@@ -13,18 +13,21 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
-      
+
       - name: Install cargo-binutils
-        run: cargo install cargo-binutils
-      
+        run: |
+          rustup component add llvm-tools
+          cargo install cargo-binutils
+
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
+      
       - name: Build firmware
         run: cargo build --release --target thumbv7em-none-eabihf
       
@@ -50,12 +53,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+      
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
       
@@ -71,12 +75,13 @@ jobs:
     env:
       RUSTFLAGS: "-D warnings"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+      
       - name: Check formatting
         run: cargo fmt --check || true
       

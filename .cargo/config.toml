@@ -1,16 +1,9 @@
 [target.thumbv7em-none-eabihf]
 runner = "probe-rs run --chip STM32F469NIHx"
-rustflags = [
-    "-C", "link-arg=-Tlink.x",
-    "-C", "link-arg=-Tdefmt.x",
-    # Reproducibility: deterministic linker
-    "-C", "link-arg=--build-id=none",
-]
+rustflags = ["-C", "link-arg=-Tlink.x", "-C", "link-arg=-Tdefmt.x"]
 
 [build]
 target = "thumbv7em-none-eabihf"
 
 [env]
 DEFMT_LOG = "info"
-# Reproducibility: fixed timestamp
-SOURCE_DATE_EPOCH = "1704067200"

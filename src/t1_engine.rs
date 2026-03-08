@@ -86,7 +86,8 @@ fn recv_block<T: T1Transport>(
         .map_err(T1Error::Transport)?;
     // Remaining bytes must arrive quickly (within a few byte times).
     // Use short timeout to avoid overrun from 1ms polling delay.
-    const INTER_BYTE_MS: u32 = 200;
+    // 20ms is sufficient for 9600 baud (1 byte = 1.04ms) with margin.
+    const INTER_BYTE_MS: u32 = 20;
     buf[1] = t
         .recv_byte_timeout(INTER_BYTE_MS)
         .map_err(T1Error::Transport)?;
@@ -198,7 +199,6 @@ pub fn transmit_apdu_t1<T: T1Transport>(
     }
 
     let mut resp_len = 0usize;
-    let mut nr: u8 = 0;
     let mut first_rx = true;
     loop {
         if first_rx {
@@ -212,18 +212,28 @@ pub fn transmit_apdu_t1<T: T1Transport>(
             let n = min(inf_len, response.len().saturating_sub(resp_len));
             response[resp_len..resp_len + n].copy_from_slice(&block[3..3 + n]);
             resp_len += n;
+            defmt::info!("T1 RX I-block: PCB=0x{:02X} inf_len={} copied={} total_resp_len={} M={}", pcb, inf_len, n, resp_len, (pcb & I_M_CHAIN) != 0);
             let m = (pcb & I_M_CHAIN) != 0;
             if !m {
                 *ns = (*ns + 1) & 1;
                 return Ok(resp_len);
             }
-            nr = (nr + 1) & 1;
+            // Extract card's N(S) from PCB bit 6, compute N(R) = (N(S) + 1) % 2
+            // N(R) indicates the NEXT expected block number (ISO 7816-3)
+            // If card sent N(S)=1, we send N(R)=0 meaning "I got block 1, send block 0 next"
+            let card_ns = (pcb >> 6) & 1;
+            let nr = (card_ns + 1) & 1;  // N(R) = (N(S) + 1) mod 2
             let r_pcb = PCB_R_BLOCK | (nr << 4);
             let r_lrc = 0u8 ^ r_pcb ^ 0u8;
+            defmt::info!("T1 TX R-block: NAD=00 PCB=0x{:02X} LEN=00 LRC=0x{:02X} (card_ns={} nr={})", r_pcb, r_lrc, card_ns, nr);
             t.send_byte(0).map_err(T1Error::Transport)?;
             t.send_byte(r_pcb).map_err(T1Error::Transport)?;
             t.send_byte(0).map_err(T1Error::Transport)?;
             t.send_byte(r_lrc).map_err(T1Error::Transport)?;
+            // Small delay to allow our R-block echoes to arrive before draining
+            // In half-duplex smartcard mode, the card won't start transmitting
+            // until after our transmission is complete
+            cortex_m::asm::delay(10_000); // ~60us at 168MHz
             t.prepare_rx();
         } else if (pcb & PCB_MASK) == PCB_S_BLOCK {
             if (pcb & 0x1F) == 0x03 {
