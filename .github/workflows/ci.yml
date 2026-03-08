@@ -19,6 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+          components: llvm-tools
       
       - name: Install cargo-binutils
         run: cargo install cargo-binutils
