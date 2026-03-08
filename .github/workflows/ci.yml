@@ -17,7 +17,8 @@ jobs:
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
-      
+        with:
+          toolchain: "1.92"
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
       
@@ -50,7 +51,8 @@ jobs:
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
-      
+        with:
+          toolchain: "1.92"
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
       
@@ -70,7 +72,8 @@ jobs:
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
-      
+        with:
+          toolchain: "1.92"
       - name: Check formatting
         run: cargo fmt --check || true
       
