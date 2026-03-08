@@ -19,9 +19,12 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+      
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils
+      
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
-      
       - name: Build firmware
         run: cargo build --release --target thumbv7em-none-eabihf
       
