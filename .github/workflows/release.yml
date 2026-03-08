@@ -100,53 +100,56 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Write release notes to file
+          cat > release-notes.md << 'NOTES'
+          ## STM32 CCID Firmware Release
+          
+          ### Files
+          | File | Description | Size |
+          |------|-------------|------|
+          | `ccid-firmware.elf` | ELF binary with debug symbols | ~1.7MB |
+          | `ccid-firmware.bin` | Raw binary for direct flash | ~44KB |
+          | `ccid-firmware.hex` | Intel HEX format | ~120KB |
+          | `*.sha256` | SHA256 checksums | - |
+          
+          ### Flash Instructions
+          
+          **probe-rs (recommended)**
+          ```bash
+          probe-rs run --chip STM32F469NIHx ccid-firmware.bin
+          ```
+          
+          **st-flash**
+          ```bash
+          st-flash write ccid-firmware.bin 0x08000000
+          ```
+          
+          **STM32CubeProgrammer**
+          Load `ccid-firmware.elf` directly.
+          
+          ### Reproducibility
+          
+          This release was built in Docker with:
+          - `SOURCE_DATE_EPOCH=1704067200`
+          - Pinned Rust toolchain (see `rust-toolchain.toml`)
+          
+          To reproduce this build locally:
+          ```bash
+          git clone https://github.com/Amperstrand/ccid-firmware-rs.git
+          cd ccid-firmware-rs
+          docker build -t ccid-builder .
+          docker create --name extract ccid-builder
+          docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
+          sha256sum ccid-firmware.elf
+          ```
+          
+          Compare the SHA256 with `ccid-firmware.elf.sha256` from this release.
+          NOTES
+          
           gh release create "${GITHUB_REF_NAME}" \
             dist/* \
             --title "${GITHUB_REF_NAME}: STM32 CCID Firmware" \
-            --notes-file - <<'EOF'
-      ## STM32 CCID Firmware Release
-      
-      ### Files
-      | File | Description | Size |
-      |------|-------------|------|
-      | `ccid-firmware.elf` | ELF binary with debug symbols | ~1.7MB |
-      | `ccid-firmware.bin` | Raw binary for direct flash | ~44KB |
-      | `ccid-firmware.hex` | Intel HEX format | ~120KB |
-      | `*.sha256` | SHA256 checksums | - |
-      
-      ### Flash Instructions
-      
-      **probe-rs (recommended)**
-      ```bash
-      probe-rs run --chip STM32F469NIHx ccid-firmware.bin
-      ```
-      
-      **st-flash**
-      ```bash
-      st-flash write ccid-firmware.bin 0x08000000
-      ```
-      
-      **STM32CubeProgrammer**
-      Load `ccid-firmware.elf` directly.
-      
-      ### Reproducibility
-      
-      This release was built in Docker with:
-      - `SOURCE_DATE_EPOCH=1704067200`
-      - Pinned Rust toolchain (see `rust-toolchain.toml`)
-      
-      To reproduce this build locally:
-      ```bash
-      git clone https://github.com/Amperstrand/ccid-firmware-rs.git
-      cd ccid-firmware-rs
-      docker build -t ccid-builder .
-      docker create --name extract ccid-builder
-      docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
-      sha256sum ccid-firmware.elf
-      ```
-      
-      Compare the SHA256 with `ccid-firmware.elf.sha256` from this release.
-      EOF
+            --notes-file release-notes.md
 
   reproducibility-report:
     needs: build-release
