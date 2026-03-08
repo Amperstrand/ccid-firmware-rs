@@ -1,0 +1,32 @@
+# Build artifacts
+/target/
+*.bin
+*.elf
+*.hex
+
+# Logs and debug output
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.fixed
+*.backup
+
+# Test directories (local only)
+tests/hardware/

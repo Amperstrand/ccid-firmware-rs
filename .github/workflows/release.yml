@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.0.1)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SOURCE_DATE_EPOCH: 1704067200
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build in Docker (reproducible)
+        run: |
+          docker build \
+            -t ccid-firmware-builder \
+            .
+          
+          # Create container and extract firmware
+          docker create --name extract ccid-firmware-builder
+          docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
+          docker rm extract
+      
+      - name: Generate release artifacts
+        run: |
+          # Convert to binary and hex formats
+          arm-none-eabi-objcopy -O binary ccid-firmware.elf ccid-firmware.bin
+          arm-none-eabi-objcopy -O ihex ccid-firmware.elf ccid-firmware.hex
+          
+          # Generate checksums
+          sha256sum ccid-firmware.elf > ccid-firmware.elf.sha256
+          sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
+          sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
+          
+          # Display checksums for verification
+          echo "## Release Checksums" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat ccid-firmware.*.sha256 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+      
+      - name: Verify reproducibility
+        run: |
+          echo "Building twice to verify reproducibility..."
+          
+          # Clean and rebuild in Docker
+          docker build \
+            --no-cache \
+            -t ccid-firmware-builder-verify \
+            .
+          
+          docker create --name extract-verify ccid-firmware-builder-verify
+          docker cp extract-verify:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-verify.elf
+          docker rm extract-verify
+          
+          # Compare checksums
+          SHA1=$(sha256sum ccid-firmware.elf | cut -d' ' -f1)
+          SHA2=$(sha256sum ccid-firmware-verify.elf | cut -d' ' -f1)
+          
+          echo "Build 1: $SHA1"
+          echo "Build 2: $SHA2"
+          
+          if [ "$SHA1" = "$SHA2" ]; then
+            echo "✅ Reproducibility verified - both builds identical" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Reproducibility check failed" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+      
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          cp ccid-firmware.elf ccid-firmware.bin ccid-firmware.hex dist/
+          cp ccid-firmware.*.sha256 dist/
+          cd dist && sha256sum * > SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/* \
+            --title "${GITHUB_REF_NAME}: STM32 CCID Firmware" \
+            --notes-file - <<'EOF'
+      ## STM32 CCID Firmware Release
+      
+      ### Files
+      | File | Description | Size |
+      |------|-------------|------|
+      | `ccid-firmware.elf` | ELF binary with debug symbols | ~1.7MB |
+      | `ccid-firmware.bin` | Raw binary for direct flash | ~44KB |
+      | `ccid-firmware.hex` | Intel HEX format | ~120KB |
+      | `*.sha256` | SHA256 checksums | - |
+      
+      ### Flash Instructions
+      
+      **probe-rs (recommended)**
+      ```bash
+      probe-rs run --chip STM32F469NIHx ccid-firmware.bin
+      ```
+      
+      **st-flash**
+      ```bash
+      st-flash write ccid-firmware.bin 0x08000000
+      ```
+      
+      **STM32CubeProgrammer**
+      Load `ccid-firmware.elf` directly.
+      
+      ### Reproducibility
+      
+      This release was built in Docker with:
+      - `SOURCE_DATE_EPOCH=1704067200`
+      - Pinned Rust toolchain (see `rust-toolchain.toml`)
+      
+      To reproduce this build locally:
+      ```bash
+      git clone https://github.com/Amperstrand/ccid-firmware-rs.git
+      cd ccid-firmware-rs
+      docker build -t ccid-builder .
+      docker create --name extract ccid-builder
+      docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
+      sha256sum ccid-firmware.elf
+      ```
+      
+      Compare the SHA256 with `ccid-firmware.elf.sha256` from this release.
+      EOF
+
+  reproducibility-report:
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          echo "## Reproducibility Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This release was built with:" >> $GITHUB_STEP_SUMMARY
+          echo "- Docker container for isolation" >> $GITHUB_STEP_SUMMARY
+          echo "- SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Pinned Rust toolchain via rust-toolchain.toml" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To reproduce this build locally:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "docker build -t ccid-builder ." >> $GITHUB_STEP_SUMMARY
+          echo "docker create --name extract ccid-builder" >> $GITHUB_STEP_SUMMARY
+          echo "docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf" >> $GITHUB_STEP_SUMMARY
+          echo "sha256sum ccid-firmware.elf" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

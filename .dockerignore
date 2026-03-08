@@ -1,0 +1,29 @@
+# Build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Documentation not needed in build
+*.md
+!README.md
+
+# Test files (not needed for firmware build)
+test_*.py
+tests/
+
+# CI
+.github/
