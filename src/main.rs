@@ -20,6 +20,8 @@
 //! - PC1: Touch interrupt
 //! - SDRAM: Framebuffer via FMC
 
+// Entire file is ARM-only firmware code
+// For x86_64, cargo test runs against lib.rs instead
 #![cfg(all(target_arch = "arm", target_os = "none"))]
 #![no_std]
 #![no_main]
@@ -27,11 +29,11 @@
 use defmt_rtt as _;
 use panic_probe as _;
 
+mod device_profile;
 mod pinpad;
 mod smartcard;
 mod t1_engine;
 mod usb_identity;
-mod device_profile;
 
 use cortex_m_rt::entry;
 use stm32f4xx_hal::gpio::{

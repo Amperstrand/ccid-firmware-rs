@@ -1,3 +1,4 @@
+#![cfg(all(target_arch = "arm", target_os = "none"))]
 //! Smartcard Hardware Abstraction Layer for STM32F469 CCID Reader
 //!
 //! Supports both T=0 and T=1 protocols (ISO 7816-3)

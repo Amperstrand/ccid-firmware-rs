@@ -1,3 +1,4 @@
+#![cfg(all(target_arch = "arm", target_os = "none"))]
 //! USB CCID Class implementation for smartcard reader mode
 //!
 //! This module implements the USB Chip/Smart Card Interface Device (CCID) protocol
@@ -328,9 +329,8 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             #[cfg(feature = "display")]
             pin_result_pending: None,
             response_buffer: [0u8; 261],
+        }
     }
-    }
-
 
     /// Get a reference to the smartcard driver
     pub fn driver(&self) -> &D {
@@ -838,7 +838,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             self.rx_buffer[3],
             self.rx_buffer[4],
         ]) as usize;
-        
+
         // Infer protocol from data length
         let requested_protocol = match data_len {
             5 => 0, // T=0
@@ -1067,7 +1067,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
                 // Build APDU from PIN buffer
                 let ascii_pin = buffer.to_ascii();
                 let pin_len = buffer.len();
-                
+
                 // Get params from secure state (should still have them)
                 if let SecureState::WaitingForPin { params, .. } = &self.secure_state {
                     let builder = VerifyApduBuilder::from_template(
@@ -1075,17 +1075,25 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
                         params.apdu_template[2], // P1
                         params.apdu_template[3], // P2
                     );
-                    
+
                     match builder.build(&ascii_pin[..pin_len]) {
                         Ok(apdu) => {
                             let apdu_len = 5 + pin_len;
-                            match self.driver.transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer) {
+                            match self
+                                .driver
+                                .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
+                            {
                                 Ok(resp_len) => {
                                     defmt::info!("CCID: Card responded, len={}", resp_len);
                                     // Copy response to avoid borrow conflict
                                     let mut resp_copy: [u8; 261] = [0u8; 261];
-                                    resp_copy[..resp_len].copy_from_slice(&self.response_buffer[..resp_len]);
-                                    self.complete_pin_entry(seq, PinResult::Success, Some(&resp_copy[..resp_len]));
+                                    resp_copy[..resp_len]
+                                        .copy_from_slice(&self.response_buffer[..resp_len]);
+                                    self.complete_pin_entry(
+                                        seq,
+                                        PinResult::Success,
+                                        Some(&resp_copy[..resp_len]),
+                                    );
                                 }
                                 Err(_) => {
                                     defmt::warn!("CCID: Card transmit failed");

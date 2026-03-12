@@ -1,3 +1,4 @@
+#![cfg(all(target_arch = "arm", target_os = "none"))]
 //! USB Identity Configuration
 //!
 //! Re-exports USB identity constants from the active device profile.

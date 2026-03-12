@@ -1,3 +1,4 @@
+#![cfg(all(target_arch = "arm", target_os = "none"))]
 //! T=1 block protocol engine (ISO 7816-3)
 //! I/R/S blocks, LRC, chaining for APDU > IFSC.
 //! R-block from card: ACK (bits 1-0 = 00) or retransmit request (01 = EDC error, 10 = other);
@@ -212,7 +213,14 @@ pub fn transmit_apdu_t1<T: T1Transport>(
             let n = min(inf_len, response.len().saturating_sub(resp_len));
             response[resp_len..resp_len + n].copy_from_slice(&block[3..3 + n]);
             resp_len += n;
-            defmt::info!("T1 RX I-block: PCB=0x{:02X} inf_len={} copied={} total_resp_len={} M={}", pcb, inf_len, n, resp_len, (pcb & I_M_CHAIN) != 0);
+            defmt::info!(
+                "T1 RX I-block: PCB=0x{:02X} inf_len={} copied={} total_resp_len={} M={}",
+                pcb,
+                inf_len,
+                n,
+                resp_len,
+                (pcb & I_M_CHAIN) != 0
+            );
             let m = (pcb & I_M_CHAIN) != 0;
             if !m {
                 *ns = (*ns + 1) & 1;
@@ -222,10 +230,16 @@ pub fn transmit_apdu_t1<T: T1Transport>(
             // N(R) indicates the NEXT expected block number (ISO 7816-3)
             // If card sent N(S)=1, we send N(R)=0 meaning "I got block 1, send block 0 next"
             let card_ns = (pcb >> 6) & 1;
-            let nr = (card_ns + 1) & 1;  // N(R) = (N(S) + 1) mod 2
+            let nr = (card_ns + 1) & 1; // N(R) = (N(S) + 1) mod 2
             let r_pcb = PCB_R_BLOCK | (nr << 4);
             let r_lrc = 0u8 ^ r_pcb ^ 0u8;
-            defmt::info!("T1 TX R-block: NAD=00 PCB=0x{:02X} LEN=00 LRC=0x{:02X} (card_ns={} nr={})", r_pcb, r_lrc, card_ns, nr);
+            defmt::info!(
+                "T1 TX R-block: NAD=00 PCB=0x{:02X} LEN=00 LRC=0x{:02X} (card_ns={} nr={})",
+                r_pcb,
+                r_lrc,
+                card_ns,
+                nr
+            );
             t.send_byte(0).map_err(T1Error::Transport)?;
             t.send_byte(r_pcb).map_err(T1Error::Transport)?;
             t.send_byte(0).map_err(T1Error::Transport)?;

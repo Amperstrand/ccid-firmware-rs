@@ -1,3 +1,4 @@
+#![cfg(all(target_arch = "arm", target_os = "none"))]
 //! Device Profile Configuration for CCID Reader Emulation
 //!
 //! This module provides a unified configuration system for emulating different

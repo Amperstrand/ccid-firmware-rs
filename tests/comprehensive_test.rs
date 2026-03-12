@@ -273,7 +273,7 @@ fn test_state_machine_tick_wrapping() {
     
     // Should timeout after 10 seconds worth of ticks
     // (accounting for wrap-around)
-    assert!(ctx.check_timeout(0xFFFFFFF0 + 10000, 1000));
+    assert!(ctx.check_timeout(0xFFFFFFF0_u32.wrapping_add(10000), 1000));
 }
 
 #[test]

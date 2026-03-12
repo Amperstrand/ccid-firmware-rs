@@ -14,7 +14,25 @@ fn test_full_pin_entry_flow_user_pin() {
     
     // 1. Parse CCID PIN verification parameters
     let ccid_data: [u8; 17] = [
-    
+        30,   // bTimerOut = 30 seconds
+        0x82, // bmFormatString = ASCII, left justified
+        0x00, // bmPINBlockString
+        0x00, // bmPINLengthFormat
+        8,    // wPINMaxExtraDigit high = max 8
+        6,    // wPINMaxExtraDigit low = min 6
+        0x02, // bEntryValidationCondition = validation key
+        1,    // bNumberMessage
+        0x09, 0x04, // wLangId = 0x0409 (English)
+        0,    // bMsgIndex
+        0,    // bTeoPrologue
+        // APDU template
+        0x00, // CLA
+        0x20, // INS = VERIFY
+        0x00, // P1
+        0x81, // P2 = User PIN
+        0x08, // Lc
+    ];
+
     let params = PinVerifyParams::parse(&ccid_data).expect("Failed to parse params");
     assert_eq!(params.pin_type, 0x81);
     assert_eq!(params.min_len, 6);
