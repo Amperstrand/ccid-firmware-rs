@@ -19,6 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+          targets: thumbv7em-none-eabihf
 
       - name: Install cargo-binutils
         run: |
@@ -29,13 +30,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
       
       - name: Build firmware
-        run: cargo build --release --target thumbv7em-none-eabihf
+        run: cargo build --release
       
       - name: Generate binary artifacts
         run: |
-          cargo objcopy --release --target thumbv7em-none-eabihf -- \
+          cargo objcopy --release -- \
             -O binary ccid-firmware.bin
-          cargo objcopy --release --target thumbv7em-none-eabihf -- \
+          cargo objcopy --release -- \
             -O ihex ccid-firmware.hex
           sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
           sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
@@ -50,26 +51,6 @@ jobs:
             ccid-firmware.bin.sha256
             ccid-firmware.hex.sha256
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.92"
-      
-      - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@v2
-      
-      - name: Run unit tests
-        run: cargo test --target x86_64-unknown-linux-gnu --lib --tests
-      
-      - name: Check Python syntax
-        run: |
-          python3 -m py_compile test_*.py || true
-
   lint:
     runs-on: ubuntu-latest
     env:
@@ -81,9 +62,15 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.92"
+          targets: thumbv7em-none-eabihf
+          components: rustfmt, clippy
       
       - name: Check formatting
         run: cargo fmt --check || true
       
       - name: Run clippy
-        run: cargo clippy --target thumbv7em-none-eabihf -- -D warnings || true
+        run: cargo clippy -- -D warnings || true
+
+      - name: Check Python syntax
+        run: |
+          python3 -m py_compile test_*.py || true

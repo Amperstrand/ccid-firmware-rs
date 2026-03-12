@@ -1,7 +1,8 @@
 // Only compile for ARM embedded targets (not for x86_64 tests)
-//!
+//
 //! Run: `cargo run --release --example display_touch`
 
+#![cfg(all(target_arch = "arm", target_os = "none"))]
 #![deny(warnings)]
 #![no_main]
 #![no_std]
