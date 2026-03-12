@@ -1,0 +1,1767 @@
+   0.201310184s  INFO prepare_target{force=false package_id=display-test v0.1.0 (/Users/macbook/src/seedkeeperport/ccid-reader/display-test) target="display-test"}: cargo::core::compiler::fingerprint: fingerprint error for display-test v0.1.0 (/Users/macbook/src/seedkeeperport/ccid-reader/display-test)/Check { test: false }/TargetInner { name: "display-test", tested: false, benched: false, doc: true, ..: with_path("/Users/macbook/src/seedkeeperport/ccid-reader/display-test/src/main.rs", Edition2021) }
+   0.202727587s  INFO prepare_target{force=false package_id=display-test v0.1.0 (/Users/macbook/src/seedkeeperport/ccid-reader/display-test) target="display-test"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/display-test-5902e04df564689b/bin-display-test`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+  18: <unknown>
+   0.281442903s  INFO prepare_target{force=false package_id=cortex-m v0.7.7 target="cortex_m"}: cargo::core::compiler::fingerprint: fingerprint error for cortex-m v0.7.7/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("cortex_m", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cortex-m-0.7.7/src/lib.rs", Edition2018) }
+   0.281919004s  INFO prepare_target{force=false package_id=cortex-m v0.7.7 target="cortex_m"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/cortex-m-1358b2d611bbd7b8/lib-cortex_m`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+  19: <unknown>
+   0.283244489s  INFO prepare_target{force=false package_id=bare-metal v0.2.5 target="bare_metal"}: cargo::core::compiler::fingerprint: fingerprint error for bare-metal v0.2.5/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("bare_metal", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bare-metal-0.2.5/src/lib.rs", Edition2015) }
+   0.283278025s  INFO prepare_target{force=false package_id=bare-metal v0.2.5 target="bare_metal"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/bare-metal-afce9022104d1755/lib-bare_metal`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.287855488s  INFO prepare_target{force=false package_id=bitfield v0.13.2 target="bitfield"}: cargo::core::compiler::fingerprint: fingerprint error for bitfield v0.13.2/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("bitfield", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitfield-0.13.2/src/lib.rs", Edition2015) }
+   0.287886973s  INFO prepare_target{force=false package_id=bitfield v0.13.2 target="bitfield"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/bitfield-b7696f8ca31edd49/lib-bitfield`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.289458171s  INFO prepare_target{force=false package_id=critical-section v1.2.0 target="critical_section"}: cargo::core::compiler::fingerprint: fingerprint error for critical-section v1.2.0/Check { test: false }/TargetInner { ..: lib_target("critical_section", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/critical-section-1.2.0/src/lib.rs", Edition2018) }
+   0.289489114s  INFO prepare_target{force=false package_id=critical-section v1.2.0 target="critical_section"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/critical-section-958de39d7a8aa301/lib-critical_section`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.290258054s  INFO prepare_target{force=false package_id=embedded-hal v0.2.7 target="embedded_hal"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-hal v0.2.7/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_hal", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-hal-0.2.7/src/lib.rs", Edition2015) }
+   0.290317242s  INFO prepare_target{force=false package_id=embedded-hal v0.2.7 target="embedded_hal"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-hal-b3b58adb669ae389/lib-embedded_hal`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.291200368s  INFO prepare_target{force=false package_id=nb v0.1.3 target="nb"}: cargo::core::compiler::fingerprint: fingerprint error for nb v0.1.3/Check { test: false }/TargetInner { name_inferred: true, doctest: false, ..: lib_target("nb", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nb-0.1.3/src/lib.rs", Edition2015) }
+   0.291220312s  INFO prepare_target{force=false package_id=nb v0.1.3 target="nb"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/nb-fd007c1337f1ef45/lib-nb`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.291765063s  INFO prepare_target{force=false package_id=nb v1.1.0 target="nb"}: cargo::core::compiler::fingerprint: fingerprint error for nb v1.1.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("nb", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nb-1.1.0/src/lib.rs", Edition2018) }
+   0.291784722s  INFO prepare_target{force=false package_id=nb v1.1.0 target="nb"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/nb-3d5a8e84864d5088/lib-nb`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.292402324s  INFO prepare_target{force=false package_id=defmt v0.3.100 target="defmt"}: cargo::core::compiler::fingerprint: fingerprint error for defmt v0.3.100/Check { test: false }/TargetInner { ..: lib_target("defmt", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/defmt-0.3.100/src/lib.rs", Edition2021) }
+   0.292426232s  INFO prepare_target{force=false package_id=defmt v0.3.100 target="defmt"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/defmt-742e5b767672f295/lib-defmt`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  13: cargo::ops::cargo_compile::compile_ws
+  14: cargo::ops::cargo_compile::compile_with_exec
+  15: cargo::ops::cargo_compile::compile
+  16: cargo::commands::check::exec
+  17: <cargo::cli::Exec>::exec
+  18: cargo::main
+  19: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  20: std::rt::lang_start::<()>::{closure#0}
+  21: std::rt::lang_start_internal
+  22: _main
+  23: <unknown>
+   0.293100415s  INFO prepare_target{force=false package_id=defmt v1.0.1 target="defmt"}: cargo::core::compiler::fingerprint: fingerprint error for defmt v1.0.1/Check { test: false }/TargetInner { ..: lib_target("defmt", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/defmt-1.0.1/src/lib.rs", Edition2021) }
+   0.293118246s  INFO prepare_target{force=false package_id=defmt v1.0.1 target="defmt"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/defmt-006c94d70766078c/lib-defmt`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: cargo::core::compiler::compile
+  13: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  14: cargo::ops::cargo_compile::compile_ws
+  15: cargo::ops::cargo_compile::compile_with_exec
+  16: cargo::ops::cargo_compile::compile
+  17: cargo::commands::check::exec
+  18: <cargo::cli::Exec>::exec
+  19: cargo::main
+  20: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  21: std::rt::lang_start::<()>::{closure#0}
+  22: std::rt::lang_start_internal
+  23: _main
+  24: <unknown>
+   0.293910417s  INFO prepare_target{force=false package_id=bitflags v1.3.2 target="bitflags"}: cargo::core::compiler::fingerprint: fingerprint error for bitflags v1.3.2/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("bitflags", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-1.3.2/src/lib.rs", Edition2018) }
+   0.293935176s  INFO prepare_target{force=false package_id=bitflags v1.3.2 target="bitflags"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/bitflags-2a778d8d625f5579/lib-bitflags`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: cargo::core::compiler::compile
+  13: cargo::core::compiler::compile
+  14: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  15: cargo::ops::cargo_compile::compile_ws
+  16: cargo::ops::cargo_compile::compile_with_exec
+  17: cargo::ops::cargo_compile::compile
+  18: cargo::commands::check::exec
+  19: <cargo::cli::Exec>::exec
+  20: cargo::main
+  21: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  22: std::rt::lang_start::<()>::{closure#0}
+  23: std::rt::lang_start_internal
+  24: _main
+  25: <unknown>
+   0.303419415s  INFO prepare_target{force=false package_id=void v1.0.2 target="void"}: cargo::core::compiler::fingerprint: fingerprint error for void v1.0.2/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("void", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/void-1.0.2/src/lib.rs", Edition2015) }
+   0.303446604s  INFO prepare_target{force=false package_id=void v1.0.2 target="void"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/void-3173337e49346424/lib-void`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.303935678s  INFO prepare_target{force=false package_id=volatile-register v0.2.2 target="volatile_register"}: cargo::core::compiler::fingerprint: fingerprint error for volatile-register v0.2.2/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("volatile_register", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/volatile-register-0.2.2/src/lib.rs", Edition2015) }
+   0.303951950s  INFO prepare_target{force=false package_id=volatile-register v0.2.2 target="volatile_register"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/volatile-register-6ad63b8e08204282/lib-volatile_register`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.304445479s  INFO prepare_target{force=false package_id=vcell v0.1.3 target="vcell"}: cargo::core::compiler::fingerprint: fingerprint error for vcell v0.1.3/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("vcell", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/vcell-0.1.3/src/lib.rs", Edition2015) }
+   0.304460175s  INFO prepare_target{force=false package_id=vcell v0.1.3 target="vcell"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/vcell-e94fbe4ca168dfc9/lib-vcell`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.304859994s  INFO prepare_target{force=false package_id=cortex-m-rt v0.7.5 target="cortex_m_rt"}: cargo::core::compiler::fingerprint: fingerprint error for cortex-m-rt v0.7.5/Check { test: false }/TargetInner { ..: lib_target("cortex_m_rt", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cortex-m-rt-0.7.5/src/lib.rs", Edition2021) }
+   0.304876621s  INFO prepare_target{force=false package_id=cortex-m-rt v0.7.5 target="cortex_m_rt"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/cortex-m-rt-166f4c0f95d05e21/lib-cortex_m_rt`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+  19: <unknown>
+   0.306753610s  INFO prepare_target{force=false package_id=defmt-rtt v0.4.2 target="defmt_rtt"}: cargo::core::compiler::fingerprint: fingerprint error for defmt-rtt v0.4.2/Check { test: false }/TargetInner { ..: lib_target("defmt_rtt", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/defmt-rtt-0.4.2/src/lib.rs", Edition2021) }
+   0.306779109s  INFO prepare_target{force=false package_id=defmt-rtt v0.4.2 target="defmt_rtt"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/defmt-rtt-c0b7868103bff4f3/lib-defmt_rtt`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+  19: <unknown>
+   0.309662766s  INFO prepare_target{force=false package_id=embedded-graphics v0.8.2 target="embedded_graphics"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-graphics v0.8.2/Check { test: false }/TargetInner { ..: lib_target("embedded_graphics", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-graphics-0.8.2/src/lib.rs", Edition2021) }
+   0.309695246s  INFO prepare_target{force=false package_id=embedded-graphics v0.8.2 target="embedded_graphics"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-graphics-2d8a64ec49bdc2d4/lib-embedded_graphics`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+  19: <unknown>
+   0.310545384s  INFO prepare_target{force=false package_id=az v1.2.1 target="az"}: cargo::core::compiler::fingerprint: fingerprint error for az v1.2.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("az", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/az-1.2.1/src/lib.rs", Edition2018) }
+   0.310568940s  INFO prepare_target{force=false package_id=az v1.2.1 target="az"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/az-f8cf7c37db0a9e34/lib-az`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.313045881s  INFO prepare_target{force=false package_id=byteorder v1.5.0 target="byteorder"}: cargo::core::compiler::fingerprint: fingerprint error for byteorder v1.5.0/Check { test: false }/TargetInner { benched: false, ..: lib_target("byteorder", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/byteorder-1.5.0/src/lib.rs", Edition2021) }
+   0.313071884s  INFO prepare_target{force=false package_id=byteorder v1.5.0 target="byteorder"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/byteorder-9fe7df1649acbe62/lib-byteorder`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.313571918s  INFO prepare_target{force=false package_id=embedded-graphics-core v0.4.1 target="embedded_graphics_core"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-graphics-core v0.4.1/Check { test: false }/TargetInner { ..: lib_target("embedded_graphics_core", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-graphics-core-0.4.1/src/lib.rs", Edition2021) }
+   0.313589393s  INFO prepare_target{force=false package_id=embedded-graphics-core v0.4.1 target="embedded_graphics_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-graphics-core-ea134fbeb125eebc/lib-embedded_graphics_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.314440755s  INFO prepare_target{force=false package_id=float-cmp v0.9.0 target="float_cmp"}: cargo::core::compiler::fingerprint: fingerprint error for float-cmp v0.9.0/Check { test: false }/TargetInner { ..: lib_target("float_cmp", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/float-cmp-0.9.0/src/lib.rs", Edition2018) }
+   0.314466484s  INFO prepare_target{force=false package_id=float-cmp v0.9.0 target="float_cmp"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/float-cmp-6cd7bcb808cc6aff/lib-float_cmp`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.315100230s  INFO prepare_target{force=false package_id=num-traits v0.2.19 target="num_traits"}: cargo::core::compiler::fingerprint: fingerprint error for num-traits v0.2.19/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("num_traits", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/src/lib.rs", Edition2021) }
+   0.315118026s  INFO prepare_target{force=false package_id=num-traits v0.2.19 target="num_traits"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/num-traits-dfbda83a64fba9a0/lib-num_traits`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.316733704s  INFO prepare_target{force=false package_id=micromath v2.1.0 target="micromath"}: cargo::core::compiler::fingerprint: fingerprint error for micromath v2.1.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("micromath", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/micromath-2.1.0/src/lib.rs", Edition2018) }
+   0.316754435s  INFO prepare_target{force=false package_id=micromath v2.1.0 target="micromath"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/micromath-b2da901660129f3b/lib-micromath`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.317198569s  INFO prepare_target{force=false package_id=panic-probe v0.3.2 target="panic_probe"}: cargo::core::compiler::fingerprint: fingerprint error for panic-probe v0.3.2/Check { test: false }/TargetInner { ..: lib_target("panic_probe", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/panic-probe-0.3.2/src/lib.rs", Edition2021) }
+   0.317215391s  INFO prepare_target{force=false package_id=panic-probe v0.3.2 target="panic_probe"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/panic-probe-1913cc3371798991/lib-panic_probe`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+  19: <unknown>
+   0.318596475s  INFO prepare_target{force=false package_id=stm32f469i-disc v0.4.0 (https://github.com/Amperstrand/stm32f469i-disc.git?branch=sdio-support#c71065da) target="stm32f469i_disc"}: cargo::core::compiler::fingerprint: fingerprint error for stm32f469i-disc v0.4.0 (https://github.com/Amperstrand/stm32f469i-disc.git?branch=sdio-support#c71065da)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("stm32f469i_disc", ["lib"], "/Users/macbook/.cargo/git/checkouts/stm32f469i-disc-8f8d0d4adb973470/c71065d/src/lib.rs", Edition2021) }
+   0.318621499s  INFO prepare_target{force=false package_id=stm32f469i-disc v0.4.0 (https://github.com/Amperstrand/stm32f469i-disc.git?branch=sdio-support#c71065da) target="stm32f469i_disc"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/stm32f469i-disc-e44fe82a7ea4bf21/lib-stm32f469i_disc`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+  19: <unknown>
+   0.319919628s  INFO prepare_target{force=false package_id=embedded-hal v1.0.0 target="embedded_hal"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-hal v1.0.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_hal", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-hal-1.0.0/src/lib.rs", Edition2021) }
+   0.319946023s  INFO prepare_target{force=false package_id=embedded-hal v1.0.0 target="embedded_hal"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-hal-37dc62e5f2ad2e38/lib-embedded_hal`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.320700756s  INFO prepare_target{force=false package_id=ft6x06 v0.1.2 (https://github.com/DougAnderson444/ft6x06?rev=cc352f80b12fd985da4c4847771a26ebc03ece62#cc352f80) target="ft6x06"}: cargo::core::compiler::fingerprint: fingerprint error for ft6x06 v0.1.2 (https://github.com/DougAnderson444/ft6x06?rev=cc352f80b12fd985da4c4847771a26ebc03ece62#cc352f80)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ft6x06", ["lib"], "/Users/macbook/.cargo/git/checkouts/ft6x06-3db09accb1afc4e8/cc352f8/src/lib.rs", Edition2021) }
+   0.320728952s  INFO prepare_target{force=false package_id=ft6x06 v0.1.2 (https://github.com/DougAnderson444/ft6x06?rev=cc352f80b12fd985da4c4847771a26ebc03ece62#cc352f80) target="ft6x06"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/ft6x06-e339095db54ae436/lib-ft6x06`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.322502056s  INFO prepare_target{force=false package_id=panic-probe v0.2.1 target="panic_probe"}: cargo::core::compiler::fingerprint: fingerprint error for panic-probe v0.2.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("panic_probe", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/panic-probe-0.2.1/src/lib.rs", Edition2018) }
+   0.322527433s  INFO prepare_target{force=false package_id=panic-probe v0.2.1 target="panic_probe"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/panic-probe-16e2082ee7296a81/lib-panic_probe`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.324235849s  INFO prepare_target{force=false package_id=rtt-target v0.3.1 target="rtt_target"}: cargo::core::compiler::fingerprint: fingerprint error for rtt-target v0.3.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("rtt_target", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rtt-target-0.3.1/src/lib.rs", Edition2018) }
+   0.324260872s  INFO prepare_target{force=false package_id=rtt-target v0.3.1 target="rtt_target"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/rtt-target-c3e2bbd5fd9ee74a/lib-rtt_target`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.325349627s  INFO prepare_target{force=false package_id=ufmt-write v0.1.0 target="ufmt_write"}: cargo::core::compiler::fingerprint: fingerprint error for ufmt-write v0.1.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ufmt_write", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ufmt-write-0.1.0/src/lib.rs", Edition2018) }
+   0.325374735s  INFO prepare_target{force=false package_id=ufmt-write v0.1.0 target="ufmt_write"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/ufmt-write-ff21ccfec2d4abb0/lib-ufmt_write`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  13: cargo::ops::cargo_compile::compile_ws
+  14: cargo::ops::cargo_compile::compile_with_exec
+  15: cargo::ops::cargo_compile::compile
+  16: cargo::commands::check::exec
+  17: <cargo::cli::Exec>::exec
+  18: cargo::main
+  19: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  20: std::rt::lang_start::<()>::{closure#0}
+  21: std::rt::lang_start_internal
+  22: _main
+  23: <unknown>
+   0.325874128s  INFO prepare_target{force=false package_id=nt35510 v0.1.0 target="nt35510"}: cargo::core::compiler::fingerprint: fingerprint error for nt35510 v0.1.0/Check { test: false }/TargetInner { tested: false, benched: false, doctest: false, ..: lib_target("nt35510", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nt35510-0.1.0/src/lib.rs", Edition2021) }
+   0.325891157s  INFO prepare_target{force=false package_id=nt35510 v0.1.0 target="nt35510"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/nt35510-5dc3540c125d799e/lib-nt35510`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.326656614s  INFO prepare_target{force=false package_id=embedded-display-controller v0.2.0 target="embedded_display_controller"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-display-controller v0.2.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_display_controller", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-display-controller-0.2.0/src/lib.rs", Edition2018) }
+   0.326681858s  INFO prepare_target{force=false package_id=embedded-display-controller v0.2.0 target="embedded_display_controller"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-display-controller-5869cbe87b39cd41/lib-embedded_display_controller`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.327320863s  INFO prepare_target{force=false package_id=otm8009a v0.1.0 target="otm8009a"}: cargo::core::compiler::fingerprint: fingerprint error for otm8009a v0.1.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("otm8009a", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/otm8009a-0.1.0/src/lib.rs", Edition2021) }
+   0.327343365s  INFO prepare_target{force=false package_id=otm8009a v0.1.0 target="otm8009a"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/otm8009a-a88a2067f6843f2f/lib-otm8009a`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.328184629s  INFO prepare_target{force=false package_id=stm32-fmc v0.4.0 target="stm32_fmc"}: cargo::core::compiler::fingerprint: fingerprint error for stm32-fmc v0.4.0/Check { test: false }/TargetInner { ..: lib_target("stm32_fmc", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stm32-fmc-0.4.0/src/lib.rs", Edition2018) }
+   0.328229664s  INFO prepare_target{force=false package_id=stm32-fmc v0.4.0 target="stm32_fmc"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/stm32-fmc-638ea10b0dc94f88/lib-stm32_fmc`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.330120593s  INFO prepare_target{force=false package_id=stm32f4xx-hal v0.23.0 (https://github.com/Amperstrand/stm32f4xx-hal?rev=4defe541ba408af40b2f496915bd1d53ce8b487e#4defe541) target="stm32f4xx_hal"}: cargo::core::compiler::fingerprint: fingerprint error for stm32f4xx-hal v0.23.0 (https://github.com/Amperstrand/stm32f4xx-hal?rev=4defe541ba408af40b2f496915bd1d53ce8b487e#4defe541)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("stm32f4xx_hal", ["lib"], "/Users/macbook/.cargo/git/checkouts/stm32f4xx-hal-86f4409d72311dae/4defe54/src/lib.rs", Edition2021) }
+   0.330145582s  INFO prepare_target{force=false package_id=stm32f4xx-hal v0.23.0 (https://github.com/Amperstrand/stm32f4xx-hal?rev=4defe541ba408af40b2f496915bd1d53ce8b487e#4defe541) target="stm32f4xx_hal"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/stm32f4xx-hal-71c0474a6434bfb9/lib-stm32f4xx_hal`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+  20: <unknown>
+   0.332082306s  INFO prepare_target{force=false package_id=bare-metal v1.0.0 target="bare_metal"}: cargo::core::compiler::fingerprint: fingerprint error for bare-metal v1.0.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("bare_metal", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bare-metal-1.0.0/src/lib.rs", Edition2015) }
+   0.332117935s  INFO prepare_target{force=false package_id=bare-metal v1.0.0 target="bare_metal"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/bare-metal-f1cee2584ae83330/lib-bare_metal`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.333600989s  INFO prepare_target{force=false package_id=embedded-dma v0.2.0 target="embedded_dma"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-dma v0.2.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_dma", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-dma-0.2.0/src/lib.rs", Edition2018) }
+   0.333623101s  INFO prepare_target{force=false package_id=embedded-dma v0.2.0 target="embedded_dma"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-dma-1b14bc3a6c001124/lib-embedded_dma`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.334148343s  INFO prepare_target{force=false package_id=stable_deref_trait v1.2.1 target="stable_deref_trait"}: cargo::core::compiler::fingerprint: fingerprint error for stable_deref_trait v1.2.1/Check { test: false }/TargetInner { ..: lib_target("stable_deref_trait", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stable_deref_trait-1.2.1/src/lib.rs", Edition2015) }
+   0.334171176s  INFO prepare_target{force=false package_id=stable_deref_trait v1.2.1 target="stable_deref_trait"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/stable_deref_trait-a2932b3ca2d2f62d/lib-stable_deref_trait`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.334663053s  INFO prepare_target{force=false package_id=embedded-hal-nb v1.0.0 target="embedded_hal_nb"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-hal-nb v1.0.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_hal_nb", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-hal-nb-1.0.0/src/lib.rs", Edition2021) }
+   0.334680330s  INFO prepare_target{force=false package_id=embedded-hal-nb v1.0.0 target="embedded_hal_nb"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-hal-nb-541b321624fb4e2c/lib-embedded_hal_nb`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.335201864s  INFO prepare_target{force=false package_id=embedded-io v0.6.1 target="embedded_io"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-io v0.6.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_io", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-io-0.6.1/src/lib.rs", Edition2021) }
+   0.335218515s  INFO prepare_target{force=false package_id=embedded-io v0.6.1 target="embedded_io"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-io-72d5a09310616aec/lib-embedded_io`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.335636800s  INFO prepare_target{force=false package_id=embedded-storage v0.3.1 target="embedded_storage"}: cargo::core::compiler::fingerprint: fingerprint error for embedded-storage v0.3.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("embedded_storage", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/embedded-storage-0.3.1/src/lib.rs", Edition2018) }
+   0.335653222s  INFO prepare_target{force=false package_id=embedded-storage v0.3.1 target="embedded_storage"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/embedded-storage-8539e8683757fe4f/lib-embedded_storage`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.336181506s  INFO prepare_target{force=false package_id=enumflags2 v0.7.12 target="enumflags2"}: cargo::core::compiler::fingerprint: fingerprint error for enumflags2 v0.7.12/Check { test: false }/TargetInner { ..: lib_target("enumflags2", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/enumflags2-0.7.12/src/lib.rs", Edition2018) }
+   0.336204482s  INFO prepare_target{force=false package_id=enumflags2 v0.7.12 target="enumflags2"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/enumflags2-2590ebf50679882e/lib-enumflags2`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.337560465s  INFO prepare_target{force=false package_id=fugit v0.3.9 target="fugit"}: cargo::core::compiler::fingerprint: fingerprint error for fugit v0.3.9/Check { test: false }/TargetInner { ..: lib_target("fugit", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fugit-0.3.9/src/lib.rs", Edition2021) }
+   0.337588146s  INFO prepare_target{force=false package_id=fugit v0.3.9 target="fugit"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/fugit-daf3aa0d9a3311da/lib-fugit`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.338493181s  INFO prepare_target{force=false package_id=gcd v2.3.0 target="gcd"}: cargo::core::compiler::fingerprint: fingerprint error for gcd v2.3.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("gcd", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gcd-2.3.0/src/lib.rs", Edition2021) }
+   0.338516348s  INFO prepare_target{force=false package_id=gcd v2.3.0 target="gcd"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/gcd-a5d48df355d4432f/lib-gcd`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.339519211s  INFO prepare_target{force=false package_id=fugit-timer v0.1.3 target="fugit_timer"}: cargo::core::compiler::fingerprint: fingerprint error for fugit-timer v0.1.3/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("fugit_timer", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fugit-timer-0.1.3/src/lib.rs", Edition2021) }
+   0.339543611s  INFO prepare_target{force=false package_id=fugit-timer v0.1.3 target="fugit_timer"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/fugit-timer-fb877c2522969eef/lib-fugit_timer`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.363232990s  INFO prepare_target{force=false package_id=rand_core v0.6.4 target="rand_core"}: cargo::core::compiler::fingerprint: fingerprint error for rand_core v0.6.4/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("rand_core", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.6.4/src/lib.rs", Edition2018) }
+   0.363270712s  INFO prepare_target{force=false package_id=rand_core v0.6.4 target="rand_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/rand_core-5c0976a31bb991c8/lib-rand_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.364084422s  INFO prepare_target{force=false package_id=rand_core v0.9.5 target="rand_core"}: cargo::core::compiler::fingerprint: fingerprint error for rand_core v0.9.5/Check { test: false }/TargetInner { ..: lib_target("rand_core", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rand_core-0.9.5/src/lib.rs", Edition2021) }
+   0.364133029s  INFO prepare_target{force=false package_id=rand_core v0.9.5 target="rand_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/rand_core-346e3bc76ad7993b/lib-rand_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.364829545s  INFO prepare_target{force=false package_id=sdio-host v0.9.0 target="sdio_host"}: cargo::core::compiler::fingerprint: fingerprint error for sdio-host v0.9.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("sdio_host", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/lib.rs", Edition2018) }
+   0.364853592s  INFO prepare_target{force=false package_id=sdio-host v0.9.0 target="sdio_host"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/sdio-host-b0f74740ba819086/lib-sdio_host`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.365332313s  INFO prepare_target{force=false package_id=stm32f4 v0.16.0 target="stm32f4"}: cargo::core::compiler::fingerprint: fingerprint error for stm32f4 v0.16.0/Check { test: false }/TargetInner { ..: lib_target("stm32f4", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/stm32f4-0.16.0/src/lib.rs", Edition2021) }
+   0.365352089s  INFO prepare_target{force=false package_id=stm32f4 v0.16.0 target="stm32f4"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/stm32f4-f21c3262386cfd39/lib-stm32f4`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.366542827s  INFO prepare_target{force=false package_id=portable-atomic v1.13.1 target="portable_atomic"}: cargo::core::compiler::fingerprint: fingerprint error for portable-atomic v1.13.1/Check { test: false }/TargetInner { doc_scrape_examples: Disabled, ..: lib_target("portable_atomic", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/portable-atomic-1.13.1/src/lib.rs", Edition2018) }
+   0.366568830s  INFO prepare_target{force=false package_id=portable-atomic v1.13.1 target="portable_atomic"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/portable-atomic-c21e94f4e7947edf/lib-portable_atomic`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.370957325s  INFO prepare_target{force=false package_id=synopsys-usb-otg v0.4.0 target="synopsys_usb_otg"}: cargo::core::compiler::fingerprint: fingerprint error for synopsys-usb-otg v0.4.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("synopsys_usb_otg", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/synopsys-usb-otg-0.4.0/src/lib.rs", Edition2018) }
+   0.370982944s  INFO prepare_target{force=false package_id=synopsys-usb-otg v0.4.0 target="synopsys_usb_otg"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/synopsys-usb-otg-fffef7c8f87145d7/lib-synopsys_usb_otg`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.373972301s  INFO prepare_target{force=false package_id=usb-device v0.3.2 target="usb_device"}: cargo::core::compiler::fingerprint: fingerprint error for usb-device v0.3.2/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("usb_device", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/usb-device-0.3.2/src/lib.rs", Edition2018) }
+   0.374003935s  INFO prepare_target{force=false package_id=usb-device v0.3.2 target="usb_device"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/usb-device-71fdd84abb718741/lib-usb_device`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.374844187s  INFO prepare_target{force=false package_id=heapless v0.8.0 target="heapless"}: cargo::core::compiler::fingerprint: fingerprint error for heapless v0.8.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("heapless", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/heapless-0.8.0/src/lib.rs", Edition2021) }
+   0.374870703s  INFO prepare_target{force=false package_id=heapless v0.8.0 target="heapless"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/heapless-f73af4c354e3437b/lib-heapless`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  13: cargo::ops::cargo_compile::compile_ws
+  14: cargo::ops::cargo_compile::compile_with_exec
+  15: cargo::ops::cargo_compile::compile
+  16: cargo::commands::check::exec
+  17: <cargo::cli::Exec>::exec
+  18: cargo::main
+  19: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  20: std::rt::lang_start::<()>::{closure#0}
+  21: std::rt::lang_start_internal
+  22: _main
+  23: <unknown>
+   0.375738819s  INFO prepare_target{force=false package_id=hash32 v0.3.1 target="hash32"}: cargo::core::compiler::fingerprint: fingerprint error for hash32 v0.3.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("hash32", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hash32-0.3.1/src/lib.rs", Edition2015) }
+   0.375762878s  INFO prepare_target{force=false package_id=hash32 v0.3.1 target="hash32"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/hash32-0418bf62e9943c3e/lib-hash32`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: cargo::core::compiler::compile
+  13: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  14: cargo::ops::cargo_compile::compile_ws
+  15: cargo::ops::cargo_compile::compile_with_exec
+  16: cargo::ops::cargo_compile::compile
+  17: cargo::commands::check::exec
+  18: <cargo::cli::Exec>::exec
+  19: cargo::main
+  20: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  21: std::rt::lang_start::<()>::{closure#0}
+  22: std::rt::lang_start_internal
+  23: _main
+  24: <unknown>
+   0.377259912s  INFO prepare_target{force=false package_id=time v0.3.47 target="time"}: cargo::core::compiler::fingerprint: fingerprint error for time v0.3.47/Check { test: false }/TargetInner { benched: false, ..: lib_target("time", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-0.3.47/src/lib.rs", Edition2024) }
+   0.377278290s  INFO prepare_target{force=false package_id=time v0.3.47 target="time"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/time-59f16fd1b37d6b68/lib-time`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+  21: <unknown>
+   0.377946627s  INFO prepare_target{force=false package_id=deranged v0.5.8 target="deranged"}: cargo::core::compiler::fingerprint: fingerprint error for deranged v0.5.8/Check { test: false }/TargetInner { ..: lib_target("deranged", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/deranged-0.5.8/src/lib.rs", Edition2021) }
+   0.377962963s  INFO prepare_target{force=false package_id=deranged v0.5.8 target="deranged"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/deranged-5062845f6db24ca0/lib-deranged`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.378503985s  INFO prepare_target{force=false package_id=powerfmt v0.2.0 target="powerfmt"}: cargo::core::compiler::fingerprint: fingerprint error for powerfmt v0.2.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("powerfmt", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/powerfmt-0.2.0/src/lib.rs", Edition2021) }
+   0.378520546s  INFO prepare_target{force=false package_id=powerfmt v0.2.0 target="powerfmt"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/powerfmt-b027170677328d21/lib-powerfmt`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: cargo::core::compiler::compile
+  12: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  13: cargo::ops::cargo_compile::compile_ws
+  14: cargo::ops::cargo_compile::compile_with_exec
+  15: cargo::ops::cargo_compile::compile
+  16: cargo::commands::check::exec
+  17: <cargo::cli::Exec>::exec
+  18: cargo::main
+  19: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  20: std::rt::lang_start::<()>::{closure#0}
+  21: std::rt::lang_start_internal
+  22: _main
+  23: <unknown>
+   0.378934560s  INFO prepare_target{force=false package_id=num-conv v0.2.0 target="num_conv"}: cargo::core::compiler::fingerprint: fingerprint error for num-conv v0.2.0/Check { test: false }/TargetInner { ..: lib_target("num_conv", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-conv-0.2.0/src/lib.rs", Edition2021) }
+   0.378950040s  INFO prepare_target{force=false package_id=num-conv v0.2.0 target="num_conv"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/num-conv-29593cdf8cbcb78f/lib-num_conv`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+   0.379347864s  INFO prepare_target{force=false package_id=time-core v0.1.8 target="time_core"}: cargo::core::compiler::fingerprint: fingerprint error for time-core v0.1.8/Check { test: false }/TargetInner { ..: lib_target("time_core", ["lib"], "/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/time-core-0.1.8/src/lib.rs", Edition2024) }
+   0.379362865s  INFO prepare_target{force=false package_id=time-core v0.1.8 target="time_core"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/.fingerprint/time-core-9f9d572dc8a8dbf2/lib-time_core`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::create
+   1: std::backtrace::Backtrace::capture
+   2: cargo_util::paths::read_bytes
+   3: cargo_util::paths::read
+   4: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   5: cargo::core::compiler::fingerprint::prepare_target
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: cargo::core::compiler::compile
+  11: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  12: cargo::ops::cargo_compile::compile_ws
+  13: cargo::ops::cargo_compile::compile_with_exec
+  14: cargo::ops::cargo_compile::compile
+  15: cargo::commands::check::exec
+  16: <cargo::cli::Exec>::exec
+  17: cargo::main
+  18: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  19: std::rt::lang_start::<()>::{closure#0}
+  20: std::rt::lang_start_internal
+  21: _main
+  22: <unknown>
+    Checking bitflags v1.3.2
+    Checking void v1.0.2
+    Checking critical-section v1.2.0
+    Checking vcell v0.1.3
+    Checking bitfield v0.13.2
+    Checking byteorder v1.5.0
+    Checking stable_deref_trait v1.2.1
+    Checking portable-atomic v1.13.1
+    Checking bare-metal v0.2.5
+    Checking embedded-hal v1.0.0
+    Checking powerfmt v0.2.0
+    Checking gcd v2.3.0
+    Checking defmt v1.0.1
+    Checking embedded-display-controller v0.2.0
+    Checking ufmt-write v0.1.0
+    Checking volatile-register v0.2.2
+    Checking cortex-m-rt v0.7.5
+    Checking time-core v0.1.8
+    Checking num-conv v0.2.0
+    Checking micromath v2.1.0
+    Checking enumflags2 v0.7.12
+    Checking num-traits v0.2.19
+    Checking az v1.2.1
+    Checking embedded-dma v0.2.0
+    Checking stm32-fmc v0.4.0
+    Checking deranged v0.5.8
+    Checking sdio-host v0.9.0
+    Checking hash32 v0.3.1
+    Checking rand_core v0.9.5
+    Checking embedded-storage v0.3.1
+    Checking rand_core v0.6.4
+    Checking heapless v0.8.0
+    Checking embedded-io v0.6.1
+    Checking bare-metal v1.0.0
+    Checking nt35510 v0.1.0
+    Checking defmt v0.3.100
+    Checking nb v1.1.0
+    Checking fugit v0.3.9
+    Checking defmt-rtt v0.4.2
+    Checking nb v0.1.3
+    Checking embedded-hal-nb v1.0.0
+    Checking embedded-hal v0.2.7
+    Checking cortex-m v0.7.7
+    Checking otm8009a v0.1.0
+    Checking fugit-timer v0.1.3
+    Checking usb-device v0.3.2
+    Checking rtt-target v0.3.1
+    Checking stm32f4 v0.16.0
+    Checking panic-probe v0.3.2
+    Checking panic-probe v0.2.1
+    Checking float-cmp v0.9.0
+    Checking ft6x06 v0.1.2 (https://github.com/DougAnderson444/ft6x06?rev=cc352f80b12fd985da4c4847771a26ebc03ece62#cc352f80)
+    Checking synopsys-usb-otg v0.4.0
+    Checking embedded-graphics-core v0.4.1
+    Checking time v0.3.47
+    Checking embedded-graphics v0.8.2
+    Checking stm32f4xx-hal v0.23.0 (https://github.com/Amperstrand/stm32f4xx-hal?rev=4defe541ba408af40b2f496915bd1d53ce8b487e#4defe541)
+    Checking stm32f469i-disc v0.4.0 (https://github.com/Amperstrand/stm32f469i-disc.git?branch=sdio-support#c71065da)
+    Checking display-test v0.1.0 (/Users/macbook/src/seedkeeperport/ccid-reader/display-test)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 06s

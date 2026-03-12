@@ -1,0 +1,2 @@
+cargo:rustc-link-search=/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/build/ft6x06-a90414bfde027001/out
+cargo:rerun-if-changed=memory.x

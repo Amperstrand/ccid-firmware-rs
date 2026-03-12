@@ -1,6 +1,6 @@
 [package]
 name = "ccid-firmware-rs"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2021"
 description = "USB CCID firmware for STM32 microcontrollers in Rust"
 license = "MIT OR Apache-2.0"
@@ -23,14 +23,51 @@ cortex-m-rt = "0.7"
 defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal.git", features = ["stm32f469", "usb_fs"] }
+stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal.git", rev = "4defe541ba408af40b2f496915bd1d53ce8b487e", features = ["stm32f469", "usb_fs", "framebuffer"] }
 usb-device = "0.3"
 embedded-alloc = "0.5"
+stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", branch = "sdio-support" }
 
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg-f469" }
 
+[features]
+# Default device profile
+default = ["profile-cherry-st2100"]
+
+# Device profile selection (mutually exclusive, pick one)
+profile-cherry-st2100 = []    # Cherry SmartTerminal ST-2100 (PIN pad reader)
+profile-gemalto-plain = []    # Gemalto IDBridge CT30 (basic reader, no PIN pad)
+profile-gemalto-pinpad = []   # Gemalto IDBridge K30 (PIN pad reader)
+
+# Optional features
+display = ["embedded-graphics", "embedded-hal"]
+
+[dependencies.embedded-graphics]
+version = "0.8"
+optional = true
+
+[dependencies.embedded-hal]
+version = "0.2"
+optional = true
+
+# ============================================================================
+# Build Profiles
+# ============================================================================
+#
+# debug = 2: Full DWARF debug info (needed for probe-rs RTT location info)
+# opt-level = "z": Optimize for size (embedded target)
+# lto = true: Link-time optimization for smaller binary
+# codegen-units = 1: Better optimization (slower compile)
+# panic = "abort": No unwinding (reduces binary size)
+#
 [profile.release]
-codegen-units = 1
-debug = true
+debug = 2
+opt-level = "z"
 lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+debug = 2
+opt-level = 1

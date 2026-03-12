@@ -7,6 +7,7 @@ use usb_device::class_prelude::*;
 use usb_device::endpoint::{In, Out};
 use usb_device::{Result, UsbError};
 
+use crate::pinpad::{PinBuffer, PinResult, PinVerifyParams, VerifyApduBuilder};
 use crate::smartcard::{parse_atr, AtrParams};
 
 // ============================================================================
@@ -130,43 +131,18 @@ pub const CCID_ERR_XFR_PARITY_ERROR: u8 = 0xFD;
 pub const CCID_ERR_ICC_MUTE: u8 = 0xFE;
 pub const CCID_ERR_CMD_ABORTED: u8 = 0xFF;
 
-// ============================================================================
-/// CCID class functional descriptor DATA (52 bytes, without length and type)
-/// This is passed to writer.write(DESCRIPTOR_TYPE_CCID, &CCID_CLASS_DESCRIPTOR_DATA)
-/// which will prepend the length (54) and type (0x21)
-pub const CCID_CLASS_DESCRIPTOR_DATA: [u8; 52] = [
-    // bcdCCID: CCID Class Spec release number 1.10 (little-endian)
-    0x10, 0x01, // bMaxSlotIndex: Highest available slot (0 = single slot)
-    0x00, // bVoltageSupport: 5V, 3V, 1.8V (bits 0,1,2)
-    0x07, // dwProtocols: T=0 and T=1
-    0x03, 0x00, 0x00, 0x00, // dwDefaultClock: 4 MHz = 4,000,000 Hz (little-endian)
-    0x00, 0x2D, 0x3D, 0x00, // dwMaximumClock: 20 MHz = 20,000,000 Hz
-    0x80, 0x84, 0x31, 0x01, // bNumClockSupported: 0 (use default/maximum)
-    0x00, // dwDataRate: 10752 bps (default for T=0)
-    0x00, 0x2A, 0x00, 0x00, // dwMaxDataRate: 344086 bps
-    0x36, 0x41, 0x05, 0x00, // bNumDataRatesSupported: 0 (use default/maximum)
-    0x00, // dwMaxIFSD: 254 bytes (maximum IFSD for T=1, not used for T=0)
-    0xFE, 0x00, 0x00, 0x00, // dwSynchProtocols: None
-    0x00, 0x00, 0x00, 0x00, // dwMechanical: No special characteristics
-    0x00, 0x00, 0x00, 0x00,
-    // dwFeatures: 0x000207B2 (APDU level + auto params + clock stop + NAD + auto IFSD)
-    // - 0x02: Automatic parameter configuration based on ATR
-    // - 0x10: Automatic ICC clock frequency change
-    // - 0x20: Automatic baud rate change (Fi/Di)
-    // - 0x80: Automatic PPS made by CCID
-    // - 0x0100: CCID can set ICC in clock stop mode
-    // - 0x0200: NAD value other than 00 accepted (T=1)
-    // - 0x0400: Automatic IFSD exchange as first exchange (T=1)
-    // - 0x00020000: Short APDU level exchange
-    0xB2, 0x07, 0x02, 0x00, // dwMaxCCIDMessageLength: 271 bytes (10 header + 261 data)
-    0x0F, 0x01, 0x00, 0x00, // bClassGetResponse: 0xFF (echo)
-    0xFF, // bClassEnvelope: 0xFF (echo)
-    0xFF, // wLcdLayout: 0x0000 (no LCD)
-    0x00, 0x00, // bPINSupport: 0x00 (no PIN support)
-    0x00, // bMaxCCIDBusySlots: 1
-    0x01,
-];
+// ===============================================================================
+// CCID Class Functional Descriptor
+//
+// Reference: CCID Rev 1.1 Spec (USB-IF DWG_Smart-Card_CCID_Rev110.pdf)
+// Table 5.1-1: CCID Functional Descriptor Fields
+//
+// The descriptor is generated from the active device profile.
+// See src/device_profile.rs for profile configuration.
+use crate::device_profile::CURRENT_PROFILE;
 
+/// CCID class descriptor data from the active device profile
+pub const CCID_CLASS_DESCRIPTOR_DATA: [u8; 52] = CURRENT_PROFILE.ccid_descriptor();
 /// Default clock frequency in kHz for class requests
 pub const CLOCK_FREQUENCY_KHZ: [u8; 4] = [0x40, 0x0F, 0x00, 0x00]; // 4000 kHz = 4 MHz
 
@@ -253,6 +229,20 @@ enum SlotState {
     PresentInactive, // Card present but not powered
     PresentActive,   // Card present, powered, ATR received
 }
+
+/// Secure PIN entry state for PC_to_RDR_Secure operations
+#[derive(Clone)]
+pub enum SecureState {
+    /// No active PIN entry
+    Idle,
+    /// PIN entry in progress - waiting for display/touch input
+    WaitingForPin {
+        /// CCID sequence number for response
+        seq: u8,
+        /// Parsed PIN verify parameters
+        params: PinVerifyParams,
+    },
+}
 /// CCID Bulk-OUT message header (10 bytes)
 /// Note: Header fields are parsed manually from rx_buffer to avoid packed struct issues
 
@@ -296,6 +286,13 @@ pub struct CcidClass<'bus, Bus: UsbBus, D: SmartcardDriver> {
     current_protocol: u8,
     /// Parsed ATR parameters (from last power-on)
     atr_params: AtrParams,
+    /// Secure PIN entry state for deferred response
+    secure_state: SecureState,
+    /// Pending PIN result from touchscreen entry (display feature)
+    #[cfg(feature = "display")]
+    pin_result_pending: Option<(u8, PinResult, PinBuffer)>,
+    /// Response buffer for card communication
+    response_buffer: [u8; 261],
 }
 
 impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
@@ -327,8 +324,13 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             ep_int,
             current_protocol: 0, // Default to T=0
             atr_params: AtrParams::default(),
-        }
+            secure_state: SecureState::Idle,
+            #[cfg(feature = "display")]
+            pin_result_pending: None,
+            response_buffer: [0u8; 261],
     }
+    }
+
 
     /// Get a reference to the smartcard driver
     pub fn driver(&self) -> &D {
@@ -413,8 +415,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
                 self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
             }
             PC_TO_RDR_SECURE => {
-                defmt::debug!("CCID: Secure command (stub - no PIN hardware)");
-                self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+                self.handle_secure(seq);
             }
             PC_TO_RDR_MECHANICAL => {
                 defmt::debug!("CCID: Mechanical command (stub - no mechanical parts)");
@@ -796,7 +797,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             self.tx_buffer[6] = seq;
             self.tx_buffer[7] = Self::build_status(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
             self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 1;
+            self.tx_buffer[9] = 0; // bClockStatus: 0x00 for T=1 (clock always running)
             self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + params.len()]
                 .copy_from_slice(&params);
             self.tx_len = CCID_HEADER_SIZE + params.len();
@@ -823,24 +824,31 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
 
     /// Handle PC_to_RDR_SetParameters command
     fn handle_set_parameters(&mut self, seq: u8) {
-        // bProtocolNum is in b_specific[0] (byte 7 of the CCID message)
-        let requested_protocol = self.rx_buffer[7];
-
-        // Debug: dump incoming message header
-        defmt::info!("CCID: SetParameters IN: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
-            self.rx_buffer[0], self.rx_buffer[1], self.rx_buffer[2], self.rx_buffer[3],
-            self.rx_buffer[4], self.rx_buffer[5], self.rx_buffer[6], self.rx_buffer[7],
-            self.rx_buffer[8], self.rx_buffer[9]);
-        defmt::info!(
-            "CCID: SetParameters protocol={} requested",
-            requested_protocol
-        );
-
-        if requested_protocol > 1 {
-            defmt::error!("CCID: Unsupported protocol {}", requested_protocol);
-            self.send_slot_status(seq, COMMAND_STATUS_FAILED, self.get_icc_status(), 0x07);
-            return;
-        }
+        // CCID header: [mt][dwLength 4][bSlot][bSeq][bBWI][wLevel 2]
+        // Reference: CCID Rev 1.1 Table 6.2-3
+        //
+        // NOTE: libccid sends protocol data structure WITHOUT bProtocolNum prefix!
+        // The spec says abData[0] = bProtocolNum, but libccid sends:
+        //   - For T=0: 5 bytes of T=0 params (no bProtocolNum prefix)
+        //   - For T=1: 7 bytes of T=1 params (no bProtocolNum prefix)
+        // We infer protocol from dwLength: 5=T=0, 7=T=1
+        let data_len = u32::from_le_bytes([
+            self.rx_buffer[1],
+            self.rx_buffer[2],
+            self.rx_buffer[3],
+            self.rx_buffer[4],
+        ]) as usize;
+        
+        // Infer protocol from data length
+        let requested_protocol = match data_len {
+            5 => 0, // T=0
+            7 => 1, // T=1
+            _ => {
+                defmt::error!("CCID: SetParameters invalid dwLength={}", data_len);
+                self.send_slot_status(seq, COMMAND_STATUS_FAILED, self.get_icc_status(), 0x07);
+                return;
+            }
+        };
 
         // Accept the protocol
         self.driver.set_protocol(requested_protocol);
@@ -864,7 +872,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             self.tx_buffer[6] = seq;
             self.tx_buffer[7] = Self::build_status(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
             self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 1;
+            self.tx_buffer[9] = 0; // bClockStatus: 0x00 for T=1 (clock always running)
             self.tx_buffer[10..17].copy_from_slice(&params);
             self.tx_len = CCID_HEADER_SIZE + 7;
         } else {
@@ -885,6 +893,357 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             self.tx_buffer[10..15].copy_from_slice(&params);
             self.tx_len = CCID_HEADER_SIZE + 5;
         }
+    }
+
+    /// Handle PC_to_RDR_Secure command (PIN verification)
+    ///
+    /// This is the first phase of PIN verification: parse the PIN Verify Data Structure
+    /// and prepare for deferred response (actual PIN entry handled by display/touch).
+    fn handle_secure(&mut self, seq: u8) {
+        // 1. Check slot state - must have active card
+        if self.slot_state != SlotState::PresentActive {
+            self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_SLOT_BUSY);
+            return;
+        }
+
+        // 2. Parse bmPINOperation from data area (CCID Rev 1.1 spec section 6.2.7)
+        // CCID header is 10 bytes: dwLength(4) + bSlot(1) + bSeq(1) + bBWI(1) + wLevelParameter(2) + RFU(1)
+        // Data area starts at offset 10, first byte is bmPINOperation
+        // Need at least 11 bytes: 10-byte CCID header + 1 byte PIN operation
+        if self.rx_len <= 10 {
+            self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            return;
+        }
+
+        let pin_operation = self.rx_buffer[10]; // bmPINOperation - first byte of data area
+
+        match pin_operation {
+            0x00 => {
+                // PIN Verify - parse PIN Verify Data Structure (CCID Rev 1.1 Section 6.1.11)
+                // Data area: bmPINOperation(1) + PIN Verify Data Structure
+                // PIN Verify Data Structure starts at offset 11 (after bmPINOperation)
+                let pin_data = &self.rx_buffer[11..self.rx_len];
+
+                match PinVerifyParams::parse(pin_data) {
+                    Some(params) => {
+                        // Store for deferred response - PIN entry will happen on display/touch
+                        self.secure_state = SecureState::WaitingForPin { seq, params };
+                        defmt::debug!("CCID: PIN Verify - waiting for PIN entry");
+                        // No immediate response - will send RDR_to_PC_DataBlock after PIN entry
+                    }
+                    None => {
+                        defmt::warn!("CCID: PIN Verify parse failed");
+                        self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+                    }
+                }
+            }
+            0x01 => {
+                // PIN Modify - not implemented
+                defmt::warn!("CCID: PIN Modify not yet implemented");
+                self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            }
+            _ => {
+                defmt::warn!("CCID: Unknown PIN operation: {}", pin_operation);
+                self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            }
+        }
+    }
+
+    /// Check if PIN entry is currently active
+    /// Returns true if a PC_to_RDR_Secure command is pending PIN entry
+    pub fn is_pin_entry_active(&self) -> bool {
+        matches!(self.secure_state, SecureState::WaitingForPin { .. })
+    }
+
+    /// Take the secure PIN entry parameters, resetting state to Idle
+    /// Returns (seq, params) if PIN entry was active, None otherwise
+    /// This is called by the main loop when starting PIN entry UI
+    pub fn take_secure_params(&mut self) -> Option<(u8, PinVerifyParams)> {
+        if let SecureState::WaitingForPin { seq, params } =
+            core::mem::replace(&mut self.secure_state, SecureState::Idle)
+        {
+            Some((seq, params))
+        } else {
+            None
+        }
+    }
+
+    /// Complete PIN entry with result and optional APDU response
+    /// Sends RDR_to_PC_DataBlock response to host
+    /// This is called by the main loop after PIN entry is complete
+    ///
+    /// # Arguments
+    /// * `seq` - CCID sequence number from original PC_to_RDR_Secure request
+    /// * `result` - PIN entry result (Success/Cancelled/Timeout/InvalidLength)
+    /// * `apdu_response` - Card response bytes on success (SW1 SW2 + optional data)
+    pub fn complete_pin_entry(&mut self, seq: u8, result: PinResult, apdu_response: Option<&[u8]>) {
+        defmt::debug!(
+            "CCID: PIN entry complete - seq={}, result={:?}",
+            seq,
+            result
+        );
+
+        let icc_status = self.get_icc_status();
+
+        match result {
+            PinResult::Success => {
+                // APDU was sent to card successfully
+                if let Some(resp) = apdu_response {
+                    self.send_data_block_response(
+                        seq,
+                        resp,
+                        COMMAND_STATUS_NO_ERROR,
+                        icc_status,
+                        0,
+                    );
+                } else {
+                    // No response data - shouldn't happen but handle gracefully
+                    self.send_data_block_response(seq, &[], COMMAND_STATUS_NO_ERROR, icc_status, 0);
+                }
+            }
+            PinResult::Cancelled => {
+                // User cancelled - send error response
+                defmt::warn!("CCID: PIN entry cancelled by user");
+                self.send_data_block_response(
+                    seq,
+                    &[],
+                    COMMAND_STATUS_FAILED,
+                    icc_status,
+                    CCID_ERR_PIN_CANCELLED,
+                );
+            }
+            PinResult::Timeout => {
+                // Timeout - send error response
+                defmt::warn!("CCID: PIN entry timed out");
+                self.send_data_block_response(
+                    seq,
+                    &[],
+                    COMMAND_STATUS_FAILED,
+                    icc_status,
+                    CCID_ERR_PIN_TIMEOUT,
+                );
+            }
+            PinResult::InvalidLength => {
+                // Invalid PIN length - send error response
+                defmt::warn!("CCID: Invalid PIN length");
+                self.send_data_block_response(
+                    seq,
+                    &[],
+                    COMMAND_STATUS_FAILED,
+                    icc_status,
+                    CCID_ERR_CMD_ABORTED,
+                );
+            }
+        }
+
+        // Ensure state is reset to Idle
+        self.secure_state = SecureState::Idle;
+    }
+
+    /// Check if a card is currently present
+    /// This is used by the main loop for display updates
+    pub fn is_card_present(&self) -> bool {
+        self.driver.is_card_present()
+    }
+
+    /// Store PIN entry result from touchscreen
+    /// This is called by main loop after PIN entry completes
+    #[cfg(feature = "display")]
+    pub fn set_pin_result(&mut self, seq: u8, result: PinResult, buffer: PinBuffer) {
+        self.pin_result_pending = Some((seq, result, buffer));
+    }
+
+    /// Process pending PIN result - transmit APDU to card
+    /// This is called by main loop each iteration
+    #[cfg(feature = "display")]
+    pub fn process_pin_result(&mut self) {
+        // Take the pending result if any
+        let Some((seq, result, buffer)) = self.pin_result_pending.take() else {
+            return;
+        };
+
+        match result {
+            PinResult::Success => {
+                // Build APDU from PIN buffer
+                let ascii_pin = buffer.to_ascii();
+                let pin_len = buffer.len();
+                
+                // Get params from secure state (should still have them)
+                if let SecureState::WaitingForPin { params, .. } = &self.secure_state {
+                    let builder = VerifyApduBuilder::from_template(
+                        params.apdu_template[0], // CLA
+                        params.apdu_template[2], // P1
+                        params.apdu_template[3], // P2
+                    );
+                    
+                    match builder.build(&ascii_pin[..pin_len]) {
+                        Ok(apdu) => {
+                            let apdu_len = 5 + pin_len;
+                            match self.driver.transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer) {
+                                Ok(resp_len) => {
+                                    defmt::info!("CCID: Card responded, len={}", resp_len);
+                                    // Copy response to avoid borrow conflict
+                                    let mut resp_copy: [u8; 261] = [0u8; 261];
+                                    resp_copy[..resp_len].copy_from_slice(&self.response_buffer[..resp_len]);
+                                    self.complete_pin_entry(seq, PinResult::Success, Some(&resp_copy[..resp_len]));
+                                }
+                                Err(_) => {
+                                    defmt::warn!("CCID: Card transmit failed");
+                                    self.complete_pin_entry(seq, PinResult::Cancelled, None);
+                                }
+                            }
+                        }
+                        Err(_e) => {
+                            defmt::warn!("CCID: APDU build failed");
+                            self.complete_pin_entry(seq, PinResult::InvalidLength, None);
+                        }
+                    }
+                } else {
+                    // No params stored - shouldn't happen
+                    defmt::warn!("CCID: No secure params for PIN processing");
+                    self.complete_pin_entry(seq, PinResult::Cancelled, None);
+                }
+            }
+            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                self.complete_pin_entry(seq, result, None);
+            }
+        }
+    }
+
+    /// Process pending PIN entry with mock PIN "1234"
+    ///
+    /// This is a simplified implementation for testing/development.
+    /// TODO(Task 5): Replace with real display/touch UI integration.
+    ///
+    /// This method:
+    /// 1. Takes the secure params (seq, params) if PIN entry is active
+    /// 2. Builds a VERIFY APDU with mock PIN "1234"
+    /// 3. Transmits to the card
+    /// 4. Sends the CCID DataBlock response
+    ///
+    /// Returns true if PIN entry was processed, false if not active.
+    #[cfg(feature = "display")]
+    pub fn process_mock_pin_entry(&mut self) -> bool {
+        // Check if PIN entry is active
+        if !self.is_pin_entry_active() {
+            return false;
+        }
+
+        // Take the secure params
+        let Some((seq, params)) = self.take_secure_params() else {
+            return false;
+        };
+
+        defmt::info!(
+            "CCID: Mock PIN entry - seq={}, pin_type=0x{:02X}",
+            seq,
+            params.pin_type
+        );
+
+        // Mock PIN: "1234" as ASCII bytes
+        // NOTE: This is hardcoded for testing. Real implementation should:
+        // - Use display/touch UI to collect PIN
+        // - Validate min/max length from params
+        // - Handle timeout from params.timeout_secs
+        let mock_pin: [u8; 4] = *b"1234";
+
+        // Build VERIFY APDU
+        let builder = VerifyApduBuilder::from_template(
+            params.apdu_template[0], // CLA
+            params.apdu_template[2], // P1
+            params.apdu_template[3], // P2 (0x81=user, 0x83=admin)
+        );
+
+        let apdu = match builder.build(&mock_pin) {
+            Ok(apdu) => apdu,
+            Err(e) => {
+                defmt::warn!("CCID: Mock PIN build failed");
+                self.complete_pin_entry(seq, PinResult::InvalidLength, None);
+                return true;
+            }
+        };
+
+        // Get actual APDU length (5 header + PIN length)
+        let apdu_len = 5 + mock_pin.len();
+
+        defmt::debug!("CCID: Mock PIN APDU: {=[u8]:02X}", &apdu[..apdu_len]);
+
+        // Transmit to card
+        let mut response_buffer = [0u8; 258]; // Max response = 255 data + 2 status
+        match self
+            .driver
+            .transmit_apdu(&apdu[..apdu_len], &mut response_buffer)
+        {
+            Ok(resp_len) => {
+                defmt::info!(
+                    "CCID: Card response: {=[u8]:02X} (len={})",
+                    &response_buffer[..resp_len.min(10)],
+                    resp_len
+                );
+                // Success - send response to host
+                self.complete_pin_entry(
+                    seq,
+                    PinResult::Success,
+                    Some(&response_buffer[..resp_len]),
+                );
+            }
+            Err(_e) => {
+                defmt::warn!("CCID: Card transmission failed");
+                // Card error - send failure response
+                self.complete_pin_entry(seq, PinResult::Cancelled, None);
+            }
+        }
+
+        true
+    }
+
+    /// Send RDR_to_PC_DataBlock response
+    ///
+    /// # Arguments
+    /// * `seq` - CCID sequence number
+    /// * `data` - Response data (APDU response bytes)
+    /// * `cmd_status` - Command status (COMMAND_STATUS_NO_ERROR or COMMAND_STATUS_FAILED)
+    /// * `icc_status` - ICC status from get_icc_status()
+    /// * `error` - CCID error code (0 for success)
+    fn send_data_block_response(
+        &mut self,
+        seq: u8,
+        data: &[u8],
+        cmd_status: u8,
+        icc_status: u8,
+        error: u8,
+    ) {
+        let data_len = data.len() as u32;
+
+        // Build CCID header
+        self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
+        self.tx_buffer[1..5].copy_from_slice(&data_len.to_le_bytes());
+        self.tx_buffer[5] = 0; // Slot
+        self.tx_buffer[6] = seq;
+        self.tx_buffer[7] = Self::build_status(cmd_status, icc_status);
+        self.tx_buffer[8] = error;
+        self.tx_buffer[9] = 0; // Clock status
+
+        // Copy data after header
+        let header_len = CCID_HEADER_SIZE;
+        if data.len() + header_len <= self.tx_buffer.len() {
+            self.tx_buffer[header_len..header_len + data.len()].copy_from_slice(data);
+            self.tx_len = header_len + data.len();
+        } else {
+            // Data too large - truncate (shouldn't happen with SW1 SW2 responses)
+            defmt::warn!("CCID: DataBlock response truncated");
+            let truncated_len = self.tx_buffer.len() - header_len;
+            self.tx_buffer[header_len..].copy_from_slice(&data[..truncated_len]);
+            self.tx_len = self.tx_buffer.len();
+        }
+
+        defmt::trace!(
+            "CCID: Sending DataBlock seq={}, len={}, status={}, error={}",
+            seq,
+            self.tx_len,
+            self.tx_buffer[7],
+            error
+        );
     }
 
     /// Send a SlotStatus response

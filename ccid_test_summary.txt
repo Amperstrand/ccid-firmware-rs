@@ -1,0 +1,6 @@
+lsusb: Bus 001 Device 049: ID 076b:3021 OmniKey AG CardMan 3021 / 3121
+pcsc_scan: Reader 0 OMNIKEY AG CardMan 3121, card inserted, ATR starts 3B
+test_ccid_apdu.py: exit 0, Connect failed - Card protocol mismatch (0x8010000F)
+pcscd_debug.log: saved (foreground pcscd failed to start - kill not permitted; system pcscd used)
+apdu_test.log: saved in ccid-reader/
+defmt.log: not captured (probe-rs not installed)

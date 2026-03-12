@@ -1,0 +1,3 @@
+cargo:rustc-link-search=/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/build/stm32f4-c122693711bf11a5/out
+cargo:rerun-if-changed=src/stm32f469/device.x
+cargo:rerun-if-changed=build.rs

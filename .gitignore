@@ -27,6 +27,3 @@ Thumbs.db
 *.bak
 *.fixed
 *.backup
-
-# Test directories (local only)
-tests/hardware/

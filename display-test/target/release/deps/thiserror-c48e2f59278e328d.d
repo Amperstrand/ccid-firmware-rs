@@ -1,0 +1,14 @@
+/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/deps/thiserror-c48e2f59278e328d.d: /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/build/thiserror-ff7419df28a55aea/out/private.rs
+
+/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/deps/libthiserror-c48e2f59278e328d.rlib: /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/build/thiserror-ff7419df28a55aea/out/private.rs
+
+/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/deps/libthiserror-c48e2f59278e328d.rmeta: /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs /Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/build/thiserror-ff7419df28a55aea/out/private.rs
+
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/lib.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/aserror.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/display.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/var.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18/src/private.rs:
+/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/build/thiserror-ff7419df28a55aea/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/release/build/thiserror-ff7419df28a55aea/out

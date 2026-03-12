@@ -1,0 +1,11 @@
+/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/deps/sdio_host-b0f74740ba819086.d: /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/lib.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/common_cmd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/sd_cmd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/emmc_cmd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/common.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/sd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/emmc.rs
+
+/Users/macbook/src/seedkeeperport/ccid-reader/display-test/target/thumbv7em-none-eabihf/debug/deps/libsdio_host-b0f74740ba819086.rmeta: /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/lib.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/common_cmd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/sd_cmd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/emmc_cmd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/common.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/sd.rs /Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/emmc.rs
+
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/lib.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/common_cmd.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/sd_cmd.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/emmc_cmd.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/common.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/sd.rs:
+/Users/macbook/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/sdio-host-0.9.0/src/emmc.rs:
