@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      matrix:
+        profile: [profile-cherry-st2100, profile-gemalto-plain, profile-gemalto-pinpad]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -32,69 +35,119 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      - name: Extract profile suffix
+        id: profile
+        run: |
+          # Extract suffix: profile-cherry-st2100 -> cherry-st2100
+          SUFFIX="${{ matrix.profile }}"
+          SUFFIX="${SUFFIX#profile-}"
+          echo "suffix=$SUFFIX" >> $GITHUB_OUTPUT
+      
       - name: Build in Docker (reproducible)
         run: |
           docker build \
-            -t ccid-firmware-builder \
+            --build-arg PROFILE=${{ matrix.profile }} \
+            -t ccid-firmware-builder-${{ steps.profile.outputs.suffix }} \
             .
           
           # Create container and extract firmware
-          docker create --name extract ccid-firmware-builder
-          docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
-          docker rm extract
+          docker create --name extract-${{ steps.profile.outputs.suffix }} ccid-firmware-builder-${{ steps.profile.outputs.suffix }}
+          docker cp extract-${{ steps.profile.outputs.suffix }}:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-${{ steps.profile.outputs.suffix }}.elf
+          docker rm extract-${{ steps.profile.outputs.suffix }}
       
       - name: Generate release artifacts
         run: |
+          SUFFIX="${{ steps.profile.outputs.suffix }}"
+          
           # Convert to binary and hex formats
-          arm-none-eabi-objcopy -O binary ccid-firmware.elf ccid-firmware.bin
-          arm-none-eabi-objcopy -O ihex ccid-firmware.elf ccid-firmware.hex
+          arm-none-eabi-objcopy -O binary ccid-firmware-$SUFFIX.elf ccid-firmware-$SUFFIX.bin
+          arm-none-eabi-objcopy -O ihex ccid-firmware-$SUFFIX.elf ccid-firmware-$SUFFIX.hex
           
           # Generate checksums
-          sha256sum ccid-firmware.elf > ccid-firmware.elf.sha256
-          sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
-          sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
+          sha256sum ccid-firmware-$SUFFIX.elf > ccid-firmware-$SUFFIX.elf.sha256
+          sha256sum ccid-firmware-$SUFFIX.bin > ccid-firmware-$SUFFIX.bin.sha256
+          sha256sum ccid-firmware-$SUFFIX.hex > ccid-firmware-$SUFFIX.hex.sha256
           
           # Display checksums for verification
-          echo "## Release Checksums" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Checksums (${{ matrix.profile }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat ccid-firmware.*.sha256 >> $GITHUB_STEP_SUMMARY
+          cat ccid-firmware-$SUFFIX.*.sha256 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
       
       - name: Verify reproducibility
         run: |
-          echo "Building twice to verify reproducibility..."
+          SUFFIX="${{ steps.profile.outputs.suffix }}"
+          
+          echo "Building twice to verify reproducibility for ${{ matrix.profile }}..."
           
           # Clean and rebuild in Docker
           docker build \
             --no-cache \
-            -t ccid-firmware-builder-verify \
+            --build-arg PROFILE=${{ matrix.profile }} \
+            -t ccid-firmware-builder-verify-$SUFFIX \
             .
           
-          docker create --name extract-verify ccid-firmware-builder-verify
-          docker cp extract-verify:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-verify.elf
-          docker rm extract-verify
+          docker create --name extract-verify-$SUFFIX ccid-firmware-builder-verify-$SUFFIX
+          docker cp extract-verify-$SUFFIX:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-verify-$SUFFIX.elf
+          docker rm extract-verify-$SUFFIX
           
           # Compare checksums
-          SHA1=$(sha256sum ccid-firmware.elf | cut -d' ' -f1)
-          SHA2=$(sha256sum ccid-firmware-verify.elf | cut -d' ' -f1)
+          SHA1=$(sha256sum ccid-firmware-$SUFFIX.elf | cut -d' ' -f1)
+          SHA2=$(sha256sum ccid-firmware-verify-$SUFFIX.elf | cut -d' ' -f1)
           
-          echo "Build 1: $SHA1"
-          echo "Build 2: $SHA2"
+          echo "Build 1 (${{ matrix.profile }}): $SHA1"
+          echo "Build 2 (${{ matrix.profile }}): $SHA2"
           
           if [ "$SHA1" = "$SHA2" ]; then
-            echo "✅ Reproducibility verified - both builds identical" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Reproducibility verified for ${{ matrix.profile }} - both builds identical" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Reproducibility check failed" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Reproducibility check failed for ${{ matrix.profile }}" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
       
       - name: Collect release assets
         run: |
+          SUFFIX="${{ steps.profile.outputs.suffix }}"
           mkdir -p dist
-          cp ccid-firmware.elf ccid-firmware.bin ccid-firmware.hex dist/
-          cp ccid-firmware.*.sha256 dist/
-          cd dist && sha256sum * > SHA256SUMS
+          cp ccid-firmware-$SUFFIX.elf ccid-firmware-$SUFFIX.bin ccid-firmware-$SUFFIX.hex dist/
+          cp ccid-firmware-$SUFFIX.*.sha256 dist/
+          cd dist && sha256sum * > SHA256SUMS-${{ matrix.profile }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.profile }}
+          path: dist/*
+
+  create-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: firmware-*
+          merge-multiple: true
+      
+      - name: Prepare release assets
+        run: |
+          cd release-assets
+          # Combine all SHA256SUMS into one file
+          cat SHA256SUMS-* > SHA256SUMS
+          rm SHA256SUMS-*
+          
+          # Display combined checksums
+          echo "## All Release Checksums" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat SHA256SUMS >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Create GitHub Release
         env:
@@ -104,50 +157,63 @@ jobs:
           cat > release-notes.md << 'NOTES'
           ## STM32 CCID Firmware Release
           
-          ### Files
+          This release includes firmware for **three device profiles**:
+          
+          | Profile | Device | VID:PID | Features |
+          |---------|--------|---------|----------|
+          | `cherry-st2100` | Cherry SmartTerminal ST-2100 | `046a:003e` | PIN pad |
+          | `gemalto-plain` | Gemalto IDBridge CT30 | `08e6:3437` | Basic |
+          | `gemalto-pinpad` | Gemalto IDBridge K30 | `08e6:3437` | PIN pad |
+          
+          ### Files per Profile
+          
+          Each profile includes:
           | File | Description | Size |
           |------|-------------|------|
-          | `ccid-firmware.elf` | ELF binary with debug symbols | ~1.7MB |
-          | `ccid-firmware.bin` | Raw binary for direct flash | ~44KB |
-          | `ccid-firmware.hex` | Intel HEX format | ~120KB |
+          | `ccid-firmware-{profile}.elf` | ELF binary with debug symbols | ~1.7MB |
+          | `ccid-firmware-{profile}.bin` | Raw binary for direct flash | ~44KB |
+          | `ccid-firmware-{profile}.hex` | Intel HEX format | ~120KB |
           | `*.sha256` | SHA256 checksums | - |
           
           ### Flash Instructions
           
           **probe-rs (recommended)**
           ```bash
-          probe-rs run --chip STM32F469NIHx ccid-firmware.bin
+          # Replace {profile} with: cherry-st2100, gemalto-plain, or gemalto-pinpad
+          probe-rs run --chip STM32F469NIHx ccid-firmware-{profile}.bin
           ```
           
           **st-flash**
           ```bash
-          st-flash write ccid-firmware.bin 0x08000000
+          st-flash write ccid-firmware-{profile}.bin 0x08000000
           ```
           
           **STM32CubeProgrammer**
-          Load `ccid-firmware.elf` directly.
+          Load `ccid-firmware-{profile}.elf` directly.
           
           ### Reproducibility
           
-          This release was built in Docker with:
+          All profiles were built in Docker with:
           - `SOURCE_DATE_EPOCH=1704067200`
           - Pinned Rust toolchain (see `rust-toolchain.toml`)
           
-          To reproduce this build locally:
+          To reproduce a build locally:
           ```bash
           git clone https://github.com/Amperstrand/ccid-firmware-rs.git
           cd ccid-firmware-rs
-          docker build -t ccid-builder .
+          
+          # Build specific profile
+          docker build --build-arg PROFILE=profile-cherry-st2100 -t ccid-builder .
           docker create --name extract ccid-builder
-          docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
-          sha256sum ccid-firmware.elf
+          docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-cherry-st2100.elf
+          sha256sum ccid-firmware-cherry-st2100.elf
           ```
           
-          Compare the SHA256 with `ccid-firmware.elf.sha256` from this release.
+          Compare the SHA256 with the corresponding `.sha256` file from this release.
           NOTES
           
           gh release create "${GITHUB_REF_NAME}" \
-            dist/* \
+            release-assets/* \
             --title "${GITHUB_REF_NAME}: STM32 CCID Firmware" \
             --notes-file release-notes.md
 
@@ -164,9 +230,15 @@ jobs:
           echo "- SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}" >> $GITHUB_STEP_SUMMARY
           echo "- Pinned Rust toolchain via rust-toolchain.toml" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "To reproduce this build locally:" >> $GITHUB_STEP_SUMMARY
+          echo "All three profiles verified reproducible:" >> $GITHUB_STEP_SUMMARY
+          echo "- profile-cherry-st2100" >> $GITHUB_STEP_SUMMARY
+          echo "- profile-gemalto-plain" >> $GITHUB_STEP_SUMMARY
+          echo "- profile-gemalto-pinpad" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "To reproduce a build locally:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker build -t ccid-builder ." >> $GITHUB_STEP_SUMMARY
+          echo "# Build specific profile" >> $GITHUB_STEP_SUMMARY
+          echo "docker build --build-arg PROFILE=profile-cherry-st2100 -t ccid-builder ." >> $GITHUB_STEP_SUMMARY
           echo "docker create --name extract ccid-builder" >> $GITHUB_STEP_SUMMARY
           echo "docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf" >> $GITHUB_STEP_SUMMARY
           echo "sha256sum ccid-firmware.elf" >> $GITHUB_STEP_SUMMARY

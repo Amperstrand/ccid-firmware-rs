@@ -2,11 +2,15 @@
 #
 # Usage:
 #   docker build -t ccid-firmware-builder .
+#   docker build --build-arg PROFILE=profile-gemalto-plain -t ccid-firmware-builder .
 #   docker create --name extract ccid-firmware-builder
 #   docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
 #   docker rm extract
 
 FROM rust:1.92-slim-bookworm
+
+# Build argument for device profile (default: profile-cherry-st2100)
+ARG PROFILE=profile-cherry-st2100
 
 # Install ARM cross-compilation toolchain
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,7 +34,11 @@ COPY vendor ./vendor
 COPY .cargo ./.cargo
 COPY rust-toolchain.toml ./
 
-# Build firmware
-RUN cargo build --release --target thumbv7em-none-eabihf
+# Build firmware with profile-specific features
+RUN if [ "$PROFILE" = "profile-cherry-st2100" ]; then \
+      cargo build --release --target thumbv7em-none-eabihf; \
+    else \
+      cargo build --release --no-default-features --features "$PROFILE" --target thumbv7em-none-eabihf; \
+    fi
 
 # Output: /app/target/thumbv7em-none-eabihf/release/ccid-firmware
