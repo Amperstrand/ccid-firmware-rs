@@ -21,11 +21,15 @@ This project contains derivative ideas and protocol behavior from `osmo-ccid-fir
 
 ## Build
 
+Quick start (default Cherry ST-2100 profile):
+
 ```bash
 cargo build --release --target thumbv7em-none-eabihf
 ```
 
-Release mode is required for reliable USB behavior with `synopsys-usb-otg`.
+**Note:** Release mode is required for reliable USB behavior with `synopsys-usb-otg`.
+
+Detailed build instructions, profile selection, and flashing are documented in [BUILDING.md](BUILDING.md).
 
 ## Linux note (plug and play)
 
@@ -68,6 +72,12 @@ GitHub Actions workflow at `.github/workflows/ci.yml` runs only host-safe tests:
 - Python syntax checks for helper scripts
 
 ## Device Profiles
+
+| Profile | Device | VID:PID | Default |
+|---------|--------|---------|---------|
+| `profile-cherry-st2100` | Cherry SmartTerminal ST-2100 (PIN pad) | `046a:003e` | ✓ |
+| `profile-gemalto-plain` | Gemalto IDBridge CT30 (basic) | `08e6:3437` | |
+| `profile-gemalto-pinpad` | Gemalto IDBridge K30 (PIN pad) | `08e6:3437` | |
 
 Device-specific configurations and build instructions are documented in [BUILDING.md](BUILDING.md).
 
