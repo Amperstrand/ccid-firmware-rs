@@ -344,7 +344,7 @@ fn main() -> ! {
 
     #[cfg(not(feature = "display"))]
     let mut rcc = dp.RCC.freeze(
-        Config::hsi()
+        Config::hse(8.MHz())
             .sysclk(168.MHz())
             .pclk1(42.MHz())
             .pclk2(84.MHz())
