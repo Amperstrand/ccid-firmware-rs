@@ -35,7 +35,7 @@ installations that already include the upstream reader list.
 ## Flash
 
 ```bash
-probe-rs run --chip STM32F469NI target/thumbv7em-none-eabihf/release/ccid-reader
+probe-rs run --chip STM32F469NI target/thumbv7em-none-eabihf/release/ccid-firmware
 ```
 
 ## Test strategy
@@ -67,6 +67,14 @@ GitHub Actions workflow at `.github/workflows/ci.yml` runs only host-safe tests:
 - Rust unit tests (`cargo test` on host target)
 - Python syntax checks for helper scripts
 
+## Device Profiles
+
+Device-specific configurations and build instructions are documented in [BUILDING.md](BUILDING.md).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
+
 ## Repository guide
 
 - Firmware entrypoint: `src/main.rs`
@@ -75,4 +83,3 @@ GitHub Actions workflow at `.github/workflows/ci.yml` runs only host-safe tests:
 - Unit-testable protocol helpers: `src/protocol_unit.rs`
 - Unit tests inspired by osmo test files: `src/protocol_unit.rs` (`#[cfg(test)]` module)
 - Pinout: `PINOUT.md`
-- Publication/readiness notes: `PUBLICATION_READINESS.md`

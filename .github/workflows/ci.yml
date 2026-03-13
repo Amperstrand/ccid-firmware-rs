@@ -12,6 +12,9 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [profile-cherry-st2100, profile-gemalto-plain, profile-gemalto-pinpad]
     steps:
       - uses: actions/checkout@v5
       
@@ -30,21 +33,33 @@ jobs:
         uses: Swatinem/rust-cache@v2
       
       - name: Build firmware
-        run: cargo build --release
+        run: |
+          if [[ "${{ matrix.profile }}" == "profile-cherry-st2100" ]]; then
+            cargo build --release
+          else
+            cargo build --release --no-default-features --features ${{ matrix.profile }}
+          fi
       
       - name: Generate binary artifacts
         run: |
-          cargo objcopy --release -- \
-            -O binary ccid-firmware.bin
-          cargo objcopy --release -- \
-            -O ihex ccid-firmware.hex
+          if [[ "${{ matrix.profile }}" == "profile-cherry-st2100" ]]; then
+            cargo objcopy --release -- \
+              -O binary ccid-firmware.bin
+            cargo objcopy --release -- \
+              -O ihex ccid-firmware.hex
+          else
+            cargo objcopy --release --no-default-features --features ${{ matrix.profile }} -- \
+              -O binary ccid-firmware.bin
+            cargo objcopy --release --no-default-features --features ${{ matrix.profile }} -- \
+              -O ihex ccid-firmware.hex
+          fi
           sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
           sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
+          name: firmware-${{ matrix.profile }}
           path: |
             ccid-firmware.bin
             ccid-firmware.hex
@@ -66,11 +81,11 @@ jobs:
           components: rustfmt, clippy
       
       - name: Check formatting
-        run: cargo fmt --check || true
-      
+        run: cargo fmt --check
+
       - name: Run clippy
-        run: cargo clippy -- -D warnings || true
+        run: cargo clippy -- -D warnings
 
       - name: Check Python syntax
         run: |
-          python3 -m py_compile test_*.py || true
+          python3 -m py_compile tests/hardware/*.py

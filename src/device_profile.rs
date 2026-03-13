@@ -296,24 +296,30 @@ impl DeviceProfile {
 }
 
 // ============================================================================
-// Pre-defined Device Profiles
+// Base Profile (Common Configuration)
 // ============================================================================
 
-/// Cherry SmartTerminal ST-2100 Profile
+/// Base profile containing all common CCID configuration values.
 ///
-/// A PIN pad reader with LCD display. We configure it for Short APDU level
-/// to match our firmware's APDU-centric `handle_xfr_block` implementation.
+/// All device profiles share these identical settings:
+/// - CCID version 1.1 (bcdCCID = 0x0110)
+/// - Single slot (maxSlotIndex = 0)
+/// - Voltage support: 5V | 3V | 1.8V
+/// - Protocols: T=0 | T=1
+/// - Timing: 4-20 MHz clock, up to 344086 bps data rate
+/// - Features: Auto config, Short APDU level
+/// - Message size: 271 bytes max
+/// - Exchange level: Short APDU
 ///
-/// Reference: https://ccid.apdu.fr/ccid/section.html
-#[cfg(feature = "profile-cherry-st2100")]
-pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
-    // USB Identity
-    vendor_id: 0x046A,
-    product_id: 0x003E,
+/// Individual profiles only override USB identity and display/PIN settings.
+const BASE_PROFILE: DeviceProfile = DeviceProfile {
+    // USB Identity (placeholder - must be overridden)
+    vendor_id: 0x0000,
+    product_id: 0x0000,
     device_release: 0x0100,
-    manufacturer: "Cherry GmbH",
-    product: "SmartTerminal ST-2100",
-    serial_number: "ST2100-001",
+    manufacturer: "",
+    product: "",
+    serial_number: "",
 
     // CCID Version
     bcd_ccid: 0x0110,
@@ -354,15 +360,35 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     class_get_response: 0xFF,
     class_envelope: 0xFF,
 
-    // Display/PIN (disabled for initial testing)
+    // Display/PIN (disabled by default)
     lcd_layout: (0, 0),
-    pin_support: 0x00, // Enable to 0x03 when PIN pad UI ready
+    pin_support: 0x00,
 
     // Concurrency
     max_busy_slots: 1,
 
     // Exchange level
     exchange_level: ExchangeLevel::ShortApdu,
+};
+
+// ============================================================================
+// Device Profiles (USB Identity + Display/PIN overrides only)
+// ============================================================================
+
+/// Cherry SmartTerminal ST-2100 Profile
+///
+/// A PIN pad reader with LCD display. We configure it for Short APDU level
+/// to match our firmware's APDU-centric `handle_xfr_block` implementation.
+///
+/// Reference: https://ccid.apdu.fr/ccid/section.html
+#[cfg(feature = "profile-cherry-st2100")]
+pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
+    vendor_id: 0x046A,
+    product_id: 0x003E,
+    manufacturer: "Cherry GmbH",
+    product: "SmartTerminal ST-2100",
+    serial_number: "ST2100-001",
+    ..BASE_PROFILE
 };
 
 /// Gemalto IDBridge CT30 Profile (Plain Reader)
@@ -371,58 +397,12 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 /// Uses Short APDU level for simplicity.
 #[cfg(feature = "profile-gemalto-plain")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
-    // USB Identity
     vendor_id: 0x08E6,
     product_id: 0x3437,
-    device_release: 0x0100,
     manufacturer: "Gemalto",
     product: "IDBridge CT30",
     serial_number: "CT30-001",
-
-    // CCID Version
-    bcd_ccid: 0x0110,
-    max_slot_index: 0,
-    voltage_support: 0x07,
-    protocols: 0x03,
-
-    // Timing
-    default_clock_khz: 4000,
-    max_clock_khz: 20000,
-    num_clocks: 0,
-    default_data_rate: 10752,
-    max_data_rate: 344086,
-    num_data_rates: 0,
-
-    // T=1 Parameters
-    max_ifsd: 254,
-    synch_protocols: 0,
-    mechanical: 0,
-
-    // Features: Short APDU level (firmware only supports Short APDU, not TPDU)
-    // Note: Real Gemalto PC Twin uses TPDU level (0x00010230), but our firmware
-    // implements Short APDU level for all profiles. Use this for basic reader emulation.
-    features: FEAT_AUTO_PARAM_ATR
-        | FEAT_AUTO_CLOCK
-        | FEAT_AUTO_BAUD
-        | FEAT_AUTO_PPS
-        | FEAT_SHORT_APDU_LEVEL,
-
-    // Message Size
-    max_ccid_message_length: 271,
-
-    // Class Bytes
-    class_get_response: 0xFF,
-    class_envelope: 0xFF,
-
-    // Display/PIN (none)
-    lcd_layout: (0, 0),
-    pin_support: 0x00,
-
-    // Concurrency
-    max_busy_slots: 1,
-
-    // Exchange level
-    exchange_level: ExchangeLevel::ShortApdu,
+    ..BASE_PROFILE
 };
 
 /// Gemalto IDBridge K30 Profile (PIN Pad Reader)
@@ -431,116 +411,29 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 /// Uses Short APDU level with PIN pad enabled.
 #[cfg(feature = "profile-gemalto-pinpad")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
-    // USB Identity
     vendor_id: 0x08E6,
     product_id: 0x3438,
-    device_release: 0x0100,
     manufacturer: "Gemalto",
     product: "IDBridge K30",
     serial_number: "K30-001",
-
-    // CCID Version
-    bcd_ccid: 0x0110,
-    max_slot_index: 0,
-    voltage_support: 0x07,
-    protocols: 0x03,
-
-    // Timing
-    default_clock_khz: 4000,
-    max_clock_khz: 20000,
-    num_clocks: 0,
-    default_data_rate: 10752,
-    max_data_rate: 344086,
-    num_data_rates: 0,
-
-    // T=1 Parameters
-    max_ifsd: 254,
-    synch_protocols: 0,
-    mechanical: 0,
-
-    // Features: Short APDU + PIN pad
-    features: FEAT_AUTO_PARAM_ATR
-        | FEAT_AUTO_CLOCK
-        | FEAT_AUTO_BAUD
-        | FEAT_AUTO_PPS
-        | FEAT_SHORT_APDU_LEVEL,
-
-    // Message Size
-    max_ccid_message_length: 271,
-
-    // Class Bytes
-    class_get_response: 0xFF,
-    class_envelope: 0xFF,
-
-    // Display/PIN
     lcd_layout: (16, 16),
     pin_support: PIN_VERIFY_MODIFY,
-
-    // Concurrency
-    max_busy_slots: 1,
-
-    // Exchange level
-    exchange_level: ExchangeLevel::ShortApdu,
+    ..BASE_PROFILE
 };
 
-/// Default profile (Cherry ST-2100) when no feature is specified
+/// Compile error if no profile feature is selected.
+/// Use `--features profile-cherry-st2100` (default) or another profile.
 #[cfg(not(any(
     feature = "profile-cherry-st2100",
     feature = "profile-gemalto-plain",
     feature = "profile-gemalto-pinpad"
 )))]
-pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
-    // USB Identity
-    vendor_id: 0x046A,
-    product_id: 0x003E,
-    device_release: 0x0100,
-    manufacturer: "Cherry GmbH",
-    product: "SmartTerminal ST-2100",
-    serial_number: "ST2100-001",
-
-    // CCID Version
-    bcd_ccid: 0x0110,
-    max_slot_index: 0,
-    voltage_support: 0x07,
-    protocols: 0x03,
-
-    // Timing
-    default_clock_khz: 4000,
-    max_clock_khz: 20000,
-    num_clocks: 0,
-    default_data_rate: 10752,
-    max_data_rate: 344086,
-    num_data_rates: 0,
-
-    // T=1 Parameters
-    max_ifsd: 254,
-    synch_protocols: 0,
-    mechanical: 0,
-
-    // Features
-    features: FEAT_AUTO_PARAM_ATR
-        | FEAT_AUTO_CLOCK
-        | FEAT_AUTO_BAUD
-        | FEAT_AUTO_PPS
-        | FEAT_SHORT_APDU_LEVEL,
-
-    // Message Size
-    max_ccid_message_length: 271,
-
-    // Class Bytes
-    class_get_response: 0xFF,
-    class_envelope: 0xFF,
-
-    // Display/PIN
-    lcd_layout: (0, 0),
-    pin_support: 0x00,
-
-    // Concurrency
-    max_busy_slots: 1,
-
-    // Exchange level
-    exchange_level: ExchangeLevel::ShortApdu,
-};
+compile_error!(
+    "No device profile selected. Use one of: \
+     --features profile-cherry-st2100 (default), \
+     --features profile-gemalto-plain, \
+     --features profile-gemalto-pinpad"
+);
 
 // ============================================================================
 // Unit Tests
