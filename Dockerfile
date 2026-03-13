@@ -1,4 +1,4 @@
-# Reproducible build environment for STM32 CCID firmware
+ # Reproducible build environment for STM32 CCID firmware
 #
 # Usage:
 #   docker build -t ccid-firmware-builder .

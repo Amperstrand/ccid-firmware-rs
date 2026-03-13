@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-03-13
+
+### Changed
+- **Streamlined release artifacts**: Only `.bin` files are now released (following specter-diy pattern)
+- Dropped `.elf` and `.hex` from releases - `.bin` is sufficient for all flashing tools
+- Single `SHA256SUMS` file instead of individual `.sha256` files per artifact
+- Release size reduced from 19 files to 4 files (3x `.bin` + 1x `SHA256SUMS`)
+
 ## [0.0.6] - 2026-03-13
 
 ### Added
@@ -67,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - CI setup for cargo-binutils objcopy command installation
 
-[Unreleased]: https://github.com/yourusername/ccid-reader/compare/v0.0.6...HEAD
+[Unreleased]: https://github.com/yourusername/ccid-reader/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/yourusername/ccid-reader/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/yourusername/ccid-reader/compare/v0.0.4...v0.0.6
 [0.0.4]: https://github.com/yourusername/ccid-reader/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/yourusername/ccid-reader/compare/v0.0.2...v0.0.3

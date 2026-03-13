@@ -59,20 +59,14 @@ jobs:
         run: |
           SUFFIX="${{ steps.profile.outputs.suffix }}"
           
-          # Convert to binary and hex formats
+          # Convert to binary format (only format needed for flashing)
           arm-none-eabi-objcopy -O binary ccid-firmware-$SUFFIX.elf ccid-firmware-$SUFFIX.bin
-          arm-none-eabi-objcopy -O ihex ccid-firmware-$SUFFIX.elf ccid-firmware-$SUFFIX.hex
           
-          # Generate checksums
-          sha256sum ccid-firmware-$SUFFIX.elf > ccid-firmware-$SUFFIX.elf.sha256
-          sha256sum ccid-firmware-$SUFFIX.bin > ccid-firmware-$SUFFIX.bin.sha256
-          sha256sum ccid-firmware-$SUFFIX.hex > ccid-firmware-$SUFFIX.hex.sha256
-          
-          # Display checksums for verification
-          echo "## Release Checksums (${{ matrix.profile }})" >> $GITHUB_STEP_SUMMARY
+          # Display checksum for verification
+          echo "## Release Checksum (${{ matrix.profile }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat ccid-firmware-$SUFFIX.*.sha256 >> $GITHUB_STEP_SUMMARY
+          sha256sum ccid-firmware-$SUFFIX.bin >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
       
       - name: Verify reproducibility
@@ -88,13 +82,15 @@ jobs:
             -t ccid-firmware-builder-verify-$SUFFIX \
             .
           
+          # Extract ELF and convert to binary
           docker create --name extract-verify-$SUFFIX ccid-firmware-builder-verify-$SUFFIX
           docker cp extract-verify-$SUFFIX:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-verify-$SUFFIX.elf
           docker rm extract-verify-$SUFFIX
-          
+          arm-none-eabi-objcopy -O binary ccid-firmware-verify-$SUFFIX.elf ccid-firmware-verify-$SUFFIX.bin
+
           # Compare checksums
-          SHA1=$(sha256sum ccid-firmware-$SUFFIX.elf | cut -d' ' -f1)
-          SHA2=$(sha256sum ccid-firmware-verify-$SUFFIX.elf | cut -d' ' -f1)
+          SHA1=$(sha256sum ccid-firmware-$SUFFIX.bin | cut -d' ' -f1)
+          SHA2=$(sha256sum ccid-firmware-verify-$SUFFIX.bin | cut -d' ' -f1)
           
           echo "Build 1 (${{ matrix.profile }}): $SHA1"
           echo "Build 2 (${{ matrix.profile }}): $SHA2"
@@ -105,14 +101,13 @@ jobs:
             echo "❌ Reproducibility check failed for ${{ matrix.profile }}" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
-      
+
       - name: Collect release assets
         run: |
           SUFFIX="${{ steps.profile.outputs.suffix }}"
           mkdir -p dist
-          cp ccid-firmware-$SUFFIX.elf ccid-firmware-$SUFFIX.bin ccid-firmware-$SUFFIX.hex dist/
-          cp ccid-firmware-$SUFFIX.*.sha256 dist/
-          cd dist && sha256sum * > SHA256SUMS-${{ matrix.profile }}
+          cp ccid-firmware-$SUFFIX.bin dist/
+          cd dist && sha256sum ccid-firmware-$SUFFIX.bin > SHA256SUMS-${{ matrix.profile }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -167,13 +162,11 @@ jobs:
           
           ### Files per Profile
           
-          Each profile includes:
-          | File | Description | Size |
-          |------|-------------|------|
-          | `ccid-firmware-{profile}.elf` | ELF binary with debug symbols | ~1.7MB |
-          | `ccid-firmware-{profile}.bin` | Raw binary for direct flash | ~44KB |
-          | `ccid-firmware-{profile}.hex` | Intel HEX format | ~120KB |
-          | `*.sha256` | SHA256 checksums | - |
+           Each profile includes:
+           | File | Description | Size |
+           |------|-------------|------|
+           | `ccid-firmware-{profile}.bin` | Raw binary for direct flash | ~44KB |
+           | `SHA256SUMS-{profile}` | SHA256 checksums for verification | - |
           
           ### Flash Instructions
           
@@ -183,15 +176,12 @@ jobs:
           probe-rs run --chip STM32F469NIHx ccid-firmware-{profile}.bin
           ```
           
-          **st-flash**
-          ```bash
-          st-flash write ccid-firmware-{profile}.bin 0x08000000
-          ```
-          
-          **STM32CubeProgrammer**
-          Load `ccid-firmware-{profile}.elf` directly.
-          
-          ### Reproducibility
+           **st-flash**
+           ```bash
+           st-flash write ccid-firmware-{profile}.bin 0x08000000
+           ```
+           
+           ### Reproducibility
           
           All profiles were built in Docker with:
           - `SOURCE_DATE_EPOCH=1704067200`
@@ -202,14 +192,14 @@ jobs:
           git clone https://github.com/Amperstrand/ccid-firmware-rs.git
           cd ccid-firmware-rs
           
-          # Build specific profile
-          docker build --build-arg PROFILE=profile-cherry-st2100 -t ccid-builder .
-          docker create --name extract ccid-builder
-          docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-cherry-st2100.elf
-          sha256sum ccid-firmware-cherry-st2100.elf
-          ```
-          
-          Compare the SHA256 with the corresponding `.sha256` file from this release.
+           # Build specific profile
+           docker build --build-arg PROFILE=profile-cherry-st2100 -t ccid-builder .
+           docker create --name extract ccid-builder
+           docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware-cherry-st2100.bin
+           sha256sum ccid-firmware-cherry-st2100.bin
+           ```
+           
+           Compare the SHA256 with the SHA256SUMS-{profile} file from this release.
           NOTES
           
           gh release create "${GITHUB_REF_NAME}" \
@@ -240,6 +230,6 @@ jobs:
           echo "# Build specific profile" >> $GITHUB_STEP_SUMMARY
           echo "docker build --build-arg PROFILE=profile-cherry-st2100 -t ccid-builder ." >> $GITHUB_STEP_SUMMARY
           echo "docker create --name extract ccid-builder" >> $GITHUB_STEP_SUMMARY
-          echo "docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf" >> $GITHUB_STEP_SUMMARY
-          echo "sha256sum ccid-firmware.elf" >> $GITHUB_STEP_SUMMARY
+          echo "docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.bin" >> $GITHUB_STEP_SUMMARY
+          echo "sha256sum ccid-firmware.bin" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
