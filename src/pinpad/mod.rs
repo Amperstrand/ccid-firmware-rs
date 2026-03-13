@@ -8,10 +8,11 @@
 //! - Touchscreen-based pinpad UI (embedded-graphics)
 //!
 //! # Architecture
+#![allow(dead_code)]
+#![allow(unused_imports)]
 //!
 //! The module is designed to work on both embedded ARM targets and host machines
 //! for testing. All modules use embedded-graphics which works on both platforms.
-
 
 pub mod apdu;
 pub mod state;
@@ -240,8 +241,8 @@ impl PinBuffer {
     /// Get masked representation for display (e.g., "****")
     pub fn to_mask(&self) -> [u8; 16] {
         let mut mask = [0u8; 16];
-        for i in 0..self.len {
-            mask[i] = b'*';
+        for item in mask.iter_mut().take(self.len) {
+            *item = b'*';
         }
         mask
     }
@@ -275,5 +276,3 @@ pub fn secure_clear(data: &mut [u8]) {
         }
     }
 }
-
-

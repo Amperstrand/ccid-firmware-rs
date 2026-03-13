@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-03-13
+
+### Changed
+- Fixed all clippy errors and warnings (83 total)
+- Added crate-level `#![allow(...)]` for scaffolding code (PIN pad features not yet in use)
+- Added pre-commit hook for `cargo fmt --check` and `cargo clippy -- -D warnings`
+- Improved code quality: replaced manual range checks with `is_ascii_digit()`, used iterator patterns
+
 ## [0.0.7] - 2026-03-13
 
 ### Changed

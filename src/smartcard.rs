@@ -1,4 +1,9 @@
 #![cfg(all(target_arch = "arm", target_os = "none"))]
+#![allow(dead_code)]
+#![allow(clippy::identity_op)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::manual_clamp)]
+#![allow(clippy::needless_range_loop)]
 //! Smartcard Hardware Abstraction Layer for STM32F469 CCID Reader
 //!
 //! Supports both T=0 and T=1 protocols (ISO 7816-3)
@@ -109,12 +114,14 @@ fn di_from_ta1_low(nibble: u8) -> u8 {
 
 /// Parse ATR into AtrParams (ISO 7816-3 §8.2)
 pub fn parse_atr(atr: &[u8]) -> AtrParams {
-    let mut p = AtrParams::default();
-    p.fi = 372;
-    p.di = 1;
-    p.ifsc = 32;
-    p.bwi = 4;
-    p.cwi = 13;
+    let mut p = AtrParams {
+        fi: 372,
+        di: 1,
+        ifsc: 32,
+        bwi: 4,
+        cwi: 13,
+        ..AtrParams::default()
+    };
     if atr.len() < 2 {
         return p;
     }

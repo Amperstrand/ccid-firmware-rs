@@ -7,6 +7,13 @@
 //! Reference: https://ccid.apdu.fr/ccid/section.html (PIN pad reader identities)
 
 #![no_std]
+#![allow(dead_code)] // PIN pad scaffolding not yet in use
+#![allow(unused_imports)] // Public re-exports for future use
+#![allow(clippy::identity_op)] // XOR with 0 for LRC clarity
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::manual_clamp)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::manual_is_multiple_of)]
 
 pub mod pinpad;
 pub mod protocol_unit;
@@ -45,15 +52,10 @@ pub const CCID_CLASS_DESCRIPTOR_DATA: [u8; 52] = [
     //   Bit  7: Clock stop mode
     //   Bit  8: NAD value other than 0x00 accepted
     //   Bit 17: Short APDU level
-    0xBA, 0x00, 0x01, 0x00,
-    // [42-45] dwMaxCCIDMessageLength = 270 (0x010E)
-    0x0E, 0x01, 0x00, 0x00,
-    // [46]    bClassGetResponse = 0xFF (auto)
-    0xFF,
-    0xFF, // [48-49] wLcdLayout = 0 (disabled)
+    0xBA, 0x00, 0x01, 0x00, // [42-45] dwMaxCCIDMessageLength = 270 (0x010E)
+    0x0E, 0x01, 0x00, 0x00, // [46]    bClassGetResponse = 0xFF (auto)
+    0xFF, 0xFF, // [48-49] wLcdLayout = 0 (disabled)
     0x00, 0x00, // [50]    bPINSupport = 0x00 (disabled for testing)
     0x00, // [51]    bMaxCCIDBusySlots = 1
     0x01,
 ];
-
-

@@ -1,4 +1,7 @@
 #![cfg(all(target_arch = "arm", target_os = "none"))]
+#![allow(dead_code)]
+#![allow(clippy::identity_op)]
+#![allow(clippy::collapsible_if)]
 //! T=1 block protocol engine (ISO 7816-3)
 //! I/R/S blocks, LRC, chaining for APDU > IFSC.
 //! R-block from card: ACK (bits 1-0 = 00) or retransmit request (01 = EDC error, 10 = other);
@@ -63,7 +66,7 @@ fn send_i_block<T: T1Transport>(t: &mut T, inf: &[u8], ns: u8, m: bool) -> Resul
     for &b in inf {
         t.send_byte(b)?;
     }
-    let lrc_val = 0u8 ^ 0 ^ pcb ^ len ^ lrc(inf);
+    let lrc_val = 0 ^ pcb ^ len ^ lrc(inf);
     t.send_byte(lrc_val)?;
     defmt::info!(
         "T1 TX done: LRC=0x{:02X} ({} total bytes sent)",
@@ -195,7 +198,6 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                 continue;
             }
         }
-        offset += chunk_len;
         break;
     }
 

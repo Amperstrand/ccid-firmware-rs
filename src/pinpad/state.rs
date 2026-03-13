@@ -7,6 +7,7 @@
 //! - Completed (PIN entered, ready to send APDU)
 //! - Cancelled (user cancelled)
 //! - Timeout (time limit exceeded)
+#![allow(dead_code)]
 
 use crate::pinpad::{PinBuffer, PinResult, PinVerifyParams};
 

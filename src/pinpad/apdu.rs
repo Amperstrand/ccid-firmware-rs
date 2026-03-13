@@ -3,6 +3,8 @@
 //! This module handles construction of VERIFY APDUs from PIN data.
 //! It is platform-agnostic and can be tested on the host.
 
+#![allow(dead_code)]
+
 /// APDU builder for VERIFY commands
 ///
 /// The VERIFY command (INS=0x20) is used to submit a PIN to the card.
@@ -78,7 +80,7 @@ impl VerifyApduBuilder {
 
         // Validate all characters are ASCII digits
         for &c in pin_ascii {
-            if c < b'0' || c > b'9' {
+            if !c.is_ascii_digit() {
                 return Err(ApduError::InvalidPinCharacter);
             }
         }

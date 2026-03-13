@@ -1,6 +1,5 @@
 use core::default::Default;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AtrParams {
     pub fi: u16,

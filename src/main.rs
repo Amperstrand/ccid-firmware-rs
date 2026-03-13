@@ -25,6 +25,9 @@
 #![cfg(all(target_arch = "arm", target_os = "none"))]
 #![no_std]
 #![no_main]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+#![allow(static_mut_refs)]
 
 use defmt_rtt as _;
 use panic_probe as _;

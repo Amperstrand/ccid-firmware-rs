@@ -1,4 +1,8 @@
 #![cfg(all(target_arch = "arm", target_os = "none"))]
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(clippy::identity_op)]
+#![allow(clippy::manual_is_multiple_of)]
 //! USB CCID Class implementation for smartcard reader mode
 //!
 //! This module implements the USB Chip/Smart Card Interface Device (CCID) protocol
@@ -244,12 +248,6 @@ pub enum SecureState {
         params: PinVerifyParams,
     },
 }
-/// CCID Bulk-OUT message header (10 bytes)
-/// Note: Header fields are parsed manually from rx_buffer to avoid packed struct issues
-
-// ============================================================================
-// CcidClass Implementation
-// ============================================================================
 
 /// USB CCID Class for smartcard reader functionality
 pub struct CcidClass<'bus, Bus: UsbBus, D: SmartcardDriver> {
