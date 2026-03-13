@@ -288,8 +288,9 @@ pub struct CcidClass<'bus, Bus: UsbBus, D: SmartcardDriver> {
     /// Secure PIN entry state for deferred response
     secure_state: SecureState,
     /// Pending PIN result from touchscreen entry (display feature)
+    /// Stores (seq, result, buffer, params) to avoid race condition with secure_state
     #[cfg(feature = "display")]
-    pin_result_pending: Option<(u8, PinResult, PinBuffer)>,
+    pin_result_pending: Option<(u8, PinResult, PinBuffer, PinVerifyParams)>,
     /// Response buffer for card communication
     response_buffer: [u8; 261],
 }
@@ -1046,161 +1047,95 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
 
     /// Store PIN entry result from touchscreen
     /// This is called by main loop after PIN entry completes
+    /// Params are stored to avoid race condition with secure_state being cleared
     #[cfg(feature = "display")]
-    pub fn set_pin_result(&mut self, seq: u8, result: PinResult, buffer: PinBuffer) {
-        self.pin_result_pending = Some((seq, result, buffer));
+    pub fn set_pin_result(
+        &mut self,
+        seq: u8,
+        result: PinResult,
+        buffer: PinBuffer,
+        params: PinVerifyParams,
+    ) {
+        defmt::debug!(
+            "CCID: Storing PIN result - seq={}, result={:?}, pin_len={}",
+            seq,
+            result,
+            buffer.len()
+        );
+        self.pin_result_pending = Some((seq, result, buffer, params));
     }
 
     /// Process pending PIN result - transmit APDU to card
     /// This is called by main loop each iteration
     #[cfg(feature = "display")]
     pub fn process_pin_result(&mut self) {
-        // Take the pending result if any
-        let Some((seq, result, buffer)) = self.pin_result_pending.take() else {
+        let Some((seq, result, buffer, params)) = self.pin_result_pending.take() else {
             return;
         };
 
+        defmt::debug!(
+            "CCID: Processing PIN result - seq={}, result={:?}, min_len={}, max_len={}",
+            seq,
+            result,
+            params.min_len,
+            params.max_len
+        );
+
         match result {
             PinResult::Success => {
-                // Build APDU from PIN buffer
                 let ascii_pin = buffer.to_ascii();
                 let pin_len = buffer.len();
 
-                // Get params from secure state (should still have them)
-                if let SecureState::WaitingForPin { params, .. } = &self.secure_state {
-                    let builder = VerifyApduBuilder::from_template(
-                        params.apdu_template[0], // CLA
-                        params.apdu_template[2], // P1
-                        params.apdu_template[3], // P2
-                    );
+                defmt::debug!(
+                    "CCID: Building APDU - CLA={:02X}, P1={:02X}, P2={:02X}, pin_len={}",
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                    pin_len
+                );
 
-                    match builder.build(&ascii_pin[..pin_len]) {
-                        Ok(apdu) => {
-                            let apdu_len = 5 + pin_len;
-                            match self
-                                .driver
-                                .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
-                            {
-                                Ok(resp_len) => {
-                                    defmt::info!("CCID: Card responded, len={}", resp_len);
-                                    // Copy response to avoid borrow conflict
-                                    let mut resp_copy: [u8; 261] = [0u8; 261];
-                                    resp_copy[..resp_len]
-                                        .copy_from_slice(&self.response_buffer[..resp_len]);
-                                    self.complete_pin_entry(
-                                        seq,
-                                        PinResult::Success,
-                                        Some(&resp_copy[..resp_len]),
-                                    );
-                                }
-                                Err(_) => {
-                                    defmt::warn!("CCID: Card transmit failed");
-                                    self.complete_pin_entry(seq, PinResult::Cancelled, None);
-                                }
+                let builder = VerifyApduBuilder::from_template(
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                );
+
+                match builder.build(&ascii_pin[..pin_len]) {
+                    Ok(apdu) => {
+                        let apdu_len = 5 + pin_len;
+                        defmt::debug!("CCID: Transmitting APDU, len={}", apdu_len);
+                        match self
+                            .driver
+                            .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
+                        {
+                            Ok(resp_len) => {
+                                defmt::info!("CCID: Card responded, len={}", resp_len);
+                                let mut resp_copy: [u8; 261] = [0u8; 261];
+                                resp_copy[..resp_len]
+                                    .copy_from_slice(&self.response_buffer[..resp_len]);
+                                self.complete_pin_entry(
+                                    seq,
+                                    PinResult::Success,
+                                    Some(&resp_copy[..resp_len]),
+                                );
+                            }
+                            Err(_) => {
+                                defmt::warn!("CCID: Card transmit failed");
+                                self.complete_pin_entry(seq, PinResult::Cancelled, None);
                             }
                         }
-                        Err(_e) => {
-                            defmt::warn!("CCID: APDU build failed");
-                            self.complete_pin_entry(seq, PinResult::InvalidLength, None);
-                        }
                     }
-                } else {
-                    // No params stored - shouldn't happen
-                    defmt::warn!("CCID: No secure params for PIN processing");
-                    self.complete_pin_entry(seq, PinResult::Cancelled, None);
+                    Err(_e) => {
+                        defmt::warn!("CCID: APDU build failed");
+                        self.complete_pin_entry(seq, PinResult::InvalidLength, None);
+                    }
                 }
             }
             PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                defmt::debug!("CCID: PIN entry failed with {:?}", result);
                 self.complete_pin_entry(seq, result, None);
             }
         }
-    }
-
-    /// Process pending PIN entry with mock PIN "1234"
-    ///
-    /// This is a simplified implementation for testing/development.
-    /// TODO(Task 5): Replace with real display/touch UI integration.
-    ///
-    /// This method:
-    /// 1. Takes the secure params (seq, params) if PIN entry is active
-    /// 2. Builds a VERIFY APDU with mock PIN "1234"
-    /// 3. Transmits to the card
-    /// 4. Sends the CCID DataBlock response
-    ///
-    /// Returns true if PIN entry was processed, false if not active.
-    #[cfg(feature = "display")]
-    pub fn process_mock_pin_entry(&mut self) -> bool {
-        // Check if PIN entry is active
-        if !self.is_pin_entry_active() {
-            return false;
-        }
-
-        // Take the secure params
-        let Some((seq, params)) = self.take_secure_params() else {
-            return false;
-        };
-
-        defmt::info!(
-            "CCID: Mock PIN entry - seq={}, pin_type=0x{:02X}",
-            seq,
-            params.pin_type
-        );
-
-        // Mock PIN: "1234" as ASCII bytes
-        // NOTE: This is hardcoded for testing. Real implementation should:
-        // - Use display/touch UI to collect PIN
-        // - Validate min/max length from params
-        // - Handle timeout from params.timeout_secs
-        let mock_pin: [u8; 4] = *b"1234";
-
-        // Build VERIFY APDU
-        let builder = VerifyApduBuilder::from_template(
-            params.apdu_template[0], // CLA
-            params.apdu_template[2], // P1
-            params.apdu_template[3], // P2 (0x81=user, 0x83=admin)
-        );
-
-        let apdu = match builder.build(&mock_pin) {
-            Ok(apdu) => apdu,
-            Err(e) => {
-                defmt::warn!("CCID: Mock PIN build failed");
-                self.complete_pin_entry(seq, PinResult::InvalidLength, None);
-                return true;
-            }
-        };
-
-        // Get actual APDU length (5 header + PIN length)
-        let apdu_len = 5 + mock_pin.len();
-
-        defmt::debug!("CCID: Mock PIN APDU: {=[u8]:02X}", &apdu[..apdu_len]);
-
-        // Transmit to card
-        let mut response_buffer = [0u8; 258]; // Max response = 255 data + 2 status
-        match self
-            .driver
-            .transmit_apdu(&apdu[..apdu_len], &mut response_buffer)
-        {
-            Ok(resp_len) => {
-                defmt::info!(
-                    "CCID: Card response: {=[u8]:02X} (len={})",
-                    &response_buffer[..resp_len.min(10)],
-                    resp_len
-                );
-                // Success - send response to host
-                self.complete_pin_entry(
-                    seq,
-                    PinResult::Success,
-                    Some(&response_buffer[..resp_len]),
-                );
-            }
-            Err(_e) => {
-                defmt::warn!("CCID: Card transmission failed");
-                // Card error - send failure response
-                self.complete_pin_entry(seq, PinResult::Cancelled, None);
-            }
-        }
-
-        true
     }
 
     /// Send RDR_to_PC_DataBlock response

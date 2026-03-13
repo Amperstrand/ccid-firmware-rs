@@ -54,11 +54,10 @@ use usb_device::prelude::*;
 
 #[cfg(feature = "display")]
 use crate::pinpad::ui::{
-    ButtonId, Keypad, TouchHandler, BUTTON_SIZE, COLOR_ACCENT, COLOR_BG, COLOR_BUTTON,
-    COLOR_BUTTON_CANCEL, COLOR_BUTTON_OK, COLOR_TEXT, KEYPAD_START_X, KEYPAD_START_Y,
+    ButtonId, Keypad, TouchHandler, BUTTON_SIZE, COLOR_ACCENT, COLOR_BG, COLOR_TEXT,
 };
 #[cfg(feature = "display")]
-use crate::pinpad::{PinEntryContext, PinResult, PinVerifyParams};
+use crate::pinpad::PinEntryContext;
 #[cfg(feature = "display")]
 use board::hal::ltdc::{Layer, PixelFormat};
 #[cfg(feature = "display")]
@@ -627,15 +626,20 @@ fn main() -> ! {
                     if context.is_complete() {
                         if let Some(result) = context.result() {
                             defmt::info!("PIN entry complete: {:?}", result);
-                            // Store result for processing
-                            ccid_class.set_pin_result(*seq, result, context.buffer.clone());
+                            let params = context.params;
+                            let buffer = context.buffer.clone();
+                            ccid_class.set_pin_result(*seq, result, buffer, params);
                         }
                         mode = AppMode::Normal;
+                        last_card_present = ccid_class.is_card_present();
+                        defmt::debug!(
+                            "Returned to Normal mode, card_present={}",
+                            last_card_present
+                        );
                     }
                 }
             }
 
-            // Process PIN result (transmit APDU if success)
             ccid_class.process_pin_result();
         }
 
