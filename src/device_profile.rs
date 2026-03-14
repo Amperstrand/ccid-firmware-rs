@@ -24,47 +24,86 @@
 // ============================================================================
 // CCID Feature Bit Definitions (CCID Rev 1.1 Spec Table 5.1-1)
 // ============================================================================
+//
+// Reference: USB CCID Specification Rev 1.1
+// https://www.usb.org/document-library/smart-card-ccid-version-11
+//
+// Cross-reference: libccid ccid.h (authoritative implementation)
+// https://github.com/LudovicRousseau/CCID/blob/master/src/ccid.h
+//
+// IMPORTANT: Bits 20+ are NOT for LCD/PIN pad! Per spec:
+// - Bit 20 (0x100000) = USB Wake-up signaling
+// - PIN pad support is indicated by bPINSupport field (offset 50)
+// - LCD is indicated by wLcdLayout field (offset 48-49)
 
 /// Bit 1: Automatic parameter configuration based on ATR
+/// libccid: CCID_CLASS_AUTO_CONF_ATR
 pub const FEAT_AUTO_PARAM_ATR: u32 = 0x0000_0002;
+
 /// Bit 2: Automatic activation of ICC on inserting
+/// libccid: CCID_CLASS_AUTO_ACTIVATION
 pub const FEAT_AUTO_ACTIVATE: u32 = 0x0000_0004;
+
 /// Bit 3: Automatic voltage selection
+/// libccid: CCID_CLASS_AUTO_VOLTAGE
 pub const FEAT_AUTO_VOLTAGE: u32 = 0x0000_0008;
+
 /// Bit 4: Automatic ICC clock frequency change
 pub const FEAT_AUTO_CLOCK: u32 = 0x0000_0010;
+
 /// Bit 5: Automatic baud rate change
+/// libccid: CCID_CLASS_AUTO_BAUD
 pub const FEAT_AUTO_BAUD: u32 = 0x0000_0020;
+
 /// Bit 6: Automatic parameter negotiation
+/// libccid: CCID_CLASS_AUTO_PPS_PROP
 pub const FEAT_AUTO_PPS_NEG: u32 = 0x0000_0040;
+
 /// Bit 7: Automatic PPS
+/// libccid: CCID_CLASS_AUTO_PPS_CUR
 pub const FEAT_AUTO_PPS: u32 = 0x0000_0080;
+
 /// Bit 8: Clock stop mode supported
 pub const FEAT_CLOCK_STOP: u32 = 0x0000_0100;
-/// Bit 9: NAD value other than 0x00 accepted
+
+/// Bit 9: NAD value other than 0x00 accepted (T=1)
 pub const FEAT_NAD_OTHER: u32 = 0x0000_0200;
-/// Bit 10: Automatic IFSD exchange (CAUTION: reader handles IFSD negotiation)
+
+/// Bit 10: Automatic IFSD exchange (T=1)
+/// libccid: CCID_CLASS_AUTO_IFSD
 pub const FEAT_AUTO_IFSD: u32 = 0x0000_0400;
-/// Bit 11: Exchange level: Character level (rarely used)
-pub const FEAT_LEVEL_CHARACTER: u32 = 0x0000_0800;
-/// Bit 12: Exchange level: TPDU level
-pub const FEAT_LEVEL_TPDU: u32 = 0x0000_1000;
-/// Bit 13: Exchange level: Short APDU level
-pub const FEAT_LEVEL_SHORT_APDU: u32 = 0x0000_2000;
-/// Bit 14: Exchange level: Extended APDU level
-pub const FEAT_LEVEL_EXTENDED_APDU: u32 = 0x0000_4000;
-/// Bit 16: TPDU level exchange (alternative bit position, older spec)
-pub const FEAT_TPDU_LEVEL: u32 = 0x0001_0000;
+
+// ============================================================================
+// Exchange Level (mutually exclusive - only ONE should be set)
+// ============================================================================
+
+/// Character level exchange (no bits set)
+/// libccid: CCID_CLASS_CHARACTER
+pub const FEAT_LEVEL_CHARACTER: u32 = 0x0000_0000;
+
+/// Bit 16: TPDU level exchange
+/// libccid: CCID_CLASS_TPDU
+pub const FEAT_LEVEL_TPDU: u32 = 0x0001_0000;
+
 /// Bit 17: Short APDU level exchange
-pub const FEAT_SHORT_APDU_LEVEL: u32 = 0x0002_0000;
+/// libccid: CCID_CLASS_SHORT_APDU
+pub const FEAT_LEVEL_SHORT_APDU: u32 = 0x0002_0000;
+
 /// Bit 18: Extended APDU level exchange
-pub const FEAT_EXTENDED_APDU_LEVEL: u32 = 0x0004_0000;
-/// Bit 20: LCD display present (wLcdLayout valid)
-pub const FEAT_LCD: u32 = 0x0010_0000;
-/// Bit 21: PIN pad present
-pub const FEAT_PIN_PAD: u32 = 0x0020_0000;
-/// Bit 22: Keypad present
-pub const FEAT_KEYPAD: u32 = 0x0040_0000;
+/// libccid: CCID_CLASS_EXTENDED_APDU
+pub const FEAT_LEVEL_EXTENDED_APDU: u32 = 0x0004_0000;
+
+/// Mask for exchange level bits
+/// libccid: CCID_CLASS_EXCHANGE_MASK
+pub const FEAT_LEVEL_MASK: u32 = 0x0007_0000;
+
+// Legacy aliases (deprecated - use FEAT_LEVEL_* instead)
+#[deprecated(note = "Use FEAT_LEVEL_TPDU instead")]
+pub const FEAT_TPDU_LEVEL: u32 = FEAT_LEVEL_TPDU;
+#[deprecated(note = "Use FEAT_LEVEL_SHORT_APDU instead")]
+pub const FEAT_SHORT_APDU_LEVEL: u32 = FEAT_LEVEL_SHORT_APDU;
+#[deprecated(note = "Use FEAT_LEVEL_EXTENDED_APDU instead")]
+pub const FEAT_EXTENDED_APDU_LEVEL: u32 = FEAT_LEVEL_EXTENDED_APDU;
 
 // ============================================================================
 // PIN Support Flags (bPINSupport)
@@ -343,16 +382,19 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
 
     // Features (CRITICAL):
     // - Auto param config from ATR (bit 1)
+    // - Auto voltage selection (bit 3)
     // - Auto ICC clock change (bit 4)
     // - Auto baud rate change (bit 5)
     // - Auto PPS (bit 7)
-    // - Short APDU level (bit 17) - NOT TPDU!
-    // - NO Auto IFSD (bit 10) - let libccid handle it
+    // - Clock stop (bit 8)
+    // - TPDU level (bit 16) - matches Cherry ST-2xxx
     features: FEAT_AUTO_PARAM_ATR
+        | FEAT_AUTO_VOLTAGE
         | FEAT_AUTO_CLOCK
         | FEAT_AUTO_BAUD
         | FEAT_AUTO_PPS
-        | FEAT_SHORT_APDU_LEVEL,
+        | FEAT_CLOCK_STOP
+        | FEAT_LEVEL_TPDU,
 
     // Message Size
     max_ccid_message_length: 271,
@@ -369,7 +411,7 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
     max_busy_slots: 1,
 
     // Exchange level
-    exchange_level: ExchangeLevel::ShortApdu,
+    exchange_level: ExchangeLevel::Tpdu,
 };
 
 // ============================================================================
@@ -378,10 +420,16 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
 
 /// Cherry SmartTerminal ST-2100 Profile
 ///
-/// A PIN pad reader with LCD display. We configure it for Short APDU level
-/// to match our firmware's APDU-centric `handle_xfr_block` implementation.
+/// A PIN pad reader with LCD display.
 ///
-/// Reference: https://ccid.apdu.fr/ccid/section.html
+/// Reference: https://ccid.apdu.fr/ccid/supported.html#0x046A0x003E
+///
+/// dwFeatures = 0x000100BA (matching real Cherry ST-2xxx)
+///   FEAT_AUTO_PARAM_ATR | FEAT_AUTO_VOLTAGE | FEAT_AUTO_CLOCK |
+///   FEAT_AUTO_BAUD | FEAT_AUTO_PPS | FEAT_CLOCK_STOP | FEAT_LEVEL_TPDU
+///
+/// bPINSupport = 0x03 (verify + modify)
+/// wLcdLayout = 0x0414 (4 lines x 20 chars) - but real device shows 0x0000 in descriptor
 #[cfg(feature = "profile-cherry-st2100")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x046A,
@@ -389,15 +437,17 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     manufacturer: "Cherry GmbH",
     product: "SmartTerminal ST-2100",
     serial_number: "ST2100-001",
+    // dwFeatures = 0x000100BA (TPDU level, matching real device)
     features: FEAT_AUTO_PARAM_ATR
+        | FEAT_AUTO_VOLTAGE
         | FEAT_AUTO_CLOCK
         | FEAT_AUTO_BAUD
         | FEAT_AUTO_PPS
-        | FEAT_SHORT_APDU_LEVEL
-        | FEAT_LCD
-        | FEAT_PIN_PAD,
+        | FEAT_CLOCK_STOP
+        | FEAT_LEVEL_TPDU,
     lcd_layout: (4, 20),
     pin_support: PIN_VERIFY_MODIFY,
+    exchange_level: ExchangeLevel::Tpdu,
     ..BASE_PROFILE
 };
 
@@ -419,6 +469,11 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 ///
 /// PIN pad reader with LCD display.
 /// Uses Short APDU level with PIN pad enabled.
+///
+/// Reference: https://ccid.apdu.fr/ccid/supported.html#0x08E60x3438
+///
+/// dwFeatures = 0x00020472 (Short APDU level)
+///   AUTO_VOLTAGE | AUTO_PPS_NEG | SHORT_APDU | AUTO_IFSD
 #[cfg(feature = "profile-gemalto-pinpad")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
@@ -426,8 +481,11 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     manufacturer: "Gemalto",
     product: "IDBridge K30",
     serial_number: "K30-001",
+    // dwFeatures = 0x00020472 (Short APDU level, matching real device)
+    features: FEAT_AUTO_VOLTAGE | FEAT_AUTO_PPS_NEG | FEAT_AUTO_IFSD | FEAT_LEVEL_SHORT_APDU,
     lcd_layout: (16, 16),
     pin_support: PIN_VERIFY_MODIFY,
+    exchange_level: ExchangeLevel::ShortApdu,
     ..BASE_PROFILE
 };
 
@@ -482,11 +540,11 @@ mod tests {
         // Must NOT have AUTO_IFSD (bit 10 = 0x0400) to enable XfrBlock
         assert_eq!(features & FEAT_AUTO_IFSD, 0, "AUTO_IFSD must be disabled");
 
-        // Must have Short APDU level (bit 17 = 0x00020000)
+        // Cherry ST-2100 uses TPDU level (bit 16 = 0x00010000), matching real device
         assert_ne!(
-            features & FEAT_SHORT_APDU_LEVEL,
+            features & FEAT_LEVEL_TPDU,
             0,
-            "Short APDU level required"
+            "TPDU level required for Cherry ST-2100"
         );
     }
 
@@ -505,8 +563,9 @@ mod tests {
     }
 
     #[test]
-    fn test_exchange_level_short_apdu() {
-        assert!(CURRENT_PROFILE.is_short_apdu());
+    fn test_exchange_level_tpdu() {
+        assert!(!CURRENT_PROFILE.is_short_apdu());
+        assert_eq!(CURRENT_PROFILE.exchange_level, ExchangeLevel::Tpdu);
     }
 
     #[test]
