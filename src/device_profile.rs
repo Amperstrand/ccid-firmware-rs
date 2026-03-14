@@ -333,6 +333,10 @@ impl DeviceProfile {
     pub const fn has_lcd(&self) -> bool {
         self.lcd_layout.0 > 0 && self.lcd_layout.1 > 0
     }
+
+    pub const fn get_lcd_layout(&self) -> (u8, u8) {
+        self.lcd_layout
+    }
 }
 
 // ============================================================================
