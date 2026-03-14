@@ -1,0 +1,3 @@
+[submodule "vendor/synopsys-usb-otg"]
+	path = vendor/synopsys-usb-otg
+	url = https://github.com/Amperstrand/synopsys-usb-otg

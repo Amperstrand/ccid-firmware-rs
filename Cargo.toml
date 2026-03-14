@@ -29,7 +29,7 @@ embedded-alloc = "0.5"
 stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", branch = "sdio-support" }
 
 [patch.crates-io]
-synopsys-usb-otg = { path = "vendor/synopsys-usb-otg-f469" }
+synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
 
 [features]
 # Default device profile
