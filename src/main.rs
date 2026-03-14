@@ -571,6 +571,7 @@ fn main() -> ! {
                         }
                     } else if let Some((ref mut draw_target, _, _)) = display_state {
                         let card_present = ccid_class.is_card_present();
+                        let card_active = ccid_class.is_card_active();
                         if card_present != last_card_present {
                             if !card_present {
                                 app_enum_state.reset();
@@ -585,9 +586,9 @@ fn main() -> ! {
                             }
                             draw_idle_screen(draw_target, card_present, &detected[..count]);
                             last_card_present = card_present;
-                        } else if card_present && !app_enum_state.is_enumerated() {
+                        } else if card_active && !app_enum_state.is_enumerated() {
                             app_enum_state
-                                .enumerate_if_needed(ccid_class.driver_mut(), card_present);
+                                .enumerate_if_needed(ccid_class.driver_mut(), card_active);
                             let mut detected: [&str; 5] = ["", "", "", "", ""];
                             let mut count = 0;
                             for name in app_enum_state.detected_names() {

@@ -313,7 +313,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         driver: D,
         ep_int: EndpointIn<'bus, Bus>,
     ) -> Self {
-        Self {
+        let mut this = Self {
             interface: allocator.interface(),
             ep_in: allocator.bulk::<In>(PACKET_SIZE as u16),
             ep_out: allocator.bulk::<Out>(PACKET_SIZE as u16),
@@ -329,13 +329,20 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             needs_zlp: false,
             card_present_last: false,
             ep_int,
-            current_protocol: 0, // Default to T=0
+            current_protocol: 0,
             atr_params: AtrParams::default(),
             secure_state: SecureState::Idle,
             #[cfg(feature = "display")]
             pin_result_pending: None,
             response_buffer: [0u8; 261],
+        };
+        let present = this.driver.is_card_present();
+        defmt::info!("CCID init: card_present={}", present);
+        if present {
+            this.card_present_last = true;
+            this.slot_state = SlotState::PresentInactive;
         }
+        this
     }
 
     /// Get a reference to the smartcard driver
@@ -719,6 +726,11 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     /// Handle PC_to_RDR_GetSlotStatus command
     fn handle_get_slot_status(&mut self, seq: u8) {
         let icc_status = self.get_icc_status();
+        defmt::info!(
+            "GetSlotStatus: slot_state={} icc={}",
+            self.slot_state as u8,
+            icc_status
+        );
         self.send_slot_status(seq, COMMAND_STATUS_NO_ERROR, icc_status, 0);
     }
 
@@ -1090,6 +1102,12 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         self.driver.is_card_present()
     }
 
+    /// Check if a card is present AND powered on (active)
+    /// This is used to determine if APDU communication is possible
+    pub fn is_card_active(&self) -> bool {
+        self.slot_state == SlotState::PresentActive
+    }
+
     /// Store PIN entry result from touchscreen
     /// This is called by main loop after PIN entry completes
     /// Params are stored to avoid race condition with secure_state being cleared
@@ -1326,9 +1344,13 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
     }
 
     fn poll(&mut self) {
-        // Card detect edge detection for NotifySlotChange
         let present_now = self.driver.is_card_present();
         if present_now != self.card_present_last {
+            defmt::info!(
+                "Card state change: {} -> {}",
+                self.card_present_last,
+                present_now
+            );
             self.card_present_last = present_now;
             self.send_notify_slot_change(present_now, true);
             if !present_now {

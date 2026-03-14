@@ -389,6 +389,15 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     manufacturer: "Cherry GmbH",
     product: "SmartTerminal ST-2100",
     serial_number: "ST2100-001",
+    features: FEAT_AUTO_PARAM_ATR
+        | FEAT_AUTO_CLOCK
+        | FEAT_AUTO_BAUD
+        | FEAT_AUTO_PPS
+        | FEAT_SHORT_APDU_LEVEL
+        | FEAT_LCD
+        | FEAT_PIN_PAD,
+    lcd_layout: (4, 20),
+    pin_support: PIN_VERIFY_MODIFY,
     ..BASE_PROFILE
 };
 
@@ -501,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pin_pad_disabled() {
-        assert!(!CURRENT_PROFILE.has_pin_pad());
+    fn test_pin_pad_enabled() {
+        assert!(CURRENT_PROFILE.has_pin_pad());
     }
 }
