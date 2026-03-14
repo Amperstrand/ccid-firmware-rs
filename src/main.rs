@@ -32,6 +32,7 @@
 use defmt_rtt as _;
 use panic_probe as _;
 
+mod app_enum;
 mod device_profile;
 mod pinpad;
 mod smartcard;
@@ -80,6 +81,8 @@ use stm32f469i_disc as board;
 
 mod ccid;
 
+#[cfg(feature = "display")]
+use app_enum::AppEnumerationState;
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
 use smartcard::{SmartcardError, SmartcardUart};
 use usb_identity::{
@@ -292,7 +295,11 @@ fn draw_pin_screen(
 
 /// Draw idle/status screen
 #[cfg(feature = "display")]
-fn draw_idle_screen(display: &mut FrameBufferDrawTarget, card_present: bool) {
+fn draw_idle_screen(
+    display: &mut FrameBufferDrawTarget,
+    card_present: bool,
+    detected_apps: &[&str],
+) {
     display.clear(COLOR_BG);
 
     let title_style = MonoTextStyle::new(&FONT_10X20, COLOR_TEXT);
@@ -307,9 +314,19 @@ fn draw_idle_screen(display: &mut FrameBufferDrawTarget, card_present: bool) {
         "Card: absent"
     };
     let _ = Text::new(card_text, Point::new(130, 220), title_style).draw(display);
-    let _ = Text::new("USB: ready", Point::new(130, 260), title_style).draw(display);
 
+    // Display detected apps below card status
     let small_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
+    let mut y = 260;
+    for app_name in detected_apps {
+        let _ = Text::new(app_name, Point::new(150, y), small_style).draw(display);
+        y += 40;
+    }
+
+    // USB status below apps (or at 260 if no apps)
+    let usb_y = if detected_apps.is_empty() { 260 } else { y };
+    let _ = Text::new("USB: ready", Point::new(130, usb_y), title_style).draw(display);
+
     let version = option_env!("GIT_VERSION").unwrap_or("unknown");
     let _ = Text::new(version, Point::new(10, 750), small_style).draw(display);
 }
@@ -526,6 +543,9 @@ fn main() -> ! {
     #[cfg(feature = "display")]
     let mut last_card_present = false;
 
+    #[cfg(feature = "display")]
+    let mut app_enum_state = AppEnumerationState::new();
+
     loop {
         // Always poll USB - required for both normal CCID and PIN entry modes
         usb_device.poll(&mut [&mut ccid_class]);
@@ -550,11 +570,33 @@ fn main() -> ! {
                             };
                         }
                     } else if let Some((ref mut draw_target, _, _)) = display_state {
-                        // Draw idle screen (only if card state changed)
                         let card_present = ccid_class.is_card_present();
                         if card_present != last_card_present {
-                            draw_idle_screen(draw_target, card_present);
+                            if !card_present {
+                                app_enum_state.reset();
+                            }
+                            let mut detected: [&str; 5] = ["", "", "", "", ""];
+                            let mut count = 0;
+                            for name in app_enum_state.detected_names() {
+                                if count < 5 {
+                                    detected[count] = name;
+                                    count += 1;
+                                }
+                            }
+                            draw_idle_screen(draw_target, card_present, &detected[..count]);
                             last_card_present = card_present;
+                        } else if card_present && !app_enum_state.is_enumerated() {
+                            app_enum_state
+                                .enumerate_if_needed(ccid_class.driver_mut(), card_present);
+                            let mut detected: [&str; 5] = ["", "", "", "", ""];
+                            let mut count = 0;
+                            for name in app_enum_state.detected_names() {
+                                if count < 5 {
+                                    detected[count] = name;
+                                    count += 1;
+                                }
+                            }
+                            draw_idle_screen(draw_target, card_present, &detected[..count]);
                         }
                     }
                 }
