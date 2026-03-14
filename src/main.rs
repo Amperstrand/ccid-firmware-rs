@@ -310,7 +310,8 @@ fn draw_idle_screen(display: &mut FrameBufferDrawTarget, card_present: bool) {
     let _ = Text::new("USB: ready", Point::new(130, 260), title_style).draw(display);
 
     let small_style = MonoTextStyle::new(&FONT_10X20, Rgb565::CSS_GRAY);
-    let _ = Text::new("v0.2.0", Point::new(10, 750), small_style).draw(display);
+    let version = option_env!("GIT_VERSION").unwrap_or("unknown");
+    let _ = Text::new(version, Point::new(10, 750), small_style).draw(display);
 }
 
 #[entry]
