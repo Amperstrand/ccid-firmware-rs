@@ -12,7 +12,7 @@ use usb_device::class_prelude::*;
 use usb_device::endpoint::{In, Out};
 use usb_device::{Result, UsbError};
 
-use crate::pinpad::{PinBuffer, PinResult, PinVerifyParams, VerifyApduBuilder};
+use crate::pinpad::{PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder};
 use crate::smartcard::{parse_atr, AtrParams};
 
 // ============================================================================
@@ -240,12 +240,19 @@ enum SlotState {
 pub enum SecureState {
     /// No active PIN entry
     Idle,
-    /// PIN entry in progress - waiting for display/touch input
-    WaitingForPin {
+    /// PIN verify entry in progress - waiting for display/touch input
+    WaitingForPinVerify {
         /// CCID sequence number for response
         seq: u8,
         /// Parsed PIN verify parameters
         params: PinVerifyParams,
+    },
+    /// PIN modify entry in progress - waiting for display/touch input
+    WaitingForPinModify {
+        /// CCID sequence number for response
+        seq: u8,
+        /// Parsed PIN modify parameters
+        params: PinModifyParams,
     },
 }
 
@@ -926,7 +933,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
                 match PinVerifyParams::parse(pin_data) {
                     Some(params) => {
                         // Store for deferred response - PIN entry will happen on display/touch
-                        self.secure_state = SecureState::WaitingForPin { seq, params };
+                        self.secure_state = SecureState::WaitingForPinVerify { seq, params };
                         defmt::debug!("CCID: PIN Verify - waiting for PIN entry");
                         // No immediate response - will send RDR_to_PC_DataBlock after PIN entry
                     }
@@ -937,9 +944,22 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
                 }
             }
             0x01 => {
-                // PIN Modify - not implemented
-                defmt::warn!("CCID: PIN Modify not yet implemented");
-                self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+                // PIN Modify - parse PIN Modify Data Structure (CCID Rev 1.1 Section 6.1.12)
+                // Data area: bmPINOperation(1) + PIN Modify Data Structure
+                // PIN Modify Data Structure starts at offset 11 (after bmPINOperation)
+                let pin_data = &self.rx_buffer[11..self.rx_len];
+
+                match PinModifyParams::parse(pin_data) {
+                    Some(params) => {
+                        // Store for deferred response - PIN entry will happen on display/touch
+                        self.secure_state = SecureState::WaitingForPinModify { seq, params };
+                        defmt::debug!("CCID: PIN Modify - waiting for PIN entry");
+                    }
+                    None => {
+                        defmt::warn!("CCID: PIN Modify parse failed");
+                        self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+                    }
+                }
             }
             _ => {
                 defmt::warn!("CCID: Unknown PIN operation: {}", pin_operation);
@@ -951,14 +971,39 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     /// Check if PIN entry is currently active
     /// Returns true if a PC_to_RDR_Secure command is pending PIN entry
     pub fn is_pin_entry_active(&self) -> bool {
-        matches!(self.secure_state, SecureState::WaitingForPin { .. })
+        matches!(
+            self.secure_state,
+            SecureState::WaitingForPinVerify { .. } | SecureState::WaitingForPinModify { .. }
+        )
     }
 
-    /// Take the secure PIN entry parameters, resetting state to Idle
-    /// Returns (seq, params) if PIN entry was active, None otherwise
+    /// Check if PIN verify entry is active
+    pub fn is_pin_verify_active(&self) -> bool {
+        matches!(self.secure_state, SecureState::WaitingForPinVerify { .. })
+    }
+
+    /// Check if PIN modify entry is active
+    pub fn is_pin_modify_active(&self) -> bool {
+        matches!(self.secure_state, SecureState::WaitingForPinModify { .. })
+    }
+
+    /// Take the secure PIN verify parameters, resetting state to Idle
+    /// Returns (seq, params) if PIN verify was active, None otherwise
     /// This is called by the main loop when starting PIN entry UI
     pub fn take_secure_params(&mut self) -> Option<(u8, PinVerifyParams)> {
-        if let SecureState::WaitingForPin { seq, params } =
+        if let SecureState::WaitingForPinVerify { seq, params } =
+            core::mem::replace(&mut self.secure_state, SecureState::Idle)
+        {
+            Some((seq, params))
+        } else {
+            None
+        }
+    }
+
+    /// Take the secure PIN modify parameters, resetting state to Idle
+    /// Returns (seq, params) if PIN modify was active, None otherwise
+    pub fn take_secure_modify_params(&mut self) -> Option<(u8, PinModifyParams)> {
+        if let SecureState::WaitingForPinModify { seq, params } =
             core::mem::replace(&mut self.secure_state, SecureState::Idle)
         {
             Some((seq, params))
@@ -1287,7 +1332,18 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
             self.card_present_last = present_now;
             self.send_notify_slot_change(present_now, true);
             if !present_now {
+                // Card removed - must power off driver and reset state
+                // to avoid crash/inconsistency on reinsert (CCID Rev 1.1 §6.3)
+                defmt::info!("Card removed, powering off driver");
+                self.driver.power_off();
                 self.slot_state = SlotState::Absent;
+                self.cmd_busy = false; // Cancel any pending command
+                self.rx_len = 0; // Clear any pending receive data
+                self.secure_state = SecureState::Idle; // Cancel any PIN entry
+                #[cfg(feature = "display")]
+                {
+                    self.pin_result_pending = None;
+                }
             } else {
                 self.slot_state = SlotState::PresentInactive;
             }

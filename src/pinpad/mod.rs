@@ -39,6 +39,139 @@ pub enum PinResult {
     InvalidLength,
 }
 
+/// PIN modification parameters extracted from CCID message (CCID Rev 1.1 §6.1.12)
+///
+/// | Offset | Field | Description |
+/// |--------|-------|-------------|
+/// | 0 | bTimerOut | Timeout in seconds (0 = no timeout) |
+/// | 1 | bmFormatString | PIN format and justification |
+/// | 2 | bmPINBlockString | PIN block length |
+/// | 3 | bmPINLengthFormat | PIN length format |
+/// | 4 | bInsertionOffsetOld | Offset for old PIN in APDU |
+/// | 5 | bInsertionOffsetNew | Offset for new PIN in APDU |
+/// | 6-7 | wPINMaxExtraDigit | Max (high), Min (low) |
+/// | 8 | bEntryValidationCondition | Validation trigger |
+/// | 9 | bNumberMessage | Number of messages |
+/// | 10-11 | wLangId | Language ID |
+/// | 12 | bMsgIndex1 | Message index for old PIN prompt |
+/// | 13 | bMsgIndex2 | Message index for new PIN prompt |
+/// | 14 | bMsgIndex3 | Message index for confirm PIN prompt |
+/// | 15 | bTeoPrologue | TPDU prologue |
+/// | 16+ | abPINApdu | APDU template |
+#[derive(Debug, Clone, Copy)]
+pub struct PinModifyParams {
+    /// Timeout in seconds (0 = no timeout)
+    pub timeout_secs: u8,
+    /// Minimum PIN length
+    pub min_len: u8,
+    /// Maximum PIN length
+    pub max_len: u8,
+    /// PIN format flags (bmFormatString)
+    pub format: u8,
+    /// Entry validation condition
+    pub validation: u8,
+    /// Offset in APDU where old PIN should be inserted
+    pub old_pin_offset: u8,
+    /// Offset in APDU where new PIN should be inserted
+    pub new_pin_offset: u8,
+    /// APDU template (CLA INS P1 P2 [Lc])
+    pub apdu_template: [u8; 5],
+    /// Template length (typically 5 for short APDU)
+    pub template_len: usize,
+    /// P2 value to determine PIN type (0x81=user, 0x83=admin)
+    pub pin_type: u8,
+    /// Time slot for UI updates (milliseconds)
+    pub time_slot: u16,
+    /// Message index for old PIN prompt
+    pub msg_index_old: u8,
+    /// Message index for new PIN prompt
+    pub msg_index_new: u8,
+    /// Message index for confirm PIN prompt
+    pub msg_index_confirm: u8,
+}
+
+impl Default for PinModifyParams {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 30,
+            min_len: 6,
+            max_len: 8,
+            format: 0x82,                                  // ASCII, left justified
+            validation: 0x02,                              // Validation key pressed
+            old_pin_offset: 5,                             // After CLA INS P1 P2 Lc
+            new_pin_offset: 13,                            // After old PIN (8 bytes)
+            apdu_template: [0x00, 0x24, 0x00, 0x81, 0x10], // CHANGE REFERENCE
+            template_len: 5,
+            pin_type: 0x81, // User PIN
+            time_slot: 100,
+            msg_index_old: 0,
+            msg_index_new: 1,
+            msg_index_confirm: 2,
+        }
+    }
+}
+
+impl PinModifyParams {
+    /// Parse PIN modification data structure from CCID Rev 1.1 §6.1.12
+    pub fn parse(data: &[u8]) -> Option<Self> {
+        if data.len() < 20 {
+            return None;
+        }
+
+        let timeout_secs = data[0];
+        let format = data[1];
+        let _pin_block_string = data[2];
+        let _pin_length_format = data[3];
+        let old_pin_offset = data[4];
+        let new_pin_offset = data[5];
+
+        let max_len = data[6];
+        let min_len = data[7];
+
+        let validation = data[8];
+
+        let apdu_start = 16; // Offset 16 per CCID spec
+
+        if data.len() < apdu_start + 4 {
+            return None;
+        }
+
+        let cla = data[apdu_start];
+        let ins = data[apdu_start + 1];
+        let p1 = data[apdu_start + 2];
+        let p2 = data[apdu_start + 3];
+
+        let apdu_template = [cla, ins, p1, p2, max_len * 2]; // Lc = old + new
+
+        Some(Self {
+            timeout_secs,
+            min_len,
+            max_len,
+            format,
+            validation,
+            old_pin_offset,
+            new_pin_offset,
+            apdu_template,
+            template_len: 5,
+            pin_type: p2,
+            time_slot: 100,
+            msg_index_old: data.get(12).copied().unwrap_or(0),
+            msg_index_new: data.get(13).copied().unwrap_or(1),
+            msg_index_confirm: data.get(14).copied().unwrap_or(2),
+        })
+    }
+
+    /// Check if this is a User PIN modification
+    pub fn is_user_pin(&self) -> bool {
+        self.pin_type == 0x81
+    }
+
+    /// Check if this is an Admin PIN modification
+    pub fn is_admin_pin(&self) -> bool {
+        self.pin_type == 0x83
+    }
+}
+
 /// PIN verification parameters extracted from CCID message
 #[derive(Debug, Clone, Copy)]
 pub struct PinVerifyParams {
@@ -62,6 +195,16 @@ pub struct PinVerifyParams {
     pub time_slot: u16,
     /// Message index for display
     pub message_index: u8,
+    /// PIN block string (CCID offset 2) - PIN block size in bytes
+    pub pin_block_string: u8,
+    /// PIN length format (CCID offset 3) - how PIN length is encoded
+    pub pin_length_format: u8,
+    /// Number of messages to display (CCID offset 7)
+    pub number_message: u8,
+    /// Language ID (CCID offsets 8-9)
+    pub lang_id: u16,
+    /// TPDU prologue byte (CCID offset 11)
+    pub teo_prologue: u8,
 }
 
 impl Default for PinVerifyParams {
@@ -70,55 +213,61 @@ impl Default for PinVerifyParams {
             timeout_secs: 30,
             min_len: 6,
             max_len: 8,
-            format: 0x82,     // ASCII, left justified
-            validation: 0x02, // Validation key pressed
+            format: 0x82,
+            validation: 0x02,
             apdu_template: [0x00, 0x20, 0x00, 0x81, 0x08],
             template_len: 5,
-            pin_type: 0x81, // User PIN
-            time_slot: 100, // 100ms default
+            pin_type: 0x81,
+            time_slot: 100,
             message_index: 0,
+            pin_block_string: 0x08,
+            pin_length_format: 0x00,
+            number_message: 0x01,
+            lang_id: 0x0409,
+            teo_prologue: 0x00,
         }
     }
 }
 
 impl PinVerifyParams {
-    /// Parse PIN verification data structure from CCID message
+    /// Parse PIN verification data structure from CCID Rev 1.1 §6.1.11
     ///
-    /// CCID PIN Verification Data Structure (Section 6.1.11):
-    /// Offset 0: bTimerOut
-    /// Offset 1: bmFormatString
-    /// Offset 2: bmPINBlockString
-    /// Offset 3: bmPINLengthFormat
-    /// Offset 4-5: wPINMaxExtraDigit (max:high, min:low)
-    /// Offset 6: bEntryValidationCondition
-    /// Offset 7: bNumberMessage
-    /// Offset 8-9: wLangId
-    /// Offset 10: bMsgIndex
-    /// Offset 11: bTeoPrologue
-    /// Offset 12+: abPINApdu (APDU template)
+    /// | Offset | Field | Description |
+    /// |--------|-------|-------------|
+    /// | 0 | bTimerOut | Timeout in seconds (0 = no timeout) |
+    /// | 1 | bmFormatString | PIN format and justification |
+    /// | 2 | bmPINBlockString | PIN block length |
+    /// | 3 | bmPINLengthFormat | PIN length format |
+    /// | 4-5 | wPINMaxExtraDigit | Max (high), Min (low) |
+    /// | 6 | bEntryValidationCondition | Validation trigger |
+    /// | 7 | bNumberMessage | Number of messages |
+    /// | 8-9 | wLangId | Language ID |
+    /// | 10 | bMsgIndex | Message index |
+    /// | 11 | bTeoPrologue | TPDU prologue |
+    /// | 12+ | abPINApdu | APDU template |
     pub fn parse(data: &[u8]) -> Option<Self> {
-        // Minimum size: header (12 bytes) + APDU template (4+ bytes)
         if data.len() < 16 {
             return None;
         }
 
         let timeout_secs = data[0];
         let format = data[1];
-        let _pin_block_string = data[2];
-        let _pin_length_format = data[3];
+        let pin_block_string = data[2];
+        let pin_length_format = data[3];
 
-        // wPINMaxExtraDigit: high byte = max, low byte = min
         let max_len = data[4];
         let min_len = data[5];
 
         let validation = data[6];
-        // Skip bNumberMessage, wLangId, bMsgIndex (bytes 7-10)
+        let number_message = data.get(7).copied().unwrap_or(1);
+        let lang_id = u16::from_le_bytes([
+            data.get(8).copied().unwrap_or(0x09),
+            data.get(9).copied().unwrap_or(0x04),
+        ]);
+        let teo_prologue = data.get(11).copied().unwrap_or(0);
 
-        // bTeoPrologue at offset 11
-        // abPINApdu starts at offset 12
         let apdu_start = 12;
 
-        // Need at least 4 bytes for APDU header
         if data.len() < apdu_start + 4 {
             return None;
         }
@@ -128,8 +277,6 @@ impl PinVerifyParams {
         let p1 = data[apdu_start + 2];
         let p2 = data[apdu_start + 3];
 
-        // For VERIFY command, we expect INS = 0x20
-        // The template includes Lc, but we'll compute it based on actual PIN length
         let apdu_template = [cla, ins, p1, p2, max_len];
 
         Some(Self {
@@ -140,9 +287,14 @@ impl PinVerifyParams {
             validation,
             apdu_template,
             template_len: 5,
-            pin_type: p2,   // 0x81 = User PIN (PW1), 0x83 = Admin PIN (PW3)
-            time_slot: 100, // Default 100ms
+            pin_type: p2,
+            time_slot: 100,
             message_index: data.get(10).copied().unwrap_or(0),
+            pin_block_string,
+            pin_length_format,
+            number_message,
+            lang_id,
+            teo_prologue,
         })
     }
 
@@ -154,6 +306,38 @@ impl PinVerifyParams {
     /// Check if this is an Admin PIN verification
     pub fn is_admin_pin(&self) -> bool {
         self.pin_type == 0x83
+    }
+
+    /// Get PIN format from bmFormatString (bits 0-3)
+    /// Returns: 0x00=Binary, 0x01=BCD, 0x02=ASCII
+    pub fn pin_format(&self) -> u8 {
+        self.format & 0x0F
+    }
+
+    /// Check if PIN format is ASCII
+    pub fn is_ascii_format(&self) -> bool {
+        self.pin_format() == 0x02
+    }
+
+    /// Check if PIN format is BCD
+    pub fn is_bcd_format(&self) -> bool {
+        self.pin_format() == 0x01
+    }
+
+    /// Check if PIN format is Binary
+    pub fn is_binary_format(&self) -> bool {
+        self.pin_format() == 0x00
+    }
+
+    /// Get justification from bmFormatString (bits 4-5)
+    /// Returns: 0=Right, 1=Left
+    pub fn justification(&self) -> u8 {
+        (self.format >> 4) & 0x03
+    }
+
+    /// Check if PIN is left-justified
+    pub fn is_left_justified(&self) -> bool {
+        self.justification() == 1
     }
 }
 
@@ -253,6 +437,59 @@ impl PinBuffer {
             Some(self.digits[index])
         } else {
             None
+        }
+    }
+
+    /// Convert PIN to BCD format (packed, 2 digits per byte)
+    /// Left-justified: first digit in high nibble of first byte
+    pub fn to_bcd(&self) -> ([u8; 8], usize) {
+        let mut bcd = [0u8; 8];
+        let byte_count = self.len.div_ceil(2);
+
+        for (i, &digit) in self.digits[..self.len].iter().enumerate() {
+            let byte_idx = i / 2;
+            if i % 2 == 0 {
+                bcd[byte_idx] = digit << 4;
+            } else {
+                bcd[byte_idx] |= digit;
+            }
+        }
+        (bcd, byte_count)
+    }
+
+    /// Convert PIN to binary format (1 digit per nibble, left-justified)
+    pub fn to_binary(&self) -> ([u8; 8], usize) {
+        let mut binary = [0u8; 8];
+        let byte_count = self.len.div_ceil(2);
+
+        for (i, &digit) in self.digits[..self.len].iter().enumerate() {
+            let byte_idx = i / 2;
+            if i % 2 == 0 {
+                binary[byte_idx] = digit << 4;
+            } else {
+                binary[byte_idx] |= digit;
+            }
+        }
+        (binary, byte_count)
+    }
+
+    /// Convert PIN to the format specified by bmFormatString
+    /// Returns (buffer, length) in the requested format
+    pub fn to_format(&self, format: u8) -> ([u8; 16], usize) {
+        match format & 0x0F {
+            0x00 => {
+                let (bin, len) = self.to_binary();
+                let mut result = [0u8; 16];
+                result[..len].copy_from_slice(&bin[..len]);
+                (result, len)
+            }
+            _ => {
+                // Default: ASCII format (0x02) or any unknown format
+                let mut result = [0u8; 16];
+                let ascii = self.to_ascii();
+                result[..self.len].copy_from_slice(&ascii[..self.len]);
+                (result, self.len)
+            }
         }
     }
 }
