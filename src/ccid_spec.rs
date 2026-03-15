@@ -223,20 +223,26 @@ pub const CCID_ERR_CMD_SLOT_BUSY: u8 = 0xE0;
 pub const CHERRY_ST2XXX_DWFEATURES: u32 = 0x0001_00BA;
 
 /// Gemalto IDBridge CT30 (VID:08E6 PID:3437)
-/// Ref: https://ccid.apdu.fr/ccid/supported.html#0x08E60x3437
+/// Ref: reference/CCID/readers/Gemalto_IDBridge_CT30.txt
 ///
 /// dwFeatures = 0x00010230
-/// Decoded: AUTO_CONF_ATR | AUTO_VOLTAGE | AUTO_BAUD | AUTO_PPS | AUTO_IFSD | TPDU
+/// Decoded: AUTO_CLOCK | AUTO_BAUD | NAD_OTHER | TPDU
 /// bPINSupport = 0x00 (no PIN pad)
+/// wLcdLayout = 0x0000 (no LCD)
 pub const GEMALTO_CT30_DWFEATURES: u32 = 0x0001_0230;
 
-/// Gemalto IDBridge K30 / USB Shell Token V2 (VID:08E6 PID:3438)
-/// Ref: https://ccid.apdu.fr/ccid/supported.html#0x08E60x3438
+/// Gemalto IDBridge K30 (VID:08E6 PID:3438)
+/// Ref: reference/CCID/readers/Gemalto_IDBridge_K30.txt
 ///
-/// dwFeatures = 0x00020472
-/// Decoded: AUTO_VOLTAGE | AUTO_PPS_NEG | SHORT_APDU | AUTO_IFSD
-/// bPINSupport = 0x03 (verify + modify)
-pub const GEMALTO_K30_DWFEATURES: u32 = 0x0002_0472;
+/// dwFeatures = 0x00010230 (TPDU level - SAME AS CT30!)
+/// Decoded: AUTO_CLOCK | AUTO_BAUD | NAD_OTHER | TPDU
+///
+/// ⚠️ IMPORTANT: The K30 is NOT a PIN pad reader!
+/// - bPINSupport = 0x00 (NO PIN PAD!)
+/// - wLcdLayout = 0x0000 (NO LCD!)
+///
+/// For PIN pad support, use Cherry ST-2xxx profile instead.
+pub const GEMALTO_K30_DWFEATURES: u32 = 0x0001_0230;
 
 // ============================================================================
 // Unit Tests
@@ -263,20 +269,15 @@ mod tests {
     #[test]
     fn test_gemalto_ct30_features() {
         let expected = GEMALTO_CT30_DWFEATURES;
-        let computed = FEAT_AUTO_CONF_ATR
-            | FEAT_AUTO_VOLTAGE
-            | FEAT_AUTO_BAUD
-            | FEAT_AUTO_PPS
-            | FEAT_AUTO_IFSD
-            | FEAT_LEVEL_TPDU;
+        // 0x00010230 = AUTO_CLOCK | AUTO_BAUD | NAD_OTHER | TPDU
+        let computed = FEAT_AUTO_CLOCK | FEAT_AUTO_BAUD | FEAT_NAD_OTHER | FEAT_LEVEL_TPDU;
         assert_eq!(expected, computed, "Gemalto CT30 dwFeatures mismatch");
     }
 
     #[test]
     fn test_gemalto_k30_features() {
         let expected = GEMALTO_K30_DWFEATURES;
-        let computed =
-            FEAT_AUTO_VOLTAGE | FEAT_AUTO_PPS_NEG | FEAT_LEVEL_SHORT_APDU | FEAT_AUTO_IFSD;
+        let computed = FEAT_AUTO_CLOCK | FEAT_AUTO_BAUD | FEAT_NAD_OTHER | FEAT_LEVEL_TPDU;
         assert_eq!(expected, computed, "Gemalto K30 dwFeatures mismatch");
     }
 
@@ -294,8 +295,8 @@ mod tests {
 
         let k30_level = GEMALTO_K30_DWFEATURES & FEAT_LEVEL_MASK;
         assert_eq!(
-            k30_level, FEAT_LEVEL_SHORT_APDU,
-            "K30 should use Short APDU level"
+            k30_level, FEAT_LEVEL_TPDU,
+            "K30 should use TPDU level (same as CT30)"
         );
     }
 }

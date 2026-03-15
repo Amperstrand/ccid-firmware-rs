@@ -1,3 +1,6 @@
 [submodule "vendor/synopsys-usb-otg"]
 	path = vendor/synopsys-usb-otg
 	url = https://github.com/Amperstrand/synopsys-usb-otg
+[submodule "reference/CCID"]
+	path = reference/CCID
+	url = https://salsa.debian.org/rousseau/CCID.git

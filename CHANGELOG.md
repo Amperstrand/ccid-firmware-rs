@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **CRITICAL FIX**: Gemalto IDBridge K30 profile no longer falsely claims PIN pad and LCD capabilities
+  - Real K30 has bPINSupport=0x00, wLcdLayout=0x0000 (no PIN, no LCD)
+  - K30 uses TPDU level (0x00010230), not Short APDU (0x00020472)
+  - For PIN pad support, use profile-cherry-st2100 (the only PIN-capable profile)
+- All profiles now match CCID reference files exactly (reference/CCID/readers/*.txt)
+- Fixed GEMALTO_K30_DWFEATURES constant: 0x00010230 (was incorrectly 0x00020472)
+- Fixed dwFeatures decomposition tests to match actual reference values
+- Added upstream CCID project as git submodule for authoritative device reference
+
 ## [0.0.8] - 2026-03-13
 
 ### Changed

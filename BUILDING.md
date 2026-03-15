@@ -54,13 +54,19 @@ sudo dnf install stlink-tools
 
 ## Device Profiles
 
+Reference: `reference/CCID/readers/*.txt` (authoritative device specifications)
+
 The firmware supports three mutually exclusive USB device profiles:
 
-| Profile | Device | VID:PID | Default |
-|---------|--------|---------|---------|
-| `profile-cherry-st2100` | Cherry SmartTerminal ST-2100 (PIN pad) | 046a:003e | ✓ |
-| `profile-gemalto-plain` | Gemalto IDBridge CT30 (basic) | 08e6:3437 | |
-| `profile-gemalto-pinpad` | Gemalto IDBridge K30 (PIN pad) | 08e6:3437 | |
+| Profile | Device | VID:PID | PIN Pad | Default |
+|---------|--------|---------|---------|---------|
+| `profile-cherry-st2100` | Cherry SmartTerminal ST-2xxx | 046a:003e | ✓ Yes | ✓ |
+| `profile-gemalto-plain` | Gemalto IDBridge CT30 | 08e6:3437 | No | |
+| `profile-gemalto-pinpad` | Gemalto IDBridge K30 | 08e6:3438 | No | |
+
+> **⚠️ IMPORTANT:** Only the **Cherry ST-2xxx** has PIN pad support.
+> Despite its feature name, `profile-gemalto-pinpad` does NOT provide PIN pad capability.
+> The K30 (PID:3438) is a basic reader, virtually identical to CT30 (PID:3437).
 
 ## Building
 

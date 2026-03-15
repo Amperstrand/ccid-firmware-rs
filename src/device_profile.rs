@@ -422,43 +422,54 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
 // Device Profiles (USB Identity + Display/PIN overrides only)
 // ============================================================================
 
-/// Cherry SmartTerminal ST-2100 Profile
+/// Cherry SmartTerminal ST-2xxx Profile (VID:046A PID:003E)
 ///
-/// A PIN pad reader with LCD display.
+/// Reference: reference/CCID/readers/CherrySmartTerminalST2XXX.txt
 ///
-/// Reference: https://ccid.apdu.fr/ccid/supported.html#0x046A0x003E
+/// dwFeatures = 0x000100BA (TPDU level)
+/// bPINSupport = 0x03 (verify + modify) - ONLY PROFILE WITH PIN PAD!
+/// wLcdLayout = 0x0000 in descriptor (device has LCD but doesn't advertise it)
 ///
-/// dwFeatures = 0x000100BA (matching real Cherry ST-2xxx)
-///   FEAT_AUTO_PARAM_ATR | FEAT_AUTO_VOLTAGE | FEAT_AUTO_CLOCK |
-///   FEAT_AUTO_BAUD | FEAT_AUTO_PPS | FEAT_CLOCK_STOP | FEAT_LEVEL_TPDU
-///
-/// bPINSupport = 0x03 (verify + modify)
-/// wLcdLayout = 0x0414 (4 lines x 20 chars) - but real device shows 0x0000 in descriptor
+/// IMPORTANT: This is the ONLY profile with PIN pad support.
+/// Gemalto CT30 and K30 have NO PIN pad capability.
 #[cfg(feature = "profile-cherry-st2100")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x046A,
     product_id: 0x003E,
     manufacturer: "Cherry GmbH",
-    product: "SmartTerminal ST-2100",
-    serial_number: "ST2100-001",
-    // dwFeatures = 0x000100BA (TPDU level, matching real device)
-    features: FEAT_AUTO_PARAM_ATR
-        | FEAT_AUTO_VOLTAGE
-        | FEAT_AUTO_CLOCK
-        | FEAT_AUTO_BAUD
-        | FEAT_AUTO_PPS
-        | FEAT_CLOCK_STOP
-        | FEAT_LEVEL_TPDU,
-    lcd_layout: (4, 20),
+    product: "SmartTerminal ST-2xxx",
+    serial_number: "ST2XXX-001",
+    // CCID spec version 1.00 (per reference file)
+    bcd_ccid: 0x0100,
+    // 5V only (per reference file: bVoltageSupport: 0x01)
+    voltage_support: 0x01,
+    // 8000 kHz max clock (per reference file: dwMaximumClock: 8.000 MHz)
+    max_clock_khz: 8000,
+    // 10753 bps default (per reference file: dwDataRate: 10753 bps)
+    default_data_rate: 10753,
+    // 344105 bps max (per reference file: dwMaxDataRate: 344105 bps)
+    max_data_rate: 344105,
+    // 270 bytes max message (per reference file: dwMaxCCIDMessageLength: 270 bytes)
+    max_ccid_message_length: 270,
+    // wLcdLayout = 0x0000 in descriptor (device has LCD but descriptor shows 0)
+    lcd_layout: (0, 0),
+    // bPINSupport = 0x03 (verify + modify)
     pin_support: PIN_VERIFY_MODIFY,
     exchange_level: ExchangeLevel::Tpdu,
     ..BASE_PROFILE
 };
 
-/// Gemalto IDBridge CT30 Profile (Plain Reader)
+/// Gemalto IDBridge CT30 Profile (Basic Reader - VID:08E6 PID:3437)
 ///
 /// Basic smartcard reader without PIN pad or display.
-/// Uses Short APDU level for simplicity.
+///
+/// Reference: reference/CCID/readers/Gemalto_IDBridge_CT30.txt
+///
+/// dwFeatures = 0x00010230 (TPDU level)
+/// bPINSupport = 0x00 (NO PIN PAD!)
+/// wLcdLayout = 0x0000 (NO LCD!)
+/// bClassGetResponse = 0x00
+/// bClassEnvelope = 0x00
 #[cfg(feature = "profile-gemalto-plain")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
@@ -466,18 +477,40 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     manufacturer: "Gemalto",
     product: "IDBridge CT30",
     serial_number: "CT30-001",
+    // CCID spec version 1.01 (per reference file)
+    bcd_ccid: 0x0101,
+    // 4800 kHz clock (per reference file: dwDefaultClock/dwMaximumClock: 4.800 MHz)
+    default_clock_khz: 4800,
+    max_clock_khz: 4800,
+    // 12903 bps default, 825806 bps max (per reference file)
+    default_data_rate: 12903,
+    max_data_rate: 825806,
+    // dwFeatures = 0x00010230 (AUTO_CLOCK | AUTO_BAUD | NAD_OTHER | TPDU)
+    features: FEAT_AUTO_CLOCK | FEAT_AUTO_BAUD | FEAT_NAD_OTHER | FEAT_LEVEL_TPDU,
+    // Class bytes: 0x00 (per reference file)
+    class_get_response: 0x00,
+    class_envelope: 0x00,
+    // No PIN, no LCD
+    lcd_layout: (0, 0),
+    pin_support: 0x00,
+    exchange_level: ExchangeLevel::Tpdu,
     ..BASE_PROFILE
 };
 
-/// Gemalto IDBridge K30 Profile (PIN Pad Reader)
+/// Gemalto IDBridge K30 Profile (Basic Reader - VID:08E6 PID:3438)
 ///
-/// PIN pad reader with LCD display.
-/// Uses Short APDU level with PIN pad enabled.
+/// ⚠️ IMPORTANT: The K30 is NOT a PIN pad reader!
+/// This is a basic smartcard reader, IDENTICAL to CT30 in capabilities.
 ///
-/// Reference: https://ccid.apdu.fr/ccid/supported.html#0x08E60x3438
+/// Reference: reference/CCID/readers/Gemalto_IDBridge_K30.txt
 ///
-/// dwFeatures = 0x00020472 (Short APDU level)
-///   AUTO_VOLTAGE | AUTO_PPS_NEG | SHORT_APDU | AUTO_IFSD
+/// dwFeatures = 0x00010230 (TPDU level - SAME AS CT30!)
+/// bPINSupport = 0x00 (NO PIN PAD!)
+/// wLcdLayout = 0x0000 (NO LCD!)
+/// bClassGetResponse = 0x00
+/// bClassEnvelope = 0x00
+///
+/// For PIN pad support, use profile-cherry-st2100 instead.
 #[cfg(feature = "profile-gemalto-pinpad")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
@@ -485,11 +518,23 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     manufacturer: "Gemalto",
     product: "IDBridge K30",
     serial_number: "K30-001",
-    // dwFeatures = 0x00020472 (Short APDU level, matching real device)
-    features: FEAT_AUTO_VOLTAGE | FEAT_AUTO_PPS_NEG | FEAT_AUTO_IFSD | FEAT_LEVEL_SHORT_APDU,
-    lcd_layout: (16, 16),
-    pin_support: PIN_VERIFY_MODIFY,
-    exchange_level: ExchangeLevel::ShortApdu,
+    // CCID spec version 1.01 (per reference file)
+    bcd_ccid: 0x0101,
+    // 4800 kHz clock (per reference file)
+    default_clock_khz: 4800,
+    max_clock_khz: 4800,
+    // 12903 bps default, 825806 bps max (per reference file)
+    default_data_rate: 12903,
+    max_data_rate: 825806,
+    // dwFeatures = 0x00010230 (AUTO_CLOCK | AUTO_BAUD | NAD_OTHER | TPDU)
+    features: FEAT_AUTO_CLOCK | FEAT_AUTO_BAUD | FEAT_NAD_OTHER | FEAT_LEVEL_TPDU,
+    // Class bytes: 0x00 (per reference file)
+    class_get_response: 0x00,
+    class_envelope: 0x00,
+    // NO PIN, NO LCD (this was incorrectly set before!)
+    lcd_layout: (0, 0),
+    pin_support: 0x00,
+    exchange_level: ExchangeLevel::Tpdu,
     ..BASE_PROFILE
 };
 
