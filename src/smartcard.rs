@@ -493,20 +493,18 @@ impl SmartcardUart {
                         self.ifsc,
                         self.usart.cr2().read().bits()
                     );
-                    // Skip automatic IFSD negotiation - let libccid handle it via Secure commands
-                    // IFSD exchange will happen on first XfrBlock if needed
-                    // match self.do_ifs_negotiation_t1() {
-                    //     Ok(ifsc) => {
-                    //         self.ifsc = ifsc;
-                    //         defmt::info!("T=1 IFSD OK: card IFSC={}", self.ifsc);
-                    //     }
-                    //     Err(()) => {
-                    //         defmt::warn!(
-                    //             "T=1 IFSD negotiation failed, using ATR IFSC={}",
-                    //             self.ifsc
-                    //         );
-                    //     }
-                    // }
+                    match self.do_ifs_negotiation_t1() {
+                        Ok(ifsc) => {
+                            self.ifsc = ifsc;
+                            defmt::info!("T=1 IFSD OK: card IFSC={}", self.ifsc);
+                        }
+                        Err(()) => {
+                            defmt::warn!(
+                                "T=1 IFSD negotiation failed, using ATR IFSC={}",
+                                self.ifsc
+                            );
+                        }
+                    }
                 }
                 defmt::info!("ATR OK, len={}, protocol=T={}", self.atr.len, self.protocol);
                 Ok(&self.atr)
