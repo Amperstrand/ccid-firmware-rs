@@ -93,8 +93,8 @@ impl Button {
 /// Keypad layout with all buttons
 #[derive(Debug, Clone, Copy)]
 pub struct Keypad {
-    /// All buttons (12 total: 0-9, OK, Cancel)
-    buttons: [Button; 12],
+    /// All buttons (13 total: 0-9, OK, Cancel, Backspace)
+    buttons: [Button; 13],
 }
 
 impl Keypad {
@@ -105,11 +105,14 @@ impl Keypad {
     ///   [1] [2] [3]
     ///   [4] [5] [6]
     ///   [7] [8] [9]
-    /// [X] [0] [OK]
+    ///  [<] [0] [OK]
+    ///   [X] (centered below)
     /// ```
     pub fn new() -> Self {
         let step = BUTTON_SIZE as i32 + BUTTON_SPACING as i32;
         let bottom_y = KEYPAD_START_Y + 3 * step;
+        let cancel_y = bottom_y + step;
+        let cancel_x = KEYPAD_START_X + step;
         let buttons = [
             Button::new(
                 ButtonId::Digit(1),
@@ -175,11 +178,11 @@ impl Keypad {
                 COLOR_BUTTON,
             ),
             Button::new(
-                ButtonId::Cancel,
+                ButtonId::Backspace,
                 KEYPAD_START_X,
                 bottom_y,
-                "X",
-                COLOR_BUTTON_CANCEL,
+                "<",
+                COLOR_BUTTON,
             ),
             Button::new(
                 ButtonId::Digit(0),
@@ -194,6 +197,13 @@ impl Keypad {
                 bottom_y,
                 "OK",
                 COLOR_BUTTON_OK,
+            ),
+            Button::new(
+                ButtonId::Cancel,
+                cancel_x,
+                cancel_y,
+                "X",
+                COLOR_BUTTON_CANCEL,
             ),
         ];
 
@@ -419,7 +429,7 @@ mod tests {
     #[test]
     fn test_keypad_creation() {
         let keypad = Keypad::new();
-        assert_eq!(keypad.buttons().len(), 12);
+        assert_eq!(keypad.buttons().len(), 13);
     }
 
     #[test]

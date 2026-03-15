@@ -368,8 +368,9 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
     // CCID Version
     bcd_ccid: 0x0110,
     max_slot_index: 0,
-    voltage_support: 0x07, // 5V | 3V | 1.8V
-    protocols: 0x03,       // T=0 | T=1
+    // Hardware: 5V only (STM32F469-DISCO + Specter Shield)
+    voltage_support: 0x01,
+    protocols: 0x03, // T=0 | T=1
 
     // Timing
     default_clock_khz: 4000,
