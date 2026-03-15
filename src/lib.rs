@@ -7,7 +7,7 @@
 //! Reference: https://ccid.apdu.fr/ccid/section.html (PIN pad reader identities)
 //! Reference: PC/SC Part 10 v2.02.09 (Secure PIN Entry)
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![allow(dead_code)] // PIN pad scaffolding not yet in use
 #![allow(unused_imports)] // Public re-exports for future use
 #![allow(clippy::identity_op)] // XOR with 0 for LRC clarity

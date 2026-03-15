@@ -17,6 +17,8 @@ jobs:
         profile: [profile-cherry-st2100, profile-gemalto-plain, profile-gemalto-pinpad]
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -72,6 +74,8 @@ jobs:
       RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v5
+        with:
+          submodules: true
       
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -89,3 +93,24 @@ jobs:
       - name: Check Python syntax
         run: |
           python3 -m py_compile tests/hardware/*.py
+
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          targets: x86_64-unknown-linux-gnu
+      
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+      
+      - name: Run tests
+        run: cargo test

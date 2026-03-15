@@ -22,35 +22,50 @@
 
 // Entire file is ARM-only firmware code
 // For x86_64, cargo test runs against lib.rs instead
-#![cfg(all(target_arch = "arm", target_os = "none"))]
-#![no_std]
-#![no_main]
-#![allow(unused_mut)]
-#![allow(unused_variables)]
-#![allow(static_mut_refs)]
+#![cfg_attr(all(target_arch = "arm", target_os = "none"), no_std)]
+#![cfg_attr(all(target_arch = "arm", target_os = "none"), no_main)]
+#![cfg_attr(all(target_arch = "arm", target_os = "none"), allow(unused_mut))]
+#![cfg_attr(all(target_arch = "arm", target_os = "none"), allow(unused_variables))]
+#![cfg_attr(all(target_arch = "arm", target_os = "none"), allow(static_mut_refs))]
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use defmt_rtt as _;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use panic_probe as _;
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod app_enum;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod device_profile;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod pinpad;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod smartcard;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod t1_engine;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod usb_identity;
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use cortex_m_rt::entry;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::gpio::{
     gpioa::{PA2, PA4},
     gpioc::{PC2, PC5},
     gpiog::PG10,
     Alternate, Input, OpenDrain, Output, PushPull,
 };
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::otg_fs::{UsbBus, USB};
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::pac;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::prelude::*;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::rcc::Config;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_device::endpoint::In;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_device::prelude::*;
 
 #[cfg(feature = "display")]
@@ -79,17 +94,22 @@ use embedded_graphics::{
 #[cfg(feature = "display")]
 use stm32f469i_disc as board;
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod ccid;
 
 #[cfg(feature = "display")]
 use app_enum::AppEnumerationState;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use smartcard::{SmartcardError, SmartcardUart};
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_identity::{
     USB_MANUFACTURER, USB_PRODUCT, USB_PRODUCT_ID, USB_SERIAL_NUMBER, USB_VENDOR_ID,
 };
 
 /// USB endpoint memory buffer (required by USB OTG driver)
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 static mut USB_EP_MEMORY: [u32; 1024] = [0; 1024];
 
 /// Tick counter for timeout handling (milliseconds since boot)
@@ -126,16 +146,19 @@ enum AppMode {
 }
 
 /// Wrapper to adapt SmartcardUart to the ccid::SmartcardDriver trait
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 struct SmartcardWrapper {
     uart: SmartcardUart,
 }
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 impl SmartcardWrapper {
     fn new(uart: SmartcardUart) -> Self {
         Self { uart }
     }
 }
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 impl CcidSmartcardDriver for SmartcardWrapper {
     type Error = SmartcardError;
 
@@ -331,6 +354,7 @@ fn draw_idle_screen(
     let _ = Text::new(version, Point::new(10, 750), small_style).draw(display);
 }
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 #[entry]
 fn main() -> ! {
     defmt::info!("CCID Reader starting...");
@@ -692,4 +716,12 @@ fn main() -> ! {
             // No display - nothing else to do
         }
     }
+}
+
+// Stub main for host compilation (tests, docs, etc.)
+// The firmware binary only runs on ARM targets, but cargo test
+// on CI needs a valid main() for the x86_64 host.
+#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+fn main() {
+    // This binary is only meaningful on ARM embedded targets
 }
