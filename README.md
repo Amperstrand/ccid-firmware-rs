@@ -21,7 +21,7 @@ This project contains derivative ideas and protocol behavior from `osmo-ccid-fir
 
 ## Build
 
-Quick start (default Cherry ST-2100 profile):
+Quick start (default Cherry SmartTerminal ST-2xxx profile):
 
 ```bash
 cargo build --release --target thumbv7em-none-eabihf
@@ -75,14 +75,13 @@ GitHub Actions workflow at `.github/workflows/ci.yml` runs only host-safe tests:
 
 Reference: `reference/CCID/readers/*.txt` (authoritative device specifications)
 
-| Profile | Device | VID:PID | PIN Pad | Default |
-|---------|--------|---------|---------|---------|
-| `profile-cherry-st2100` | Cherry SmartTerminal ST-2xxx | `046a:003e` | ✓ Yes | ✓ |
-| `profile-gemalto-plain` | Gemalto IDBridge CT30 | `08e6:3437` | No | |
-| `profile-gemalto-pinpad` | Gemalto IDBridge K30 | `08e6:3438` | No | |
+| Profile Feature | Device | VID:PID | PIN Pad | Default |
+|-----------------|--------|---------|---------|---------|
+| `profile-cherry-smartterminal-st2xxx` | Cherry SmartTerminal ST-2xxx | `046a:003e` | ✓ Yes | ✓ |
+| `profile-gemalto-idbridge-ct30` | Gemalto IDBridge CT30 | `08e6:3437` | No | |
+| `profile-gemalto-idbridge-k30` | Gemalto IDBridge K30 | `08e6:3438` | No | |
 
 > **⚠️ IMPORTANT:** Only the **Cherry ST-2xxx** has PIN pad support.
-> Despite its feature name, `profile-gemalto-pinpad` does NOT provide PIN pad capability.
 > The K30 (PID:3438) is a basic reader, virtually identical to CT30 (PID:3437).
 
 ## Changelog

@@ -8,17 +8,17 @@
 //!
 //! # Available Profiles
 //!
-//! - `cherry-st2100`: Cherry SmartTerminal ST-2100 (PIN pad reader)
-//! - `gemalto-plain`: Gemalto IDBridge CT30 (basic reader, no PIN pad)
-//! - `gemalto-pinpad`: Gemalto IDBridge K30 (PIN pad reader)
+//! - `cherry-smartterminal-st2xxx`: Cherry SmartTerminal ST-2xxx (PIN pad reader)
+//! - `gemalto-idbridge-ct30`: Gemalto IDBridge CT30 (basic reader)
+//! - `gemalto-idbridge-k30`: Gemalto IDBridge K30 (basic reader, no PIN pad!)
 //!
 //! # Usage
 //!
 //! Select a profile at compile time via Cargo features:
 //! ```bash
-//! cargo build --features cherry-st2100
-//! cargo build --features gemalto-plain
-//! cargo build --features gemalto-pinpad
+//! cargo build --features profile-cherry-smartterminal-st2xxx
+//! cargo build --features profile-gemalto-idbridge-ct30
+//! cargo build --features profile-gemalto-idbridge-k30
 //! ```
 
 // ============================================================================
@@ -432,7 +432,7 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
 ///
 /// IMPORTANT: This is the ONLY profile with PIN pad support.
 /// Gemalto CT30 and K30 have NO PIN pad capability.
-#[cfg(feature = "profile-cherry-st2100")]
+#[cfg(feature = "profile-cherry-smartterminal-st2xxx")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x046A,
     product_id: 0x003E,
@@ -470,7 +470,7 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 /// wLcdLayout = 0x0000 (NO LCD!)
 /// bClassGetResponse = 0x00
 /// bClassEnvelope = 0x00
-#[cfg(feature = "profile-gemalto-plain")]
+#[cfg(feature = "profile-gemalto-idbridge-ct30")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
     product_id: 0x3437,
@@ -510,8 +510,8 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 /// bClassGetResponse = 0x00
 /// bClassEnvelope = 0x00
 ///
-/// For PIN pad support, use profile-cherry-st2100 instead.
-#[cfg(feature = "profile-gemalto-pinpad")]
+/// For PIN pad support, use profile-cherry-smartterminal-st2xxx instead.
+#[cfg(feature = "profile-gemalto-idbridge-k30")]
 pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
     product_id: 0x3438,
@@ -539,17 +539,17 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 };
 
 /// Compile error if no profile feature is selected.
-/// Use `--features profile-cherry-st2100` (default) or another profile.
+/// Use `--features profile-cherry-smartterminal-st2xxx` (default) or another profile.
 #[cfg(not(any(
-    feature = "profile-cherry-st2100",
-    feature = "profile-gemalto-plain",
-    feature = "profile-gemalto-pinpad"
+    feature = "profile-cherry-smartterminal-st2xxx",
+    feature = "profile-gemalto-idbridge-ct30",
+    feature = "profile-gemalto-idbridge-k30"
 )))]
 compile_error!(
     "No device profile selected. Use one of: \
-     --features profile-cherry-st2100 (default), \
-     --features profile-gemalto-plain, \
-     --features profile-gemalto-pinpad"
+     --features profile-cherry-smartterminal-st2xxx (default), \
+     --features profile-gemalto-idbridge-ct30, \
+     --features profile-gemalto-idbridge-k30"
 );
 
 // ============================================================================

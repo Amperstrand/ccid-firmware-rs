@@ -58,19 +58,18 @@ Reference: `reference/CCID/readers/*.txt` (authoritative device specifications)
 
 The firmware supports three mutually exclusive USB device profiles:
 
-| Profile | Device | VID:PID | PIN Pad | Default |
-|---------|--------|---------|---------|---------|
-| `profile-cherry-st2100` | Cherry SmartTerminal ST-2xxx | 046a:003e | ✓ Yes | ✓ |
-| `profile-gemalto-plain` | Gemalto IDBridge CT30 | 08e6:3437 | No | |
-| `profile-gemalto-pinpad` | Gemalto IDBridge K30 | 08e6:3438 | No | |
+| Profile Feature | Device | VID:PID | PIN Pad | Default |
+|-----------------|--------|---------|---------|---------|
+| `profile-cherry-smartterminal-st2xxx` | Cherry SmartTerminal ST-2xxx | 046a:003e | ✓ Yes | ✓ |
+| `profile-gemalto-idbridge-ct30` | Gemalto IDBridge CT30 | 08e6:3437 | No | |
+| `profile-gemalto-idbridge-k30` | Gemalto IDBridge K30 | 08e6:3438 | No | |
 
 > **⚠️ IMPORTANT:** Only the **Cherry ST-2xxx** has PIN pad support.
-> Despite its feature name, `profile-gemalto-pinpad` does NOT provide PIN pad capability.
 > The K30 (PID:3438) is a basic reader, virtually identical to CT30 (PID:3437).
 
 ## Building
 
-### Default Build (Cherry ST-2100)
+### Default Build (Cherry SmartTerminal ST-2xxx)
 
 ```bash
 cargo build --release
@@ -84,19 +83,19 @@ Binary location: `target/thumbv7em-none-eabihf/release/ccid-firmware`
 
 Build for a specific device profile using the `--no-default-features` and `--features` flags:
 
-**Gemalto CT30 (plain reader, no PIN pad):**
+**Gemalto CT30 (basic reader):**
 ```bash
-cargo build --release --no-default-features --features profile-gemalto-plain
+cargo build --release --no-default-features --features profile-gemalto-idbridge-ct30
 ```
 
-**Gemalto K30 (PIN pad reader):**
+**Gemalto K30 (basic reader):**
 ```bash
-cargo build --release --no-default-features --features profile-gemalto-pinpad
+cargo build --release --no-default-features --features profile-gemalto-idbridge-k30
 ```
 
-**Cherry ST-2100 (explicit, same as default):**
+**Cherry ST-2xxx (explicit, same as default):**
 ```bash
-cargo build --release --no-default-features --features profile-cherry-st2100
+cargo build --release --no-default-features --features profile-cherry-smartterminal-st2xxx
 ```
 
 Binary location for all profiles: `target/thumbv7em-none-eabihf/release/ccid-firmware`
@@ -164,7 +163,7 @@ st-flash write ccid-firmware.bin 0x8000000
 For reproducible builds in a containerized environment:
 
 ```bash
-docker build --build-arg PROFILE=profile-gemalto-plain .
+docker build --build-arg PROFILE=profile-gemalto-idbridge-ct30 .
 ```
 
 The Dockerfile produces the binary at `/app/output/ccid-firmware.bin` with a checksum.
@@ -174,7 +173,7 @@ The Dockerfile produces the binary at `/app/output/ccid-firmware.bin` with a che
 Test that builds are deterministic:
 
 ```bash
-scripts/verify-reproducibility.sh profile-cherry-st2100
+scripts/verify-reproducibility.sh profile-cherry-smartterminal-st2xxx
 ```
 
 Exit codes:

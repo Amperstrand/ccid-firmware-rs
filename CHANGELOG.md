@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added osmo-ccid-firmware as git submodule at `reference/osmo-ccid-firmware/` for protocol reference
+- Added `docs/SPECIFICATIONS.md` with links to official CCID, ISO 7816, and PC/SC specifications
+
 ### Changed
+- **Profile naming refactored** to align with CCID project conventions:
+  - `profile-cherry-st2100` → `profile-cherry-smartterminal-st2xxx`
+  - `profile-gemalto-plain` → `profile-gemalto-idbridge-ct30`
+  - `profile-gemalto-pinpad` → `profile-gemalto-idbridge-k30`
 - **CRITICAL FIX**: Gemalto IDBridge K30 profile no longer falsely claims PIN pad and LCD capabilities
   - Real K30 has bPINSupport=0x00, wLcdLayout=0x0000 (no PIN, no LCD)
   - K30 uses TPDU level (0x00010230), not Short APDU (0x00020472)
-  - For PIN pad support, use profile-cherry-st2100 (the only PIN-capable profile)
+  - For PIN pad support, use profile-cherry-smartterminal-st2xxx (the only PIN-capable profile)
 - All profiles now match CCID reference files exactly (reference/CCID/readers/*.txt)
 - Fixed GEMALTO_K30_DWFEATURES constant: 0x00010230 (was incorrectly 0x00020472)
 - Fixed dwFeatures decomposition tests to match actual reference values
@@ -36,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.0.6] - 2026-03-13
 
 ### Added
-- Multi-profile CI/CD: All 3 profiles (Cherry ST-2100, Gemalto Plain, Gemalto PINpad) now built and released
+- Multi-profile CI/CD: All 3 profiles now built and released
 - Reproducibility improvements: Added `--remap-path-prefix` flag to build system for reproducible builds
 
 ### Changed

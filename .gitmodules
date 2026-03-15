@@ -4,3 +4,6 @@
 [submodule "reference/CCID"]
 	path = reference/CCID
 	url = https://salsa.debian.org/rousseau/CCID.git
+[submodule "reference/osmo-ccid-firmware"]
+	path = reference/osmo-ccid-firmware
+	url = https://gitea.osmocom.org/sim-card/osmo-ccid-firmware
