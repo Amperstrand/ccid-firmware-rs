@@ -60,7 +60,7 @@ dependencies = [
  "embedded-hal 0.2.7",
  "panic-probe 0.3.2",
  "stm32f469i-disc",
- "stm32f4xx-hal",
+ "stm32f4xx-hal 0.23.0 (git+https://github.com/Amperstrand/stm32f4xx-hal.git?rev=789e5e8)",
  "usb-device",
 ]
 
@@ -487,6 +487,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ral-registers"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46b71a9d9206e8b46714c74255adcaea8b11e0350c1d8456165073c3f75fc81a"
+
+[[package]]
 name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -581,18 +587,49 @@ dependencies = [
  "nt35510",
  "otm8009a",
  "stm32-fmc",
- "stm32f4xx-hal",
+ "stm32f4xx-hal 0.23.0 (git+https://github.com/Amperstrand/stm32f4xx-hal?rev=4defe541ba408af40b2f496915bd1d53ce8b487e)",
 ]
 
 [[package]]
 name = "stm32f4xx-hal"
 version = "0.23.0"
-source = "git+https://github.com/Amperstrand/stm32f4xx-hal.git?rev=4defe541ba408af40b2f496915bd1d53ce8b487e#4defe541ba408af40b2f496915bd1d53ce8b487e"
+source = "git+https://github.com/Amperstrand/stm32f4xx-hal?rev=4defe541ba408af40b2f496915bd1d53ce8b487e#4defe541ba408af40b2f496915bd1d53ce8b487e"
 dependencies = [
  "bare-metal 1.0.0",
  "cortex-m",
  "cortex-m-rt",
  "defmt 1.0.1",
+ "document-features",
+ "embedded-display-controller",
+ "embedded-dma",
+ "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0",
+ "embedded-hal-nb",
+ "embedded-io",
+ "embedded-storage",
+ "enumflags2",
+ "fugit",
+ "fugit-timer",
+ "micromath",
+ "nb 1.1.0",
+ "rand_core 0.6.4",
+ "rand_core 0.9.5",
+ "sdio-host",
+ "stm32-fmc",
+ "stm32f4",
+ "synopsys-usb-otg 0.4.0",
+ "time",
+ "void",
+]
+
+[[package]]
+name = "stm32f4xx-hal"
+version = "0.23.0"
+source = "git+https://github.com/Amperstrand/stm32f4xx-hal.git?rev=789e5e8#789e5e86f5d93ae80b2f50e861c3c76980733bca"
+dependencies = [
+ "bare-metal 1.0.0",
+ "cortex-m",
+ "cortex-m-rt",
  "document-features",
  "embedded-display-controller",
  "embedded-dma",
@@ -609,10 +646,8 @@ dependencies = [
  "nb 1.1.0",
  "rand_core 0.6.4",
  "rand_core 0.9.5",
- "sdio-host",
- "stm32-fmc",
  "stm32f4",
- "synopsys-usb-otg",
+ "synopsys-usb-otg 0.5.0",
  "time",
  "void",
 ]
@@ -636,6 +671,17 @@ checksum = "e948d523b316939545d8b21a48c27aef150ce25321b9f95ff7978647a806a6fe"
 dependencies = [
  "cortex-m",
  "embedded-hal 0.2.7",
+ "usb-device",
+ "vcell",
+]
+
+[[package]]
+name = "synopsys-usb-otg"
+version = "0.5.0"
+dependencies = [
+ "critical-section",
+ "embedded-hal 0.2.7",
+ "ral-registers",
  "usb-device",
  "vcell",
 ]
@@ -720,7 +766,3 @@ checksum = "de437e2a6208b014ab52972a27e59b33fa2920d3e00fe05026167a1c509d19cc"
 dependencies = [
  "vcell",
 ]
-
-[[patch.unused]]
-name = "synopsys-usb-otg"
-version = "0.5.0"

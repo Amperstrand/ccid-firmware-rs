@@ -4,9 +4,8 @@
 #![allow(clippy::manual_div_ceil)]
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::needless_range_loop)]
-//! Smartcard Hardware Abstraction Layer for STM32F469 CCID Reader
-//!
-//! Supports both T=0 and T=1 protocols (ISO 7816-3)
+
+use crate::pps_fsm::{di_from_ta1, fi_from_ta1, PpsFsm, PpsResult, PpsState};
 
 use core::convert::Infallible;
 
@@ -85,33 +84,6 @@ pub struct AtrParams {
     pub has_ta1: bool,
 }
 
-/// Fi values from TA1 upper nibble (ISO 7816-3 Table 7)
-fn fi_from_ta1_high(nibble: u8) -> u16 {
-    const FI_TABLE: [u16; 16] = [
-        0, 372, 558, 744, 1116, 1488, 1860, 0, 0, 512, 768, 1024, 1536, 2048, 0, 0,
-    ];
-    if (nibble as usize) < FI_TABLE.len() {
-        FI_TABLE[nibble as usize]
-    } else {
-        372
-    }
-}
-
-/// Di values from TA1 lower nibble (ISO 7816-3 Table 8)
-fn di_from_ta1_low(nibble: u8) -> u8 {
-    const DI_TABLE: [u8; 16] = [0, 1, 2, 4, 8, 16, 32, 64, 12, 20, 0, 0, 0, 0, 0, 0];
-    if (nibble as usize) < DI_TABLE.len() {
-        let d = DI_TABLE[nibble as usize];
-        if d != 0 {
-            d
-        } else {
-            1
-        }
-    } else {
-        1
-    }
-}
-
 /// Parse ATR into AtrParams (ISO 7816-3 §8.2)
 pub fn parse_atr(atr: &[u8]) -> AtrParams {
     let mut p = AtrParams {
@@ -141,8 +113,8 @@ pub fn parse_atr(atr: &[u8]) -> AtrParams {
             if level == 1 {
                 p.ta1 = ta;
                 p.has_ta1 = true;
-                p.fi = fi_from_ta1_high(ta >> 4);
-                p.di = di_from_ta1_low(ta & 0x0F);
+                p.fi = fi_from_ta1(ta);
+                p.di = di_from_ta1(ta);
             } else if level >= 3 && td_protocol == 1 {
                 // TA for T=1 (level ≥ 3, since TA2 is global "specific mode")
                 p.ifsc = ta;
@@ -404,70 +376,47 @@ impl SmartcardUart {
         }
     }
 
-    // ========================================================================
-    // PPS/PTS Negotiation (ISO 7816-3 §9)
-    //
-    // This is a BASIC implementation (single attempt, blocking). A full PPS FSM
-    // like osmo-ccid-firmware would include:
-    //
-    // osmo's full FSM (iso7816_fsm.c:111-121, ccid_slot_fsm.c:279-334):
-    // - PPS_S_PPS_REQ_INIT  -> Initialize PPS request
-    // - PPS_S_TX_PPS_REQ    -> Transmit PPS request bytes
-    // - PPS_S_WAIT_PPSX     -> Wait for initial byte (0xFF)
-    // - PPS_S_WAIT_PPS0     -> Wait for format byte
-    // - PPS_S_WAIT_PPS1/2/3 -> Wait for parameter bytes (based on PPS0 flags)
-    // - PPS_S_WAIT_PCK      -> Wait for checksum
-    // - PPS_S_DONE          -> Complete
-    //
-    // osmo also handles:
-    // - ISO7816_E_PPS_DONE_IND:    Success -> update UART Fi/Di, return Parameters
-    // - ISO7816_E_PPS_FAILED_IND:  Mismatch -> deactivate card, return error
-    // - ISO7816_E_PPS_UNSUPPORTED: No response -> deactivate card, return error
-    //
-    // WHY WE USE BASIC IMPLEMENTATION:
-    // 1. Single-slot reader: Commands are sequential, no async state machine needed
-    // 2. Modern cards: Most respond correctly to basic PPS or use default Fi/Di
-    // 3. Complexity: Full FSM adds ~200 lines for edge cases rarely encountered
-    // 4. SatoChip/Seedkeeper: Works fine with basic PPS negotiation
-    //
-    // If full FSM is needed, see osmo-ccid-firmware/ccid_common/iso7816_fsm.c
-    // ========================================================================
-    fn negotiate_pps(&mut self, params: &AtrParams) -> Result<(), ()> {
-        // Skip PPS if no TA1 or already at default values (Fi=372, Di=1)
+    fn negotiate_pps_fsm(&mut self, params: &AtrParams) -> Result<(), ()> {
         if !params.has_ta1 || params.ta1 == 0x11 {
+            defmt::debug!("PPS: skipping (no TA1 or default Fi/Di)");
             return Ok(());
         }
 
-        // Build PPS request: [PPSS, PPS0, PPS1, PCK]
-        // PPSS = 0xFF (initial byte)
-        // PPS0 = 0x10 | protocol (bit 4 = PPS1 present)
-        // PPS1 = TA1 value (Fi/Di)
-        // PCK = XOR checksum of all previous bytes
-        let pps0 = 0x10u8 | (params.protocol & 0x0F);
-        let pps1 = params.ta1;
-        let pck = 0xFFu8 ^ pps0 ^ pps1;
-        let req = [0xFFu8, pps0, pps1, pck];
+        let mut fsm = PpsFsm::new();
+        let req = fsm.build_request(params.protocol, params.ta1);
 
-        // Send PPS request
-        for &b in &req {
+        defmt::info!("PPS: sending {} bytes", req.len());
+        for &b in req {
             self.send_byte(b).map_err(|_| ())?;
         }
 
-        // Receive PPS response (single attempt, 100ms timeout per byte)
-        let mut resp = [0u8; 4];
-        for r in &mut resp {
-            *r = self.receive_byte_timeout(100).map_err(|_| ())?;
-        }
+        fsm.start_response();
 
-        // Validate response (should echo request)
-        if resp != req {
-            defmt::warn!("PPS: response mismatch");
-            return Err(());
+        let timeout_ms = 200u32;
+        loop {
+            match self.receive_byte_timeout(timeout_ms) {
+                Ok(byte) => {
+                    let state = fsm.process_byte(byte);
+                    if state == PpsState::Done {
+                        self.set_baud_from_fi_di(params.fi, params.di);
+                        defmt::info!("PPS: success, Fi={} Di={}", params.fi, params.di);
+                        return Ok(());
+                    } else if state == PpsState::Failed {
+                        defmt::warn!("PPS: negotiation failed");
+                        return Err(());
+                    }
+                }
+                Err(SmartcardError::Timeout) => {
+                    fsm.set_timeout();
+                    defmt::warn!("PPS: timeout - using default parameters");
+                    return Err(());
+                }
+                Err(_) => {
+                    defmt::warn!("PPS: receive error");
+                    return Err(());
+                }
+            }
         }
-
-        // Update baud rate based on negotiated Fi/Di
-        self.set_baud_from_fi_di(params.fi, params.di);
-        Ok(())
     }
 
     pub fn power_on(&mut self) -> Result<&Atr, SmartcardError> {
@@ -516,11 +465,10 @@ impl SmartcardUart {
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 defmt::info!("ATR len={} hex={=[u8]:x}", self.atr.len, atr_slice);
                 let params = parse_atr(&self.atr.raw[..self.atr.len]);
-                // Skip PPS and IFSD negotiation -- sending extra bytes after ATR
-                // corrupts the card's state. Use defaults from ATR instead.
-                // PPS: stay at default Fi=372/Di=1 (safe for all cards).
-                // IFSC: use value from ATR (TA3), or default 32.
                 self.detect_protocol_from_atr();
+
+                let _ = self.negotiate_pps_fsm(&params);
+
                 if self.protocol == 0 {
                     // T=0: enable NACK (CR3 bit 4) for error signaling
                     self.usart

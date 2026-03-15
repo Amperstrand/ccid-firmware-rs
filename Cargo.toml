@@ -23,7 +23,7 @@ cortex-m-rt = "0.7"
 defmt = "0.3"
 defmt-rtt = "0.4"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
-stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal.git", rev = "4defe541ba408af40b2f496915bd1d53ce8b487e", features = ["stm32f469", "usb_fs", "framebuffer"] }
+stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal.git", rev = "789e5e8", features = ["stm32f469", "usb_fs", "framebuffer"] }
 usb-device = "0.3"
 embedded-alloc = "0.5"
 stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", branch = "sdio-support" }

@@ -40,6 +40,8 @@ mod device_profile;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod pinpad;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
+mod pps_fsm;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod smartcard;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod t1_engine;
