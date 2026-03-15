@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [profile-cherry-st2100, profile-gemalto-plain, profile-gemalto-pinpad]
+        profile: [profile-cherry-smartterminal-st2xxx, profile-gemalto-idbridge-ct30, profile-gemalto-idbridge-k30]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,7 +36,7 @@ jobs:
       
       - name: Build firmware
         run: |
-          if [[ "${{ matrix.profile }}" == "profile-cherry-st2100" ]]; then
+          if [[ "${{ matrix.profile }}" == "profile-cherry-smartterminal-st2xxx" ]]; then
             cargo build --release
           else
             cargo build --release --no-default-features --features ${{ matrix.profile }}
@@ -44,7 +44,7 @@ jobs:
       
       - name: Generate binary artifacts
         run: |
-          if [[ "${{ matrix.profile }}" == "profile-cherry-st2100" ]]; then
+          if [[ "${{ matrix.profile }}" == "profile-cherry-smartterminal-st2xxx" ]]; then
             cargo objcopy --release -- \
               -O binary ccid-firmware.bin
             cargo objcopy --release -- \
