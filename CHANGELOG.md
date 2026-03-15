@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Added osmo-ccid-firmware as git submodule at `reference/osmo-ccid-firmware/` for protocol reference
 - Added `docs/SPECIFICATIONS.md` with links to official CCID, ISO 7816, and PC/SC specifications
+- Added compliance review documentation for stub commands (Escape, T0APDU, Mechanical, Abort)
 
 ### Changed
 - **Profile naming refactored** to align with CCID project conventions:
@@ -24,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed GEMALTO_K30_DWFEATURES constant: 0x00010230 (was incorrectly 0x00020472)
 - Fixed dwFeatures decomposition tests to match actual reference values
 - Added upstream CCID project as git submodule for authoritative device reference
+
+### Compliance Notes
+- Voltage support verified correct per profile (Cherry: 0x01, Gemalto: 0x07)
+- Stub commands (Escape, T0APDU, Mechanical) intentionally return CMD_NOT_SUPPORTED
+- Abort command returns success (matches osmo-ccid-firmware behavior for single-slot)
+- T=1 prepare_rx() is intentional trait default, not a bug
+- Time extension handling requires async architecture (future enhancement)
 
 ## [0.0.8] - 2026-03-13
 
