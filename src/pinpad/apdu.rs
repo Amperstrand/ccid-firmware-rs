@@ -1,23 +1,19 @@
-//! APDU construction for PIN verification
-//!
-//! This module handles construction of VERIFY APDUs from PIN data.
-//! It is platform-agnostic and can be tested on the host.
+//! APDU construction for PIN verification and modification
 
 #![allow(dead_code)]
 
-/// APDU builder for VERIFY commands
-///
-/// The VERIFY command (INS=0x20) is used to submit a PIN to the card.
-/// For OpenPGP cards:
-/// - P2=0x81: User PIN (PW1), 6-8 characters
-/// - P2=0x83: Admin PIN (PW3), 8 characters
 pub struct VerifyApduBuilder {
-    /// CLA byte (typically 0x00)
     cla: u8,
-    /// P1 byte (typically 0x00)
     p1: u8,
-    /// P2 byte (0x81 for user PIN, 0x83 for admin PIN)
     p2: u8,
+}
+
+pub struct ModifyApduBuilder {
+    cla: u8,
+    p1: u8,
+    p2: u8,
+    old_pin_offset: usize,
+    new_pin_offset: usize,
 }
 
 impl VerifyApduBuilder {
@@ -125,9 +121,88 @@ impl VerifyApduBuilder {
         self.build(&ascii[..len])
     }
 
-    /// Get the effective APDU length for a given PIN length
     pub fn apdu_len(pin_len: usize) -> usize {
-        5 + pin_len // CLA + INS + P1 + P2 + Lc + PIN
+        5 + pin_len
+    }
+}
+
+impl ModifyApduBuilder {
+    pub fn user_pin() -> Self {
+        Self {
+            cla: 0x00,
+            p1: 0x00,
+            p2: 0x81,
+            old_pin_offset: 5,
+            new_pin_offset: 13,
+        }
+    }
+
+    pub fn admin_pin() -> Self {
+        Self {
+            cla: 0x00,
+            p1: 0x00,
+            p2: 0x83,
+            old_pin_offset: 5,
+            new_pin_offset: 13,
+        }
+    }
+
+    pub fn from_template(cla: u8, p1: u8, p2: u8, old_off: usize, new_off: usize) -> Self {
+        Self {
+            cla,
+            p1,
+            p2,
+            old_pin_offset: old_off,
+            new_pin_offset: new_off,
+        }
+    }
+
+    pub fn is_user_pin(&self) -> bool {
+        self.p2 == 0x81
+    }
+
+    pub fn is_admin_pin(&self) -> bool {
+        self.p2 == 0x83
+    }
+
+    pub fn build(&self, old_pin: &[u8], new_pin: &[u8]) -> Result<[u8; 21], ApduError> {
+        if old_pin.is_empty() || new_pin.is_empty() {
+            return Err(ApduError::PinTooShort);
+        }
+
+        if self.is_admin_pin() && (old_pin.len() != 8 || new_pin.len() != 8) {
+            return Err(ApduError::InvalidPinLength);
+        }
+
+        if self.is_user_pin()
+            && (old_pin.len() < 6 || old_pin.len() > 8 || new_pin.len() < 6 || new_pin.len() > 8)
+        {
+            return Err(ApduError::InvalidPinLength);
+        }
+
+        for &c in old_pin.iter().chain(new_pin.iter()) {
+            if !c.is_ascii_digit() {
+                return Err(ApduError::InvalidPinCharacter);
+            }
+        }
+
+        let mut apdu = [0u8; 21];
+        let total_len = old_pin.len() + new_pin.len();
+
+        apdu[0] = self.cla;
+        apdu[1] = 0x24;
+        apdu[2] = self.p1;
+        apdu[3] = self.p2;
+        apdu[4] = total_len as u8;
+
+        apdu[5..5 + old_pin.len()].copy_from_slice(old_pin);
+        apdu[5 + old_pin.len()..5 + total_len].copy_from_slice(new_pin);
+
+        Ok(apdu)
+    }
+
+    pub fn apdu_len(old_len: usize, new_len: usize) -> usize {
+        5 + old_len + new_len
     }
 }
 
