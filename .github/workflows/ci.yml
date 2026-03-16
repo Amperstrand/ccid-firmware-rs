@@ -88,7 +88,7 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --release --target thumbv7em-none-eabihf -- -D warnings
 
       - name: Check Python syntax
         run: |
