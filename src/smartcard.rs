@@ -322,7 +322,9 @@ impl SmartcardUart {
         defmt::info!("PPS: baud updated to {} (Fi={}, Di={})", baudrate, fi, di);
     }
 
-    /// T=1 IFSD negotiation: send S(IFS request) with IFSD=254, parse S(IFS response).
+    /// T=1 IFSD negotiation (ISO 7816-3 §11.4.2).
+    /// Send S(IFS request) with IFSD=254, parse S(IFS response) to get card's IFSC.
+    /// S-block format: NAD=0, PCB=0xC1 (request)/0xE1 (response), LEN=1, INF=IFS value, LRC.
     fn do_ifs_negotiation_t1(&mut self) -> Result<u8, ()> {
         const S_IFS_REQ: u8 = 0xC1; // S(IFS request)
         const S_IFS_RESP: u8 = 0xE1; // S(IFS response) -- bit 5 set for response
