@@ -307,38 +307,6 @@ impl PinVerifyParams {
     pub fn is_admin_pin(&self) -> bool {
         self.pin_type == 0x83
     }
-
-    /// Get PIN format from bmFormatString (bits 0-3)
-    /// Returns: 0x00=Binary, 0x01=BCD, 0x02=ASCII
-    pub fn pin_format(&self) -> u8 {
-        self.format & 0x0F
-    }
-
-    /// Check if PIN format is ASCII
-    pub fn is_ascii_format(&self) -> bool {
-        self.pin_format() == 0x02
-    }
-
-    /// Check if PIN format is BCD
-    pub fn is_bcd_format(&self) -> bool {
-        self.pin_format() == 0x01
-    }
-
-    /// Check if PIN format is Binary
-    pub fn is_binary_format(&self) -> bool {
-        self.pin_format() == 0x00
-    }
-
-    /// Get justification from bmFormatString (bits 4-5)
-    /// Returns: 0=Right, 1=Left
-    pub fn justification(&self) -> u8 {
-        (self.format >> 4) & 0x03
-    }
-
-    /// Check if PIN is left-justified
-    pub fn is_left_justified(&self) -> bool {
-        self.justification() == 1
-    }
 }
 
 /// PIN buffer for storing entered digits
@@ -406,13 +374,6 @@ impl PinBuffer {
         self.len >= min
     }
 
-    /// Get the PIN as ASCII bytes
-    pub fn as_ascii(&self) -> &[u8] {
-        // Convert digits to ASCII: '0' = 0x30, '1' = 0x31, etc.
-        // This is done lazily via conversion
-        &self.digits[..self.len]
-    }
-
     /// Convert PIN to ASCII representation
     pub fn to_ascii(&self) -> [u8; 16] {
         let mut ascii = [0u8; 16];
@@ -430,68 +391,6 @@ impl PinBuffer {
         }
         mask
     }
-
-    /// Get raw digit at index
-    pub fn get(&self, index: usize) -> Option<u8> {
-        if index < self.len {
-            Some(self.digits[index])
-        } else {
-            None
-        }
-    }
-
-    /// Convert PIN to BCD format (packed, 2 digits per byte)
-    /// Left-justified: first digit in high nibble of first byte
-    pub fn to_bcd(&self) -> ([u8; 8], usize) {
-        let mut bcd = [0u8; 8];
-        let byte_count = self.len.div_ceil(2);
-
-        for (i, &digit) in self.digits[..self.len].iter().enumerate() {
-            let byte_idx = i / 2;
-            if i % 2 == 0 {
-                bcd[byte_idx] = digit << 4;
-            } else {
-                bcd[byte_idx] |= digit;
-            }
-        }
-        (bcd, byte_count)
-    }
-
-    /// Convert PIN to binary format (1 digit per nibble, left-justified)
-    pub fn to_binary(&self) -> ([u8; 8], usize) {
-        let mut binary = [0u8; 8];
-        let byte_count = self.len.div_ceil(2);
-
-        for (i, &digit) in self.digits[..self.len].iter().enumerate() {
-            let byte_idx = i / 2;
-            if i % 2 == 0 {
-                binary[byte_idx] = digit << 4;
-            } else {
-                binary[byte_idx] |= digit;
-            }
-        }
-        (binary, byte_count)
-    }
-
-    /// Convert PIN to the format specified by bmFormatString
-    /// Returns (buffer, length) in the requested format
-    pub fn to_format(&self, format: u8) -> ([u8; 16], usize) {
-        match format & 0x0F {
-            0x00 => {
-                let (bin, len) = self.to_binary();
-                let mut result = [0u8; 16];
-                result[..len].copy_from_slice(&bin[..len]);
-                (result, len)
-            }
-            _ => {
-                // Default: ASCII format (0x02) or any unknown format
-                let mut result = [0u8; 16];
-                let ascii = self.to_ascii();
-                result[..self.len].copy_from_slice(&ascii[..self.len]);
-                (result, self.len)
-            }
-        }
-    }
 }
 
 impl Drop for PinBuffer {
@@ -501,15 +400,6 @@ impl Drop for PinBuffer {
             unsafe {
                 core::ptr::write_volatile(d, 0);
             }
-        }
-    }
-}
-
-/// Securely clear a byte slice
-pub fn secure_clear(data: &mut [u8]) {
-    for b in data.iter_mut() {
-        unsafe {
-            core::ptr::write_volatile(b, 0);
         }
     }
 }
