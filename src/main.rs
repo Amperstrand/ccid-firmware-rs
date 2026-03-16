@@ -75,7 +75,7 @@ use crate::pinpad::ui::{
     ButtonId, Keypad, TouchHandler, BUTTON_SIZE, COLOR_ACCENT, COLOR_BG, COLOR_TEXT,
 };
 #[cfg(feature = "display")]
-use crate::pinpad::PinEntryContext;
+use crate::pinpad::{PinEntryContext, PinModifyContext, PinModifyStep};
 #[cfg(feature = "display")]
 use board::hal::ltdc::{Layer, PixelFormat};
 #[cfg(feature = "display")]
@@ -141,6 +141,13 @@ enum AppMode {
     /// PIN entry active - poll USB + touch, render keypad
     PinEntry {
         context: PinEntryContext,
+        keypad: Keypad,
+        touch_handler: TouchHandler,
+        seq: u8,
+    },
+    /// PIN modification active - multi-step: old PIN → new PIN → confirm (CCID Rev 1.1 §6.1.12)
+    PinModify {
+        context: PinModifyContext,
         keypad: Keypad,
         touch_handler: TouchHandler,
         seq: u8,
@@ -310,6 +317,67 @@ fn draw_pin_screen(
         let _ = button.bounds.into_styled(style).draw(display);
 
         // Draw button label (centered)
+        let label_style = MonoTextStyle::new(&FONT_10X20, COLOR_TEXT);
+        let label_x =
+            button.bounds.top_left.x + (BUTTON_SIZE as i32 / 2) - (button.label.len() as i32 * 5);
+        let label_y = button.bounds.top_left.y + (BUTTON_SIZE as i32 / 2) + 10;
+        let _ = Text::new(button.label, Point::new(label_x, label_y), label_style).draw(display);
+    }
+}
+
+/// Draw the PIN modification keypad screen with step-aware prompts (CCID Rev 1.1 §6.1.12)
+#[cfg(feature = "display")]
+fn draw_pin_modify_screen(
+    display: &mut FrameBufferDrawTarget,
+    context: &PinModifyContext,
+    keypad: &Keypad,
+    pressed_button: Option<ButtonId>,
+) {
+    display.clear(COLOR_BG);
+
+    let title_style = MonoTextStyle::new(&FONT_10X20, COLOR_TEXT);
+
+    let (title, subtitle) = match context.step {
+        PinModifyStep::OldPin => ("Change PIN", "Enter current PIN"),
+        PinModifyStep::NewPin => ("Change PIN", "Enter new PIN"),
+        PinModifyStep::ConfirmPin => ("Change PIN", "Confirm new PIN"),
+        PinModifyStep::Completed => ("Change PIN", "Done!"),
+        PinModifyStep::Cancelled => ("Change PIN", "Cancelled"),
+        PinModifyStep::Timeout => ("Change PIN", "Timeout"),
+        PinModifyStep::Mismatch => ("Change PIN", "PINs don't match"),
+        PinModifyStep::InvalidLength => ("Change PIN", "Invalid length"),
+        PinModifyStep::Idle => ("Change PIN", ""),
+    };
+
+    let title_x = (display.width as i32 / 2).saturating_sub((title.len() as i32 * 10) / 2);
+    let _ = Text::new(title, Point::new(title_x, 30), title_style).draw(display);
+
+    let subtitle_style = MonoTextStyle::new(&FONT_10X20, COLOR_ACCENT);
+    let subtitle_x = (display.width as i32 / 2).saturating_sub((subtitle.len() as i32 * 10) / 2);
+    let _ = Text::new(subtitle, Point::new(subtitle_x, 60), subtitle_style).draw(display);
+
+    let pin_len = context.current_buffer_len();
+    let mut mask_buf = [b'*'; 16];
+    let mask_str = core::str::from_utf8(&mask_buf[..pin_len.min(16)]).unwrap_or("****");
+    let pin_style = MonoTextStyle::new(&FONT_10X20, COLOR_ACCENT);
+    let pin_x = (display.width as i32 / 2).saturating_sub((pin_len.min(16) as i32 * 10) / 2);
+    let _ = Text::new(mask_str, Point::new(pin_x, 130), pin_style).draw(display);
+
+    for button in keypad.buttons() {
+        let color = if pressed_button == Some(button.id) {
+            Rgb565::CSS_SLATE_GRAY
+        } else {
+            button.color
+        };
+
+        let style = PrimitiveStyleBuilder::new()
+            .fill_color(color)
+            .stroke_color(COLOR_TEXT)
+            .stroke_width(2)
+            .build();
+
+        let _ = button.bounds.into_styled(style).draw(display);
+
         let label_style = MonoTextStyle::new(&FONT_10X20, COLOR_TEXT);
         let label_x =
             button.bounds.top_left.x + (BUTTON_SIZE as i32 / 2) - (button.label.len() as i32 * 5);
@@ -580,7 +648,6 @@ fn main() -> ! {
         {
             match &mut mode {
                 AppMode::Normal => {
-                    // Check if CCID received Secure command
                     if ccid_class.is_pin_entry_active() {
                         if let Some((seq, params)) = ccid_class.take_secure_params() {
                             defmt::info!("Entering PIN mode, seq={}", seq);
@@ -589,6 +656,21 @@ fn main() -> ! {
                             let keypad = Keypad::new();
                             let touch_handler = TouchHandler::new();
                             mode = AppMode::PinEntry {
+                                context,
+                                keypad,
+                                touch_handler,
+                                seq,
+                            };
+                        }
+                    } else if ccid_class.is_pin_modify_active() {
+                        // Check for PIN modify (CCID Rev 1.1 §6.1.12)
+                        if let Some((seq, params)) = ccid_class.take_secure_modify_params() {
+                            defmt::info!("Entering PIN modify mode, seq={}", seq);
+                            let mut context = PinModifyContext::new(params);
+                            context.start(get_tick_ms());
+                            let keypad = Keypad::new();
+                            let touch_handler = TouchHandler::new();
+                            mode = AppMode::PinModify {
                                 context,
                                 keypad,
                                 touch_handler,
@@ -708,9 +790,94 @@ fn main() -> ! {
                         );
                     }
                 }
+                AppMode::PinModify {
+                    context,
+                    keypad,
+                    touch_handler,
+                    seq,
+                } => {
+                    let touch_point =
+                        if let Some((_, ref mut touch_ctrl, ref mut i2c)) = display_state {
+                            if let Some(ref mut t) = touch_ctrl {
+                                if let Ok(num) = t.detect_touch(i2c) {
+                                    if num > 0 {
+                                        if let Ok(point) = t.get_touch(i2c, 1) {
+                                            Some(Point::new(point.x as i32, point.y as i32))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                    let button = touch_handler.process(keypad, touch_point);
+
+                    if let Some(btn) = button {
+                        match btn {
+                            ButtonId::Digit(d) => {
+                                context.add_digit(d);
+                                defmt::debug!("PIN modify digit: {}", d);
+                            }
+                            ButtonId::Backspace => {
+                                context.backspace();
+                            }
+                            ButtonId::Ok => {
+                                let result = context.submit();
+                                defmt::info!("PIN modify step submitted, result={:?}", result);
+                            }
+                            ButtonId::Cancel => {
+                                context.cancel();
+                                defmt::info!("PIN modify cancelled");
+                            }
+                            ButtonId::None => {}
+                        }
+                    }
+
+                    if context.check_timeout(get_tick_ms(), 1000) {
+                        defmt::warn!("PIN modify timeout");
+                    }
+
+                    if let Some((ref mut draw_target, _, _)) = display_state {
+                        draw_pin_modify_screen(
+                            draw_target,
+                            context,
+                            keypad,
+                            touch_handler.pressed(),
+                        );
+                    }
+
+                    if context.is_complete() {
+                        if let Some(result) = context.result() {
+                            defmt::info!("PIN modify complete: {:?}", result);
+                            ccid_class.set_pin_modify_result(
+                                *seq,
+                                result,
+                                context.old_buffer.clone(),
+                                context.new_buffer.clone(),
+                                context.params,
+                            );
+                        }
+                        mode = AppMode::Normal;
+                        last_card_present = ccid_class.is_card_present();
+                        defmt::debug!(
+                            "Returned to Normal mode, card_present={}",
+                            last_card_present
+                        );
+                    }
+                }
             }
 
             ccid_class.process_pin_result();
+            ccid_class.process_pin_modify_result();
         }
 
         #[cfg(not(feature = "display"))]

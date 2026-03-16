@@ -9,7 +9,7 @@
 //! - Timeout (time limit exceeded)
 #![allow(dead_code)]
 
-use crate::pinpad::{PinBuffer, PinResult, PinVerifyParams};
+use crate::pinpad::{PinBuffer, PinModifyParams, PinResult, PinVerifyParams};
 
 /// PIN entry state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -26,6 +26,30 @@ pub enum PinEntryState {
     /// PIN entry timed out
     Timeout,
     /// Invalid PIN length entered
+    InvalidLength,
+}
+
+/// PIN modification step - tracks which PIN is being entered (CCID Rev 1.1 §6.1.12)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PinModifyStep {
+    /// No PIN modify in progress
+    #[default]
+    Idle,
+    /// Entering old/current PIN
+    OldPin,
+    /// Entering new PIN
+    NewPin,
+    /// Confirming new PIN (re-entry)
+    ConfirmPin,
+    /// All steps completed successfully
+    Completed,
+    /// User cancelled at any step
+    Cancelled,
+    /// Timeout occurred
+    Timeout,
+    /// New PIN and confirm PIN don't match
+    Mismatch,
+    /// Invalid PIN length
     InvalidLength,
 }
 
@@ -163,6 +187,203 @@ impl PinEntryContext {
     pub fn reset(&mut self) {
         self.state = PinEntryState::Idle;
         self.buffer.clear();
+        self.start_ticks = 0;
+        self.pressed_button = None;
+    }
+}
+
+/// PIN modification context - holds state for multi-step PIN change (CCID Rev 1.1 §6.1.12)
+#[derive(Debug)]
+pub struct PinModifyContext {
+    /// Current step in the modification flow
+    pub step: PinModifyStep,
+    /// Old/current PIN buffer
+    pub old_buffer: PinBuffer,
+    /// New PIN buffer
+    pub new_buffer: PinBuffer,
+    /// Temporary buffer for confirm step (compared then cleared)
+    pub confirm_buffer: PinBuffer,
+    /// Parameters from CCID Secure command
+    pub params: PinModifyParams,
+    /// Start time (in system ticks)
+    pub start_ticks: u32,
+    /// Currently pressed button (for UI highlighting)
+    pub pressed_button: Option<u8>,
+}
+
+impl PinModifyContext {
+    /// Create a new PIN modify context
+    pub fn new(params: PinModifyParams) -> Self {
+        let max_len = params.max_len as usize;
+        Self {
+            step: PinModifyStep::Idle,
+            old_buffer: PinBuffer::new(max_len),
+            new_buffer: PinBuffer::new(max_len),
+            confirm_buffer: PinBuffer::new(max_len),
+            params,
+            start_ticks: 0,
+            pressed_button: None,
+        }
+    }
+
+    /// Start PIN modification flow (begins with old PIN entry)
+    pub fn start(&mut self, current_ticks: u32) {
+        self.step = PinModifyStep::OldPin;
+        self.old_buffer.clear();
+        self.new_buffer.clear();
+        self.confirm_buffer.clear();
+        self.start_ticks = current_ticks;
+        self.pressed_button = None;
+    }
+
+    /// Add a digit to the current step's buffer
+    pub fn add_digit(&mut self, digit: u8) -> bool {
+        let buffer = match self.step {
+            PinModifyStep::OldPin => &mut self.old_buffer,
+            PinModifyStep::NewPin => &mut self.new_buffer,
+            PinModifyStep::ConfirmPin => &mut self.confirm_buffer,
+            _ => return false,
+        };
+        buffer.push(digit)
+    }
+
+    /// Remove the last digit from current buffer (backspace)
+    pub fn backspace(&mut self) -> bool {
+        let buffer = match self.step {
+            PinModifyStep::OldPin => &mut self.old_buffer,
+            PinModifyStep::NewPin => &mut self.new_buffer,
+            PinModifyStep::ConfirmPin => &mut self.confirm_buffer,
+            _ => return false,
+        };
+        buffer.pop()
+    }
+
+    /// Submit current step's PIN and advance to next step
+    pub fn submit(&mut self) -> PinResult {
+        match self.step {
+            PinModifyStep::OldPin => {
+                if !self.old_buffer.has_minimum(self.params.min_len as usize) {
+                    self.step = PinModifyStep::InvalidLength;
+                    return PinResult::InvalidLength;
+                }
+                self.step = PinModifyStep::NewPin;
+                PinResult::Success
+            }
+            PinModifyStep::NewPin => {
+                if !self.new_buffer.has_minimum(self.params.min_len as usize) {
+                    self.step = PinModifyStep::InvalidLength;
+                    return PinResult::InvalidLength;
+                }
+                self.step = PinModifyStep::ConfirmPin;
+                PinResult::Success
+            }
+            PinModifyStep::ConfirmPin => {
+                if !self
+                    .confirm_buffer
+                    .has_minimum(self.params.min_len as usize)
+                {
+                    self.step = PinModifyStep::InvalidLength;
+                    return PinResult::InvalidLength;
+                }
+                if self.new_buffer.len() != self.confirm_buffer.len() {
+                    self.step = PinModifyStep::Mismatch;
+                    return PinResult::InvalidLength;
+                }
+                let new_ascii = self.new_buffer.to_ascii();
+                let confirm_ascii = self.confirm_buffer.to_ascii();
+                if new_ascii[..self.new_buffer.len()] != confirm_ascii[..self.confirm_buffer.len()]
+                {
+                    self.step = PinModifyStep::Mismatch;
+                    return PinResult::InvalidLength;
+                }
+                self.step = PinModifyStep::Completed;
+                self.confirm_buffer.clear();
+                PinResult::Success
+            }
+            _ => PinResult::Cancelled,
+        }
+    }
+
+    /// Cancel PIN modification
+    pub fn cancel(&mut self) {
+        self.step = PinModifyStep::Cancelled;
+        self.old_buffer.clear();
+        self.new_buffer.clear();
+        self.confirm_buffer.clear();
+    }
+
+    /// Check for timeout
+    pub fn check_timeout(&mut self, current_ticks: u32, ticks_per_second: u32) -> bool {
+        if !matches!(
+            self.step,
+            PinModifyStep::OldPin | PinModifyStep::NewPin | PinModifyStep::ConfirmPin
+        ) {
+            return false;
+        }
+        if self.params.timeout_secs == 0 {
+            return false;
+        }
+        let elapsed_ticks = current_ticks.wrapping_sub(self.start_ticks);
+        let elapsed_secs = elapsed_ticks / ticks_per_second;
+        if elapsed_secs >= self.params.timeout_secs as u32 {
+            self.step = PinModifyStep::Timeout;
+            self.old_buffer.clear();
+            self.new_buffer.clear();
+            self.confirm_buffer.clear();
+            return true;
+        }
+        false
+    }
+
+    /// Check if modification is active (in progress)
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self.step,
+            PinModifyStep::OldPin | PinModifyStep::NewPin | PinModifyStep::ConfirmPin
+        )
+    }
+
+    /// Check if modification is complete (success or failure)
+    pub fn is_complete(&self) -> bool {
+        matches!(
+            self.step,
+            PinModifyStep::Completed
+                | PinModifyStep::Cancelled
+                | PinModifyStep::Timeout
+                | PinModifyStep::Mismatch
+                | PinModifyStep::InvalidLength
+        )
+    }
+
+    /// Get the result of PIN modification
+    pub fn result(&self) -> Option<PinResult> {
+        match self.step {
+            PinModifyStep::Completed => Some(PinResult::Success),
+            PinModifyStep::Cancelled => Some(PinResult::Cancelled),
+            PinModifyStep::Timeout => Some(PinResult::Timeout),
+            PinModifyStep::Mismatch | PinModifyStep::InvalidLength => {
+                Some(PinResult::InvalidLength)
+            }
+            _ => None,
+        }
+    }
+
+    /// Get current PIN buffer length for display
+    pub fn current_buffer_len(&self) -> usize {
+        match self.step {
+            PinModifyStep::OldPin => self.old_buffer.len(),
+            PinModifyStep::NewPin => self.new_buffer.len(),
+            PinModifyStep::ConfirmPin => self.confirm_buffer.len(),
+            _ => 0,
+        }
+    }
+
+    /// Reset the context for reuse
+    pub fn reset(&mut self) {
+        self.step = PinModifyStep::Idle;
+        self.old_buffer.clear();
+        self.new_buffer.clear();
+        self.confirm_buffer.clear();
         self.start_ticks = 0;
         self.pressed_button = None;
     }
