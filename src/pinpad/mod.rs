@@ -20,7 +20,7 @@ pub mod state;
 pub mod ui;
 
 // Re-export common types
-pub use apdu::{ApduError, VerifyApduBuilder, VerifyResponse};
+pub use apdu::{ApduError, ModifyApduBuilder, VerifyApduBuilder, VerifyResponse};
 pub use state::{PinEntryContext, PinEntryState};
 #[cfg(feature = "display")]
 pub use ui::{draw_pinpad, ButtonId, Keypad, TouchHandler};

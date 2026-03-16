@@ -32,6 +32,14 @@ const PCB_S_BLOCK: u8 = 0xC0;
 const PCB_MASK: u8 = 0xC0;
 const I_M_CHAIN: u8 = 0x20;
 
+/// S-block subtypes (ISO 7816-3 §11.6)
+/// RESYNC: request=0xC0, response=0xE0
+/// WTX: request=0xC3, response=0xCB
+const S_RESYNC_REQ: u8 = 0x00;
+const S_RESYNC_RESP: u8 = 0x20;
+const S_WTX_REQ: u8 = 0x03;
+const S_WTX_RESP: u8 = 0x0B;
+
 /// Max INF size (IFSC)
 const T1_MAX_IFSC: usize = 254;
 const T1_BLOCK_BUF: usize = 2 + 1 + T1_MAX_IFSC + 1;
@@ -184,16 +192,26 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                 continue;
             }
             if (pcb & PCB_MASK) == PCB_S_BLOCK {
-                // ISO 7816-3: WTX request = 0xC3 (type 3), WTX response = 0xCB
-                if (pcb & 0x1F) == 0x03 {
+                let s_type = pcb & 0x1F;
+                if s_type == S_WTX_REQ {
                     let wtx = block.get(3).copied().unwrap_or(0);
-                    let s_resp = [0u8, 0xCB, 1, wtx, 0u8]; // S(WTX response)
-                    let l = 0 ^ s_resp[1] ^ s_resp[2] ^ s_resp[3];
+                    let resp_pcb = PCB_S_BLOCK | 0x20 | S_WTX_RESP;
+                    let l = 0 ^ resp_pcb ^ 1 ^ wtx;
+                    defmt::info!("T1: S(WTX req) wtx={}, sending S(WTX resp)", wtx);
                     t.send_byte(0).map_err(T1Error::Transport)?;
-                    t.send_byte(s_resp[1]).map_err(T1Error::Transport)?;
-                    t.send_byte(s_resp[2]).map_err(T1Error::Transport)?;
-                    t.send_byte(s_resp[3]).map_err(T1Error::Transport)?;
+                    t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
+                    t.send_byte(1).map_err(T1Error::Transport)?;
+                    t.send_byte(wtx).map_err(T1Error::Transport)?;
                     t.send_byte(l).map_err(T1Error::Transport)?;
+                } else if s_type == S_RESYNC_REQ {
+                    let resp_pcb = PCB_S_BLOCK | 0x20 | S_RESYNC_RESP;
+                    let l = 0 ^ resp_pcb ^ 0;
+                    defmt::info!("T1: S(RESYNC req), sending S(RESYNC resp)");
+                    t.send_byte(0).map_err(T1Error::Transport)?;
+                    t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
+                    t.send_byte(0).map_err(T1Error::Transport)?;
+                    t.send_byte(l).map_err(T1Error::Transport)?;
+                    *ns = 0;
                 }
                 continue;
             }
@@ -252,14 +270,26 @@ pub fn transmit_apdu_t1<T: T1Transport>(
             cortex_m::asm::delay(10_000); // ~60us at 168MHz
             t.prepare_rx();
         } else if (pcb & PCB_MASK) == PCB_S_BLOCK {
-            if (pcb & 0x1F) == 0x03 {
+            let s_type = pcb & 0x1F;
+            if s_type == S_WTX_REQ {
                 let wtx = block.get(3).copied().unwrap_or(0);
-                let l = 0 ^ 0xCB ^ 1 ^ wtx;
+                let resp_pcb = PCB_S_BLOCK | 0x20 | S_WTX_RESP;
+                let l = 0 ^ resp_pcb ^ 1 ^ wtx;
+                defmt::info!("T1 RX: S(WTX req) wtx={}, sending S(WTX resp)", wtx);
                 t.send_byte(0).map_err(T1Error::Transport)?;
-                t.send_byte(0xCB).map_err(T1Error::Transport)?;
+                t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
                 t.send_byte(1).map_err(T1Error::Transport)?;
                 t.send_byte(wtx).map_err(T1Error::Transport)?;
                 t.send_byte(l).map_err(T1Error::Transport)?;
+            } else if s_type == S_RESYNC_REQ {
+                let resp_pcb = PCB_S_BLOCK | 0x20 | S_RESYNC_RESP;
+                let l = 0 ^ resp_pcb ^ 0;
+                defmt::info!("T1 RX: S(RESYNC req), sending S(RESYNC resp)");
+                t.send_byte(0).map_err(T1Error::Transport)?;
+                t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
+                t.send_byte(0).map_err(T1Error::Transport)?;
+                t.send_byte(l).map_err(T1Error::Transport)?;
+                *ns = 0;
             }
         }
     }

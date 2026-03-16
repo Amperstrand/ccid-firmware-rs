@@ -12,7 +12,9 @@ use usb_device::class_prelude::*;
 use usb_device::endpoint::{In, Out};
 use usb_device::{Result, UsbError};
 
-use crate::pinpad::{PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder};
+use crate::pinpad::{
+    ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder,
+};
 use crate::smartcard::{parse_atr, AtrParams};
 
 // ============================================================================
@@ -298,6 +300,10 @@ pub struct CcidClass<'bus, Bus: UsbBus, D: SmartcardDriver> {
     /// Stores (seq, result, buffer, params) to avoid race condition with secure_state
     #[cfg(feature = "display")]
     pin_result_pending: Option<(u8, PinResult, PinBuffer, PinVerifyParams)>,
+    /// Pending PIN modify result from touchscreen entry (display feature)
+    /// Stores (seq, result, old_buffer, new_buffer, params) for PIN change operations
+    #[cfg(feature = "display")]
+    pin_modify_result_pending: Option<(u8, PinResult, PinBuffer, PinBuffer, PinModifyParams)>,
     /// Response buffer for card communication
     response_buffer: [u8; 261],
 }
@@ -334,6 +340,8 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             secure_state: SecureState::Idle,
             #[cfg(feature = "display")]
             pin_result_pending: None,
+            #[cfg(feature = "display")]
+            pin_modify_result_pending: None,
             response_buffer: [0u8; 261],
         };
         let present = this.driver.is_card_present();
@@ -1196,6 +1204,108 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             }
             PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
                 defmt::debug!("CCID: PIN entry failed with {:?}", result);
+                self.complete_pin_entry(seq, result, None);
+            }
+        }
+    }
+
+    /// Store PIN modify entry result from touchscreen
+    /// This is called by main loop after PIN modify entry completes
+    #[cfg(feature = "display")]
+    pub fn set_pin_modify_result(
+        &mut self,
+        seq: u8,
+        result: PinResult,
+        old_buffer: PinBuffer,
+        new_buffer: PinBuffer,
+        params: PinModifyParams,
+    ) {
+        defmt::debug!(
+            "CCID: Storing PIN modify result - seq={}, result={:?}, old_len={}, new_len={}",
+            seq,
+            result,
+            old_buffer.len(),
+            new_buffer.len()
+        );
+        self.pin_modify_result_pending = Some((seq, result, old_buffer, new_buffer, params));
+    }
+
+    /// Process pending PIN modify result - transmit CHANGE REFERENCE DATA APDU to card
+    /// This is called by main loop each iteration
+    /// Per ISO 7816-4 §7.5.7: CHANGE REFERENCE DATA (INS=0x24)
+    #[cfg(feature = "display")]
+    pub fn process_pin_modify_result(&mut self) {
+        let Some((seq, result, old_buffer, new_buffer, params)) =
+            self.pin_modify_result_pending.take()
+        else {
+            return;
+        };
+
+        defmt::debug!(
+            "CCID: Processing PIN modify result - seq={}, result={:?}, min_len={}, max_len={}",
+            seq,
+            result,
+            params.min_len,
+            params.max_len
+        );
+
+        match result {
+            PinResult::Success => {
+                let old_pin = old_buffer.to_ascii();
+                let old_len = old_buffer.len();
+                let new_pin = new_buffer.to_ascii();
+                let new_len = new_buffer.len();
+
+                defmt::debug!(
+                    "CCID: Building CHANGE REFERENCE DATA APDU - CLA={:02X}, P1={:02X}, P2={:02X}, old_len={}, new_len={}",
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                    old_len,
+                    new_len
+                );
+
+                let builder = ModifyApduBuilder::from_template(
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                    params.old_pin_offset as usize,
+                    params.new_pin_offset as usize,
+                );
+
+                match builder.build(&old_pin[..old_len], &new_pin[..new_len]) {
+                    Ok(apdu) => {
+                        let apdu_len = 5 + old_len + new_len;
+                        defmt::debug!("CCID: Transmitting CHANGE APDU, len={}", apdu_len);
+                        match self
+                            .driver
+                            .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
+                        {
+                            Ok(resp_len) => {
+                                defmt::info!("CCID: Card responded to CHANGE, len={}", resp_len);
+                                let mut resp_copy: [u8; 261] = [0u8; 261];
+                                resp_copy[..resp_len]
+                                    .copy_from_slice(&self.response_buffer[..resp_len]);
+                                self.complete_pin_entry(
+                                    seq,
+                                    PinResult::Success,
+                                    Some(&resp_copy[..resp_len]),
+                                );
+                            }
+                            Err(_) => {
+                                defmt::warn!("CCID: Card transmit failed for CHANGE");
+                                self.complete_pin_entry(seq, PinResult::Cancelled, None);
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        defmt::warn!("CCID: CHANGE APDU build failed");
+                        self.complete_pin_entry(seq, PinResult::InvalidLength, None);
+                    }
+                }
+            }
+            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                defmt::debug!("CCID: PIN modify entry failed with {:?}", result);
                 self.complete_pin_entry(seq, result, None);
             }
         }

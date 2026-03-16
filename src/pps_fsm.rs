@@ -9,6 +9,7 @@
 //! - Check `state()` for completion status
 
 #![cfg(all(target_arch = "arm", target_os = "none"))]
+#![allow(dead_code)]
 
 /// PPS state machine states (matching osmo-ccid-firmware)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

@@ -5,7 +5,7 @@
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::needless_range_loop)]
 
-use crate::pps_fsm::{di_from_ta1, fi_from_ta1, PpsFsm, PpsResult, PpsState};
+use crate::pps_fsm::{di_from_ta1, fi_from_ta1, PpsFsm, PpsState};
 
 use core::convert::Infallible;
 
