@@ -43,7 +43,7 @@ The 52-byte CCID class descriptor is generated per-profile in `src/device_profil
 |--------|-------|-----------------|----------------|--------|
 | 0-1 | bcdCCID | 0x0110 (Rev 1.10) | 0x0110 (base), 0x0100/0x0101 (profiles) | PASS |
 | 2 | bMaxSlotIndex | 0x00 (single slot) | 0x00 | PASS |
-| 3 | bVoltageSupport | Bitfield: 5V, 3V, 1.8V | 0x01 (5V only) | PASS |
+| 3 | bVoltageSupport | Bitfield: 5V, 3V, 1.8V | 0x01 (5V only) | PASS — see [DD-2](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01) |
 | 4-7 | dwProtocols | Bitfield: T=0, T=1 | 0x03 (T=0 and T=1) | PASS |
 | 8-11 | dwDefaultClock | Default clock in kHz | 4000 kHz | PASS |
 | 12-15 | dwMaximumClock | Max clock in kHz | 8000-20000 kHz (profile-dependent) | PASS |
@@ -123,7 +123,7 @@ All message type codes match spec Table 6.1-1 and osmo-ccid reference.
 | 0x83 | RDR_to_PC_Escape | 6.2.4 | `RDR_TO_PC_ESCAPE` | PASS (used for error resp) |
 | 0x84 | RDR_to_PC_DataRateAndClockFrequency | 6.2.5 | `RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQ` | PASS |
 | 0x50 | RDR_to_PC_NotifySlotChange | 6.3.1 | `RDR_TO_PC_NOTIFY_SLOT_CHANGE` | PASS |
-| 0x51 | RDR_to_PC_HardwareError | 6.3.2 | Not implemented | N/A |
+| 0x51 | RDR_to_PC_HardwareError | 6.3.2 | Not implemented | N/A — see [DD-8](DESIGN_DECISIONS.md#dd-8-hardwareerror-interrupt-rdr_to_pc_hardwareerror-051-not-implemented) |
 
 ---
 
@@ -571,7 +571,7 @@ PASS - Fully compliant.
 
 **Spec Reference**: §6.3.2
 
-Not implemented. No hardware fault detection sensors available. N/A for this hardware.
+Not implemented. No hardware fault detection sensors available. N/A for this hardware. See [DD-8](DESIGN_DECISIONS.md#dd-8-hardwareerror-interrupt-rdr_to_pc_hardwareerror-051-not-implemented).
 
 ---
 
@@ -661,14 +661,16 @@ PASS - Both T=0 and T=1 protocol data structures match spec Table 6.2-3.
 
 ### Documented Deviations (Acceptable)
 
-| # | Description | Rationale |
-|---|-------------|-----------|
-| 1 | SetParameters infers protocol from dwLength instead of bProtocolNum | libccid quirk - host doesn't send bProtocolNum |
-| 2 | Abort is a stub (always returns success) | Single-slot synchronous reader |
-| 3 | Escape returns CMD_NOT_SUPPORTED | Vendor-specific, no defined behavior |
-| 4 | T0APDU returns CMD_NOT_SUPPORTED | XfrBlock provides equivalent functionality |
-| 5 | Mechanical returns CMD_NOT_SUPPORTED | No mechanical hardware |
-| 6 | HardwareError interrupt not implemented | No fault detection sensors |
+For full rationale behind each deviation, see [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md).
+
+| # | Description | Rationale | Design Decision |
+|---|-------------|-----------|-----------------|
+| 1 | SetParameters infers protocol from dwLength instead of bProtocolNum | libccid quirk - host doesn't send bProtocolNum | — |
+| 2 | Abort is a stub (always returns success) | Single-slot synchronous reader | [DD-3](DESIGN_DECISIONS.md#dd-3-abort-command-is-a-stub-always-returns-success) |
+| 3 | Escape returns CMD_NOT_SUPPORTED | Vendor-specific, no defined behavior | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
+| 4 | T0APDU returns CMD_NOT_SUPPORTED | XfrBlock provides equivalent functionality | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
+| 5 | Mechanical returns CMD_NOT_SUPPORTED | No mechanical hardware | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
+| 6 | HardwareError interrupt not implemented | No fault detection sensors | [DD-8](DESIGN_DECISIONS.md#dd-8-hardwareerror-interrupt-rdr_to_pc_hardwareerror-051-not-implemented) |
 
 ### Exceeds Reference Implementation
 

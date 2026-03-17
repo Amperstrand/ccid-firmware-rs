@@ -121,9 +121,9 @@ The C reference has **no T=1 support at all**. The CCID descriptor advertises `d
 | BWI/CWI (TB3) | Parsed | N/A (T=0 only) |
 | EDC type (TC3) | Parsed (LRC/CRC) | N/A (T=0 only) |
 
-**Divergence — inverse convention**: The Rust implementation only accepts direct convention (TS=0x3B). If a card sends inverse convention (TS=0x3F), it will not be handled. The C reference detects and supports both conventions, including the edge case of receiving inverse-encoded bytes on a direct-configured UART (flipping via RBIT or LUT).
+**Divergence — inverse convention**: The Rust implementation only accepts direct convention (TS=0x3B). If a card sends inverse convention (TS=0x3F), it will not be handled. The C reference detects and supports both conventions, including the edge case of receiving inverse-encoded bytes on a direct-configured UART (flipping via RBIT or LUT). See [DD-1](DESIGN_DECISIONS.md#dd-1-inverse-convention-ts0x3f-not-supported) for the hardware rationale.
 
-**Verdict**: Accidental gap in Rust. Cards using inverse convention will not work. This should be addressed for full ISO 7816-3 compliance.
+**Verdict**: Intentional hardware limitation. The STM32F469 USART lacks hardware byte inversion support, and software inversion would require significant architectural changes. Cards using inverse convention will not work.
 
 **Divergence — TCK verification**: ~~Both implementations accept ATRs with bad TCK checksums.~~ Rust now verifies TCK for T=1 ATRs and rejects the ATR on mismatch (per ISO 7816-3 §8.2.4). C verifies TCK but only logs the failure without rejecting the ATR.
 
@@ -434,27 +434,29 @@ The `parse_atr()` function is duplicated between `smartcard.rs` (ARM-only) and `
 
 ### 10.1 Intentional Divergences
 
-| # | Divergence | Reason |
-|---|-----------|--------|
-| 1 | T=1 protocol support (Rust only) | Feature scope — Rust targets broader card support |
-| 2 | PIN pad implementation (Rust only) | Feature addition — Cherry ST-2xxx emulation |
-| 3 | Single slot vs 8 slots | Platform difference |
-| 4 | Voltage support (5V vs 5V/3V/1.8V) | Hardware capability |
-| 5 | Different MCU targets (STM32F469 vs SAMD54) | Platform difference |
-| 6 | Device profiles (3 compile-time) | Emulation flexibility |
-| 7 | Graceful PPS failure (Rust) | Robustness over strictness |
-| 8 | Display/touch UI (Rust, feature-gated) | Hardware capability |
-| 9 | Synchronous vs async command model | Simplicity vs scalability |
-| 10 | Direct params vs proposed_pars | Simplicity + robustness trade-off |
+For full rationale behind each divergence, see [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md).
+
+| # | Divergence | Reason | Design Decision |
+|---|-----------|--------|-----------------|
+| 1 | T=1 protocol support (Rust only) | Feature scope — Rust targets broader card support | — |
+| 2 | PIN pad implementation (Rust only) | Feature addition — Cherry ST-2xxx emulation | — |
+| 3 | Single slot vs 8 slots | Platform difference | — |
+| 4 | Voltage support (5V vs 5V/3V/1.8V) | Hardware capability | [DD-2](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01) |
+| 5 | Different MCU targets (STM32F469 vs SAMD54) | Platform difference | — |
+| 6 | Device profiles (3 compile-time) | Emulation flexibility | — |
+| 7 | Graceful PPS failure (Rust) | Robustness over strictness | [DD-5](DESIGN_DECISIONS.md#dd-5-graceful-pps-failure-degradation-instead-of-deactivation) |
+| 8 | Display/touch UI (Rust, feature-gated) | Hardware capability | — |
+| 9 | Synchronous vs async command model | Simplicity vs scalability | — |
+| 10 | Direct params vs proposed_pars | Simplicity + robustness trade-off | [DD-4](DESIGN_DECISIONS.md#dd-4-direct-atr-derived-parameters-instead-of-proposed_pars-pattern) |
 
 ### 10.2 Accidental Gaps in Rust
 
 | # | Gap | Severity | Recommendation |
 |---|-----|----------|----------------|
-| 1 | No inverse convention support (TS=0x3F) | **High** — cards using inverse convention won't work | Add convention detection and byte inversion |
+| 1 | No inverse convention support (TS=0x3F) | **High** — cards using inverse convention won't work | Intentional hardware limitation (see [DD-1](DESIGN_DECISIONS.md#dd-1-inverse-convention-ts0x3f-not-supported)). Would require USART reconfiguration. |
 | 2 | No TCK verification for T=1 ATRs | ~~**Medium**~~ **FIXED** | Implemented in `verify_atr_tck()` (smartcard.rs, protocol_unit.rs). ATR rejected if TCK mismatch and protocol is T=1. |
 | 3 | P3==0 (256 bytes) not handled in T=0 | ~~**Medium**~~ **FIXED** | Le==0 mapped to 256 in GET RESPONSE read path (cf-93o) |
-| 4 | Clock frequency parameter silently ignored | **Low** — response returns actual clock, so host can adapt | Document behavior or clamp to actual value |
+| 4 | Clock frequency parameter silently ignored | **Low** — response returns actual clock, so host can adapt | Intentional hardware limitation (see [DD-6](DESIGN_DECISIONS.md#dd-6-clock-frequency-parameter-ignored-in-setdatarateandclockfrequency)). APB1 clock is fixed by STM32 hardware. |
 
 ### 10.3 Accidental Gaps in C
 
@@ -466,7 +468,7 @@ The `parse_atr()` function is duplicated between `smartcard.rs` (ARM-only) and `
 
 ### 10.4 Items for Follow-Up
 
-1. **[cf-be8-gap-1]** Add inverse convention support to Rust ATR parser — HIGH priority
+1. **[cf-be8-gap-1]** Add inverse convention support to Rust ATR parser — deferred (see [DD-1](DESIGN_DECISIONS.md#dd-1-inverse-convention-ts0x3f-not-supported) for hardware rationale)
 2. **[cf-be8-gap-2]** ~~Add TCK verification for T=1 ATRs in Rust~~ — **FIXED** — `verify_atr_tck()` rejects ATR on TCK mismatch for T=1
 3. **[cf-be8-gap-3]** ~~Handle P3==0 (256 bytes) in Rust T=0 transmit~~ — **FIXED** (cf-93o)
 4. **[cf-be8-gap-4]** Consider proposed_pars pattern for Rust SetParameters — LOW priority (design choice)

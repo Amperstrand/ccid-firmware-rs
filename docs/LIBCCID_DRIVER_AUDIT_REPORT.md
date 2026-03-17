@@ -14,8 +14,8 @@ The firmware is broadly compatible with Linux pcscd/libccid for Gemalto CT30 (08
 | Severity | Count | Summary |
 |----------|-------|---------|
 | ~~CRITICAL~~ FIXED | 1 | ~~Gemalto escape 0x6A not handled~~ → Now returns valid GEMALTO_FIRMWARE_FEATURES |
-| HIGH | 1 | Voltage support mismatch for CT30/K30 profiles (0x01 vs 0x07) |
-| MEDIUM | 1 | Cherry ST-2xxx bInterfaceClass is 0x0B instead of real device's 0xFF |
+| ~~HIGH~~ INTENTIONAL | 1 | ~~Voltage support mismatch for CT30/K30 profiles (0x01 vs 0x07)~~ → Hardware limitation (see [DD-2](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01)) |
+| ~~MEDIUM~~ FIXED | 1 | ~~Cherry ST-2xxx bInterfaceClass is 0x0B instead of real device's 0xFF~~ → Now configurable per profile |
 | LOW | 4 | Minor descriptor mismatches that do not affect basic operation |
 
 ---
@@ -151,7 +151,7 @@ All three target VID:PID combinations are listed in libccid's `supported_readers
 
 The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), returning a minimal valid `GEMALTO_FIRMWARE_FEATURES` response with `bNumberMessageFix = 1`. This suppresses the `has_gemalto_modify_pin_bug()` workaround. All other capability fields remain 0 since CT30/K30 lack PIN pads and displays. Non-Gemalto profiles and non-0x6A escape codes continue to return `CMD_NOT_SUPPORTED`.
 
-### 3.2 [HIGH] Voltage Support Mismatch for CT30/K30
+### 3.2 [HIGH] Voltage Support Mismatch for CT30/K30 (Intentional Hardware Limitation)
 
 **Severity**: HIGH
 **Affected profiles**: CT30, K30
@@ -164,6 +164,8 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 1. libccid calls `IFDHPowerICC()` with `dwVoltage = 0` (auto-select) by default. Since `bVoltageSupport & 0x07` indicates only 5V, pcscd will only try 5V. This works for most SIM/USIM cards but fails for cards that strictly require 3V.
 2. If pcscd is configured with `AutoVoltage = true` (the default), it iterates through supported voltages. With 0x01, it only tries 5V and gives up if the card doesn't respond.
 3. The firmware's `handle_power_on()` at `src/ccid.rs:621-629` explicitly rejects `bPowerSelect` values 0x02 (3V) and 0x03 (1.8V), returning `CMD_NOT_SUPPORTED`.
+
+**Note**: This is an **intentional hardware limitation**, not a fixable bug. The STM32F469-DISCO board with Specter DIY Shield Lite has a fixed 5V SIM slot voltage regulator. The firmware correctly reports what the hardware can actually do. See [DD-2: Voltage Support Limited to 5V Only](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01) for full rationale.
 
 **Recommendation**: For CT30/K30 profiles, override `voltage_support: 0x07` in the profile definition. Note: this is a descriptor-only change — the actual hardware voltage selection would need a corresponding `handle_power_on` change to accept 3V/1.8V requests, which depends on the STM32 board's voltage regulator capabilities.
 
@@ -440,7 +442,7 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 | Data rate negotiation | PASS | PASS | PASS |
 | SetParameters (libccid quirk) | PASS | PASS | PASS |
 | Escape 0x6A (Gemalto) | N/A | PASS (fixed) | PASS (fixed) |
-| Voltage support | PASS | **FAIL** (0x01 vs 0x07) | **FAIL** (0x01 vs 0x07) |
+| Voltage support | PASS | **INTENTIONAL** (0x01 vs 0x07, see [DD-2](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01)) | **INTENTIONAL** (0x01 vs 0x07, see [DD-2](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01)) |
 | Slot change interrupt | PASS | PASS | PASS |
 | PIN verify/modify | PASS (with display) | N/A | N/A |
 | Overall | **USABLE** | **USABLE** | **USABLE** |
@@ -453,7 +455,7 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 
 1. ~~**Implement Gemalto escape 0x6A**~~ for CT30/K30 profiles. ~~Return a minimal `GEMALTO_FIRMWARE_FEATURES` response with `bNumberMessageFix = 1` to suppress the modify PIN workaround.~~ **DONE** — implemented in `handle_escape()`.
 
-2. **Override voltage_support to 0x07** for CT30/K30 profiles in `device_profile.rs`. Also update `handle_power_on()` to accept 3V/1.8V bPowerSelect values (or return a more appropriate error code).
+2. ~~**Override voltage_support to 0x07** for CT30/K30 profiles in `device_profile.rs`. Also update `handle_power_on()` to accept 3V/1.8V bPowerSelect values (or return a more appropriate error code).~~ **Not applicable** — the fixed 5V regulator is a hardware constraint (see [DD-2](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01)). If a different board with programmable voltage is used, the profile should be updated accordingly.
 
 ### Future Improvements
 
