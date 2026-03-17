@@ -2,6 +2,7 @@
 
 **Issue**: cf-be8
 **Date**: 2026-03-17
+**Audited Commit**: `1adf2f1` (2026-03-17)
 **C Reference**: osmocom/osmo-ccid-firmware (`osmo_ccid/`)
 **Rust Implementation**: Amperstrand/ccid-firmware-rs (`src/`)
 
@@ -347,9 +348,16 @@ Both implementations route errors to the correct response message type based on 
 | Card removal mid-operation | State reset | Context-dependent error |
 | Concurrent commands | SLOT_BUSY rejection | SLOT_BUSY rejection |
 
-### 7.4 Error Response Type Bug in C
+### 7.4 SetDataRateAndClockFrequency Response Type (Correct in Both)
 
-The C implementation maps SetDataRateAndClockFrequency to a SlotStatus response, but the CCID spec (Section 6.1-4, Table 6.1-4) specifies it should use a DataBlock response. The Rust implementation also uses SlotStatus, so both have the same minor spec divergence.
+**Correction**: An earlier version of this report incorrectly claimed that both implementations mapped SetDataRateAndClockFrequency to a SlotStatus (0x81) response, characterizing this as a "minor spec divergence." This was wrong.
+
+Both implementations correctly use `RDR_to_PC_DataRateAndClockFrequency` (0x84) per CCID §6.2.5:
+
+- **C**: `ccid_common/ccid_device.c` (fn `ccid_handle_set_rate_and_clock`) calls `ccid_gen_clock_and_rate()` which builds an `RDR_to_PC_DataRateAndClockFrequency` message (fn `ccid_gen_clock_and_rate_nr`).
+- **Rust**: `src/ccid.rs` (fn `handle_set_data_rate_and_clock`) uses `RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQ` (0x84) as the response message type.
+
+There is no spec divergence here. This item has been removed from all divergence listings.
 
 ---
 

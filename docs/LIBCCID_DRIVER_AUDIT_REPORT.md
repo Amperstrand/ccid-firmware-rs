@@ -4,6 +4,7 @@
 **Date**: 2026-03-17
 **Issue**: cf-2pe
 **Reference**: libccid source (https://salsa.debian.org/pcsclite/libccid)
+**Audited Commit**: `1adf2f1` (2026-03-17)
 
 ---
 
@@ -43,7 +44,7 @@ All three target VID:PID combinations are listed in libccid's `supported_readers
 | Gemalto K30 | 0x0B (CCID) | 0x0B (CCID) | NO |
 
 **Details**:
-- Firmware hardcodes `CLASS_CCID = 0x0B` at `src/ccid.rs:86` for ALL profiles
+- Firmware hardcodes `CLASS_CCID = 0x0B` at `src/ccid.rs` (const `CLASS_CCID`) for ALL profiles (per-profile override available via `interface_class`)
 - Real Cherry ST-2xxx uses `bInterfaceClass: 0xFF` (proprietary, not standard CCID)
 - Real CT30 and K30 use `bInterfaceClass: 0x0B` (standard CCID) — matches firmware
 
@@ -155,7 +156,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 
 **Severity**: HIGH
 **Affected profiles**: CT30, K30
-**Firmware**: `src/device_profile.rs:372` (BASE_PROFILE), not overridden by CT30/K30 profiles
+**Firmware**: `src/device_profile.rs` (const `BASE_PROFILE`), not overridden by CT30/K30 profiles
 **Reference**: `reference/CCID/readers/Gemalto_IDBridge_CT30.txt:22` — `bVoltageSupport: 0x07`
 
 **Description**: The firmware reports `bVoltageSupport = 0x01` (5V only) for CT30 and K30 profiles. The real devices report `0x07` (5V + 3V + 1.8V).
@@ -163,7 +164,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 **Consequences**:
 1. libccid calls `IFDHPowerICC()` with `dwVoltage = 0` (auto-select) by default. Since `bVoltageSupport & 0x07` indicates only 5V, pcscd will only try 5V. This works for most SIM/USIM cards but fails for cards that strictly require 3V.
 2. If pcscd is configured with `AutoVoltage = true` (the default), it iterates through supported voltages. With 0x01, it only tries 5V and gives up if the card doesn't respond.
-3. The firmware's `handle_power_on()` at `src/ccid.rs:621-629` explicitly rejects `bPowerSelect` values 0x02 (3V) and 0x03 (1.8V), returning `CMD_NOT_SUPPORTED`.
+3. The firmware's `handle_power_on()` at `src/ccid.rs` (fn `handle_power_on`) explicitly rejects `bPowerSelect` values 0x02 (3V) and 0x03 (1.8V), returning `CMD_NOT_SUPPORTED`.
 
 **Note**: This is an **intentional hardware limitation**, not a fixable bug. The STM32F469-DISCO board with Specter DIY Shield Lite has a fixed 5V SIM slot voltage regulator. The firmware correctly reports what the hardware can actually do. See [DD-2: Voltage Support Limited to 5V Only](DESIGN_DECISIONS.md#dd-2-voltage-support-limited-to-5v-only-bvoltagesupport0x01) for full rationale.
 
@@ -174,7 +175,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 **Severity**: MEDIUM
 **Status**: FIXED — `interface_class` is now configurable per profile. Cherry ST-2xxx uses 0xFF; other profiles default to 0x0B.
 **Affected profiles**: Cherry ST-2xxx
-**Firmware**: `src/device_profile.rs` (`interface_class` field), `src/ccid.rs:1645` (uses `CURRENT_PROFILE.interface_class`)
+**Firmware**: `src/device_profile.rs` (struct `DeviceProfile`, field `interface_class`), `src/ccid.rs` (fn `get_configuration_descriptors`)
 **Reference**: `reference/CCID/readers/CherrySmartTerminalST2XXX.txt:12` — `bInterfaceClass: 0xFF`
 
 **Description**: The real Cherry ST-2xxx uses USB class 0xFF (vendor-specific/proprietary), NOT the standard CCID class 0x0B. The firmware hardcodes 0x0B for all profiles via `CLASS_CCID`.
@@ -184,7 +185,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 2. This changes the device access path: kernel ccid driver → pcscd (via /dev/bus/usb) vs. direct pcscd → USB device. Both paths ultimately work, but the kernel ccid driver path may have different permission models and hotplug behavior.
 3. udev rules for CCID devices (`ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_CLASS_FROM_DEVICE}=="0b"`) will match the firmware but not the real device.
 
-**Recommendation**: ~~If exact behavioral reproduction is required, the Cherry profile should override `bInterfaceClass` to 0xFF. This would require making the class configurable per profile rather than hardcoded in `ccid.rs:1645`.~~ **Implemented**: `DeviceProfile` now has an `interface_class` field. The Cherry profile sets it to `0xFF`; other profiles inherit the default `0x0B` (standard CCID).
+**Recommendation**: ~~If exact behavioral reproduction is required, the Cherry profile should override `bInterfaceClass` to 0xFF. This would require making the class configurable per profile rather than hardcoded in `ccid.rs`.~~ **Implemented**: `DeviceProfile` now has an `interface_class` field. The Cherry profile sets it to `0xFF`; other profiles inherit the default `0x0B` (standard CCID).
 
 ### 3.4 [LOW] bNumDataRatesSupported Mismatch for CT30/K30
 
@@ -199,7 +200,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 
 **Severity**: LOW
 **Affected profiles**: All
-**Firmware**: `src/ccid.rs:154,157` — Returns fixed 4000 kHz and 10752 bps
+**Firmware**: `src/ccid.rs` (const `CLOCK_FREQUENCY_KHZ`, const `DATA_RATE_BPS`) — Returns fixed 4000 kHz and 10752 bps
 **Reference**: Real CT30/K30 support GET_CLOCK_FREQUENCIES (returns 4800 kHz) and GET_DATA_RATES (returns 53 rates). Real Cherry ST-2xxx does NOT support these requests (times out).
 
 **Consequences**: The returned values don't match any profile's actual capabilities. However, libccid uses `bNumClockSupported = 0` and `bNumDataRatesSupported = 0` to indicate "ignore these requests," so the returned values are largely unused in practice.
@@ -208,7 +209,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 
 **Severity**: LOW
 **Affected profiles**: CT30, K30
-**Firmware**: `"IDBridge CT30"` / `"IDBridge K30"` at `src/device_profile.rs:479,520`
+**Firmware**: `"IDBridge CT30"` / `"IDBridge K30"` at `src/device_profile.rs` (const `CURRENT_PROFILE` for CT30/K30)
 **Reference**: Real device returns `"USB SmartCard Reader"` (generic)
 
 **Consequences**: No functional impact — libccid matches by VID:PID, not product string. However, tools like `lsusb` or `pcsc_scan` will show different product names than the real devices.
@@ -238,7 +239,7 @@ All PC_to_RDR and RDR_to_PC message type constants match the CCID Rev 1.1 specif
 
 ### 4.2 bmCommandStatus Encoding
 
-Firmware: `(cmd_status << 6) | icc_status` at `src/ccid.rs:513`
+Firmware: `(cmd_status << 6) | icc_status` at `src/ccid.rs` (fn `build_status`)
 
 | Status | Firmware | libccid | Match |
 |--------|----------|---------|-------|
@@ -250,7 +251,7 @@ Firmware: `(cmd_status << 6) | icc_status` at `src/ccid.rs:513`
 
 ### 4.3 bError Codes
 
-All error codes defined in the firmware (`src/ccid.rs:123-139`) match the CCID spec and libccid's `ccid.h`. Notable codes:
+All error codes defined in the firmware (`src/ccid.rs`, consts `CCID_ERR_*`) match the CCID spec and libccid's `ccid.h`. Notable codes:
 
 | Code | Firmware | libccid | Used In |
 |------|----------|---------|---------|
@@ -262,9 +263,17 @@ All error codes defined in the firmware (`src/ccid.rs:123-139`) match the CCID s
 
 **Verdict**: PASS. All error codes are spec-compliant.
 
-### 4.4 bChainParameter
+### 4.4 Response Byte 9 (bChainParameter / bClockStatus / bProtocolNum)
 
-The firmware sets `bChainParameter = 0` in all responses (`src/ccid.rs:647,667,919,1066`). This is correct for TPDU-level exchange where the host handles chaining. For short/extended APDU levels, this field would carry chain state, but the firmware uses TPDU level exclusively.
+The meaning of byte 9 in a CCID response depends on the message type:
+- **DataBlock (0x80)**: byte 9 = `bChainParameter` — chain state for APDU chaining
+- **SlotStatus (0x81)**: byte 9 = `bClockStatus` — clock running/stopped
+- **Parameters (0x82)**: byte 9 = `bProtocolNum` — active protocol number
+
+The firmware sets byte 9 to 0 in all responses. This is correct because:
+- For **DataBlock** responses (`src/ccid.rs`, fn `handle_power_on` and fn `handle_xfr_block`): `bChainParameter = 0` is correct for TPDU-level exchange where the host handles chaining. For short/extended APDU levels, this field would carry chain state, but the firmware uses TPDU level exclusively.
+- For **SlotStatus** responses (`src/ccid.rs`, fn `handle_power_off` and fn `send_slot_status_with_clock`): `bClockStatus = 0` means clock is running, which is correct for normal operation.
+- For **Parameters** responses (`src/ccid.rs`, fn `handle_reset_parameters`, fn `handle_get_parameters`, and fn `handle_set_parameters`): `bProtocolNum = 0` is correct for T=0 default parameters (ResetParameters) and is updated appropriately for T=1 in GetParameters/SetParameters.
 
 **Verdict**: PASS.
 
@@ -312,7 +321,7 @@ All profiles use TPDU level, which means libccid sends raw T=1 blocks via XfrBlo
 
 **Auto IFSD (bit 10)**: Not set in any profile. Correct — with TPDU level, IFSD negotiation is handled by the firmware's T=1 engine via S-block, not by libccid.
 
-**Auto PPS (bit 7)**: Set in Cherry profile only. With this flag, libccid skips PPS negotiation and SetParameters, letting the reader handle PPS autonomously. The firmware's `smartcard.rs:472` does call `negotiate_pps_fsm()` during power-on, so this is consistent.
+**Auto PPS (bit 7)**: Set in Cherry profile only. With this flag, libccid skips PPS negotiation and SetParameters, letting the reader handle PPS autonomously. The firmware's `smartcard.rs` (fn `negotiate_pps_fsm`) does call `negotiate_pps_fsm()` during power-on, so this is consistent.
 
 ---
 
@@ -320,13 +329,13 @@ All profiles use TPDU level, which means libccid sends raw T=1 blocks via XfrBlo
 
 ### 6.1 ATR Generation
 
-The firmware reads ATR from the card via USART2 at `src/smartcard.rs:540-608`. The ATR is passed verbatim to the host in the `RDR_to_PC_DataBlock` response (`src/ccid.rs:649-652`).
+The firmware reads ATR from the card via USART2 at `src/smartcard.rs` (fn `read_atr`). The ATR is passed verbatim to the host in the `RDR_to_PC_DataBlock` response (`src/ccid.rs`, fn `handle_power_on`).
 
-**Maximum ATR length**: 33 bytes (`SC_ATR_MAX_LEN` at `src/smartcard.rs:36`). Matches CCID spec maximum.
+**Maximum ATR length**: 33 bytes (`SC_ATR_MAX_LEN` at `src/smartcard.rs` (const `SC_ATR_MAX_LEN`)). Matches CCID spec maximum.
 
 ### 6.2 Protocol Selection from ATR
 
-The firmware parses ATR to detect T=0 vs T=1 at `src/smartcard.rs:611-645`:
+The firmware parses ATR to detect T=0 vs T=1 at `src/smartcard.rs` (fn `detect_protocol_from_atr`):
 - Reads T0 byte, finds TD1
 - Extracts protocol from TD1's lower nibble
 - Defaults to T=0 if no TD1 found
@@ -340,7 +349,7 @@ libccid parses the same ATR in `IFDHSetProtocolParameters()`:
 
 ### 6.3 ATR-Based Parameter Configuration
 
-With `FEAT_AUTO_PARAM_ATR` (bit 1) set, libccid expects the reader to auto-configure timing parameters from the ATR. The firmware does this in `smartcard.rs:power_on()`:
+With `FEAT_AUTO_PARAM_ATR` (bit 1) set, libccid expects the reader to auto-configure timing parameters from the ATR. The firmware does this in `src/smartcard.rs` (fn `power_on`):
 1. Parses ATR → `AtrParams`
 2. Negotiates PPS if needed
 3. Configures USART baud rate from Fi/Di
@@ -353,11 +362,11 @@ With `FEAT_AUTO_PARAM_ATR` (bit 1) set, libccid expects the reader to auto-confi
 
 ### 7.1 SetDataRateAndClockFrequency
 
-**Firmware**: `src/ccid.rs:725-771`
+**Firmware**: `src/ccid.rs` (fn `handle_set_data_rate_and_clock`)
 **libccid**: `ifdhandler.c` → `IFDHSetProtocolParameters()`
 
 The firmware handles this command and returns actual clock/rate values. However:
-- Clock frequency is fixed by hardware (`_clock_hz` parameter ignored at `smartcard.rs:289`)
+- Clock frequency is fixed by hardware (`_clock_hz` parameter ignored at `src/smartcard.rs`, fn `set_clock_and_rate`)
 - Only baud rate is applied, clamped to 9600–5,000,000 bps
 
 **libccid negotiation flow**:
@@ -376,7 +385,7 @@ The firmware handles this command and returns actual clock/rate values. However:
 | GET_CLOCK_FREQUENCIES (0x02) | 4000 kHz | 4800 kHz | Timeout (not supported) |
 | GET_DATA_RATES (0x03) | 10752 bps | 53 rates | Timeout (not supported) |
 
-These values are hardcoded constants (`src/ccid.rs:154,157`) and don't vary per profile. Since `bNumClockSupported = 0` and `bNumDataRatesSupported = 0`, libccid treats these as informational only.
+These values are hardcoded constants (`src/ccid.rs`, const `CLOCK_FREQUENCY_KHZ` and const `DATA_RATE_BPS`) and don't vary per profile. Since `bNumClockSupported = 0` and `bNumDataRatesSupported = 0`, libccid treats these as informational only.
 
 **Verdict**: LOW. Functionally adequate but not profile-accurate.
 
@@ -471,24 +480,24 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 
 ## Appendix A: Source File References
 
-| Component | Firmware File | Key Lines |
-|-----------|--------------|-----------|
-| USB descriptors | `src/ccid.rs` | 1640-1660 |
-| CCID class descriptor | `src/device_profile.rs` | 224-320 |
-| Device profiles | `src/device_profile.rs` | 359-540 |
-| Feature flags | `src/device_profile.rs` | 39-98 |
-| CCID message types | `src/ccid.rs` | 25-68 |
-| Error codes | `src/ccid.rs` | 123-139 |
-| Power on / ATR | `src/ccid.rs` | 586-668 |
-| SetParameters | `src/ccid.rs` | 1017-1087 |
-| Data rate negotiation | `src/ccid.rs` | 725-771 |
-| Escape handling | `src/ccid.rs` | `handle_escape()` |
-| Class requests | `src/ccid.rs` | 1750-1802 |
-| ATR parsing | `src/smartcard.rs` | 88-163, 540-608 |
-| Protocol detection | `src/smartcard.rs` | 611-645 |
-| T=1 engine | `src/t1_engine.rs` | 160-296 |
-| PPS negotiation | `src/pps_fsm.rs` | Full file |
-| USB identity | `src/usb_identity.rs` | Full file |
+| Component | Firmware File | Key Reference |
+|-----------|--------------|---------------|
+| USB descriptors | `src/ccid.rs` | fn `get_configuration_descriptors` |
+| CCID class descriptor | `src/device_profile.rs` | fn `ccid_descriptor` |
+| Device profiles | `src/device_profile.rs` | const `BASE_PROFILE`, const `CURRENT_PROFILE` |
+| Feature flags | `src/device_profile.rs` | consts `FEAT_*` |
+| CCID message types | `src/ccid.rs` | consts `PC_TO_RDR_*`, `RDR_TO_PC_*` |
+| Error codes | `src/ccid.rs` | consts `CCID_ERR_*` |
+| Power on / ATR | `src/ccid.rs` | fn `handle_power_on` |
+| SetParameters | `src/ccid.rs` | fn `handle_set_parameters` |
+| Data rate negotiation | `src/ccid.rs` | fn `handle_set_data_rate_and_clock` |
+| Escape handling | `src/ccid.rs` | fn `handle_escape` |
+| Class requests | `src/ccid.rs` | fn `control_in`, fn `control_out` |
+| ATR parsing | `src/smartcard.rs` | fn `parse_atr`, fn `read_atr` |
+| Protocol detection | `src/smartcard.rs` | fn `detect_protocol_from_atr` |
+| T=1 engine | `src/t1_engine.rs` | fn `transmit_apdu_t1` |
+| PPS negotiation | `src/pps_fsm.rs` | struct `PpsFsm` |
+| USB identity | `src/usb_identity.rs` | consts `USB_*` |
 
 ## Appendix B: libccid Source References
 

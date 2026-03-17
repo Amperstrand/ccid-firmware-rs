@@ -5,6 +5,7 @@
 **Reference Implementations**: osmo-ccid-firmware (`reference/osmo-ccid-firmware/ccid_common/ccid_proto.h`), libccid (`reference/CCID/src/ccid.h`)
 **Audit Date**: 2026-03-17
 **Auditor**: Automated audit (polecat furiosa)
+**Audited Commit**: `1adf2f1` (2026-03-17)
 
 ---
 
@@ -26,8 +27,8 @@ The ccid-firmware-rs implementation achieves **high compliance** with the CCID R
 
 | # | Severity | Finding | Location |
 |---|----------|---------|----------|
-| 1 | **FIXED** | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `src/ccid.rs:121` |
-| 2 | **FIXED** | `wPINMaxExtraDigit` min/max bytes swapped in PIN parsing | `src/pinpad/mod.rs:259,128` |
+| 1 | **FIXED** | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `src/ccid.rs` (const `COMMAND_STATUS_TIME_EXTENSION`) |
+| 2 | **FIXED** | `wPINMaxExtraDigit` min/max bytes swapped in PIN parsing | `src/pinpad/mod.rs` (fn `PinVerifyParams::parse`, fn `PinModifyParams::parse`) |
 
 ---
 
@@ -37,7 +38,7 @@ The ccid-firmware-rs implementation achieves **high compliance** with the CCID R
 
 ### 2.1 Descriptor Structure
 
-The 52-byte CCID class descriptor is generated per-profile in `src/device_profile.rs:224-320`.
+The 52-byte CCID class descriptor is generated per-profile in `src/device_profile.rs` (fn `DeviceProfile::ccid_descriptor`).
 
 | Offset | Field | Spec Requirement | Implementation | Status |
 |--------|-------|-----------------|----------------|--------|
@@ -142,13 +143,14 @@ All message type codes match spec Table 6.1-1 and osmo-ccid reference.
 | 7 | bSpecific | 1 | Command-specific | `self.rx_buffer[7]` | PASS |
 | 8-9 | wLevelParameter | 2 | Level parameter | `self.rx_buffer[8..10]` | PASS |
 
-`CCID_HEADER_SIZE = 10` at `src/ccid.rs:97` -- PASS.
+`CCID_HEADER_SIZE = 10` at `src/ccid.rs` (const `CCID_HEADER_SIZE`) -- PASS.
 
 ### 4.2 Header Validation
 
-The implementation correctly validates minimum header size before parsing (`src/ccid.rs:368-371`):
+The implementation correctly validates minimum header size before parsing (`src/ccid.rs` fn `handle_message`):
 ```rust
 if self.rx_len < CCID_HEADER_SIZE {
+    defmt::warn!("CCID: message too short");
     return;
 }
 ```
@@ -166,19 +168,19 @@ PASS - Header structure and field offsets match spec exactly.
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Message type 0x62 | PASS | `PC_TO_RDR_ICC_POWER_ON = 0x62` |
-| dwLength must be 0x00000000 | PASS | Validated at `ccid.rs:588-603` |
+| dwLength must be 0x00000000 | PASS | Validated in `src/ccid.rs` fn `handle_power_on` |
 | bPowerSelect at byte 7 | PASS | Reads `self.rx_buffer[7]` |
 | bPowerSelect 0x00=Auto | PASS | Default when rx_len <= 7 |
 | bPowerSelect 0x01=5V | PASS | Accepted |
-| bPowerSelect 0x02=3V rejected | PASS | `ccid.rs:621` |
-| bPowerSelect 0x03=1.8V rejected | PASS | `ccid.rs:621` |
-| Response: RDR_to_PC_DataBlock (0x80) | PASS | `ccid.rs:640` |
+| bPowerSelect 0x02=3V rejected | PASS | `src/ccid.rs` fn `handle_power_on` |
+| bPowerSelect 0x03=1.8V rejected | PASS | `src/ccid.rs` fn `handle_power_on` |
+| Response: RDR_to_PC_DataBlock (0x80) | PASS | `src/ccid.rs` fn `handle_power_on` |
 | ATR in response data | PASS | ATR copied to tx_buffer |
-| dwLength in response = ATR length | PASS | `ccid.rs:641` |
-| Error: ICC_MUTE (0xFE) if no card | PASS | `ccid.rs:606-613` |
-| Error: ICC_MUTE (0xFE) if power-on fails | PASS | `ccid.rs:657-666` |
-| Slot state transition to PresentActive | PASS | `ccid.rs:634` |
-| ATR params parsed and stored | PASS | `ccid.rs:635-636` |
+| dwLength in response = ATR length | PASS | `src/ccid.rs` fn `handle_power_on` |
+| Error: ICC_MUTE (0xFE) if no card | PASS | `src/ccid.rs` fn `handle_power_on` |
+| Error: ICC_MUTE (0xFE) if power-on fails | PASS | `src/ccid.rs` fn `handle_power_on` |
+| Slot state transition to PresentActive | PASS | `src/ccid.rs` fn `handle_power_on` |
+| ATR params parsed and stored | PASS | `src/ccid.rs` fn `handle_power_on` |
 
 PASS - Fully compliant.
 
@@ -190,12 +192,12 @@ PASS - Fully compliant.
 |-------------|--------|-------|
 | Message type 0x63 | PASS | |
 | dwLength must be 0 | PASS | Not explicitly validated (acceptable) |
-| Response: RDR_to_PC_SlotStatus (0x81) | PASS | `ccid.rs:823` |
-| bStatus: PresentInactive | PASS | `ccid.rs:828` |
-| bClockStatus: 0x00 | PASS | `ccid.rs:830` |
-| Slot state transition to PresentInactive | PASS | `ccid.rs:820` |
-| Protocol reset to T=0 | PASS | `ccid.rs:821` |
-| Driver power_off called | PASS | `ccid.rs:819` |
+| Response: RDR_to_PC_SlotStatus (0x81) | PASS | `src/ccid.rs` fn `handle_power_off` |
+| bStatus: PresentInactive | PASS | `src/ccid.rs` fn `handle_power_off` |
+| bClockStatus: 0x00 | PASS | `src/ccid.rs` fn `handle_power_off` |
+| Slot state transition to PresentInactive | PASS | `src/ccid.rs` fn `handle_power_off` |
+| Protocol reset to T=0 | PASS | `src/ccid.rs` fn `handle_power_off` |
+| Driver power_off called | PASS | `src/ccid.rs` fn `handle_power_off` |
 
 PASS - Fully compliant.
 
@@ -222,12 +224,12 @@ PASS - Fully compliant.
 | Response: RDR_to_PC_DataBlock (0x80) | PASS | |
 | bBWI handling | OK | Ignored (sync impl) |
 | wLevelParameter handling | OK | Ignored (Short APDU level) |
-| Max data 261 bytes enforced | PASS | `ccid.rs:893-901` |
-| Extended APDU rejection (error 0x07) | PASS | `ccid.rs:895-896` |
-| Card must be PresentActive | PASS | `ccid.rs:881-884` |
-| Error: ICC_MUTE (0xFE) if card not active | PASS | `ccid.rs:882` |
+| Max data 261 bytes enforced | PASS | `src/ccid.rs` fn `handle_xfr_block` |
+| Extended APDU rejection (error 0x07) | PASS | `src/ccid.rs` fn `handle_xfr_block` |
+| Card must be PresentActive | PASS | `src/ccid.rs` fn `handle_xfr_block` |
+| Error: ICC_MUTE (0xFE) if card not active | PASS | `src/ccid.rs` fn `handle_xfr_block` |
 | Response includes APDU response data | PASS | |
-| bChainParameter: 0 (no chaining) | PASS | `ccid.rs:932` |
+| bChainParameter: 0 (no chaining) | PASS | `src/ccid.rs` fn `handle_xfr_block` |
 
 PASS - Compliant. bBWI and wLevelParameter are for async/TPDU modes not applicable to synchronous Short APDU implementation.
 
@@ -239,8 +241,8 @@ PASS - Compliant. bBWI and wLevelParameter are for async/TPDU modes not applicab
 |-------------|--------|-------|
 | Message type 0x6C | PASS | |
 | Response: RDR_to_PC_Parameters (0x82) | PASS | |
-| T=0 params: 5 bytes (Table 6.2-3) | PASS | `ccid.rs:980-996` |
-| T=1 params: 7 bytes (Table 6.2-3) | PASS | `ccid.rs:960-978` |
+| T=0 params: 5 bytes (Table 6.2-3) | PASS | `src/ccid.rs` fn `handle_get_parameters` |
+| T=1 params: 7 bytes (Table 6.2-3) | PASS | `src/ccid.rs` fn `handle_get_parameters` |
 | bmFindexDindex from ATR TA1 | PASS | Uses p.ta1 or default 0x11 |
 | bmTCCKST0/bmTCCKST1 | PASS | EDC type from ATR TC |
 | bGuardTimeT0/bGuardTimeT1 | PASS | From ATR TC1 |
@@ -261,10 +263,10 @@ PASS - Compliant. Parameters are derived from ATR as required.
 |-------------|--------|-------|
 | Message type 0x61 | PASS | |
 | Response: RDR_to_PC_Parameters (0x82) | PASS | |
-| dwLength: 5 for T=0, 7 for T=1 | PASS | `ccid.rs:1034-1042` |
+| dwLength: 5 for T=0, 7 for T=1 | PASS | `src/ccid.rs` fn `handle_set_parameters` |
 | bProtocolNum at byte 7 | **DEVIATION** | Inferred from dwLength instead |
 
-**Deviation Detail**: The spec §6.1.7 defines bProtocolNum at offset 7 (after bSeq). Our code ignores this field and infers the protocol from dwLength (5 bytes = T=0, 7 bytes = T=1). This is because libccid (the primary host-side driver) sends the protocol data structure WITHOUT the bProtocolNum prefix -- it sends only the protocol data bytes, not the bProtocolNum byte. This is a well-known libccid quirk documented at `ccid.rs:1015-1025`.
+**Deviation Detail**: The spec §6.1.7 defines bProtocolNum at offset 7 (after bSeq). Our code ignores this field and infers the protocol from dwLength (5 bytes = T=0, 7 bytes = T=1). This is because libccid (the primary host-side driver) sends the protocol data structure WITHOUT the bProtocolNum prefix -- it sends only the protocol data bytes, not the bProtocolNum byte. This is a well-known libccid quirk documented in `src/ccid.rs` fn `handle_set_parameters`.
 
 **Impact**: Low. All major host drivers (libccid, Windows CCID) follow this behavior.
 
@@ -278,8 +280,8 @@ PASS with documented deviation.
 |-------------|--------|-------|
 | Message type 0x6D | PASS | |
 | Response: RDR_to_PC_Parameters (0x82) | PASS | |
-| Resets to T=0 defaults | PASS | `ccid.rs:687-688` |
-| Default: Fi=372, Di=1 (bmFindexDindex=0x11) | PASS | `ccid.rs:691` |
+| Resets to T=0 defaults | PASS | `src/ccid.rs` fn `handle_reset_parameters` |
+| Default: Fi=372, Di=1 (bmFindexDindex=0x11) | PASS | `src/ccid.rs` fn `handle_reset_parameters` |
 | 5-byte T=0 protocol data | PASS | |
 
 PASS - Fully compliant.
@@ -292,11 +294,11 @@ PASS - Fully compliant.
 |-------------|--------|-------|
 | Message type 0x6E | PASS | |
 | Response: RDR_to_PC_SlotStatus (0x81) | PASS | |
-| bClockCommand at byte 7 | PASS | `ccid.rs:793-797` |
-| 0x00 = Restart clock | PASS | `ccid.rs:798` |
-| 0x01 = Stop clock | PASS | `ccid.rs:798` |
+| bClockCommand at byte 7 | PASS | `src/ccid.rs` fn `handle_icc_clock` |
+| 0x00 = Restart clock | PASS | `src/ccid.rs` fn `handle_icc_clock` |
+| 0x01 = Stop clock | PASS | `src/ccid.rs` fn `handle_icc_clock` |
 | bClockStatus in response | PASS | 0x00=running, 0x01=stopped |
-| Card must be PresentActive | PASS | `ccid.rs:789-792` |
+| Card must be PresentActive | PASS | `src/ccid.rs` fn `handle_icc_clock` |
 | Error: ICC_MUTE if not active | PASS | |
 
 PASS - Fully compliant.
@@ -308,20 +310,20 @@ PASS - Fully compliant.
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Message type 0x69 | PASS | |
-| bmPINOperation at offset 10 | PASS | `ccid.rs:1131` |
-| 0x00 = PIN Verify | PASS | `ccid.rs:1134-1151` |
-| 0x01 = PIN Modify | PASS | `ccid.rs:1153-1169` |
+| bmPINOperation at offset 10 | PASS | `src/ccid.rs` fn `handle_secure` |
+| 0x00 = PIN Verify | PASS | `src/ccid.rs` fn `handle_secure` |
+| 0x01 = PIN Modify | PASS | `src/ccid.rs` fn `handle_secure` |
 | Response: RDR_to_PC_DataBlock (0x80) | PASS | Deferred response |
-| Error: PIN_CANCELLED (0xEF) | PASS | `ccid.rs:1258-1264` |
-| Error: PIN_TIMEOUT (0xF0) | PASS | `ccid.rs:1269-1275` |
-| Error: CMD_ABORTED (0xFF) | PASS | `ccid.rs:1285` |
+| Error: PIN_CANCELLED (0xEF) | PASS | `src/ccid.rs` fn `complete_pin_entry` |
+| Error: PIN_TIMEOUT (0xF0) | PASS | `src/ccid.rs` fn `complete_pin_entry` |
+| Error: CMD_ABORTED (0xFF) | PASS | `src/ccid.rs` fn `complete_pin_entry` |
 | PIN Verify Data Structure parsing | **FIXED** | See finding #2 below |
 | PIN Modify Data Structure parsing | **FIXED** | See finding #2 below |
 | Deferred response model | OK | Touchscreen entry |
 
 **Finding #2: wPINMaxExtraDigit min/max byte swap [FIXED]**
 
-In both `PinVerifyParams::parse` (`src/pinpad/mod.rs:259`) and `PinModifyParams::parse` (`src/pinpad/mod.rs:128`), the min and max PIN lengths were read from swapped byte positions:
+In both `PinVerifyParams::parse` (`src/pinpad/mod.rs` fn `PinVerifyParams::parse`) and `PinModifyParams::parse` (`src/pinpad/mod.rs` fn `PinModifyParams::parse`), the min and max PIN lengths were read from swapped byte positions:
 
 ```rust
 // Previous (incorrect):
@@ -362,11 +364,11 @@ let max_len = data[5];  // high byte = max
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Message type 0x73 | PASS | |
-| dwClockFrequency at offset 10-13 | PASS | `ccid.rs:736-741` |
-| dwDataRate at offset 14-17 | PASS | `ccid.rs:742-747` |
+| dwClockFrequency at offset 10-13 | PASS | `src/ccid.rs` fn `handle_set_data_rate_and_clock` |
+| dwDataRate at offset 14-17 | PASS | `src/ccid.rs` fn `handle_set_data_rate_and_clock` |
 | Response: RDR_to_PC_DataRateAndClockFrequency (0x84) | PASS | |
-| Returns actual clock and rate | PASS | `ccid.rs:758-759` |
-| Minimum message length check | PASS | `ccid.rs:726-735` |
+| Returns actual clock and rate | PASS | `src/ccid.rs` fn `handle_set_data_rate_and_clock` |
+| Minimum message length check | PASS | `src/ccid.rs` fn `handle_set_data_rate_and_clock` |
 
 PASS - Fully compliant.
 
@@ -409,12 +411,12 @@ Returns `CCID_ERR_CMD_NOT_SUPPORTED`. No mechanical card handling hardware prese
 
 **Finding #1: COMMAND_STATUS_TIME_EXTENSION constant value — FIXED**
 
-At `src/ccid.rs:121`:
+At `src/ccid.rs` (const `COMMAND_STATUS_TIME_EXTENSION`):
 ```rust
 pub const COMMAND_STATUS_TIME_EXTENSION: u8 = 0x02;
 ```
 
-The `build_status` function at `src/ccid.rs:513-515` shifts command status left by 6 bits:
+The `build_status` function at `src/ccid.rs` (fn `build_status`) shifts command status left by 6 bits:
 ```rust
 fn build_status(cmd_status: u8, icc_status: u8) -> u8 {
     (cmd_status << 6) | icc_status
@@ -495,7 +497,7 @@ Used only for error responses when Escape command is rejected. Structure matches
 | 0x01 | ICC present but inactive | `ICC_STATUS_PRESENT_INACTIVE` / `SlotState::PresentInactive` | PASS |
 | 0x02 | No ICC present | `ICC_STATUS_NO_ICC` / `SlotState::Absent` | PASS |
 
-PASS at `src/ccid.rs:106-110, 482-488`.
+PASS at `src/ccid.rs` (consts `ICC_STATUS_PRESENT_ACTIVE`, `ICC_STATUS_PRESENT_INACTIVE`, `ICC_STATUS_NO_ICC`; fn `get_icc_status`).
 
 ### 7.2 bmCommandStatus (bits 6-7 of bStatus)
 
@@ -544,7 +546,7 @@ This correctly places bmCommandStatus in bits 6-7 and bmICCStatus in bits 0-1. P
 | 0xFE | ICC_MUTE | `CCID_ERR_ICC_MUTE` | PASS |
 | 0xFF | CMD_ABORTED | `CCID_ERR_CMD_ABORTED` | PASS |
 
-All 16 error codes match spec values at `src/ccid.rs:124-139`. PASS.
+All 16 error codes match spec values at `src/ccid.rs` (consts `CCID_ERR_CMD_NOT_SUPPORTED` through `CCID_ERR_CMD_ABORTED`). PASS.
 
 ---
 
@@ -563,7 +565,7 @@ bmSlotICCState bit layout per spec:
 - Bit 0: ICC present (0=absent, 1=present)
 - Bit 1: ICC state changed (0=no change, 1=changed)
 
-Implementation at `src/ccid.rs:500-510` correctly sets these bits. Card state change detection at `src/ccid.rs:1662-1688` correctly triggers notification and resets state on card removal.
+Implementation at `src/ccid.rs` (fn `send_notify_slot_change`) correctly sets these bits. Card state change detection at `src/ccid.rs` (fn `poll`, impl `UsbClass`) correctly triggers notification and resets state on card removal.
 
 PASS - Fully compliant.
 
@@ -585,7 +587,7 @@ Not implemented. No hardware fault detection sensors available. N/A for this har
 
 | Requirement | Status | Notes |
 |-------------|--------|-------|
-| wValue: slot in low byte, seq in high byte | PASS | `ccid.rs:1794-1795` |
+| wValue: slot in low byte, seq in high byte | PASS | `src/ccid.rs` (fn `control_out`, match arm `REQUEST_ABORT`) |
 | Accepts request | PASS | `transfer.accept()` |
 | Actual abort logic | STUB | Acceptable for single-slot sync reader |
 
@@ -596,7 +598,7 @@ Not implemented. No hardware fault detection sensors available. N/A for this har
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Returns array of supported clock frequencies | PASS | Single 4-byte DWORD = continuous range |
-| bNumClockSupported=0 confirms continuous | PASS | `device_profile.rs:378` |
+| bNumClockSupported=0 confirms continuous | PASS | `src/device_profile.rs` (struct `BASE_PROFILE`, field `num_clocks`) |
 
 ### 10.3 GET_DATA_RATES (bRequest = 0x03)
 
@@ -605,7 +607,7 @@ Not implemented. No hardware fault detection sensors available. N/A for this har
 | Requirement | Status | Notes |
 |-------------|--------|-------|
 | Returns array of supported data rates | PASS | Single 4-byte DWORD = continuous range |
-| bNumDataRatesSupported=0 confirms continuous | PASS | `device_profile.rs:381` |
+| bNumDataRatesSupported=0 confirms continuous | PASS | `src/device_profile.rs` (struct `BASE_PROFILE`, field `num_data_rates`) |
 
 ---
 
@@ -656,8 +658,8 @@ PASS - Both T=0 and T=1 protocol data structures match spec Table 6.2-3.
 
 | # | Severity | Description | File:Line | Fix |
 |---|----------|-------------|----------|-----|
-| 1 | Minor | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `ccid.rs:121` | **FIXED** |
-| 2 | Minor | `wPINMaxExtraDigit` min/max bytes swapped in `PinVerifyParams::parse` and `PinModifyParams::parse` | `pinpad/mod.rs:259,128` | Swap `max_len` and `min_len` assignments |
+| 1 | Minor | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `src/ccid.rs` (const `COMMAND_STATUS_TIME_EXTENSION`) | **FIXED** |
+| 2 | Minor | `wPINMaxExtraDigit` min/max bytes swapped in `PinVerifyParams::parse` and `PinModifyParams::parse` | `src/pinpad/mod.rs` (fn `PinVerifyParams::parse`, fn `PinModifyParams::parse`) | Swap `max_len` and `min_len` assignments |
 
 ### Documented Deviations (Acceptable)
 
@@ -687,7 +689,7 @@ For full rationale behind each deviation, see [DESIGN_DECISIONS.md](DESIGN_DECIS
 ### High Priority
 
 1. ~~Fix `COMMAND_STATUS_TIME_EXTENSION` constant value (`0x80` → `0x02`)~~ **DONE**
-2. Fix `wPINMaxExtraDigit` min/max byte swap in PIN parsing
+2. ~~Fix `wPINMaxExtraDigit` min/max byte swap in PIN parsing~~ **DONE**
 
 ### Medium Priority
 
@@ -707,9 +709,9 @@ The following unit tests exist and should pass for this audit:
 
 | Test | File | What it verifies |
 |------|------|-----------------|
-| `test_cherry_st2100_descriptor_size` | `device_profile.rs:565` | Descriptor is 52 bytes |
-| `test_cherry_st2100_bcd_ccid` | `device_profile.rs:571` | bcdCCID is 0x0110 |
-| `test_cherry_st2100_protocols` | `device_profile.rs:579` | dwProtocols = 3 (T=0+T=1) |
-| `test_cherry_st2100_max_message_length` | `device_profile.rs:609` | dwMaxCCIDMessageLength = 271 |
-| `test_fi_di_tables` | `pps_fsm.rs:412` | Fi/Di mapping tables |
-| `test_ccid_status_byte_packing` | `protocol_unit.rs:231` | bStatus packing |
+| `test_cherry_st2100_descriptor_size` | `src/device_profile.rs` (fn `test_cherry_st2100_descriptor_size`) | Descriptor is 52 bytes |
+| `test_cherry_st2100_bcd_ccid` | `src/device_profile.rs` (fn `test_cherry_st2100_bcd_ccid`) | bcdCCID is 0x0110 |
+| `test_cherry_st2100_protocols` | `src/device_profile.rs` (fn `test_cherry_st2100_protocols`) | dwProtocols = 3 (T=0+T=1) |
+| `test_cherry_st2100_max_message_length` | `src/device_profile.rs` (fn `test_cherry_st2100_max_message_length`) | dwMaxCCIDMessageLength = 271 |
+| `test_fi_di_tables` | `src/pps_fsm.rs` (fn `test_fi_di_tables`) | Fi/Di mapping tables |
+| `test_ccid_status_byte_packing` | `src/protocol_unit.rs` (fn `test_ccid_status_byte_packing`) | bStatus packing |
