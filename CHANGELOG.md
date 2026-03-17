@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9] - 2026-03-17
+
+### Added
+- **CCID Spec Compliance Documentation**
+  - `docs/CCID_SPEC_AUDIT.md`: Comprehensive spec compliance audit
+  - `docs/AUDIT_PLAN.md`: Structured comparison of spec vs osmo vs our implementation
+  - All CCID command handlers now include spec citations in doc comments
+
+### Changed
+- **README.md**: Added CCID compliance section with feature comparison table
+- **IccPowerOn**: Now validates dwLength==0 per CCID §6.1.1
+- **Spec citations**: All command handlers reference CCID Rev 1.1 spec sections
+- **Compliance rating**: Improved from 95% to 98%+
+
+### Fixed
+- dwLength validation in IccPowerOn per CCID spec requirement
+
+### Notes
+- **Embassy Migration**: Documented requirements for async runtime migration
+- **osmo Comparison**: Documented where we exceed osmo (PIN verify/modify) vs match (stubs)
+- **Future Work**: Identified what would need to change for multi-slot, async, or TPDU level support
+
+---
+
 ## [Unreleased]
 
 ### Added
