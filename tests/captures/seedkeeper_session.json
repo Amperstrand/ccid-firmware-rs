@@ -1,0 +1,151 @@
+{
+  "metadata": {
+    "reader": "Gemalto PC Twin Reader",
+    "reader_vid": "08E6",
+    "reader_pid": "3437",
+    "card": "SeedKeeper",
+    "timestamp": "2026-03-17",
+    "total_messages": 24,
+    "capture_method": "pcscd_debug_log_LIBCCID_COMM_level",
+    "capture_tool": "pcscd -d -f -a with ifdLogLevel=0x0007"
+  },
+  "session": {
+    "atr": "3BFA1800008131FE454A546178436F72655631B2",
+    "protocol": "T=1",
+    "operations": [
+      "init_slot_status",
+      "get_firmware_features_escape",
+      "icc_power_on_init",
+      "icc_power_off_init",
+      "icc_power_on_connect",
+      "pps_negotiation",
+      "set_parameters_t1",
+      "ifs_negotiation",
+      "select_aid_seedkeeper",
+      "verify_pin_1234",
+      "icc_power_off_disconnect"
+    ]
+  },
+  "messages": [
+    {
+      "dir": "tx",
+      "raw": "65 00 00 00 00 00 00 00 00 00",
+      "note": "GET_SLOT_STATUS (init)"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 00 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT"
+    },
+    {
+      "dir": "tx",
+      "raw": "65 00 00 00 00 00 01 00 00 00",
+      "note": "GET_SLOT_STATUS (init 2)"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 01 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT"
+    },
+    {
+      "dir": "tx",
+      "raw": "6B 01 00 00 00 00 02 00 00 00 6A",
+      "note": "ESCAPE: GET_FIRMWARE_FEATURES (0x6A)"
+    },
+    {
+      "dir": "rx",
+      "raw": "83 00 00 00 00 00 02 41 0A 00",
+      "note": "ESCAPE: FAILED (bmStatus=0x41 CMD_FAILED, bError=0x0A)"
+    },
+    {
+      "dir": "tx",
+      "raw": "62 00 00 00 00 00 06 01 00 00",
+      "note": "ICC_POWER_ON (auto voltage)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 14 00 00 00 00 06 00 00 00 3B FA 18 00 00 81 31 FE 45 4A 54 61 78 43 6F 72 65 56 31 B2",
+      "note": "DATABLOCK: ATR (20 bytes)"
+    },
+    {
+      "dir": "tx",
+      "raw": "63 00 00 00 00 00 09 00 00 00",
+      "note": "ICC_POWER_OFF (init cleanup)"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 09 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT (card still there)"
+    },
+    {
+      "dir": "tx",
+      "raw": "62 00 00 00 00 00 0C 01 00 00",
+      "note": "ICC_POWER_ON (auto voltage)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 14 00 00 00 00 0C 00 00 00 3B FA 18 00 00 81 31 FE 45 4A 54 61 78 43 6F 72 65 56 31 B2",
+      "note": "DATABLOCK: ATR (20 bytes)"
+    },
+    {
+      "dir": "tx",
+      "raw": "6F 04 00 00 00 00 0D 00 00 00 FF 11 18 F6",
+      "note": "XFRBLOCK: PPS request (FF 11 18 F6)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 04 00 00 00 00 0D 00 00 00 FF 11 18 F6",
+      "note": "DATABLOCK: PPS confirm (FF 11 18 F6)"
+    },
+    {
+      "dir": "tx",
+      "raw": "61 07 00 00 00 00 0E 01 00 00 18 10 00 45 00 FE 00",
+      "note": "SETPARAMETERS: T=1, IFSC=254, BWI=1, CWI=4, CKI=0"
+    },
+    {
+      "dir": "rx",
+      "raw": "82 07 00 00 00 00 0E 00 00 01 18 10 00 45 00 FE 00",
+      "note": "PARAMETERS: T=1 echo, bChain=0x01"
+    },
+    {
+      "dir": "tx",
+      "raw": "6F 05 00 00 00 00 0F 00 00 00 00 C1 01 FE 3E",
+      "note": "XFRBLOCK: IFS request S-block (IFSD=254)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 05 00 00 00 00 0F 00 00 00 00 E1 01 FE 1E",
+      "note": "DATABLOCK: IFS response S-block (IFSC=254)"
+    },
+    {
+      "dir": "tx",
+      "raw": "6F 0C 00 00 00 00 10 00 00 00 00 00 08 A0 00 00 00 62 01 01 00 CA",
+      "note": "XFRBLOCK: SELECT AID (T=1 I-Block, APDU=A000000062010100)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 06 00 00 00 00 10 00 00 00 00 00 02 67 00 65",
+      "note": "DATABLOCK: SELECT response (T=1 I-Block, SW=6700)"
+    },
+    {
+      "dir": "tx",
+      "raw": "6F 0E 00 00 00 00 11 00 00 00 00 40 0A 00 20 00 81 04 31 32 33 34 FF 14",
+      "note": "XFRBLOCK: VERIFY PIN (T=1 I-Block, APDU=002000810431323334FF)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 06 00 00 00 00 11 00 00 00 00 40 02 6E 00 2C",
+      "note": "DATABLOCK: VERIFY response (T=1 I-Block, SW=6E00)"
+    },
+    {
+      "dir": "tx",
+      "raw": "63 00 00 00 00 00 13 00 00 00",
+      "note": "ICC_POWER_OFF (disconnect)"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 13 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT (card still there)"
+    }
+  ]
+}

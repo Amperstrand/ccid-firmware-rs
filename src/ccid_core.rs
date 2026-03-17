@@ -39,9 +39,9 @@ pub const PACKET_SIZE: usize = 64;
 pub const CCID_HEADER_SIZE: usize = 10;
 pub const MAX_CCID_MESSAGE_LENGTH: usize = 271;
 
-pub const ICC_STATUS_PRESENT_ACTIVE: u8 = 0x00;
+pub const ICC_STATUS_NO_ICC: u8 = 0x00;
 pub const ICC_STATUS_PRESENT_INACTIVE: u8 = 0x01;
-pub const ICC_STATUS_NO_ICC: u8 = 0x02;
+pub const ICC_STATUS_PRESENT_ACTIVE: u8 = 0x02;
 
 pub const COMMAND_STATUS_NO_ERROR: u8 = 0x00;
 pub const COMMAND_STATUS_FAILED: u8 = 0x01;
@@ -285,7 +285,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn build_status(cmd_status: u8, icc_status: u8) -> u8 {
-        (cmd_status << 6) | icc_status
+        (cmd_status << 6) | (icc_status << 2)
     }
 
     fn send_err_resp(&mut self, msg_type: u8, seq: u8, error: u8) {
@@ -530,6 +530,54 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.send_slot_status(seq, COMMAND_STATUS_NO_ERROR, icc_status, 0);
     }
 
+    fn intercept_xfr_special(&mut self, data: &[u8], data_len: usize, seq: u8) -> bool {
+        if data_len >= 3 && data_len <= 5 && data[0] == 0xFF {
+            let pps0 = data[1];
+            if (pps0 & 0xE0) == 0x00 && pps0 != 0x00 {
+                ccid_info!("CCID: XfrBlock PPS request intercepted");
+                let status = Self::build_status(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE);
+                self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
+                self.tx_buffer[1..5].copy_from_slice(&(data_len as u32).to_le_bytes());
+                self.tx_buffer[5] = 0;
+                self.tx_buffer[6] = seq;
+                self.tx_buffer[7] = status;
+                self.tx_buffer[8] = 0;
+                self.tx_buffer[9] = 0;
+                self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + data_len]
+                    .copy_from_slice(&data[..data_len]);
+                self.tx_len = CCID_HEADER_SIZE + data_len;
+                return true;
+            }
+        }
+
+        if data_len == 5 && data[0] == 0x00 && (data[1] == 0xC1 || data[1] == 0xE1) {
+            let lrc_check: u8 = data.iter().take(4).fold(0u8, |a, &b| a ^ b);
+            if lrc_check == data[4] {
+                ccid_info!("CCID: XfrBlock S(IFS) request intercepted");
+                let mut resp = [0u8; 5];
+                resp[0] = 0x00;
+                resp[1] = if data[1] == 0xC1 { 0xE1 } else { 0xC1 };
+                resp[2] = data[2];
+                resp[3] = data[3];
+                resp[4] = 0;
+                resp[4] = resp.iter().fold(0u8, |a, &b| a ^ b);
+                let status = Self::build_status(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE);
+                self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
+                self.tx_buffer[1..5].copy_from_slice(&5u32.to_le_bytes());
+                self.tx_buffer[5] = 0;
+                self.tx_buffer[6] = seq;
+                self.tx_buffer[7] = status;
+                self.tx_buffer[8] = 0;
+                self.tx_buffer[9] = 0;
+                self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + 5].copy_from_slice(&resp);
+                self.tx_len = CCID_HEADER_SIZE + 5;
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn handle_xfr_block(&mut self, seq: u8) {
         if self.slot_state != SlotState::PresentActive {
             self.send_slot_status(seq, COMMAND_STATUS_FAILED, self.get_icc_status(), 0xFE);
@@ -549,12 +597,24 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             return;
         }
 
-        let apdu = &self.rx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + data_len];
-        ccid_info!("CCID: XfrBlock APDU len={}", data_len,);
+        let data_start = CCID_HEADER_SIZE;
+        let data_end = CCID_HEADER_SIZE + data_len;
+        let mut apdu_buf = [0u8; 261];
+        let copy_len = data_len.min(261);
+        apdu_buf[..copy_len].copy_from_slice(&self.rx_buffer[data_start..data_end]);
+
+        if self.intercept_xfr_special(&apdu_buf[..copy_len], copy_len, seq) {
+            return;
+        }
+
+        ccid_info!("CCID: XfrBlock APDU len={}", copy_len,);
         let mut response_buf = [0u8; MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE];
         let resp_len: usize;
 
-        match self.driver.transmit_apdu(apdu, &mut response_buf) {
+        match self
+            .driver
+            .transmit_apdu(&apdu_buf[..copy_len], &mut response_buf)
+        {
             Ok(len) => {
                 resp_len = len;
                 ccid_info!("CCID: XfrBlock OK resp_len={}", resp_len);

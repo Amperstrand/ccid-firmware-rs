@@ -137,7 +137,7 @@ impl CcidResponse {
     }
 
     pub fn icc_status(&self) -> u8 {
-        self.b_status & 0x03
+        (self.b_status >> 2) & 0x0F
     }
 
     pub fn is_success(&self) -> bool {

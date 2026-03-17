@@ -9,7 +9,7 @@ use crate::pps_fsm::{di_from_ta1, fi_from_ta1, PpsFsm, PpsState};
 
 use core::convert::Infallible;
 
-use crate::t1_engine::{transmit_apdu_t1, T1Error, T1Transport};
+use crate::t1_engine::T1Transport;
 use stm32f4xx_hal::gpio::{
     gpioa::{PA2, PA4},
     gpioc::{PC2, PC5},
@@ -399,11 +399,36 @@ impl SmartcardUart {
         }
 
         let mut fsm = PpsFsm::new();
-        let req = fsm.build_request(params.protocol, params.ta1);
+        let req = fsm.build_minimal_request(params.protocol);
 
-        defmt::info!("PPS: sending {} bytes", req.len());
+        defmt::info!("PPS: sending {} bytes (minimal, no PPS1)", req.len());
         for &b in req {
             self.send_byte(b).map_err(|_| ())?;
+        }
+
+        // Allow half-duplex line to settle after TX before enabling RX.
+        // The card needs guard time + a few ETUs to turn around and respond.
+        // At 11290 baud, 1 ETU ≈ 89μs; 2ms gives ~22 ETUs of margin.
+        Self::delay_ms(2);
+
+        // Drain any TX echo bytes and clear USART error flags.
+        let mut drained = 0u32;
+        loop {
+            let sr = self.usart.sr().read().bits();
+            if (sr & ((1 << 5) | (1 << 3))) != 0 {
+                let _ = self.usart.dr().read().dr().bits();
+                drained += 1;
+            } else {
+                break;
+            }
+        }
+        // Clear any residual FE/PE/NE flags by reading SR then DR if ORE set
+        let sr = self.usart.sr().read().bits();
+        if (sr & (1 << 3)) != 0 {
+            let _ = self.usart.dr().read().dr().bits();
+        }
+        if drained > 0 {
+            defmt::debug!("PPS: drained {} echo bytes", drained);
         }
 
         fsm.start_response();
@@ -414,8 +439,7 @@ impl SmartcardUart {
                 Ok(byte) => {
                     let state = fsm.process_byte(byte);
                     if state == PpsState::Done {
-                        self.set_baud_from_fi_di(params.fi, params.di);
-                        defmt::info!("PPS: success, Fi={} Di={}", params.fi, params.di);
+                        defmt::info!("PPS: success (minimal, protocol confirmed)");
                         return Ok(());
                     } else if state == PpsState::Failed {
                         defmt::warn!("PPS: negotiation failed");
@@ -546,6 +570,15 @@ impl SmartcardUart {
         self.protocol = 0;
         self.ifsc = 32;
         self.t1_ns = 0;
+        // Restore USART to ATR convention for next cold reset:
+        // 1.5 stop bits (CR2 STOP=11), 16 ETU guard time (GTPR GT=16)
+        self.usart
+            .cr2()
+            .modify(|r, w| unsafe { w.bits(r.bits() | 0x3000) });
+        let psc = self.usart.gtpr().read().bits() & 0xFF;
+        self.usart
+            .gtpr()
+            .write(|w| unsafe { w.bits((16u16 << 8) | psc) });
     }
 
     /// Clear USART error flags (ORE/PE/FE). Reading DR clears ORE per STM32 ref manual.
@@ -685,21 +718,7 @@ impl SmartcardUart {
             defmt::warn!("APDU too short len={}", command.len());
         }
         if self.protocol == 1 {
-            let ifsc = self.ifsc;
-            let mut ns = self.t1_ns;
-            let result = transmit_apdu_t1(self, ifsc, &mut ns, command, response).map_err(|e| {
-                match &e {
-                    T1Error::Transport(se) => defmt::warn!("T=1 Transport err={}", se),
-                    T1Error::LrcMismatch => defmt::warn!("T=1 LrcMismatch"),
-                    T1Error::Timeout => defmt::warn!("T=1 Timeout"),
-                }
-                match e {
-                    T1Error::Transport(se) => se,
-                    T1Error::LrcMismatch | T1Error::Timeout => SmartcardError::ProtocolError,
-                }
-            });
-            self.t1_ns = ns;
-            result
+            self.transmit_raw(command, response)
         } else {
             self.transmit_apdu_t0(command, response)
         }

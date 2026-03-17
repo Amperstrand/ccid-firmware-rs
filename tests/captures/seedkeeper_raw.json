@@ -1,0 +1,12 @@
+{
+  "metadata": {
+    "reader": "Gemalto PC Twin Reader",
+    "reader_vid": "08E6",
+    "reader_pid": "3437",
+    "card": "SeedKeeper",
+    "timestamp": "2026-03-17T14:38:39Z",
+    "total_messages": 0,
+    "capture_method": "raw_usb_bulk"
+  },
+  "messages": []
+}
