@@ -17,6 +17,9 @@ bench = false
 
 [dependencies]
 
+[target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]
+log = "0.4"
+
 [target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
 cortex-m = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"

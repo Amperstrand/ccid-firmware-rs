@@ -36,9 +36,7 @@ use panic_probe as _;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod app_enum;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
-mod device_profile;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-mod pinpad;
+mod ccid;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod pps_fsm;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
@@ -47,6 +45,9 @@ mod smartcard;
 mod t1_engine;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod usb_identity;
+
+#[cfg(feature = "display")]
+use ccid_firmware_rs::pinpad;
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use cortex_m_rt::entry;
@@ -71,12 +72,6 @@ use usb_device::endpoint::In;
 use usb_device::prelude::*;
 
 #[cfg(feature = "display")]
-use crate::pinpad::ui::{
-    ButtonId, Keypad, TouchHandler, BUTTON_SIZE, COLOR_ACCENT, COLOR_BG, COLOR_TEXT,
-};
-#[cfg(feature = "display")]
-use crate::pinpad::{PinEntryContext, PinModifyContext, PinModifyStep};
-#[cfg(feature = "display")]
 use board::hal::ltdc::{Layer, PixelFormat};
 #[cfg(feature = "display")]
 use board::lcd;
@@ -84,6 +79,12 @@ use board::lcd;
 use board::sdram::{alt, sdram_pins, Sdram};
 #[cfg(feature = "display")]
 use board::touch;
+#[cfg(feature = "display")]
+use ccid_firmware_rs::pinpad::ui::{
+    ButtonId, Keypad, TouchHandler, BUTTON_SIZE, COLOR_ACCENT, COLOR_BG, COLOR_TEXT,
+};
+#[cfg(feature = "display")]
+use ccid_firmware_rs::pinpad::{PinEntryContext, PinModifyContext, PinModifyStep};
 #[cfg(feature = "display")]
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
@@ -95,9 +96,6 @@ use embedded_graphics::{
 };
 #[cfg(feature = "display")]
 use stm32f469i_disc as board;
-
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-mod ccid;
 
 #[cfg(feature = "display")]
 use app_enum::AppEnumerationState;

@@ -7,7 +7,7 @@
 
 #![cfg(feature = "display")]
 
-use crate::ccid::SmartcardDriver;
+use ccid_firmware_rs::driver::SmartcardDriver;
 
 /// Number of known applications
 pub const APP_COUNT: usize = 5;

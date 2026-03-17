@@ -7,16 +7,26 @@
 //! Reference: https://ccid.apdu.fr/ccid/section.html (PIN pad reader identities)
 
 #![cfg_attr(not(test), no_std)]
-#![allow(dead_code)] // PIN pad scaffolding not yet in use
-#![allow(unused_imports)] // Public re-exports for future use
-#![allow(clippy::identity_op)] // XOR with 0 for LRC clarity
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(clippy::identity_op)]
 #![allow(clippy::manual_div_ceil)]
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::manual_is_multiple_of)]
 
+#[macro_use]
+mod logging;
+
+pub mod ccid_core;
+pub mod driver;
 pub mod pinpad;
 pub mod protocol_unit;
+
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod device_profile;
+
+pub mod mock_driver;
 
 pub use pinpad::PinModifyParams;
 #[cfg(feature = "display")]

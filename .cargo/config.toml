@@ -2,8 +2,5 @@
 runner = "probe-rs run --chip STM32F469NIHx"
 rustflags = ["-C", "link-arg=-Tlink.x", "-C", "link-arg=-Tdefmt.x", "--remap-path-prefix", "${PWD}="]
 
-[build]
-target = "thumbv7em-none-eabihf"
-
 [env]
 DEFMT_LOG = "info"

@@ -18,8 +18,8 @@ fn test_full_pin_entry_flow_user_pin() {
         0x82, // bmFormatString = ASCII, left justified
         0x00, // bmPINBlockString
         0x00, // bmPINLengthFormat
-        8,    // wPINMaxExtraDigit high = max 8
-        6,    // wPINMaxExtraDigit low = min 6
+        6,    // wPINMaxExtraDigit high byte = min 6 (DD-2: byte swap)
+        8,    // wPINMaxExtraDigit low byte = max 8 (DD-2: byte swap)
         0x02, // bEntryValidationCondition = validation key
         1,    // bNumberMessage
         0x09, 0x04, // wLangId = 0x0409 (English)

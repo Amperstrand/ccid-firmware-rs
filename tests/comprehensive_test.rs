@@ -482,9 +482,10 @@ fn test_parse_params_extreme_lengths() {
     data[14] = 0x00;
     data[15] = 0x81;
 
-    // Max = 255, Min = 0
-    data[4] = 255;
-    data[5] = 0;
+    // wPINMaxExtraDigit: max in low byte, min in high byte (DD-2: byte swap fix)
+    // Max = 255 (low byte), Min = 0 (high byte)
+    data[4] = 0; // min (high byte)
+    data[5] = 255; // max (low byte)
 
     let params = PinVerifyParams::parse(&data).unwrap();
     assert_eq!(params.max_len, 255);

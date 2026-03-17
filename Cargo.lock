@@ -58,6 +58,7 @@ dependencies = [
  "embedded-alloc",
  "embedded-graphics",
  "embedded-hal 0.2.7",
+ "log",
  "panic-probe 0.3.2",
  "stm32f469i-disc",
  "stm32f4xx-hal",
@@ -354,6 +355,12 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "log"
+version = "0.4.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "micromath"

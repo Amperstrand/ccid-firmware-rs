@@ -5,7 +5,7 @@
 //! This module provides backward compatibility for code that expects
 //! these constants directly.
 
-use crate::device_profile::CURRENT_PROFILE;
+use ccid_firmware_rs::device_profile::CURRENT_PROFILE;
 
 /// USB Vendor ID from active device profile
 pub const USB_VENDOR_ID: u16 = CURRENT_PROFILE.vendor_id;
