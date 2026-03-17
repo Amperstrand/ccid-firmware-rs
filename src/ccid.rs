@@ -584,6 +584,24 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     /// - ICC_MUTE (0xFE): No card present or power-on failed
     /// - CMD_NOT_SUPPORTED (0x00): Voltage not supported
     fn handle_power_on(&mut self, seq: u8) {
+        // Per CCID Rev 1.1 §6.1.1: dwLength must be 0x00000000
+        let data_len = u32::from_le_bytes([
+            self.rx_buffer[1],
+            self.rx_buffer[2],
+            self.rx_buffer[3],
+            self.rx_buffer[4],
+        ]);
+        if data_len != 0 {
+            defmt::warn!("CCID: IccPowerOn with non-zero dwLength={}", data_len);
+            self.send_slot_status(
+                seq,
+                COMMAND_STATUS_FAILED,
+                self.get_icc_status(),
+                CCID_ERR_CMD_NOT_SUPPORTED,
+            );
+            return;
+        }
+
         if !self.driver.is_card_present() {
             self.send_slot_status(
                 seq,
