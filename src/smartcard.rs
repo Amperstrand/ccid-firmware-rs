@@ -162,6 +162,20 @@ pub fn parse_atr(atr: &[u8]) -> AtrParams {
     p
 }
 
+/// Verify TCK (check byte) for T=1 ATRs per ISO 7816-3 §8.2.4.
+/// TCK is the XOR of all bytes from T0 to the byte before TCK.
+/// Returns true if verification passes (or TCK is not required for T=0).
+pub fn verify_atr_tck(atr: &[u8], protocol: u8) -> bool {
+    if protocol != 1 {
+        return true;
+    }
+    if atr.len() < 3 {
+        return true;
+    }
+    let expected: u8 = atr[1..atr.len() - 1].iter().fold(0u8, |acc, &b| acc ^ b);
+    expected == atr[atr.len() - 1]
+}
+
 pub struct SmartcardUart {
     usart: USART2,
     _io_pin: PA2<Alternate<7, OpenDrain>>,
@@ -468,6 +482,12 @@ impl SmartcardUart {
                 defmt::info!("ATR len={} hex={=[u8]:x}", self.atr.len, atr_slice);
                 let params = parse_atr(&self.atr.raw[..self.atr.len]);
                 self.detect_protocol_from_atr();
+
+                if !verify_atr_tck(&self.atr.raw[..self.atr.len], self.protocol) {
+                    defmt::error!("ATR TCK mismatch for T=1, rejecting ATR");
+                    self.powered = false;
+                    return Err(SmartcardError::InvalidATR);
+                }
 
                 let _ = self.negotiate_pps_fsm(&params);
 
