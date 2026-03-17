@@ -13,7 +13,7 @@ The firmware is broadly compatible with Linux pcscd/libccid for Gemalto CT30 (08
 
 | Severity | Count | Summary |
 |----------|-------|---------|
-| CRITICAL | 1 | Gemalto escape 0x6A not handled — firmware features query fails silently |
+| ~~CRITICAL~~ FIXED | 1 | ~~Gemalto escape 0x6A not handled~~ → Now returns valid GEMALTO_FIRMWARE_FEATURES |
 | HIGH | 1 | Voltage support mismatch for CT30/K30 profiles (0x01 vs 0x07) |
 | MEDIUM | 1 | Cherry ST-2xxx bInterfaceClass is 0x0B instead of real device's 0xFF |
 | LOW | 4 | Minor descriptor mismatches that do not affect basic operation |
@@ -140,23 +140,16 @@ All three target VID:PID combinations are listed in libccid's `supported_readers
 
 ## 3. Detailed Findings
 
-### 3.1 [CRITICAL] Gemalto Escape 0x6A Not Handled
+### 3.1 [FIXED] Gemalto Escape 0x6A Firmware Features Query
 
-**Severity**: CRITICAL
+**Severity**: FIXED (was CRITICAL)
 **Affected profiles**: CT30, K30
-**Firmware**: `src/ccid.rs:427-430`
+**Firmware**: `src/ccid.rs` — `handle_escape()`
 **libccid**: `src/ccid.c` — `ccid_open_hack_post()` → `set_gemalto_firmware_features()`
 
 **Description**: During device initialization, libccid sends escape command `{0x6A}` (GET_FIRMWARE_FEATURES) to ALL readers with VID `0x08E6` (Gemalto vendor). This queries a `GEMALTO_FIRMWARE_FEATURES` struct containing PIN operation capabilities, display features, and bug workarounds.
 
-The firmware returns `CCID_ERR_CMD_NOT_SUPPORTED` for all escape commands. In libccid, this causes `set_gemalto_firmware_features()` to fail silently — the features struct remains uninitialized (zeroed).
-
-**Consequences**:
-1. `has_gemalto_modify_pin_bug()` returns `true` (since `bNumberMessageFix` field is 0), triggering a workaround that fakes `bNumberMessage=3` in Secure PIN Modify CCID frames. This workaround is harmless but indicates the firmware is treated as buggy.
-2. Gemalto-specific capabilities (VerifyPinStart/Finish, ModifyPinStart/Finish, GetKeyPressed, WriteDisplay, SetSpeMessage) are unavailable to the host. Since CT30/K30 are not PIN pad readers, this has minimal practical impact.
-3. `bPPDUSupportOverXferBlock` and `bPPDUSupportOverEscape` remain 0, which may affect how pcscd routes APDUs for certain middleware.
-
-**Recommendation**: Implement escape 0x6A to return a minimal valid `GEMALTO_FIRMWARE_FEATURES` response. Set `bNumberMessageFix = 1` to suppress the modify PIN workaround. Other fields can remain 0 since CT30/K30 lack PIN pads.
+The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), returning a minimal valid `GEMALTO_FIRMWARE_FEATURES` response with `bNumberMessageFix = 1`. This suppresses the `has_gemalto_modify_pin_bug()` workaround. All other capability fields remain 0 since CT30/K30 lack PIN pads and displays. Non-Gemalto profiles and non-0x6A escape codes continue to return `CMD_NOT_SUPPORTED`.
 
 ### 3.2 [HIGH] Voltage Support Mismatch for CT30/K30
 
@@ -393,9 +386,9 @@ These values are hardcoded constants (`src/ccid.rs:154,157`) and don't vary per 
 | Quirk | libccid Behavior | Firmware Status |
 |-------|-----------------|-----------------|
 | ZLP fixup (bcdDevice == 0x0200) | Sets `zlp = true` for USB 3 compat | NOT triggered (firmware bcdDevice = 1.00) |
-| Escape 0x6A firmware features | Queries PIN/display capabilities | **NOT handled** (returns CMD_NOT_SUPPORTED) |
+| Escape 0x6A firmware features | Queries PIN/display capabilities | **Handled** (returns minimal features struct) |
 | Escape 0x1F 0x02 TPDU→APDU switch | Switches from TPDU to SHORT_APDU | NOT handled (not applicable with DRIVER_OPTION) |
-| Gemalto modify PIN bug | Fakes bNumberMessage=3 if no bNumberMessageFix | **Triggered** (because escape 0x6A fails) |
+| Gemalto modify PIN bug | Fakes bNumberMessage=3 if no bNumberMessageFix | **Not triggered** (bNumberMessageFix = 1) |
 
 ### 8.2 Cherry ST-2xxx
 
@@ -445,7 +438,7 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 | ATR passthrough | PASS | PASS | PASS |
 | Data rate negotiation | PASS | PASS | PASS |
 | SetParameters (libccid quirk) | PASS | PASS | PASS |
-| Escape 0x6A (Gemalto) | N/A | **FAIL** | **FAIL** |
+| Escape 0x6A (Gemalto) | N/A | PASS (fixed) | PASS (fixed) |
 | Voltage support | PASS | **FAIL** (0x01 vs 0x07) | **FAIL** (0x01 vs 0x07) |
 | Slot change interrupt | PASS | PASS | PASS |
 | PIN verify/modify | PASS (with display) | N/A | N/A |
@@ -457,7 +450,7 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 
 ### Immediate Actions
 
-1. **Implement Gemalto escape 0x6A** for CT30/K30 profiles. Return a minimal `GEMALTO_FIRMWARE_FEATURES` response with `bNumberMessageFix = 1` to suppress the modify PIN workaround. This is the only CRITICAL finding.
+1. ~~**Implement Gemalto escape 0x6A**~~ for CT30/K30 profiles. ~~Return a minimal `GEMALTO_FIRMWARE_FEATURES` response with `bNumberMessageFix = 1` to suppress the modify PIN workaround.~~ **DONE** — implemented in `handle_escape()`.
 
 2. **Override voltage_support to 0x07** for CT30/K30 profiles in `device_profile.rs`. Also update `handle_power_on()` to accept 3V/1.8V bPowerSelect values (or return a more appropriate error code).
 
@@ -486,7 +479,7 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 | Power on / ATR | `src/ccid.rs` | 586-668 |
 | SetParameters | `src/ccid.rs` | 1017-1087 |
 | Data rate negotiation | `src/ccid.rs` | 725-771 |
-| Escape handling | `src/ccid.rs` | 427-430 |
+| Escape handling | `src/ccid.rs` | `handle_escape()` |
 | Class requests | `src/ccid.rs` | 1750-1802 |
 | ATR parsing | `src/smartcard.rs` | 88-163, 540-608 |
 | Protocol detection | `src/smartcard.rs` | 611-645 |

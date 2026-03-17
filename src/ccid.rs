@@ -424,10 +424,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             // - Secure:     PIN entry/verification (requires keypad hardware we don't have)
             // - Mechanical: Card eject/capture (no mechanical parts in this reader)
             // ========================================================================
-            PC_TO_RDR_ESCAPE => {
-                defmt::debug!("CCID: Escape command (stub - vendor-specific)");
-                self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            }
+            PC_TO_RDR_ESCAPE => self.handle_escape(seq),
             PC_TO_RDR_ICC_CLOCK => {
                 self.handle_icc_clock(seq);
             }
@@ -1172,6 +1169,58 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
                 defmt::warn!("CCID: Unknown PIN operation: {}", pin_operation);
                 self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
             }
+        }
+    }
+
+    /// Handle PC_to_RDR_Escape command
+    ///
+    /// Gemalto readers (VID 0x08E6) need to handle escape 0x6A
+    /// (GET_FIRMWARE_FEATURES) to return a valid GEMALTO_FIRMWARE_FEATURES
+    /// struct. Without this, libccid treats the reader as buggy and
+    /// triggers the modify PIN workaround (bNumberMessageFix defaults to 0).
+    ///
+    /// GEMALTO_FIRMWARE_FEATURES struct (from libccid src/ccid.c):
+    ///   [0] bNumberMessageFix: u8  — set to 1 to suppress workaround
+    ///   [1] bPPDUSupportOverXferBlock: u8
+    ///   [2] wLcdLayout: u16 (LE)
+    ///   [4] bPINSupport: u8
+    ///   [5] bDisplayStatus: u8
+    ///   [6] bEntryStatus: u8
+    ///   [7] bVerifyPinStart: u8
+    ///   [8] bVerifyPinFinish: u8
+    ///   [9] bModifyPinStart: u8
+    ///   [10] bModifyPinFinish: u8
+    ///   [11] bGetKeyPressed: u8
+    ///   [12] bWriteDisplay: u8
+    ///   [13] bSetSpeMessage: u8
+    ///   [14] bPPDUSupportOverEscape: u8
+    fn handle_escape(&mut self, seq: u8) {
+        let data_len = u32::from_le_bytes([
+            self.rx_buffer[1],
+            self.rx_buffer[2],
+            self.rx_buffer[3],
+            self.rx_buffer[4],
+        ]) as usize;
+        let is_gemalto = CURRENT_PROFILE.vendor_id == 0x08E6;
+        let is_firmware_features_query = data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A;
+
+        if is_gemalto && is_firmware_features_query {
+            let firmware_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            let icc = self.get_icc_status();
+            self.tx_buffer[0] = RDR_TO_PC_ESCAPE;
+            self.tx_buffer[1..5].copy_from_slice(&(firmware_features.len() as u32).to_le_bytes());
+            self.tx_buffer[5] = 0;
+            self.tx_buffer[6] = seq;
+            self.tx_buffer[7] = Self::build_status(COMMAND_STATUS_NO_ERROR, icc);
+            self.tx_buffer[8] = 0;
+            self.tx_buffer[9] = 0;
+            self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + firmware_features.len()]
+                .copy_from_slice(&firmware_features);
+            self.tx_len = CCID_HEADER_SIZE + firmware_features.len();
+            defmt::debug!("CCID: Escape 0x6A -> GEMALTO_FIRMWARE_FEATURES response");
+        } else {
+            defmt::debug!("CCID: Escape command (stub - vendor-specific)");
+            self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
         }
     }
 
