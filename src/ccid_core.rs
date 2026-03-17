@@ -797,16 +797,26 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn handle_escape(&mut self, seq: u8) {
+        let is_gemalto = self.vendor_id == 0x08E6;
+
+        if !is_gemalto {
+            ccid_debug!(
+                "CCID: ESCAPE rejected for non-Gemalto vendor 0x{:04X}",
+                self.vendor_id
+            );
+            self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            return;
+        }
+
         let data_len = u32::from_le_bytes([
             self.rx_buffer[1],
             self.rx_buffer[2],
             self.rx_buffer[3],
             self.rx_buffer[4],
         ]) as usize;
-        let is_gemalto = self.vendor_id == 0x08E6;
-        let is_firmware_features_query = data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A;
 
-        if is_gemalto && is_firmware_features_query {
+        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
+            ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
             let firmware_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             let icc = self.get_icc_status();
             self.tx_buffer[0] = RDR_TO_PC_ESCAPE;
@@ -819,9 +829,11 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + firmware_features.len()]
                 .copy_from_slice(&firmware_features);
             self.tx_len = CCID_HEADER_SIZE + firmware_features.len();
-            ccid_debug!("CCID: Escape 0x6A -> GEMALTO_FIRMWARE_FEATURES response");
         } else {
-            ccid_debug!("CCID: Escape command (stub - vendor-specific)");
+            ccid_debug!(
+                "CCID: ESCAPE unknown command 0x{:02X}",
+                self.rx_buffer[CCID_HEADER_SIZE]
+            );
             self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
         }
     }
