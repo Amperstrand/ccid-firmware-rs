@@ -488,6 +488,15 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Send NotifySlotChange on interrupt endpoint
+    ///
+    /// Reference: CCID Rev 1.1 §6.3.1 - RDR_to_PC_NotifySlotChange
+    ///
+    /// Message structure (2 bytes):
+    /// - bMessageType: 0x50
+    /// - bmSlotICCState: Slot state bits
+    ///   - Bit 0: ICC present (0=absent, 1=present)
+    ///   - Bit 1: ICC state changed (0=no change, 1=changed)
+    ///   - Bits 2-7: Reserved for slot 0
     fn send_notify_slot_change(&mut self, card_present: bool, changed: bool) {
         let mut bits: u8 = 0;
         if card_present {
@@ -556,6 +565,24 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_IccPowerOn command
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.1 - IccPowerOn
+    ///
+    /// Request structure (10 bytes):
+    /// - bMessageType: 0x62
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - bPowerSelect: 0x00=Auto, 0x01=5V, 0x02=3V, 0x03=1.8V
+    /// - abRFU: 2 bytes reserved
+    ///
+    /// Response: RDR_to_PC_DataBlock (0x80) per §6.2.1
+    /// - dwLength: ATR length
+    /// - abData: Answer-to-Reset bytes
+    ///
+    /// Error conditions:
+    /// - ICC_MUTE (0xFE): No card present or power-on failed
+    /// - CMD_NOT_SUPPORTED (0x00): Voltage not supported
     fn handle_power_on(&mut self, seq: u8) {
         if !self.driver.is_card_present() {
             self.send_slot_status(
@@ -622,7 +649,22 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         }
     }
 
-    /// Handle PC_to_RDR_ResetParameters — reset to default T=0 parameters (osmo 6.1.6)
+    /// Handle PC_to_RDR_ResetParameters — reset to default T=0 parameters
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.6 - ResetParameters
+    ///
+    /// Request structure (10 bytes):
+    /// - bMessageType: 0x6D
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - abRFU: 3 bytes reserved
+    ///
+    /// Response: RDR_to_PC_Parameters (0x82) per §6.2.3
+    /// - bProtocolNum: 0x00 (T=0)
+    /// - abProtocolData: Default T=0 parameters (Fi=372, Di=1)
+    ///
+    /// Reference implementation: osmo-ccid-firmware ccid_device.c
     fn handle_reset_parameters(&mut self, seq: u8) {
         self.atr_params = AtrParams::default();
         self.current_protocol = 0;
@@ -646,6 +688,22 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_SetDataRateAndClockFrequency (CCID 6.1.14)
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.14 - SetDataRateAndClockFrequency
+    ///
+    /// Request structure (18 bytes):
+    /// - bMessageType: 0x73
+    /// - dwLength: 0x00000008 (8 bytes data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - abRFU: 3 bytes reserved
+    /// - dwClockFrequency (offset 10-13): Clock frequency in Hz
+    /// - dwDataRate (offset 14-17): Data rate in bps
+    ///
+    /// Response: RDR_to_PC_DataRateAndClockFrequency (0x84)
+    /// - dwLength: 0x00000008
+    /// - dwClockFrequency: Actual clock frequency set
+    /// - dwDataRate: Actual data rate set
     fn handle_set_data_rate_and_clock(&mut self, seq: u8) {
         const MIN_LEN: usize = 10 + 8; // header + dwClockFrequency + dwDataRate
         if self.rx_len < MIN_LEN {
@@ -695,6 +753,19 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_IccClock — bClockCommand at byte 7: 0=restart, 1=stop (CCID 6.1.9)
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.9 - IccClock
+    ///
+    /// Request structure (10 bytes):
+    /// - bMessageType: 0x6E
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - bClockCommand: 0x00=Restart clock, 0x01=Stop clock
+    /// - abRFU: 2 bytes reserved
+    ///
+    /// Response: RDR_to_PC_SlotStatus (0x81) per §6.2.2
+    /// - bClockStatus: 0x00=clock running, 0x01=clock stopped
     fn handle_icc_clock(&mut self, seq: u8) {
         let icc = self.get_icc_status();
         if icc != ICC_STATUS_PRESENT_ACTIVE {
@@ -713,6 +784,19 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_IccPowerOff command
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.2 - IccPowerOff
+    ///
+    /// Request structure (10 bytes):
+    /// - bMessageType: 0x63
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - abRFU: 3 bytes reserved
+    ///
+    /// Response: RDR_to_PC_SlotStatus (0x81) per §6.2.2
+    /// - bStatus: bmICCStatus=0x01 (present inactive), bmCommandStatus=0x00
+    /// - bClockStatus: 0x00 (clock running)
     fn handle_power_off(&mut self, seq: u8) {
         self.driver.power_off();
         self.slot_state = SlotState::PresentInactive;
@@ -732,6 +816,19 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_GetSlotStatus command
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.3 - GetSlotStatus
+    ///
+    /// Request structure (10 bytes):
+    /// - bMessageType: 0x65
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - abRFU: 3 bytes reserved
+    ///
+    /// Response: RDR_to_PC_SlotStatus (0x81) per §6.2.2
+    /// - bStatus: bmICCStatus per §6.2.6 (0x00=active, 0x01=inactive, 0x02=absent)
+    /// - bmCommandStatus: 0x00=OK, 0x01=failed, 0x02=time extension
     fn handle_get_slot_status(&mut self, seq: u8) {
         let icc_status = self.get_icc_status();
         defmt::info!(
@@ -743,6 +840,25 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_XfrBlock command (Short APDU level - route to T=0 or T=1 engine)
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.4 - XfrBlock
+    ///
+    /// Request structure (10+ bytes):
+    /// - bMessageType: 0x6F
+    /// - dwLength: APDU data length
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - bBWI: Block Waiting Integer (ignored for sync operation)
+    /// - wLevelParameter: Level parameter (ignored for Short APDU level)
+    /// - abData: APDU command bytes
+    ///
+    /// Response: RDR_to_PC_DataBlock (0x80) per §6.2.1
+    /// - dwLength: Response length
+    /// - abData: APDU response (SW1 SW2 + optional data)
+    ///
+    /// Error codes (Table 6.2-2):
+    /// - 0xFE ICC_MUTE: Card not active or communication failed
+    /// - 0x07: Extended APDU not supported (max 261 bytes)
     fn handle_xfr_block(&mut self, seq: u8) {
         if self.slot_state != SlotState::PresentActive {
             self.send_slot_status(seq, COMMAND_STATUS_FAILED, self.get_icc_status(), 0xFE);
@@ -805,6 +921,21 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_GetParameters command (real values from AtrParams)
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.5 - GetParameters
+    ///
+    /// Request structure (10 bytes):
+    /// - bMessageType: 0x6C
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - abRFU: 3 bytes reserved
+    ///
+    /// Response: RDR_to_PC_Parameters (0x82) per §6.2.3
+    /// - bProtocolNum: 0x00=T=0, 0x01=T=1
+    /// - abProtocolData: Per Table 6.2-3
+    ///   - T=0 (5 bytes): bmFindexDindex, bmTCCKST0, bGuardTimeT0, bWaitingIntegerT0, bClockStop
+    ///   - T=1 (7 bytes): bmFindexDindex, bmTCCKST1, bGuardTimeT1, bWaitingIntegersT1, bClockStop, bIFSC, bNadValue
     fn handle_get_parameters(&mut self, seq: u8) {
         let p = &self.atr_params;
         if self.current_protocol == 1 {
@@ -849,6 +980,22 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Handle PC_to_RDR_SetParameters command
+    ///
+    /// Reference: CCID Rev 1.1 §6.1.7 - SetParameters
+    ///
+    /// Request structure (10+ bytes):
+    /// - bMessageType: 0x61
+    /// - dwLength: Protocol data length (5 for T=0, 7 for T=1)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - bProtocolNum: 0x00=T=0, 0x01=T=1
+    /// - abRFU: 2 bytes reserved
+    /// - abProtocolData: Per Table 6.2-3
+    ///
+    /// Response: RDR_to_PC_Parameters (0x82) per §6.2.3
+    ///
+    /// Note: libccid sends protocol data WITHOUT bProtocolNum prefix (implementation quirk).
+    /// We infer protocol from dwLength: 5=T=0, 7=T=1.
     fn handle_set_parameters(&mut self, seq: u8) {
         // CCID header: [mt][dwLength 4][bSlot][bSeq][bBWI][wLevel 2]
         // Reference: CCID Rev 1.1 Table 6.2-3
@@ -921,10 +1068,32 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         }
     }
 
-    /// Handle PC_to_RDR_Secure command (PIN verification)
+    /// Handle PC_to_RDR_Secure command (PIN verification/modification)
     ///
-    /// This is the first phase of PIN verification: parse the PIN Verify Data Structure
-    /// and prepare for deferred response (actual PIN entry handled by display/touch).
+    /// Reference: CCID Rev 1.1 §6.1.11 (PIN Verify), §6.1.12 (PIN Modify)
+    ///
+    /// Request structure (10+ bytes):
+    /// - bMessageType: 0x69
+    /// - dwLength: PIN data structure length
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number
+    /// - bBWI: Block Waiting Integer
+    /// - wLevelParameter: Level parameter
+    /// - bmPINOperation (offset 10): 0x00=Verify, 0x01=Modify
+    /// - PIN Data Structure (offset 11+): Per §6.1.11 (Verify) or §6.1.12 (Modify)
+    ///
+    /// PIN Verify Data Structure (§6.1.11):
+    /// - bTimeOut, bmFormatString, bmPINBlockString, bmPINLengthFormat
+    /// - wPINMaxExtraDigit (max|min), bEntryValidationCondition
+    /// - bNumberMessage, wLangId, bMsgIndex, bTeoPrologue, abPINApdu
+    ///
+    /// PIN Modify Data Structure (§6.1.12):
+    /// - Same as Verify + bConfirmPIN, bInsertPosition, bReplacePosition
+    ///
+    /// Response: RDR_to_PC_DataBlock (0x80) per §6.2.1
+    /// - Error codes: PIN_CANCELLED (0xEF), PIN_TIMEOUT (0xF0), CMD_ABORTED (0xFF)
+    ///
+    /// Implementation note: Deferred response - PIN entry happens on touchscreen.
     fn handle_secure(&mut self, seq: u8) {
         // 1. Check slot state - must have active card
         if self.slot_state != SlotState::PresentActive {
@@ -1313,12 +1482,17 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
 
     /// Send RDR_to_PC_DataBlock response
     ///
-    /// # Arguments
-    /// * `seq` - CCID sequence number
-    /// * `data` - Response data (APDU response bytes)
-    /// * `cmd_status` - Command status (COMMAND_STATUS_NO_ERROR or COMMAND_STATUS_FAILED)
-    /// * `icc_status` - ICC status from get_icc_status()
-    /// * `error` - CCID error code (0 for success)
+    /// Reference: CCID Rev 1.1 §6.2.1 - RDR_to_PC_DataBlock
+    ///
+    /// Response structure (10+ bytes):
+    /// - bMessageType: 0x80
+    /// - dwLength: Data length
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number (from request)
+    /// - bStatus: bmICCStatus | bmCommandStatus per §6.2.6
+    /// - bError: Error code per Table 6.2-2 (0 on success)
+    /// - bChainParameter: Chain parameter (0 for Short APDU level)
+    /// - abData: Response data
     fn send_data_block_response(
         &mut self,
         seq: u8,
@@ -1361,11 +1535,25 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
     }
 
     /// Send a SlotStatus response
+    ///
+    /// Reference: CCID Rev 1.1 §6.2.2 - RDR_to_PC_SlotStatus
+    ///
+    /// Response structure (10 bytes):
+    /// - bMessageType: 0x81
+    /// - dwLength: 0x00000000 (no data)
+    /// - bSlot: Slot number
+    /// - bSeq: Sequence number (from request)
+    /// - bStatus: bmICCStatus | bmCommandStatus per §6.2.6
+    /// - bError: Error code per Table 6.2-2 (0 on success)
+    /// - bClockStatus: 0x00=running, 0x01=stopped (per §6.1.9 response)
     fn send_slot_status(&mut self, seq: u8, cmd_status: u8, icc_status: u8, error: u8) {
         self.send_slot_status_with_clock(seq, cmd_status, icc_status, error, 0);
     }
 
     /// Send a SlotStatus response with bClockStatus (for IccClock response)
+    ///
+    /// Reference: CCID Rev 1.1 §6.2.2 - RDR_to_PC_SlotStatus
+    /// Reference: CCID Rev 1.1 §6.1.9 - IccClock (bClockStatus field)
     fn send_slot_status_with_clock(
         &mut self,
         seq: u8,
@@ -1553,13 +1741,14 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
             return;
         }
 
+        // Reference: CCID Rev 1.1 §5.3 - Class-specific Requests
         match request.request {
+            // §5.3.2 GET_CLOCK_FREQUENCIES - Returns supported clock frequencies
             REQUEST_GET_CLOCK_FREQUENCIES => {
-                // Return supported clock frequencies
                 transfer.accept_with(&CLOCK_FREQUENCY_KHZ).ok();
             }
+            // §5.3.3 GET_DATA_RATES - Returns supported data rates
             REQUEST_GET_DATA_RATES => {
-                // Return supported data rates
                 transfer.accept_with(&DATA_RATE_BPS).ok();
             }
             _ => {
@@ -1580,12 +1769,12 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
             return;
         }
 
+        // Reference: CCID Rev 1.1 §5.3 - Class-specific Requests
         match request.request {
+            // §5.3.1 ABORT - Abort command (wValue: slot in low byte, seq in high byte)
             REQUEST_ABORT => {
-                // Abort command - slot in low byte, seq in high byte of value
                 let _slot = (request.value & 0xFF) as u8;
                 let _seq = ((request.value >> 8) & 0xFF) as u8;
-                // For now, just accept the abort
                 transfer.accept().ok();
             }
             _ => {
