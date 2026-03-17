@@ -58,3 +58,9 @@ ccid_test_summary.txt
 
 # Experimental directories
 display-test/
+
+# Gas Town runtime
+.beads/
+.opencode/
+.runtime/
+
