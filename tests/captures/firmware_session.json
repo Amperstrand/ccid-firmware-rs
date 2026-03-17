@@ -1,0 +1,75 @@
+{
+  "metadata": {
+    "reader": "Gemalto PC Twin Reader (firmware on STM32F469)",
+    "reader_vid": "08E6",
+    "reader_pid": "374B",
+    "card": "SeedKeeper",
+    "timestamp": "2026-03-17",
+    "total_messages": 10,
+    "capture_method": "pcscd_debug_log_LIBCCID_COMM_level",
+    "capture_tool": "pcscd -d -f -a with ifdLogLevel=0x0007",
+    "firmware_commit": "b98a643"
+  },
+  "session": {
+    "atr": "3BFA1800008131FE454A546178436F72655631B2",
+    "protocol": "T=1",
+    "operations": [
+      "init_slot_status",
+      "get_firmware_features_escape",
+      "icc_power_on",
+      "icc_power_off"
+    ]
+  },
+  "messages": [
+    {
+      "dir": "tx",
+      "raw": "65 00 00 00 00 00 00 00 00 00",
+      "note": "GET_SLOT_STATUS (init)"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 00 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT"
+    },
+    {
+      "dir": "tx",
+      "raw": "65 00 00 00 00 00 01 00 00 00",
+      "note": "GET_SLOT_STATUS (init 2)"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 01 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT"
+    },
+    {
+      "dir": "tx",
+      "raw": "6B 01 00 00 00 00 02 00 00 00 6A",
+      "note": "ESCAPE: GET_FIRMWARE_FEATURES (0x6A)"
+    },
+    {
+      "dir": "rx",
+      "raw": "83 0F 00 00 00 00 02 01 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00",
+      "note": "ESCAPE: SUCCESS (15 bytes firmware features, bError=0x00)"
+    },
+    {
+      "dir": "tx",
+      "raw": "62 00 00 00 00 00 06 01 00 00",
+      "note": "ICC_POWER_ON (auto voltage)"
+    },
+    {
+      "dir": "rx",
+      "raw": "80 14 00 00 00 00 06 00 00 00 3B FA 18 00 00 81 31 FE 45 4A 54 61 78 43 6F 72 65 56 31 B2",
+      "note": "DATABLOCK: ATR (20 bytes, SeedKeeper JTaxCoreV1)"
+    },
+    {
+      "dir": "tx",
+      "raw": "63 00 00 00 00 00 09 00 00 00",
+      "note": "ICC_POWER_OFF"
+    },
+    {
+      "dir": "rx",
+      "raw": "81 00 00 00 00 00 09 01 00 00",
+      "note": "SLOTSTATUS: ICC_PRESENT (card still there)"
+    }
+  ]
+}

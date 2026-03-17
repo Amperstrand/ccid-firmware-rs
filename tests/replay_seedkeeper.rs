@@ -1,9 +1,8 @@
 mod ccid_harness;
 
 use ccid_firmware_rs::ccid_core::{
-    CCID_HEADER_SIZE, COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC,
-    ICC_STATUS_PRESENT_ACTIVE, ICC_STATUS_PRESENT_INACTIVE, PC_TO_RDR_ESCAPE,
-    PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
+    CCID_HEADER_SIZE, ICC_STATUS_NO_ICC, ICC_STATUS_PRESENT_ACTIVE, ICC_STATUS_PRESENT_INACTIVE,
+    PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
     PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE,
     RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
 };
@@ -74,8 +73,7 @@ fn captures() -> Vec<ReplayCapture> {
             rx_payload: &[0xFF, 0x11, 0x18, 0xF6], // PPS confirm
         },
         // 5: SET_PARAMETERS: T=1 protocol
-        // Note: The firmware returns ATR-derived protocol params, not an echo
-        // of the host's requested params. This is correct per CCID spec.
+        // Firmware returns ATR-derived protocol params (correct per CCID spec).
         // SeedKeeper ATR gives: ta1=0x18, edc=CRC(1), guard=0, bwi=4->3, ifsc=254
         ReplayCapture {
             name: "SETPARAMETERS: T=1, IFSC=254",
@@ -84,7 +82,7 @@ fn captures() -> Vec<ReplayCapture> {
                 0x00, 0xFE, 0x00,
             ],
             rx_msg_type: RDR_TO_PC_PARAMETERS,
-            rx_status: 0x00, // ICC present active
+            rx_status: 0x00,
             rx_error: 0x00,
             rx_payload: &[0x18, 0x00, 0x00, 0x03, 0x00, 0xFE, 0x00],
         },
@@ -231,43 +229,82 @@ fn replay_power_on_seedkeeper_atr() {
 }
 
 #[test]
-fn replay_power_on_power_off_cycle() {
-    let driver = MockSmartcardDriver::new()
-        .card_present(true)
-        .with_atr(SEEDKEEPER_ATR);
-    let mut h = CcidTestHarness::new(driver, 0x08E6);
-
-    // Power on
-    let resp = h.send(PC_TO_RDR_ICC_POWER_ON, &[], 0x01);
+fn replay_escape_non_gemalto_rejected() {
+    let driver = MockSmartcardDriver::new().card_present(true);
+    let mut h = CcidTestHarness::new(driver, 0x046A); // Cherry vendor
+    let mut msg = vec![0u8; CCID_HEADER_SIZE + 1];
+    msg[0] = PC_TO_RDR_ESCAPE;
+    msg[6] = 0x01;
+    msg[CCID_HEADER_SIZE] = 0x6A;
+    let resp = h.send_raw(&msg);
     let r = parse_ccid_response(&resp);
-    assert_eq!(r.msg_type, RDR_TO_PC_DATABLOCK);
-    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_ACTIVE);
-
-    // Slot status should show active
-    let resp = h.send(PC_TO_RDR_GET_SLOT_STATUS, &[], 0x02);
-    let r = parse_ccid_response(&resp);
-    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_ACTIVE);
-
-    // Power off
-    let resp = h.send(PC_TO_RDR_ICC_POWER_OFF, &[], 0x03);
-    let r = parse_ccid_response(&resp);
-    assert_eq!(r.msg_type, RDR_TO_PC_SLOTSTATUS);
-    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_INACTIVE);
+    assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
+    assert!(r.is_cmd_failed());
 }
 
 #[test]
 fn replay_escape_get_firmware_features() {
     let driver = MockSmartcardDriver::new().card_present(true);
     let mut h = CcidTestHarness::new(driver, 0x08E6);
-    // The firmware returns CMD_NOT_SUPPORTED for unrecognized escape subcommands
-    let mut msg = vec![0u8; CCID_HEADER_SIZE + 1];
-    msg[0] = PC_TO_RDR_ESCAPE;
-    msg[6] = 0x01; // seq
-    msg[CCID_HEADER_SIZE] = 0x6A; // GET_FIRMWARE_FEATURES
-    let resp = h.send_raw(&msg);
+    let resp = h.send_raw(&[
+        0x6B, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x6A,
+    ]);
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
-    assert!(r.is_cmd_failed());
+    assert!(r.is_success());
+    assert_eq!(r.data_len, 15);
+    assert_eq!(r.data[0], 0x01);
+}
+
+#[test]
+fn replay_firmware_init_sequence() {
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(SEEDKEEPER_ATR);
+    let mut h = CcidTestHarness::new(driver, 0x08E6);
+
+    // Matches /tmp/pcscd_firmware_escape.log Device 034 (lun 000001)
+
+    // 1. GET_SLOT_STATUS (init)
+    let resp = h.send_raw(&[0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let r = parse_ccid_response(&resp);
+    assert_eq!(r.msg_type, RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_INACTIVE);
+    assert!(r.is_success());
+
+    // 2. GET_SLOT_STATUS (init 2)
+    let resp = h.send_raw(&[0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]);
+    let r = parse_ccid_response(&resp);
+    assert_eq!(r.msg_type, RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_INACTIVE);
+    assert!(r.is_success());
+
+    // 3. ESCAPE: GET_FIRMWARE_FEATURES (0x6A)
+    let resp = h.send_raw(&[
+        0x6B, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x6A,
+    ]);
+    let r = parse_ccid_response(&resp);
+    assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
+    assert!(r.is_success());
+    assert_eq!(r.b_error, 0x00);
+    assert_eq!(r.data_len, 15);
+    // firmware_features = 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+    let expected_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    assert_eq!(r.data.as_slice(), &expected_features);
+
+    // 4. ICC_POWER_ON -> ATR
+    let resp = h.send_raw(&[0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x01, 0x00, 0x00]);
+    let r = parse_ccid_response(&resp);
+    assert_eq!(r.msg_type, RDR_TO_PC_DATABLOCK);
+    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_ACTIVE);
+    assert_eq!(r.data, SEEDKEEPER_ATR);
+
+    // 5. ICC_POWER_OFF
+    let resp = h.send_raw(&[0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00]);
+    let r = parse_ccid_response(&resp);
+    assert_eq!(r.msg_type, RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(r.icc_status(), ICC_STATUS_PRESENT_INACTIVE);
+    assert!(r.is_success());
 }
 
 #[test]
