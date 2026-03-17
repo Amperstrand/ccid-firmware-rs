@@ -453,7 +453,7 @@ The `parse_atr()` function is duplicated between `smartcard.rs` (ARM-only) and `
 |---|-----|----------|----------------|
 | 1 | No inverse convention support (TS=0x3F) | **High** — cards using inverse convention won't work | Add convention detection and byte inversion |
 | 2 | No TCK verification for T=1 ATRs | **Medium** — spec requires TCK match for T=1 | Add TCK XOR verification, reject on mismatch |
-| 3 | P3==0 (256 bytes) not handled in T=0 | **Medium** — edge case for large response APDUs | Add explicit P3==0 -> 256 handling |
+| 3 | P3==0 (256 bytes) not handled in T=0 | ~~**Medium**~~ FIXED | Le==0 mapped to 256 in GET RESPONSE read path (cf-93o) |
 | 4 | Clock frequency parameter silently ignored | **Low** — response returns actual clock, so host can adapt | Document behavior or clamp to actual value |
 
 ### 10.3 Accidental Gaps in C
@@ -468,5 +468,5 @@ The `parse_atr()` function is duplicated between `smartcard.rs` (ARM-only) and `
 
 1. **[cf-be8-gap-1]** Add inverse convention support to Rust ATR parser — HIGH priority
 2. **[cf-be8-gap-2]** Add TCK verification for T=1 ATRs in Rust — MEDIUM priority
-3. **[cf-be8-gap-3]** Handle P3==0 (256 bytes) in Rust T=0 transmit — MEDIUM priority
+3. **[cf-be8-gap-3]** ~~Handle P3==0 (256 bytes) in Rust T=0 transmit~~ — FIXED (cf-93o)
 4. **[cf-be8-gap-4]** Consider proposed_pars pattern for Rust SetParameters — LOW priority (design choice)

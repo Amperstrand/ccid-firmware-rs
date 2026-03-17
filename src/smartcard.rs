@@ -787,7 +787,8 @@ impl SmartcardUart {
                             pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
                         }
                         if pb == 0xC0 || pb == 0x4F {
-                            let n = (sw2 as usize).min(max_response.saturating_sub(response_len));
+                            let le = if sw2 == 0 { 256usize } else { sw2 as usize };
+                            let n = le.min(max_response.saturating_sub(response_len));
                             for i in 0..n {
                                 response[response_len + i] =
                                     self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
