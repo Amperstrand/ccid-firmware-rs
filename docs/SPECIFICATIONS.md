@@ -142,3 +142,150 @@ Device profiles in this project are aligned with the CCID reader database:
 | `profile-gemalto-idbridge-k30` | `reference/CCID/readers/Gemalto_IDBridge_K30.txt` |
 
 > **Note:** The CCID project's reader files are the authoritative source of truth for device capabilities.
+
+---
+
+## Host Software Stack
+
+This firmware is designed to work with standard smart card middleware on major operating systems.
+
+### Linux: pcscd + libccid
+
+The primary development and testing platform.
+
+| Property | Value |
+|----------|-------|
+| **Package** | `pcscd` (daemon) + `libccid` (driver) |
+| **Maintainer** | Ludovic Rousseau |
+| **Website** | [pcsclite.apdu.fr](https://pcsclite.apdu.fr/) |
+| **License** | GPL-2.0-or-later (pcscd), LGPL-2.1-or-later (libccid) |
+
+**Key Integration Points:**
+- Reader enumeration via USB VID/PID
+- CCID descriptor parsing for feature detection
+- PIN pad capability advertisement via `IOCTL_FEATURE_GET_TLV_PROPERTIES`
+- Hot-plug support via udev
+
+**Configuration File:** `/etc/libccid_Info.plist` (reader capabilities)
+
+### Windows: Smart Card Base Components (SCBC)
+
+Microsoft's native smart card framework.
+
+| Property | Values |
+|----------|-------|
+| **Driver Model** | WDM (Windows Driver Model) |
+| **Class** | Smart Card Reader Device Setup Class |
+| **GUID** | `{50DD5230-BA8A-11D1-BF5D-0000F805F530}` |
+| **Reference** | [Microsoft Smart Card Documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/smartcard/) |
+
+**Key Integration Points:**
+- CCID driver built into Windows (WUDFRd.sys)
+- Reader identification via USB descriptors
+- PIN pad support via `IOCTL_SMARTCARD_GET_FEATURES`
+
+### macOS: SmartCardServices
+
+Apple's smart card framework.
+
+| Property | Values |
+|----------|-------|
+| **Framework** | SmartCardServices.framework |
+| **Daemon** | `com.apple.CryptoTokenKit.pcscd` |
+| **Reference** | [Apple Developer Documentation](https://developer.apple.com/documentation/security/certificate_key_and_trust_services/smart_cards) |
+
+**Key Integration Points:**
+- PC/SC compatibility layer
+- Built-in CCID driver
+- Integration with Keychain and Touch ID
+
+---
+
+## Target Hardware and Cards
+
+### SeedKeeper / Specter DIY
+
+The primary target hardware for this firmware.
+
+| Property | Values |
+|----------|-------|
+| **Hardware** | Specter DIY Shield Lite + STM32F469-DISCO |
+| **Card Type** | SeedKeeper (T=1 only) |
+| **Protocol** | ISO 7816-3 T=1 |
+| **Documentation** | [SeedKeeper Docs](https://seedkeeper.io/) |
+| **APDU Reference** | [Satochip documentation](https://github.com/Toporin/SeedKeeper-docs) |
+
+**Key APDU Commands Used:**
+- `VERIFY` (INS=0x20) - PIN verification
+- `CHANGE REFERENCE DATA` (INS=0x24) - PIN modification
+- `GET DATA` / `PUT DATA` - Data storage
+- `SELECT` - Application selection
+
+### Reader Hardware Profiles
+
+Device profiles emulate real commercial readers for plug-and-play compatibility:
+
+| Profile | Emulates | Why |
+|---------|----------|-----|
+| `profile-cherry-smartterminal-st2xxx` | Cherry SmartTerminal ST-2xxx | PIN pad support |
+| `profile-gemalto-idbridge-ct30` | Gemalto IDBridge CT30 | Basic reader (VID:08E6 PID:3437) |
+| `profile-gemalto-idbridge-k30` | Gemalto IDBridge K30 | Basic reader (VID:08E6 PID:3438) |
+
+---
+
+## Rust Dependencies
+
+This firmware builds on the Rust embedded ecosystem.
+
+### USB Stack
+
+| Crate | Purpose | License |
+|-------|---------|---------|
+| [usb-device](https://crates.io/crates/usb-device) | USB device framework | MIT |
+| [synopsys-usb-otg](https://crates.io/crates/synopsys-usb-otg) | Synopsys USB OTG driver | MIT/Apache-2.0 |
+
+**Our Fork:** `vendor/synopsys-usb-otg/` with warning suppressions for RAL-generated code.
+
+### HAL and BSP
+
+| Crate | Purpose | License |
+|-------|---------|---------|
+| [stm32f4xx-hal](https://crates.io/crates/stm32f4xx-hal) | STM32F4 hardware abstraction layer | 0BSD |
+| [stm32f469i-disc](https://crates.io/crates/stm32f469i-disc) | STM32F469-DISCO board support | MIT/Apache-2.0 |
+
+**Our Forks:**
+- `Amperstrand/stm32f4xx-hal` - SDIO support additions
+- `Amperstrand/stm32f469i-disc` - SDIO support additions
+
+### Display (Optional)
+
+| Crate | Purpose | License |
+|-------|---------|---------|
+| [embedded-graphics](https://crates.io/crates/embedded-graphics) | 2D graphics library | MIT/Apache-2.0 |
+
+---
+
+## Acknowledgments
+
+This project derives ideas, patterns, and protocol behavior from:
+
+1. **osmo-ccid-firmware** (GPL-2.0-or-later)
+   - CCID command handling patterns
+   - Slot state machine design
+   - ATR parsing approach
+
+2. **libccid** (LGPL-2.1-or-later)
+   - Reader capability database
+   - Feature flag definitions
+   - libccid quirks (e.g., SetParameters without bProtocolNum)
+
+3. **pcsc-lite** (GPL-2.0-or-later)
+   - PIN pad structure definitions
+   - IOCTL definitions
+
+4. **SeedKeeper/Specter DIY**
+   - Hardware reference design
+   - Card APDU command set
+
+5. **Cherry GmbH** and **Gemalto/Thales**
+   - Reader capability specifications (via CCID reader database)
