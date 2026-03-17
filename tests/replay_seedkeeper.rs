@@ -31,7 +31,7 @@ fn captures() -> Vec<ReplayCapture> {
             name: "GET_SLOT_STATUS (init)",
             tx: &[0x65, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             rx_msg_type: RDR_TO_PC_SLOTSTATUS,
-            rx_status: 0x04, // ICC present, inactive
+            rx_status: 0x01, // ICC present, inactive
             rx_error: 0x00,
             rx_payload: &[],
         },
@@ -40,7 +40,7 @@ fn captures() -> Vec<ReplayCapture> {
             name: "ICC_POWER_ON -> ATR",
             tx: &[0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00],
             rx_msg_type: RDR_TO_PC_DATABLOCK,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: SEEDKEEPER_ATR,
         },
@@ -49,7 +49,7 @@ fn captures() -> Vec<ReplayCapture> {
             name: "ICC_POWER_OFF",
             tx: &[0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00],
             rx_msg_type: RDR_TO_PC_SLOTSTATUS,
-            rx_status: 0x04, // ICC present, inactive (card still inserted)
+            rx_status: 0x01, // ICC present, inactive (card still inserted)
             rx_error: 0x00,
             rx_payload: &[],
         },
@@ -58,7 +58,7 @@ fn captures() -> Vec<ReplayCapture> {
             name: "ICC_POWER_ON (connect)",
             tx: &[0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00],
             rx_msg_type: RDR_TO_PC_DATABLOCK,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: SEEDKEEPER_ATR,
         },
@@ -69,7 +69,7 @@ fn captures() -> Vec<ReplayCapture> {
                 0x6F, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xFF, 0x11, 0x18, 0xF6,
             ],
             rx_msg_type: RDR_TO_PC_DATABLOCK,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: &[0xFF, 0x11, 0x18, 0xF6], // PPS confirm
         },
@@ -84,7 +84,7 @@ fn captures() -> Vec<ReplayCapture> {
                 0x00, 0xFE, 0x00,
             ],
             rx_msg_type: RDR_TO_PC_PARAMETERS,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: &[0x18, 0x00, 0x00, 0x03, 0x00, 0xFE, 0x00],
         },
@@ -96,7 +96,7 @@ fn captures() -> Vec<ReplayCapture> {
                 0x3E,
             ],
             rx_msg_type: RDR_TO_PC_DATABLOCK,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: &[0x00, 0xE1, 0x01, 0xFE, 0x1E], // IFS response
         },
@@ -108,7 +108,7 @@ fn captures() -> Vec<ReplayCapture> {
                 0x00, 0x00, 0x00, 0x62, 0x01, 0x01, 0x00, 0xCA,
             ],
             rx_msg_type: RDR_TO_PC_DATABLOCK,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: &[0x00, 0x00, 0x02, 0x67, 0x00, 0x65], // T=1 I-block, SW=6700
         },
@@ -120,7 +120,7 @@ fn captures() -> Vec<ReplayCapture> {
                 0x20, 0x00, 0x81, 0x04, 0x31, 0x32, 0x33, 0x34, 0xFF, 0x14,
             ],
             rx_msg_type: RDR_TO_PC_DATABLOCK,
-            rx_status: 0x08, // ICC present active + cmd success
+            rx_status: 0x00, // ICC present active
             rx_error: 0x00,
             rx_payload: &[0x00, 0x40, 0x02, 0x6E, 0x00, 0x2C], // T=1 I-block, SW=6E00
         },
@@ -129,7 +129,7 @@ fn captures() -> Vec<ReplayCapture> {
             name: "ICC_POWER_OFF (disconnect)",
             tx: &[0x63, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00],
             rx_msg_type: RDR_TO_PC_SLOTSTATUS,
-            rx_status: 0x04, // ICC present, inactive
+            rx_status: 0x01, // ICC present, inactive
             rx_error: 0x00,
             rx_payload: &[],
         },

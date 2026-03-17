@@ -415,14 +415,14 @@ fn test_cmd_busy_rejected() {
 
 #[test]
 fn test_status_byte_packing() {
-    let status = (ICC_STATUS_PRESENT_ACTIVE << 2) | COMMAND_STATUS_NO_ERROR;
-    assert_eq!(status, 0x08);
+    let status = (COMMAND_STATUS_NO_ERROR << 6) | ICC_STATUS_PRESENT_ACTIVE;
+    assert_eq!(status, 0x00);
 
-    let status = (ICC_STATUS_NO_ICC << 2) | COMMAND_STATUS_FAILED;
-    assert_eq!(status, 0x01);
+    let status = (COMMAND_STATUS_FAILED << 6) | ICC_STATUS_NO_ICC;
+    assert_eq!(status, 0x42);
 
-    let status = (ICC_STATUS_PRESENT_ACTIVE << 2) | COMMAND_STATUS_TIME_EXTENSION;
-    assert_eq!(status, 0x0A);
+    let status = (COMMAND_STATUS_TIME_EXTENSION << 6) | ICC_STATUS_PRESENT_ACTIVE;
+    assert_eq!(status, 0x80);
 }
 
 // ============================================================================

@@ -39,9 +39,9 @@ pub const PACKET_SIZE: usize = 64;
 pub const CCID_HEADER_SIZE: usize = 10;
 pub const MAX_CCID_MESSAGE_LENGTH: usize = 271;
 
-pub const ICC_STATUS_NO_ICC: u8 = 0x00;
+pub const ICC_STATUS_PRESENT_ACTIVE: u8 = 0x00;
 pub const ICC_STATUS_PRESENT_INACTIVE: u8 = 0x01;
-pub const ICC_STATUS_PRESENT_ACTIVE: u8 = 0x02;
+pub const ICC_STATUS_NO_ICC: u8 = 0x02;
 
 pub const COMMAND_STATUS_NO_ERROR: u8 = 0x00;
 pub const COMMAND_STATUS_FAILED: u8 = 0x01;
@@ -285,7 +285,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn build_status(cmd_status: u8, icc_status: u8) -> u8 {
-        (cmd_status << 6) | (icc_status << 2)
+        (cmd_status << 6) | icc_status
     }
 
     fn send_err_resp(&mut self, msg_type: u8, seq: u8, error: u8) {
