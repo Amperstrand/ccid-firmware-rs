@@ -1642,7 +1642,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
         writer.interface_alt(
             self.interface,
             0, // bAlternateSetting
-            CLASS_CCID,
+            CURRENT_PROFILE.interface_class,
             SUBCLASS_NONE,
             PROTOCOL_BULK,
             None, // No string description

@@ -211,6 +211,10 @@ pub struct DeviceProfile {
     /// Maximum concurrent busy slots
     pub max_busy_slots: u8,
 
+    // USB Interface Descriptor
+    /// USB interface class code (0x0B = CCID, 0xFF = vendor-specific)
+    pub interface_class: u8,
+
     // Firmware-specific settings
     /// Exchange level for APDU handling
     pub exchange_level: ExchangeLevel,
@@ -415,6 +419,9 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
     // Concurrency
     max_busy_slots: 1,
 
+    // USB Interface Descriptor
+    interface_class: 0x0B, // Standard CCID class
+
     // Exchange level
     exchange_level: ExchangeLevel::Tpdu,
 };
@@ -456,6 +463,8 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     lcd_layout: (0, 0),
     // bPINSupport = 0x03 (verify + modify)
     pin_support: PIN_VERIFY_MODIFY,
+    // Real Cherry ST-2xxx uses vendor-specific class (0xFF), not standard CCID (0x0B)
+    interface_class: 0xFF,
     exchange_level: ExchangeLevel::Tpdu,
     ..BASE_PROFILE
 };
