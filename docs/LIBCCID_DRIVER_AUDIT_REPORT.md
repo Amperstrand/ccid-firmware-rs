@@ -167,11 +167,12 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 
 **Recommendation**: For CT30/K30 profiles, override `voltage_support: 0x07` in the profile definition. Note: this is a descriptor-only change — the actual hardware voltage selection would need a corresponding `handle_power_on` change to accept 3V/1.8V requests, which depends on the STM32 board's voltage regulator capabilities.
 
-### 3.3 [MEDIUM] Cherry ST-2xxx bInterfaceClass Mismatch
+### 3.3 [MEDIUM] Cherry ST-2xxx bInterfaceClass Mismatch ~~FIXED~~
 
 **Severity**: MEDIUM
+**Status**: FIXED — `interface_class` is now configurable per profile. Cherry ST-2xxx uses 0xFF; other profiles default to 0x0B.
 **Affected profiles**: Cherry ST-2xxx
-**Firmware**: `src/ccid.rs:86,1645` (hardcoded `CLASS_CCID = 0x0B`)
+**Firmware**: `src/device_profile.rs` (`interface_class` field), `src/ccid.rs:1645` (uses `CURRENT_PROFILE.interface_class`)
 **Reference**: `reference/CCID/readers/CherrySmartTerminalST2XXX.txt:12` — `bInterfaceClass: 0xFF`
 
 **Description**: The real Cherry ST-2xxx uses USB class 0xFF (vendor-specific/proprietary), NOT the standard CCID class 0x0B. The firmware hardcodes 0x0B for all profiles via `CLASS_CCID`.
@@ -181,7 +182,7 @@ The firmware now implements escape 0x6A for Gemalto profiles (VID 0x08E6), retur
 2. This changes the device access path: kernel ccid driver → pcscd (via /dev/bus/usb) vs. direct pcscd → USB device. Both paths ultimately work, but the kernel ccid driver path may have different permission models and hotplug behavior.
 3. udev rules for CCID devices (`ACTION=="add", SUBSYSTEM=="usb", ENV{ID_USB_CLASS_FROM_DEVICE}=="0b"`) will match the firmware but not the real device.
 
-**Recommendation**: If exact behavioral reproduction is required, the Cherry profile should override `bInterfaceClass` to 0xFF. This would require making the class configurable per profile rather than hardcoded in `ccid.rs:1645`.
+**Recommendation**: ~~If exact behavioral reproduction is required, the Cherry profile should override `bInterfaceClass` to 0xFF. This would require making the class configurable per profile rather than hardcoded in `ccid.rs:1645`.~~ **Implemented**: `DeviceProfile` now has an `interface_class` field. The Cherry profile sets it to `0xFF`; other profiles inherit the default `0x0B` (standard CCID).
 
 ### 3.4 [LOW] bNumDataRatesSupported Mismatch for CT30/K30
 
@@ -456,7 +457,7 @@ The firmware does not interact with the pcscd socket protocol — that is betwee
 
 ### Future Improvements
 
-3. **Make bInterfaceClass configurable per profile** to allow Cherry ST-2xxx to use 0xFF for exact device reproduction.
+3. ~~**Make bInterfaceClass configurable per profile** to allow Cherry ST-2xxx to use 0xFF for exact device reproduction.~~ **DONE** — Added `interface_class` field to `DeviceProfile`. Cherry profile uses 0xFF; others default to 0x0B.
 
 4. **Make GET_CLOCK_FREQUENCIES and GET_DATA_RATES profile-aware** so they return values matching the active profile's capabilities.
 
