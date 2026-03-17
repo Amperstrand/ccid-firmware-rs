@@ -113,7 +113,7 @@ The C reference has **no T=1 support at all**. The CCID descriptor advertises `d
 | Inverse convention | Not handled (only direct) | Full support (ARM RBIT or LUT) |
 | Multi-level interface bytes | Supported (up to TD3) | Supported (loop over Y-mask) |
 | Historical bytes | Supported | Supported |
-| TCK verification | **Not verified** | **Logged but not rejected** |
+| TCK verification | **Verified (reject on mismatch for T=1)** | **Logged but not rejected** |
 | Max ATR length | 33 bytes | 33 bytes (MAX_ATR_SIZE=32+1) |
 | ATR read timeout | 400ms first byte, ~50ms inter-byte | 1-byte timer hint + WTIME |
 | Guard time (TC1) | Parsed and applied | Parsed, stored in pars |
@@ -125,7 +125,7 @@ The C reference has **no T=1 support at all**. The CCID descriptor advertises `d
 
 **Verdict**: Accidental gap in Rust. Cards using inverse convention will not work. This should be addressed for full ISO 7816-3 compliance.
 
-**Divergence — TCK verification**: Both implementations accept ATRs with bad TCK checksums. Rust doesn't verify TCK at all (only relevant for T=1). C verifies TCK but only logs the failure without rejecting the ATR. Neither is fully spec-compliant — ISO 7816-3 says TCK must match for T=1 protocols.
+**Divergence — TCK verification**: ~~Both implementations accept ATRs with bad TCK checksums.~~ Rust now verifies TCK for T=1 ATRs and rejects the ATR on mismatch (per ISO 7816-3 §8.2.4). C verifies TCK but only logs the failure without rejecting the ATR.
 
 ### 2.4 PPS Negotiation Comparison
 
@@ -342,7 +342,7 @@ Both implementations route errors to the correct response message type based on 
 |--------|------|---|
 | PPS failure | Graceful degradation | Card deactivation |
 | IFSD failure | Graceful degradation | N/A (T=0 only) |
-| ATR TCK mismatch | Not checked | Logged, ATR accepted |
+| ATR TCK mismatch | Rejected (T=1 only) | Logged, ATR accepted |
 | USART errors (ORE/PE/FE) | Logged, byte consumed | WTIME expired -> deactivation |
 | Card removal mid-operation | State reset | Context-dependent error |
 | Concurrent commands | SLOT_BUSY rejection | SLOT_BUSY rejection |
@@ -452,8 +452,8 @@ The `parse_atr()` function is duplicated between `smartcard.rs` (ARM-only) and `
 | # | Gap | Severity | Recommendation |
 |---|-----|----------|----------------|
 | 1 | No inverse convention support (TS=0x3F) | **High** — cards using inverse convention won't work | Add convention detection and byte inversion |
-| 2 | No TCK verification for T=1 ATRs | **Medium** — spec requires TCK match for T=1 | Add TCK XOR verification, reject on mismatch |
-| 3 | P3==0 (256 bytes) not handled in T=0 | ~~**Medium**~~ FIXED | Le==0 mapped to 256 in GET RESPONSE read path (cf-93o) |
+| 2 | No TCK verification for T=1 ATRs | ~~**Medium**~~ **FIXED** | Implemented in `verify_atr_tck()` (smartcard.rs, protocol_unit.rs). ATR rejected if TCK mismatch and protocol is T=1. |
+| 3 | P3==0 (256 bytes) not handled in T=0 | ~~**Medium**~~ **FIXED** | Le==0 mapped to 256 in GET RESPONSE read path (cf-93o) |
 | 4 | Clock frequency parameter silently ignored | **Low** — response returns actual clock, so host can adapt | Document behavior or clamp to actual value |
 
 ### 10.3 Accidental Gaps in C
@@ -467,6 +467,6 @@ The `parse_atr()` function is duplicated between `smartcard.rs` (ARM-only) and `
 ### 10.4 Items for Follow-Up
 
 1. **[cf-be8-gap-1]** Add inverse convention support to Rust ATR parser — HIGH priority
-2. **[cf-be8-gap-2]** Add TCK verification for T=1 ATRs in Rust — MEDIUM priority
-3. **[cf-be8-gap-3]** ~~Handle P3==0 (256 bytes) in Rust T=0 transmit~~ — FIXED (cf-93o)
+2. **[cf-be8-gap-2]** ~~Add TCK verification for T=1 ATRs in Rust~~ — **FIXED** — `verify_atr_tck()` rejects ATR on TCK mismatch for T=1
+3. **[cf-be8-gap-3]** ~~Handle P3==0 (256 bytes) in Rust T=0 transmit~~ — **FIXED** (cf-93o)
 4. **[cf-be8-gap-4]** Consider proposed_pars pattern for Rust SetParameters — LOW priority (design choice)

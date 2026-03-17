@@ -120,6 +120,20 @@ pub fn parse_atr(atr: &[u8]) -> AtrParams {
     p
 }
 
+/// Verify TCK (check byte) for T=1 ATRs per ISO 7816-3 §8.2.4.
+/// TCK is the XOR of all bytes from T0 to the byte before TCK.
+/// Returns true if verification passes (or TCK is not required for T=0).
+pub fn verify_atr_tck(atr: &[u8], protocol: u8) -> bool {
+    if protocol != 1 {
+        return true;
+    }
+    if atr.len() < 3 {
+        return true;
+    }
+    let expected: u8 = atr[1..atr.len() - 1].iter().fold(0u8, |acc, &b| acc ^ b);
+    expected == atr[atr.len() - 1]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcedureByte {
     Null,
@@ -234,5 +248,40 @@ mod tests {
         assert_eq!(build_bstatus(1, 0), 0x40);
         assert_eq!(build_bstatus(0, 2), 0x02);
         assert_eq!(build_bstatus(1, 2), 0x42);
+    }
+
+    #[test]
+    fn test_tck_verification_t1_valid() {
+        // ATR: TS=0x3B, T0=0x80 (TD1 present), TD1=0x01 (T=1, no more), TCK=0x81
+        // TCK = T0 XOR TD1 = 0x80 XOR 0x01 = 0x81 ✓
+        let atr = [0x3B, 0x80, 0x01, 0x81];
+        let p = parse_atr(&atr);
+        assert_eq!(p.protocol, 1);
+        assert!(verify_atr_tck(&atr, p.protocol));
+    }
+
+    #[test]
+    fn test_tck_verification_t1_invalid() {
+        // Same ATR but corrupted TCK
+        let atr = [0x3B, 0x80, 0x01, 0xFF];
+        let p = parse_atr(&atr);
+        assert_eq!(p.protocol, 1);
+        assert!(!verify_atr_tck(&atr, p.protocol));
+    }
+
+    #[test]
+    fn test_tck_verification_t0_skipped() {
+        // T=0 ATR — TCK verification should be skipped
+        let atr = [0x3B, 0x00, 0xFF];
+        let p = parse_atr(&atr);
+        assert_eq!(p.protocol, 0);
+        assert!(verify_atr_tck(&atr, p.protocol));
+    }
+
+    #[test]
+    fn test_tck_verification_short_atr() {
+        // ATR too short for TCK
+        let atr = [0x3B, 0x01];
+        assert!(verify_atr_tck(&atr, 1));
     }
 }
