@@ -125,8 +125,8 @@ impl PinModifyParams {
         let old_pin_offset = data[4];
         let new_pin_offset = data[5];
 
-        let max_len = data[6];
-        let min_len = data[7];
+        let min_len = data[6];
+        let max_len = data[7];
 
         let validation = data[8];
 
@@ -255,8 +255,8 @@ impl PinVerifyParams {
         let pin_block_string = data[2];
         let pin_length_format = data[3];
 
-        let max_len = data[4];
-        let min_len = data[5];
+        let min_len = data[4];
+        let max_len = data[5];
 
         let validation = data[6];
         let number_message = data.get(7).copied().unwrap_or(1);

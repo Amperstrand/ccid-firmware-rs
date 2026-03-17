@@ -16,17 +16,18 @@ The ccid-firmware-rs implementation achieves **high compliance** with the CCID R
 |----------|-------|
 | Fully Compliant | 14 |
 | Compliant with Documented Deviation | 3 |
-| Bugs Found | 2 |
+| Bugs Found | 1 |
+| Bugs Fixed | 2 |
 | Intentionally Not Implemented | 4 |
 | Not Applicable | 1 |
-| **Total Findings** | **24** |
+| **Total Findings** | **25** |
 
 ### Critical/Major Findings
 
 | # | Severity | Finding | Location |
 |---|----------|---------|----------|
 | 1 | **FIXED** | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `src/ccid.rs:121` |
-| 2 | **BUG** | `wPINMaxExtraDigit` min/max bytes swapped in PIN parsing | `src/pinpad/mod.rs:259,128` |
+| 2 | **FIXED** | `wPINMaxExtraDigit` min/max bytes swapped in PIN parsing | `src/pinpad/mod.rs:259,128` |
 
 ---
 
@@ -314,29 +315,31 @@ PASS - Fully compliant.
 | Error: PIN_CANCELLED (0xEF) | PASS | `ccid.rs:1258-1264` |
 | Error: PIN_TIMEOUT (0xF0) | PASS | `ccid.rs:1269-1275` |
 | Error: CMD_ABORTED (0xFF) | PASS | `ccid.rs:1285` |
-| PIN Verify Data Structure parsing | **BUG** | See finding #2 below |
-| PIN Modify Data Structure parsing | **BUG** | See finding #2 below |
+| PIN Verify Data Structure parsing | **FIXED** | See finding #2 below |
+| PIN Modify Data Structure parsing | **FIXED** | See finding #2 below |
 | Deferred response model | OK | Touchscreen entry |
 
-**Finding #2: wPINMaxExtraDigit min/max byte swap**
+**Finding #2: wPINMaxExtraDigit min/max byte swap [FIXED]**
 
-In both `PinVerifyParams::parse` (`src/pinpad/mod.rs:259`) and `PinModifyParams::parse` (`src/pinpad/mod.rs:128`), the min and max PIN lengths are read from swapped byte positions:
+In both `PinVerifyParams::parse` (`src/pinpad/mod.rs:259`) and `PinModifyParams::parse` (`src/pinpad/mod.rs:128`), the min and max PIN lengths were read from swapped byte positions:
 
 ```rust
-// Current (incorrect):
+// Previous (incorrect):
 let max_len = data[4];  // reads low byte
 let min_len = data[5];  // reads high byte
 ```
 
-Per spec §6.1.11, wPINMaxExtraDigit is a little-endian u16 where **high byte = maximum** and **low byte = minimum**:
+Per spec §6.1.11, wPINMaxExtraDigit is a little-endian u16 where **low byte = minimum** and **high byte = maximum**:
 - data[4] = low byte = minimum PIN length
 - data[5] = high byte = maximum PIN length
 
-The correct reading should be:
+The correct reading is:
 ```rust
 let min_len = data[4];  // low byte = min
 let max_len = data[5];  // high byte = max
 ```
+
+**Fix applied**: Swapped `min_len` and `max_len` assignments in both `PinVerifyParams::parse` and `PinModifyParams::parse` to correctly map low byte to minimum and high byte to maximum.
 
 **Impact**: Low-minor. In practice, most hosts send the same value in both bytes, or the firmware does not strictly enforce different min/max behavior. However, the swap could cause incorrect PIN length validation for edge cases.
 
