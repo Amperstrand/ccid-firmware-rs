@@ -118,7 +118,7 @@ pub const COMMAND_STATUS_NO_ERROR: u8 = 0x00;
 /// Command failed
 pub const COMMAND_STATUS_FAILED: u8 = 0x01;
 /// Command time extension requested
-pub const COMMAND_STATUS_TIME_EXTENSION: u8 = 0x80;
+pub const COMMAND_STATUS_TIME_EXTENSION: u8 = 0x02;
 
 /// CCID error codes (bError field) — CCID Spec Table 6.2-2 / osmo ccid_proto.h
 pub const CCID_ERR_CMD_NOT_SUPPORTED: u8 = 0x00;

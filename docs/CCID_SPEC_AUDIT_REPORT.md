@@ -25,7 +25,7 @@ The ccid-firmware-rs implementation achieves **high compliance** with the CCID R
 
 | # | Severity | Finding | Location |
 |---|----------|---------|----------|
-| 1 | **BUG** | `COMMAND_STATUS_TIME_EXTENSION = 0x80` should be `0x02` | `src/ccid.rs:121` |
+| 1 | **FIXED** | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `src/ccid.rs:121` |
 | 2 | **BUG** | `wPINMaxExtraDigit` min/max bytes swapped in PIN parsing | `src/pinpad/mod.rs:259,128` |
 
 ---
@@ -404,11 +404,11 @@ Returns `CCID_ERR_CMD_NOT_SUPPORTED`. No mechanical card handling hardware prese
 | 9 | bChainParameter | 1 | Chain parameter | 0 | PASS |
 | 10+ | abData | var | Response data | Data bytes | PASS |
 
-**Finding #1: COMMAND_STATUS_TIME_EXTENSION constant value**
+**Finding #1: COMMAND_STATUS_TIME_EXTENSION constant value — FIXED**
 
 At `src/ccid.rs:121`:
 ```rust
-pub const COMMAND_STATUS_TIME_EXTENSION: u8 = 0x80;
+pub const COMMAND_STATUS_TIME_EXTENSION: u8 = 0x02;
 ```
 
 The `build_status` function at `src/ccid.rs:513-515` shifts command status left by 6 bits:
@@ -418,11 +418,7 @@ fn build_status(cmd_status: u8, icc_status: u8) -> u8 {
 }
 ```
 
-With `COMMAND_STATUS_TIME_EXTENSION = 0x80`:
-- `(0x80 << 6)` in u8 = `0x00` (overflow, only lower 8 bits kept)
-- Result: `build_status(0x80, icc)` = `0x00 | icc` = just icc status (WRONG!)
-
-The correct value should be `0x02`:
+With `COMMAND_STATUS_TIME_EXTENSION = 0x02` (fixed):
 - `(0x02 << 6)` = `0x80`
 - Result: `build_status(0x02, icc)` = `0x80 | icc` (CORRECT)
 
@@ -506,9 +502,9 @@ PASS at `src/ccid.rs:106-110, 482-488`.
 |-------|-------------|----------------|--------|
 | 0x00 (00) | Processed without error | `COMMAND_STATUS_NO_ERROR = 0x00` → `build_status` → 0x00 | PASS |
 | 0x40 (01) | Failed | `COMMAND_STATUS_FAILED = 0x01` → `build_status` → 0x40 | PASS |
-| 0x80 (10) | Time extension | `COMMAND_STATUS_TIME_EXTENSION = 0x80` → `build_status` → **0x00** | **BUG** |
+| 0x80 (10) | Time extension | `COMMAND_STATUS_TIME_EXTENSION = 0x02` → `build_status` → 0x80 | **FIXED** |
 
-**Finding #1 detail**: See Section 6.1 above. `COMMAND_STATUS_TIME_EXTENSION` should be `0x02` not `0x80`.
+**Finding #1 detail**: See Section 6.1 above. `COMMAND_STATUS_TIME_EXTENSION` was changed from `0x80` to `0x02`.
 
 ### 7.3 bStatus Packing
 
@@ -657,7 +653,7 @@ PASS - Both T=0 and T=1 protocol data structures match spec Table 6.2-3.
 
 | # | Severity | Description | File:Line | Fix |
 |---|----------|-------------|----------|-----|
-| 1 | Minor | `COMMAND_STATUS_TIME_EXTENSION = 0x80` should be `0x02` (inconsistent with `build_status` shift pattern) | `ccid.rs:121` | Change to `0x02` |
+| 1 | Minor | `COMMAND_STATUS_TIME_EXTENSION` changed from `0x80` to `0x02` | `ccid.rs:121` | **FIXED** |
 | 2 | Minor | `wPINMaxExtraDigit` min/max bytes swapped in `PinVerifyParams::parse` and `PinModifyParams::parse` | `pinpad/mod.rs:259,128` | Swap `max_len` and `min_len` assignments |
 
 ### Documented Deviations (Acceptable)
@@ -685,7 +681,7 @@ PASS - Both T=0 and T=1 protocol data structures match spec Table 6.2-3.
 
 ### High Priority
 
-1. Fix `COMMAND_STATUS_TIME_EXTENSION` constant value (`0x80` → `0x02`)
+1. ~~Fix `COMMAND_STATUS_TIME_EXTENSION` constant value (`0x80` → `0x02`)~~ **DONE**
 2. Fix `wPINMaxExtraDigit` min/max byte swap in PIN parsing
 
 ### Medium Priority
