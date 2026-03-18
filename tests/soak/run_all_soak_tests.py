@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """CCID Firmware Soak Test Master Orchestrator
 
-Runs all 10 test suites sequentially, collecting results and generating
+Runs all test suites sequentially, collecting results and generating
 a final report. Can be used standalone or invoked by Gas Town polecats.
 
 Usage:
     python3 run_all_soak_tests.py [--suite NUM] [--skip NUM] [--list]
+    python3 run_all_soak_tests.py --profile cherry [--suite NUM]
+    FIRMWARE_SERIAL=ST2XXX-001 python3 run_all_soak_tests.py
 """
 
 import argparse
@@ -33,6 +35,7 @@ SUITES = [
     {"num": 8, "name": "extended-apdu", "script": "soak_08_extended_apdu.py", "desc": "Extended APDU stress"},
     {"num": 9, "name": "stress-repeat", "script": "soak_09_stress.py", "desc": "Rapid stress/repeat"},
     {"num": 10, "name": "cross-compare", "script": "soak_10_cross_compare.py", "desc": "Cross-reader CCID diff"},
+    {"num": 11, "name": "cherry-profile", "script": "soak_11_cherry.py", "desc": "Cherry ST-2xxx specific"},
 ]
 
 
@@ -53,16 +56,18 @@ def run_suite(suite: dict) -> dict:
         return {"suite": suite["name"], "status": "SKIP", "reason": "Script not found"}
 
     print(f"\n{'=' * 60}")
-    print(f"SUITE {suite['num']}/10: {suite['name']} — {suite['desc']}")
+    print(f"SUITE {suite['num']}/{len(SUITES)}: {suite['name']} — {suite['desc']}")
     print(f"Script: {script_path}")
     print(f"{'=' * 60}")
 
     start = time.time()
     try:
+        env = os.environ.copy()
         result = subprocess.run(
-            ["sudo", "python3", str(script_path)],
+            ["sudo", "-E", "python3", str(script_path)],
             capture_output=True, text=True, timeout=600,
             cwd=str(RIG_DIR),
+            env=env,
         )
         elapsed = time.time() - start
         return {
@@ -149,11 +154,19 @@ def generate_report(results: list):
 
 def main():
     parser = argparse.ArgumentParser(description="CCID Firmware Soak Test Orchestrator")
-    parser.add_argument("--suite", type=int, help="Run only a specific suite (1-10)")
+    parser.add_argument("--suite", type=int, help="Run only a specific suite (1-11)")
     parser.add_argument("--skip", type=int, action="append", help="Skip suite(s)")
     parser.add_argument("--list", action="store_true", help="List available suites")
     parser.add_argument("--no-stop-on-fail", action="store_true", help="Continue after failures")
+    parser.add_argument("--profile", choices=["ct30", "cherry"], help="Firmware profile (sets FIRMWARE_SERIAL)")
     args = parser.parse_args()
+
+    if args.profile == "cherry":
+        os.environ["FIRMWARE_SERIAL"] = "ST2XXX-001"
+        print("Profile: Cherry ST-2xxx (serial=ST2XXX-001)")
+    elif args.profile == "ct30":
+        os.environ["FIRMWARE_SERIAL"] = "CT30-001"
+        print("Profile: Gemalto IDBridge CT30 (serial=CT30-001)")
 
     if args.list:
         for s in SUITES:

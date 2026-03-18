@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from soaklib import (
     discover_readers, connect_reader, disconnect_reader, restart_pcscd,
     stop_pcscd, transmit_apdu, run_test_on_both, save_results,
-    SuiteResult, LOG_BASE, GEMALTO_SERIAL, FIRMWARE_SERIAL, get_atr,
+    SuiteResult, LOG_BASE, GEMALTO_SERIAL, DEFAULT_FIRMWARE_SERIAL, get_atr,
 )
 
 SUITE_DIR = LOG_BASE / "soak-01-smoke"

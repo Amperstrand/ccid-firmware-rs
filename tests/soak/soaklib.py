@@ -27,7 +27,8 @@ from smartcard.CardRequest import CardRequest
 from smartcard.Exceptions import NoCardException, CardConnectionException
 
 GEMALTO_SERIAL = "BCF852F0"
-FIRMWARE_SERIAL = "CT30-001"
+FIRMWARE_SERIALS = ["CT30-001", "ST2XXX-001"]
+DEFAULT_FIRMWARE_SERIAL = os.environ.get("FIRMWARE_SERIAL", "CT30-001")
 LOG_BASE = Path("/home/ubuntu/gt/ccid_firmware/soak-test-logs")
 RIG_DIR = Path("/home/ubuntu/gt/ccid_firmware/mayor/rig")
 GITHUB_REPO = "Amperstrand/ccid-firmware-rs"
@@ -155,7 +156,9 @@ class SuiteResult:
         return asdict(self)
 
 
-def discover_readers(timeout: int = 30) -> dict:
+def discover_readers(timeout: int = 30, firmware_serial: str = None) -> dict:
+    if firmware_serial is None:
+        firmware_serial = DEFAULT_FIRMWARE_SERIAL
     readers = {}
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -165,8 +168,8 @@ def discover_readers(timeout: int = 30) -> dict:
                 name = str(r)
                 if GEMALTO_SERIAL in name:
                     readers["gemalto"] = {"reader": r, "name": name, "serial": GEMALTO_SERIAL}
-                elif FIRMWARE_SERIAL in name:
-                    readers["firmware"] = {"reader": r, "name": name, "serial": FIRMWARE_SERIAL}
+                elif firmware_serial in name:
+                    readers["firmware"] = {"reader": r, "name": name, "serial": firmware_serial}
             if "gemalto" in readers and "firmware" in readers:
                 return readers
         except Exception:
@@ -582,7 +585,7 @@ def run_test_on_both(
             f"- Status: {'OK' if result.gemalto_ok else 'FAIL'}\n"
             f"- Response: `{result.gemalto_response[:500]}`\n"
             f"- Error: `{result.gemalto_error}`\n\n"
-            f"### Firmware Reader ({FIRMWARE_SERIAL})\n"
+            f"### Firmware Reader ({DEFAULT_FIRMWARE_SERIAL})\n"
             f"- Status: {'OK' if result.firmware_ok else 'FAIL'}\n"
             f"- Response: `{result.firmware_response[:500]}`\n"
             f"- Error: `{result.firmware_error}`\n\n"
