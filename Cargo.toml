@@ -15,6 +15,13 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[[bin]]
+name = "ccid-nfc"
+path = "src/main_nfc.rs"
+test = false
+bench = false
+required-features = ["nfc"]
+
 [dependencies]
 
 [target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]

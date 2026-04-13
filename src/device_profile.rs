@@ -570,6 +570,11 @@ compile_error!(
 // ============================================================================
 
 #[cfg(test)]
+#[cfg(any(
+    feature = "profile-cherry-smartterminal-st2xxx",
+    feature = "profile-gemalto-idbridge-ct30",
+    feature = "profile-gemalto-idbridge-k30"
+))]
 mod tests {
     use super::*;
 

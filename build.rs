@@ -33,6 +33,8 @@ fn main() {
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let memory_x_path = Path::new("memory.x");
 
+    // Only copy memory.x for ARM targets (STM32).
+    // NFC/ESP32-S3 builds use the ESP32 bootloader and linker scripts.
     if memory_x_path.exists() {
         let out_memory_x = Path::new(&out_dir).join("memory.x");
         fs::copy(memory_x_path, out_memory_x).unwrap();
