@@ -44,6 +44,11 @@ profile-cherry-smartterminal-st2xxx = []  # Cherry SmartTerminal ST-2xxx (PIN pa
 profile-gemalto-idbridge-ct30 = []        # Gemalto IDBridge CT30 (basic reader)
 profile-gemalto-idbridge-k30 = []         # Gemalto IDBridge K30 (basic reader, no PIN pad!)
 
+# NFC build variant: ESP32-S3 + PN532 contactless reader
+# Use instead of (not alongside) STM32 contact-card profiles.
+# See BUILDING.md for full NFC build instructions.
+nfc = ["embedded-hal"]
+
 # Optional features
 display = ["embedded-graphics", "embedded-hal"]
 

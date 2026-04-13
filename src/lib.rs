@@ -23,8 +23,10 @@ pub mod driver;
 pub mod pinpad;
 pub mod protocol_unit;
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod device_profile;
+
+#[cfg(feature = "nfc")]
+pub mod nfc;
 
 pub mod mock_driver;
 

@@ -1,4 +1,3 @@
-#![cfg(all(target_arch = "arm", target_os = "none"))]
 #![allow(dead_code)]
 //! Device Profile Configuration for CCID Reader Emulation
 //!
@@ -548,18 +547,22 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     ..BASE_PROFILE
 };
 
-/// Compile error if no profile feature is selected.
-/// Use `--features profile-cherry-smartterminal-st2xxx` (default) or another profile.
+/// Compile error if no profile feature is selected (STM32 builds only).
+///
+/// NFC builds use the `nfc` feature and the NFC_PROFILE from the `nfc` module
+/// instead of `CURRENT_PROFILE` — they do not need a contact-card profile.
 #[cfg(not(any(
     feature = "profile-cherry-smartterminal-st2xxx",
     feature = "profile-gemalto-idbridge-ct30",
-    feature = "profile-gemalto-idbridge-k30"
+    feature = "profile-gemalto-idbridge-k30",
+    feature = "nfc"
 )))]
 compile_error!(
     "No device profile selected. Use one of: \
      --features profile-cherry-smartterminal-st2xxx (default), \
      --features profile-gemalto-idbridge-ct30, \
-     --features profile-gemalto-idbridge-k30"
+     --features profile-gemalto-idbridge-k30, \
+     --features nfc (ESP32-S3 + PN532 NFC reader)"
 );
 
 // ============================================================================
@@ -579,8 +582,8 @@ mod tests {
     #[test]
     fn test_cherry_st2100_bcd_ccid() {
         let desc = CURRENT_PROFILE.ccid_descriptor();
-        // bcdCCID at offset 0-1 = 0x0110 (Rev 1.1)
-        assert_eq!(desc[0], 0x10);
+        // bcdCCID at offset 0-1 = 0x0100 (Rev 1.0, per Cherry reference file)
+        assert_eq!(desc[0], 0x00);
         assert_eq!(desc[1], 0x01);
     }
 
@@ -618,7 +621,8 @@ mod tests {
     fn test_cherry_st2100_max_message_length() {
         let desc = CURRENT_PROFILE.ccid_descriptor();
         let max_msg = u32::from_le_bytes([desc[42], desc[43], desc[44], desc[45]]);
-        assert_eq!(max_msg, 271);
+        // Cherry ST-2xxx: 270 bytes max (per reference file)
+        assert_eq!(max_msg, 270);
     }
 
     #[test]
