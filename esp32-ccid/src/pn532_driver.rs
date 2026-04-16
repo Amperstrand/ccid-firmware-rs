@@ -48,8 +48,6 @@ use core::time::Duration;
 
 #[cfg(target_arch = "xtensa")]
 use esp_idf_hal::delay::Delay;
-#[cfg(target_arch = "xtensa")]
-use esp_idf_hal::gpio::OutputPin;
 
 #[cfg(target_arch = "xtensa")]
 use pn532::{
@@ -110,7 +108,7 @@ pub struct Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
     IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
-    RST: OutputPin,
+    RST: embedded_hal::digital::OutputPin,
 {
     pn532: Pn532<SPIInterfaceWithIrq<SPI, IRQ>, EspDelayTimer, PN532_BUF_SIZE>,
     rst_pin: RST,
@@ -123,7 +121,7 @@ impl<SPI, IRQ, RST> Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
     IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
-    RST: OutputPin,
+    RST: embedded_hal::digital::OutputPin,
 {
     pub fn new(spi: SPI, irq: IRQ, rst: RST) -> Result<Self, NfcError> {
         let interface = SPIInterfaceWithIrq { spi, irq };
@@ -180,7 +178,7 @@ impl<SPI, IRQ, RST> NfcDriver for Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
     IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
-    RST: OutputPin,
+    RST: embedded_hal::digital::OutputPin,
 {
     type Error = NfcError;
 
