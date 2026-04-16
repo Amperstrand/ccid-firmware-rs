@@ -15,11 +15,11 @@ use esp32_ccid::{
 #[cfg(target_arch = "xtensa")]
 use esp_idf_hal::{
     delay::{FreeRtos, TickType},
-    gpio::{self, AnyIOPin, PinDriver},
+    gpio::{self, PinDriver},
     peripherals::Peripherals,
-    prelude::*,
     spi::{self, SpiDeviceDriver},
     uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
+    units::Hertz,
 };
 #[cfg(target_arch = "xtensa")]
 use esp_idf_sys::{self, EspError, ESP_ERR_TIMEOUT};
@@ -33,15 +33,15 @@ const MAX_FRAME_SIZE: usize = 274;
 const MAX_CCID_RESPONSE_SIZE: usize = 271;
 
 #[cfg(target_arch = "xtensa")]
-struct IrqPin<'d, T: gpio::InputPin>(PinDriver<'d, T, gpio::Input>);
+struct IrqPin<'d>(PinDriver<'d, gpio::Input>);
 
 #[cfg(target_arch = "xtensa")]
-impl<'d, T: gpio::InputPin> embedded_hal::digital::ErrorType for IrqPin<'d, T> {
+impl<'d> embedded_hal::digital::ErrorType for IrqPin<'d> {
     type Error = Infallible;
 }
 
 #[cfg(target_arch = "xtensa")]
-impl<'d, T: gpio::InputPin> embedded_hal::digital::InputPin for IrqPin<'d, T> {
+impl<'d> embedded_hal::digital::InputPin for IrqPin<'d> {
     fn is_high(&mut self) -> Result<bool, Self::Error> {
         Ok(self.0.is_high())
     }
@@ -69,12 +69,12 @@ fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
 
-    let Some(peripherals) = Peripherals::take() else {
-        eprintln!("Failed to take ESP32 peripherals");
+    let peripherals = Peripherals::take().unwrap_or_else(|err| {
+        eprintln!("Failed to take ESP32 peripherals: {:?}", err);
         loop {
             FreeRtos::delay_ms(1000);
         }
-    };
+    });
 
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))
@@ -89,17 +89,17 @@ fn main() {
         peripherals.uart0,
         peripherals.pins.gpio1,
         peripherals.pins.gpio3,
-        Option::<AnyIOPin>::None,
-        Option::<AnyIOPin>::None,
+        Option::<gpio::AnyIOPin>::None,
+        Option::<gpio::AnyIOPin>::None,
         &uart_config,
     )
     .unwrap();
 
-    let irq_pin = IrqPin(PinDriver::input(peripherals.pins.gpio16).unwrap());
+    let irq_pin = IrqPin(PinDriver::input(peripherals.pins.gpio16, gpio::Pull::Down).unwrap());
     let rst_pin = PinDriver::output(peripherals.pins.gpio26).unwrap();
 
     let spi_config = spi::config::Config::new()
-        .baudrate(1.MHz().into())
+        .baudrate(Hertz(1_000_000).into())
         .data_mode(spi::config::MODE_0);
 
     let spi_device = SpiDeviceDriver::new_single(
