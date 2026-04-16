@@ -75,6 +75,7 @@ pub const PIN_TIMEOUT: u8 = 0xF0;
 pub const PIN_CANCELLED: u8 = 0xEF;
 /// Slot busy
 pub const CMD_SLOT_BUSY: u8 = 0xE0;
+pub const ICC_NOT_ACTIVE: u8 = 0x05;
 
 /// Card absent in slot
 pub const CARD_ABSENT: u8 = 0x02;
