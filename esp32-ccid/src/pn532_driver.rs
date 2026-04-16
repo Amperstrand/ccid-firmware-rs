@@ -1,207 +1,278 @@
-//! # PN532 Driver Compatibility Assessment
+//! PN532 NFC driver for ESP32 + PN532 over SPI.
 //!
-//! This file documents the compatibility between pn532 crate v0.5.0 and esp-idf-hal
-//! for implementing a PN532 NFC driver on ESP32.
+//! ## Pin mapping (DevKitC V4)
+//!
+//! | Function | GPIO | Direction |
+//! |----------|------|-----------|
+//! | SCK      | 19   | SPI       |
+//! | MISO     | 18   | SPI       |
+//! | MOSI     | 17   | SPI       |
+//! | CS/SS    | 25   | SPI       |
+//! | IRQ      | 16   | Input     |
+//! | RST      | 26   | Output    |
+//!
+//! SPI: Mode 0, ≤1 MHz, MSB-first (msb-spi feature handles LSB conversion).
 
-// ============================================================================
-// SPI DEVICE TRAIT COMPATIBILITY
-// ============================================================================
+use crate::nfc::{NfcDriver, NfcError};
 
-/// **pn532 v0.5.0 SPI Interface Requirements:**
-///
-/// The pn532 crate uses `embedded_hal::spi::SpiDevice` (v1.0 trait, NOT v0.2).
-///
-/// `SPIInterface<SPI>` has the following trait bound:
-/// ```rust
-/// impl<SPI> Interface for SPIInterface<SPI>
-/// where SPI: SpiDevice
-/// ```
-///
-/// Source: https://docs.rs/pn532/0.5.0/pn532/spi/struct.SPIInterface.html
-///
-/// **esp-idf-hal SPI Compatibility: YES**
-///
-/// `esp-idf-hal` provides `SpiDeviceDriver` which implements `embedded_hal::spi::SpiDevice`.
-/// Source: https://docs.rs/esp-idf-hal/latest/esp_idf_hal/spi/
-///
-/// This means we can directly use `esp_idf_hal::spi::SpiDeviceDriver` with
-/// `pn532::spi::SPIInterface` without any adapter layer.
-
-// ============================================================================
-// LSB-FIRST SPI HANDLING
-// ============================================================================
-
-/// **PN532 Bit Order Requirement:**
-///
-/// PN532 requires LSB-first SPI bit order.
-///
-/// **ESP32 Hardware SPI Limitation:**
-///
-/// ESP32 hardware SPI typically only supports MSB-first bit order.
-///
-/// **Solution: msb-spi Feature**
-///
-/// The pn532 crate provides the `msb-spi` feature which handles the bit
-/// reversal in software within the driver. When this feature is enabled, the driver
-/// automatically reverses bits on every SPI transaction.
-///
-/// From pn532 crate docs:
-/// > "If you want to use SPIInterface and your peripheral cannot be set to
-/// > lsb mode you need to enable the `msb-spi` feature of this crate."
-///
-/// **Our Cargo.toml Configuration:**
-///
-/// ```toml
-/// [dependencies]
-/// pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false }
-/// ```
-///
-/// The `msb-spi` feature is already enabled, so we can use MSB-first SPI on
-/// ESP32 and the driver will handle the LSB conversion transparently.
-///
-/// **SPI Mode Configuration:**
-///
-/// The PN532 requires SPI Mode 0 (CPOL = 0, CPHA = 0).
-/// This must be configured when creating the SPI device.
-
-// ============================================================================
-// TIMER / DELAY REQUIREMENTS
-// ============================================================================
-
-/// **pn532 v0.5.0 Timer Requirements:**
-///
-/// The `Pn532<I, T, N>` struct constructor takes:
-/// ```rust
-/// pub fn new(interface: I, timer: T) -> Self
-/// ```
-///
-/// Where:
-/// - `I: Interface` (our SPIInterface)
-/// - `T: CountDown` (a custom timer trait, NOT embedded_hal::delay::DelayNs)
-///
-/// **The CountDown Trait:**
-///
-/// ```rust
-/// pub trait CountDown {
-///     type Time;
-///
-///     fn start<T>(&mut self, count: T)
-///     where T: Into<Self::Time>;
-///
-///     fn wait(&mut self) -> nb::Result<(), Infallible>;
-/// }
-/// ```
-///
-/// Source: https://docs.rs/pn532/0.5.0/pn532/trait.CountDown.html
-///
-/// **Contract:**
-/// - `self.start(count); block!(self.wait());` MUST block for AT LEAST the time
-///   specified by `count`.
-/// - The implementer doesn't have to be a *downcounting* timer; it could also be
-///   an *upcounting* timer as long as the contract is upheld.
-///
-/// **esp-idf-hal Timer Compatibility: NEEDS ADAPTER**
-///
-/// `esp-idf-hal` provides `Delay` which implements `embedded_hal::delay::DelayNs`,
-/// NOT the pn532-specific `CountDown` trait.
-///
-/// We will need to:
-/// 1. Wrap an `esp_idf_hal::delay::Delay` or use an ESP32 timer
-/// 2. Implement the `CountDown` trait for our wrapper
-/// 3. The wrapper should use `nb` crate to provide non-blocking wait semantics
-///
-/// **Alternative: Async Mode**
-///
-/// The pn532 crate also provides `new_async(interface: I)` which doesn't require a timer:
-/// ```rust
-/// impl<I: Interface, const N: usize> Pn532<I, (), N> {
-///     pub fn new_async(interface: I) -> Self { ... }
-/// }
-///
-/// pub async fn process_async<'a>(...) -> Result<&[u8], Error<I::Error>> { ... }
-/// ```
-///
-/// This might be simpler if we're using an async runtime like Embassy, but for blocking
-/// mode we need the CountDown adapter.
-
-// ============================================================================
-// AVAILABLE PN532 COMMANDS
-// ============================================================================
-
-/// **Key PN532 Commands for CCID/ISO 14443-4 Implementation:**
-///
-/// Source: https://docs.rs/pn532/0.5.0/pn532/requests/enum.Command.html
-///
-/// ### 1. InListPassiveTarget (Command = 74)
-/// - Purpose: Detect/select NFC cards in passive mode
-/// - Supports ISO 14443A Type A at 106kbps
-/// - This is the primary command for card detection
-/// - Returns target information including UID, ATR, etc.
-/// - Reference: PN532 User Manual section 7.3.5
-///
-/// ### 2. InDataExchange (Command = 64)
-/// - Purpose: Send APDU commands to selected cards and receive responses
-/// - This is the main command for ISO 7816-3 APDU exchange
-/// - Used for all T=0 and T=1 protocol exchanges
-/// - Reference: PN532 User Manual section 7.3.8
-///
-/// ### 3. InRelease (Command = 82)
-/// - Purpose: Release/deselect a card
-/// - Used to cleanly release the current target
-/// - Reference: PN532 User Manual section 7.3.11
-///
-/// ### 4. InDeselect (Command = 68)
-/// - Purpose: Deselect specified target(s)
-/// - Alternative to InRelease for deselecting cards
-/// - Reference: PN532 User Manual section 7.3.10
-///
-/// ### 5. InSelect (Command = 84)
-/// - Purpose: Select a specified target
-/// - Used when multiple targets are present
-/// - Reference: PN532 User Manual section 7.3.12
-///
-/// ### 6. SAMConfiguration (Command = 20)
-/// - Purpose: Configure Secure Access Module mode
-/// - Sets PN532 into normal mode for card operations
-/// - Required before card operations
-/// - Available via `Request::sam_configuration(mode, use_irq_pin)`
-/// - Takes `SAMMode` enum: `Normal`, `VirtualCard`, `WiredCard`, `DualCard`
-/// - Reference: PN532 User Manual section 7.2.10
-///
-/// ### Additional Available Commands:
-/// - `InATR` (80): Activate target in passive mode (ISO 14443-4)
-/// - `InAutoPoll` (96): Auto-poll for cards/targets
-/// - `InCommunicateThru` (66): Basic data exchange (lower level than InDataExchange)
-/// - `GetFirmwareVersion` (2): Get PN532 firmware version
-/// - `GetGeneralStatus` (4): Get PN532 status
-/// - `RFConfiguration` (50): Configure RF settings
-/// - `SetParameters` (18): Set internal PN532 parameters
-
-// ============================================================================
-// IMPLEMENTATION SUMMARY
-// ============================================================================
-
-/// **Compatibility Assessment:**
-///
-/// | Component | Compatible? | Notes |
-/// |-----------|-------------|--------|
-/// | SPI Device | ✅ YES | esp-idf-hal implements embedded_hal::spi::SpiDevice |
-/// | MSB-first SPI | ✅ YES | msb-spi feature enabled in Cargo.toml |
-/// | Timer | ⚠️ NEEDS_ADAPTER | Need CountDown trait wrapper around esp-idf-hal timer |
-/// | Required Commands | ✅ YES | InListPassiveTarget, InDataExchange, InRelease, SAMConfiguration all available |
-///
-/// **Implementation Plan:**
-///
-/// 1. Create `CountDown` trait wrapper for `esp_idf_hal::delay::Delay` or ESP32 timer
-/// 2. Use `pn532::spi::SPIInterface` with `esp_idf_hal::spi::SpiDeviceDriver`
-/// 3. Initialize PN532 with `Request::sam_configuration(SAMMode::Normal, false)`
-/// 4. Use `InListPassiveTarget` to detect ISO 14443A cards
-/// 5. Use `InDataExchange` for APDU exchange (T=0/T=1 protocols)
-/// 6. Use `InRelease` or `InDeselect` to release cards
-
-// ============================================================================
-// PLACEHOLDER STRUCT
-// ============================================================================
-
-// TODO(T7): Implement Pn532NfcDriver struct implementing NfcDriver trait
+#[cfg(not(target_arch = "xtensa"))]
 pub struct Pn532NfcDriver;
+
+#[cfg(not(target_arch = "xtensa"))]
+impl NfcDriver for Pn532NfcDriver {
+    type Error = NfcError;
+
+    fn init(&mut self) -> Result<(), NfcError> {
+        Ok(())
+    }
+
+    fn is_card_present(&mut self) -> bool {
+        false
+    }
+
+    fn power_on(&mut self, _atr_buf: &mut [u8]) -> Result<usize, NfcError> {
+        Err(NfcError::NoCard)
+    }
+
+    fn power_off(&mut self) {}
+
+    fn transmit_apdu(&mut self, _command: &[u8], _response: &mut [u8]) -> Result<usize, NfcError> {
+        Err(NfcError::NotInitialized)
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+use core::convert::Infallible;
+#[cfg(target_arch = "xtensa")]
+use core::time::Duration;
+
+#[cfg(target_arch = "xtensa")]
+use esp_idf_hal::delay::Delay;
+#[cfg(target_arch = "xtensa")]
+use esp_idf_hal::gpio::OutputPin;
+
+#[cfg(target_arch = "xtensa")]
+use pn532::{
+    requests::{BorrowedRequest, Command, SAMMode},
+    spi::SPIInterfaceWithIrq,
+    CountDown, IntoDuration, Pn532, Request,
+};
+
+/// Adapter from esp-idf blocking delay to pn532::CountDown.
+/// `start(d)` records duration; `wait()` blocks for it then returns Ok.
+#[cfg(target_arch = "xtensa")]
+pub struct EspDelayTimer {
+    deadline: Duration,
+}
+
+#[cfg(target_arch = "xtensa")]
+impl EspDelayTimer {
+    pub fn new() -> Self {
+        Self {
+            deadline: Duration::ZERO,
+        }
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+impl CountDown for EspDelayTimer {
+    type Time = Duration;
+
+    fn start<T>(&mut self, count: T)
+    where
+        T: Into<Self::Time>,
+    {
+        self.deadline = count.into();
+    }
+
+    fn wait(&mut self) -> nb::Result<(), Infallible> {
+        let ms = self.deadline.as_millis() as u32;
+        if ms > 0 {
+            Delay::new_default().delay_ms(ms);
+            self.deadline = Duration::ZERO;
+        }
+        Ok(())
+    }
+}
+
+/// PN532 internal buffer: must satisfy N-9 >= max(response_len, request_data_len).
+/// 64 → 55 byte payload, enough for standard short APDUs.
+#[cfg(target_arch = "xtensa")]
+const PN532_BUF_SIZE: usize = 64;
+
+/// Synthetic ATR: TS=3B T0=80 TD1=80 TD2=01 TCK=01.
+/// Sufficient for pcscd to route APDUs; future: build from ATS via RATS.
+#[cfg(target_arch = "xtensa")]
+const SYNTHETIC_ATR: [u8; 5] = [0x3B, 0x80, 0x80, 0x01, 0x01];
+
+#[cfg(target_arch = "xtensa")]
+pub struct Pn532NfcDriver<SPI, IRQ, RST>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+    IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
+    RST: OutputPin,
+{
+    pn532: Pn532<SPIInterfaceWithIrq<SPI, IRQ>, EspDelayTimer, PN532_BUF_SIZE>,
+    rst_pin: RST,
+    target_num: Option<u8>,
+    is_initialized: bool,
+}
+
+#[cfg(target_arch = "xtensa")]
+impl<SPI, IRQ, RST> Pn532NfcDriver<SPI, IRQ, RST>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+    IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
+    RST: OutputPin,
+{
+    pub fn new(spi: SPI, irq: IRQ, rst: RST) -> Result<Self, NfcError> {
+        let interface = SPIInterfaceWithIrq { spi, irq };
+        let timer = EspDelayTimer::new();
+        let pn532 = Pn532::new(interface, timer);
+
+        Ok(Self {
+            pn532,
+            rst_pin: rst,
+            target_num: None,
+            is_initialized: false,
+        })
+    }
+
+    fn hardware_reset(&mut self) -> Result<(), NfcError> {
+        self.rst_pin
+            .set_low()
+            .map_err(|_| NfcError::CommunicationError)?;
+        Delay::new_default().delay_ms(100);
+        self.rst_pin
+            .set_high()
+            .map_err(|_| NfcError::CommunicationError)?;
+        Delay::new_default().delay_ms(500);
+        Ok(())
+    }
+
+    fn get_firmware_version(&mut self) -> Result<(u8, u8), NfcError> {
+        let response = self
+            .pn532
+            .process(&Request::GET_FIRMWARE_VERSION, 4, 50.ms())
+            .map_err(|_| NfcError::CommunicationError)?;
+
+        if response.len() < 4 || response[0] != 0x32 {
+            return Err(NfcError::CommunicationError);
+        }
+
+        Ok((response[1], response[2]))
+    }
+
+    fn configure_sam(&mut self) -> Result<(), NfcError> {
+        self.pn532
+            .process(
+                &Request::sam_configuration(SAMMode::Normal, false),
+                0,
+                50.ms(),
+            )
+            .map_err(|_| NfcError::CommunicationError)?;
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "xtensa")]
+impl<SPI, IRQ, RST> NfcDriver for Pn532NfcDriver<SPI, IRQ, RST>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+    IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
+    RST: OutputPin,
+{
+    type Error = NfcError;
+
+    /// Init: hardware reset → GetFirmwareVersion → SAMConfiguration(Normal).
+    fn init(&mut self) -> Result<(), NfcError> {
+        self.hardware_reset()?;
+        self.get_firmware_version()?;
+        self.configure_sam()?;
+        self.is_initialized = true;
+        Ok(())
+    }
+
+    /// InListPassiveTarget for ISO 14443-A; stores target_num on success.
+    fn is_card_present(&mut self) -> bool {
+        if !self.is_initialized {
+            return false;
+        }
+
+        match self
+            .pn532
+            .process(&Request::INLIST_ONE_ISO_A_TARGET, 20, 1000.ms())
+        {
+            Ok(response) if !response.is_empty() && response[0] > 0 => {
+                self.target_num = Some(1);
+                true
+            }
+            _ => {
+                self.target_num = None;
+                false
+            }
+        }
+    }
+
+    /// Returns synthetic ATR `3B 80 80 01 01` for all detected cards.
+    fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
+        if !self.is_initialized {
+            return Err(NfcError::NotInitialized);
+        }
+        if self.target_num.is_none() && !self.is_card_present() {
+            return Err(NfcError::NoCard);
+        }
+        if self.target_num.is_none() {
+            return Err(NfcError::NoCard);
+        }
+        if atr_buf.len() < SYNTHETIC_ATR.len() {
+            return Err(NfcError::BufferOverflow);
+        }
+
+        atr_buf[..SYNTHETIC_ATR.len()].copy_from_slice(&SYNTHETIC_ATR);
+        Ok(SYNTHETIC_ATR.len())
+    }
+
+    /// InRelease to deselect the current target.
+    fn power_off(&mut self) {
+        if let Some(target_num) = self.target_num {
+            let _ = self
+                .pn532
+                .process(&Request::new(Command::InRelease, [target_num]), 0, 50.ms());
+            self.target_num = None;
+        }
+    }
+
+    /// InDataExchange with selected target.
+    /// Response[0]=status (0=ok), rest is APDU data+SW.
+    fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, NfcError> {
+        if !self.is_initialized {
+            return Err(NfcError::NotInitialized);
+        }
+        let target_num = self.target_num.ok_or(NfcError::NoCard)?;
+
+        let mut data = heapless::Vec::<u8, PN532_BUF_SIZE>::new();
+        data.push(target_num)
+            .map_err(|_| NfcError::BufferOverflow)?;
+        data.extend_from_slice(command)
+            .map_err(|_| NfcError::BufferOverflow)?;
+
+        let request = BorrowedRequest::new(Command::InDataExchange, &data);
+
+        let result = self
+            .pn532
+            .process(request, PN532_BUF_SIZE, 1000.ms())
+            .map_err(|_| NfcError::CommunicationError)?;
+
+        if result.is_empty() || result[0] != 0x00 {
+            return Err(NfcError::CommunicationError);
+        }
+
+        let apdu_response = &result[1..];
+        if response.len() < apdu_response.len() {
+            return Err(NfcError::BufferOverflow);
+        }
+        response[..apdu_response.len()].copy_from_slice(apdu_response);
+        Ok(apdu_response.len())
+    }
+}

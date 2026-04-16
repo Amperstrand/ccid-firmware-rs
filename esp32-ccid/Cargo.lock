@@ -520,6 +520,7 @@ dependencies = [
  "esp-idf-hal",
  "esp-idf-sys",
  "heapless",
+ "nb 1.1.0",
  "pn532",
 ]
 
