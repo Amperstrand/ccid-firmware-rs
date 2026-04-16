@@ -178,7 +178,6 @@ fn main() {
                 }
             }
             _ => {
-                let _ = ccid_handler.check_card_change();
                 frame_len = 0;
                 frame_parser.reset();
             }

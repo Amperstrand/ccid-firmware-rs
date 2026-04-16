@@ -149,9 +149,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     fn handle_power_off(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         self.nfc.power_off();
-        let present = self.nfc.is_card_present();
-        self.card_was_present = present;
-        self.slot_state = if present {
+        self.slot_state = if self.card_was_present {
             SlotState::PresentInactive
         } else {
             SlotState::NotPresent
@@ -168,18 +166,6 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_get_slot_status(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        let present = self.nfc.is_card_present();
-        self.card_was_present = present;
-
-        self.slot_state = if present {
-            match self.slot_state {
-                SlotState::NotPresent => SlotState::PresentInactive,
-                state => state,
-            }
-        } else {
-            SlotState::NotPresent
-        };
-
         self.write_slot_status(
             header.slot,
             header.seq,
@@ -191,12 +177,6 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
-        let present = self.nfc.is_card_present();
-        self.card_was_present = present;
-        if !present {
-            self.slot_state = SlotState::NotPresent;
-        }
-
         if self.slot_state != SlotState::PresentActive {
             return self.write_message(
                 RDR_TO_PC_DATABLOCK,
