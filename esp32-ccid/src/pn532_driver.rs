@@ -13,7 +13,8 @@
 //!
 //! SPI: Mode 0, ≤1 MHz, MSB-first (msb-spi feature handles LSB conversion).
 
-use crate::nfc::{NfcDriver, NfcError};
+#[cfg(any(not(target_arch = "xtensa"), feature = "backend-pn532"))]
+use crate::nfc::{NfcDriver, NfcError, PresenceState};
 
 #[cfg(not(target_arch = "xtensa"))]
 pub struct Pn532NfcDriver;
@@ -30,6 +31,14 @@ impl NfcDriver for Pn532NfcDriver {
         false
     }
 
+    fn poll_card_presence(&mut self) -> PresenceState {
+        PresenceState { present: false }
+    }
+
+    fn session_active(&self) -> bool {
+        false
+    }
+
     fn power_on(&mut self, _atr_buf: &mut [u8]) -> Result<usize, NfcError> {
         Err(NfcError::NoCard)
     }
@@ -41,15 +50,15 @@ impl NfcDriver for Pn532NfcDriver {
     }
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 use core::convert::Infallible;
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 use core::time::Duration;
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 use esp_idf_hal::delay::Delay;
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 use pn532::{
     requests::{BorrowedRequest, Command, SAMMode},
     spi::SPIInterfaceWithIrq,
@@ -58,12 +67,12 @@ use pn532::{
 
 /// Adapter from esp-idf blocking delay to pn532::CountDown.
 /// `start(d)` records duration; `wait()` blocks for it then returns Ok.
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 pub struct EspDelayTimer {
     deadline: Duration,
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 impl EspDelayTimer {
     pub fn new() -> Self {
         Self {
@@ -72,7 +81,7 @@ impl EspDelayTimer {
     }
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 impl CountDown for EspDelayTimer {
     type Time = Duration;
 
@@ -95,15 +104,15 @@ impl CountDown for EspDelayTimer {
 
 /// PN532 internal buffer: must satisfy N-9 >= max(response_len, request_data_len).
 /// 64 → 55 byte payload, enough for standard short APDUs.
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 const PN532_BUF_SIZE: usize = 64;
 
 /// Synthetic ATR: TS=3B T0=80 TD1=80 TD2=01 TCK=01.
 /// Sufficient for pcscd to route APDUs; future: build from ATS via RATS.
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 const SYNTHETIC_ATR: [u8; 5] = [0x3B, 0x80, 0x80, 0x01, 0x01];
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 pub struct Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
@@ -114,9 +123,10 @@ where
     rst_pin: RST,
     target_num: Option<u8>,
     is_initialized: bool,
+    session_active: bool,
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 impl<SPI, IRQ, RST> Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
@@ -133,6 +143,7 @@ where
             rst_pin: rst,
             target_num: None,
             is_initialized: false,
+            session_active: false,
         })
     }
 
@@ -173,7 +184,7 @@ where
     }
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 impl<SPI, IRQ, RST> NfcDriver for Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
@@ -193,11 +204,15 @@ where
 
     /// InListPassiveTarget for ISO 14443-A; stores target_num on success.
     fn is_card_present(&mut self) -> bool {
+        self.poll_card_presence().present
+    }
+
+    fn poll_card_presence(&mut self) -> PresenceState {
         if !self.is_initialized {
-            return false;
+            return PresenceState { present: false };
         }
 
-        match self
+        let present = match self
             .pn532
             .process(&Request::INLIST_ONE_ISO_A_TARGET, 20, 1000.ms())
         {
@@ -207,9 +222,16 @@ where
             }
             _ => {
                 self.target_num = None;
+                self.session_active = false;
                 false
             }
-        }
+        };
+
+        PresenceState { present }
+    }
+
+    fn session_active(&self) -> bool {
+        self.session_active
     }
 
     /// Returns synthetic ATR `3B 80 80 01 01` for all detected cards.
@@ -217,7 +239,7 @@ where
         if !self.is_initialized {
             return Err(NfcError::NotInitialized);
         }
-        if self.target_num.is_none() && !self.is_card_present() {
+        if self.target_num.is_none() && !self.poll_card_presence().present {
             return Err(NfcError::NoCard);
         }
         if self.target_num.is_none() {
@@ -228,6 +250,7 @@ where
         }
 
         atr_buf[..SYNTHETIC_ATR.len()].copy_from_slice(&SYNTHETIC_ATR);
+        self.session_active = true;
         Ok(SYNTHETIC_ATR.len())
     }
 
@@ -239,12 +262,16 @@ where
                 .process(&Request::new(Command::InRelease, [target_num]), 0, 50.ms());
             self.target_num = None;
         }
+        self.session_active = false;
     }
 
     /// InDataExchange with selected target.
     /// Response[0]=status (0=ok), rest is APDU data+SW.
     fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, NfcError> {
         if !self.is_initialized {
+            return Err(NfcError::NotInitialized);
+        }
+        if !self.session_active {
             return Err(NfcError::NotInitialized);
         }
         let target_num = self.target_num.ok_or(NfcError::NoCard)?;
@@ -263,6 +290,7 @@ where
             .map_err(|_| NfcError::CommunicationError)?;
 
         if result.is_empty() || result[0] != 0x00 {
+            self.session_active = false;
             return Err(NfcError::CommunicationError);
         }
 

@@ -6,7 +6,7 @@ use crate::ccid_types::{
     PC_TO_RDR_SETPARAMETERS, PC_TO_RDR_XFRBLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE,
     RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
 };
-use crate::nfc::NfcDriver;
+use crate::nfc::{NfcDriver, PresenceState};
 
 const CCID_HEADER_LEN: usize = 10;
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
@@ -14,7 +14,7 @@ const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 pub struct CcidHandler<D: NfcDriver> {
     nfc: D,
     slot_state: SlotState,
-    card_was_present: bool,
+    presence_state: PresenceState,
     tx_buf: [u8; 271],
     sync_notifications: bool,
     current_protocol: u8,
@@ -28,18 +28,11 @@ pub enum SlotState {
 }
 
 impl<D: NfcDriver> CcidHandler<D> {
-    pub fn new(mut nfc: D) -> Self {
-        let card_was_present = nfc.is_card_present();
-        let slot_state = if card_was_present {
-            SlotState::PresentInactive
-        } else {
-            SlotState::NotPresent
-        };
-
+    pub fn new(nfc: D) -> Self {
         Self {
             nfc,
-            slot_state,
-            card_was_present,
+            slot_state: SlotState::NotPresent,
+            presence_state: PresenceState { present: false },
             tx_buf: [0u8; 271],
             sync_notifications: false,
             current_protocol: 1,
@@ -86,22 +79,28 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     pub fn check_card_change(&mut self) -> Option<bool> {
-        let present = self.nfc.is_card_present();
-        if present != self.card_was_present {
-            self.card_was_present = present;
-            if !present {
-                self.slot_state = SlotState::NotPresent;
-            }
-            Some(present)
+        if self.nfc.session_active() {
+            self.presence_state = PresenceState { present: true };
+            self.slot_state = SlotState::PresentActive;
+            return None;
+        }
+
+        let presence = self.nfc.poll_card_presence();
+        if presence.present != self.presence_state.present {
+            self.presence_state = presence;
+            self.slot_state = if presence.present {
+                SlotState::PresentInactive
+            } else {
+                SlotState::NotPresent
+            };
+            Some(presence.present)
         } else {
             None
         }
     }
 
     fn handle_power_on(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        if !self.nfc.is_card_present() {
-            self.card_was_present = false;
-            self.slot_state = SlotState::NotPresent;
+        if !self.presence_state.present {
             return self.write_slot_status(
                 header.slot,
                 header.seq,
@@ -114,7 +113,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         match self.nfc.power_on(&mut self.tx_buf) {
             Ok(atr_len) => {
-                self.card_was_present = true;
+                self.presence_state.present = true;
                 self.slot_state = SlotState::PresentActive;
                 self.write_message(
                     RDR_TO_PC_DATABLOCK,
@@ -128,13 +127,13 @@ impl<D: NfcDriver> CcidHandler<D> {
                 )
             }
             Err(_) => {
-                let present = self.nfc.is_card_present();
-                self.card_was_present = present;
-                self.slot_state = if present {
-                    SlotState::PresentInactive
-                } else {
-                    SlotState::NotPresent
-                };
+                // Don't poll after activation failure — the card may be in an
+                // uncertain ISO 14443-3A state (e.g. READY after a partial
+                // WUPA). Polling now could send WUPA from READY which keeps
+                // the card stuck, breaking the next PowerUp attempt.
+                // Instead, assume the card is still physically present and let
+                // the next scheduled poll cycle verify.
+                self.slot_state = SlotState::PresentInactive;
                 self.write_slot_status(
                     header.slot,
                     header.seq,
@@ -149,11 +148,13 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     fn handle_power_off(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         self.nfc.power_off();
-        self.slot_state = if self.card_was_present {
-            SlotState::PresentInactive
-        } else {
-            SlotState::NotPresent
-        };
+
+        // After DESELECT the card is in HALT state. Do NOT poll here —
+        // WUPA would move it to READY, and the next PowerUp's WUPA would
+        // fail (WUPA is only valid from IDLE/HALT, not READY).
+        // pcscd does PowerUp→PowerDown→PowerUp as a warm reset sequence,
+        // so the next PowerUp must succeed.
+        self.slot_state = SlotState::PresentInactive;
 
         self.write_slot_status(
             header.slot,
@@ -201,16 +202,19 @@ impl<D: NfcDriver> CcidHandler<D> {
                 &self.tx_buf[..resp_len],
                 response,
             ),
-            Err(_) => self.write_message(
-                RDR_TO_PC_DATABLOCK,
-                header.slot,
-                header.seq,
-                slot_status(self.current_icc_status(), CMD_STATUS_FAILED),
-                HW_ERROR,
-                0,
-                &[],
-                response,
-            ),
+            Err(_) => {
+                self.slot_state = SlotState::PresentInactive;
+                self.write_message(
+                    RDR_TO_PC_DATABLOCK,
+                    header.slot,
+                    header.seq,
+                    slot_status(self.current_icc_status(), CMD_STATUS_FAILED),
+                    HW_ERROR,
+                    0,
+                    &[],
+                    response,
+                )
+            }
         }
     }
 
@@ -234,6 +238,19 @@ impl<D: NfcDriver> CcidHandler<D> {
                 0,
                 0,
                 FIRMWARE_VERSION,
+                response,
+            );
+        }
+
+        if payload == &[0x1F, 0x02] {
+            return self.write_message(
+                RDR_TO_PC_ESCAPE,
+                header.slot,
+                header.seq,
+                slot_status(self.current_icc_status(), CMD_STATUS_OK),
+                0,
+                0,
+                &[],
                 response,
             );
         }
@@ -394,6 +411,7 @@ mod tests {
     #[test]
     fn test_power_on_with_card_returns_atr() {
         let mut handler = new_handler(true);
+        handler.check_card_change(); // simulate card detection poll
         let cmd = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 7, &[]);
         let mut response = [0u8; 271];
 
@@ -433,6 +451,7 @@ mod tests {
     #[test]
     fn test_power_off_returns_present_inactive() {
         let mut handler = new_handler(true);
+        handler.check_card_change();
         let mut response = [0u8; 271];
         let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 2, &[]);
         handler.process_command(&power_on, &mut response);
@@ -453,6 +472,8 @@ mod tests {
     #[test]
     fn test_get_slot_status_with_card_reports_present() {
         let mut handler = new_handler(true);
+        // Card presence not known until first poll
+        handler.check_card_change();
         let cmd = build_ccid_cmd(PC_TO_RDR_GETSLOTSTAT, 0, 4, &[]);
         let mut response = [0u8; 271];
 
@@ -487,6 +508,7 @@ mod tests {
     #[test]
     fn test_xfr_block_succeeds_when_card_is_active() {
         let mut handler = new_handler(true);
+        handler.check_card_change();
         let mut response = [0u8; 271];
         let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 6, &[]);
         handler.process_command(&power_on, &mut response);
@@ -506,6 +528,8 @@ mod tests {
     #[test]
     fn test_xfr_block_when_not_powered_returns_icc_not_active() {
         let mut handler = new_handler(true);
+        // Poll so handler knows card is present (but not powered)
+        handler.check_card_change();
         let cmd = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 8, &[0x00, 0x84, 0x00, 0x00]);
         let mut response = [0u8; 271];
 
@@ -576,18 +600,90 @@ mod tests {
 
         assert_eq!(handler.check_card_change(), None);
 
-        handler.nfc = MockNfcDriver::new(true, &ATR, &APDU_RESPONSE);
+        handler.nfc.set_card_present(true);
         assert_eq!(handler.check_card_change(), Some(true));
 
         handler.slot_state = SlotState::PresentActive;
-        handler.nfc = MockNfcDriver::new(false, &ATR, &APDU_RESPONSE);
+        handler.nfc.set_card_present(false);
         assert_eq!(handler.check_card_change(), Some(false));
         assert_eq!(handler.slot_state, SlotState::NotPresent);
     }
 
     #[test]
+    fn test_session_lifecycle() {
+        let mut handler = new_handler(true);
+        handler.check_card_change();
+
+        let mut response = [0u8; 271];
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 16, &[]);
+        let power_on_len = handler.process_command(&power_on, &mut response);
+        let (power_on_header, power_on_payload) = parse_response(&response[..power_on_len]);
+
+        assert_eq!(power_on_header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(power_on_payload, ATR);
+        assert_eq!(handler.slot_state, SlotState::PresentActive);
+        assert!(handler.nfc.session_active());
+
+        let xfr = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 17, &[0x00, 0x84, 0x00, 0x00]);
+        let xfr_len = handler.process_command(&xfr, &mut response);
+        let (xfr_header, xfr_payload) = parse_response(&response[..xfr_len]);
+
+        assert_eq!(xfr_header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(xfr_payload, APDU_RESPONSE);
+        assert_eq!(handler.slot_state, SlotState::PresentActive);
+        assert!(handler.nfc.session_active());
+
+        let power_off = build_ccid_cmd(PC_TO_RDR_ICCPOWEROFF, 0, 18, &[]);
+        let power_off_len = handler.process_command(&power_off, &mut response);
+        let (power_off_header, power_off_payload) = parse_response(&response[..power_off_len]);
+
+        assert_eq!(power_off_header.message_type, RDR_TO_PC_SLOTSTATUS);
+        assert!(power_off_payload.is_empty());
+        assert_eq!(handler.slot_state, SlotState::PresentInactive);
+        assert!(!handler.nfc.session_active());
+    }
+
+    #[test]
+    fn test_poll_skips_when_session_active() {
+        let mut handler = new_handler(true);
+        handler.check_card_change();
+
+        let mut response = [0u8; 271];
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 6, &[]);
+        handler.process_command(&power_on, &mut response);
+
+        assert_eq!(handler.check_card_change(), None);
+        assert_eq!(handler.slot_state, SlotState::PresentActive);
+        assert!(handler.presence_state.present);
+    }
+
+    #[test]
+    fn test_apdu_failure_downgrades_to_present_inactive_when_card_remains_present() {
+        let mut handler = new_handler(true);
+        handler.check_card_change();
+
+        let mut response = [0u8; 271];
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 6, &[]);
+        handler.process_command(&power_on, &mut response);
+        handler.nfc.power_off();
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00]);
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert!(payload.is_empty());
+        assert_eq!(
+            header.specific[0],
+            slot_status(ICC_PRESENT_INACTIVE, CMD_STATUS_FAILED)
+        );
+        assert_eq!(handler.slot_state, SlotState::PresentInactive);
+    }
+
+    #[test]
     fn test_get_parameters_returns_default_t1_params() {
         let mut handler = new_handler(true);
+        handler.check_card_change();
         let cmd = build_ccid_cmd(PC_TO_RDR_GETPARAMETERS, 0, 12, &[]);
         let mut response = [0u8; 271];
 

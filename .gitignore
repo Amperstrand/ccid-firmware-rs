@@ -1,5 +1,9 @@
 # Build artifacts
 /target/
+esp32-ccid/target/
+esp32-ccid/.embuild/
+esp32-ccid/vendor/
+tmp/
 *.bin
 *.elf
 *.hex
@@ -63,3 +67,6 @@ display-test/
 .beads/
 .opencode/
 .runtime/
+
+# Vendored CCID source tarballs
+ccid-1.5.5/

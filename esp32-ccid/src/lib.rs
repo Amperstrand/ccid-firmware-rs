@@ -15,3 +15,18 @@ pub mod ccid_types;
 pub mod nfc;
 pub mod pn532_driver;
 pub mod serial_framing;
+
+#[cfg(feature = "backend-mfrc522")]
+pub mod mfrc522_driver;
+
+#[cfg(feature = "backend-mfrc522")]
+pub mod mfrc522_transceiver;
+
+#[cfg(feature = "backend-mfrc522")]
+pub mod led;
+
+#[cfg(feature = "backend-mfrc522")]
+pub mod ble_debug;
+
+#[cfg(feature = "backend-mfrc522")]
+pub mod ble_logger;
