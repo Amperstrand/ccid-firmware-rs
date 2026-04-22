@@ -13,15 +13,24 @@ path = "src/main.rs"
 name = "esp32_ccid"
 path = "src/lib.rs"
 
+[features]
+default = ["backend-mfrc522"]
+backend-mfrc522 = ["dep:mfrc522", "dep:iso14443"]
+backend-pn532 = ["dep:pn532"]
+
 [dependencies]
 embedded-hal = "1.0"
 heapless = "0.8"
+log = "0.4"
 nb = "1.1"
-pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false }
+mfrc522 = { path = "vendor/mfrc522", optional = true }
+iso14443 = { path = "../tmp/iso14443-rs", features = ["alloc"], optional = true }
+pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 esp-idf-sys = { version = "0.37", features = ["binstart"] }
 esp-idf-hal = "0.46"
+esp-idf-svc = { path = "vendor/esp-idf-svc" }
 
 [build-dependencies]
 embuild = { version = "0.32", features = ["espidf"] }

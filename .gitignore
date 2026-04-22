@@ -1,5 +1,9 @@
 # Build artifacts
 /target/
+esp32-ccid/target/
+esp32-ccid/.embuild/
+esp32-ccid/vendor/
+tmp/
 *.bin
 *.elf
 *.hex
@@ -58,3 +62,6 @@ ccid_test_summary.txt
 
 # Experimental directories
 display-test/
+
+# Vendored CCID source tarballs
+ccid-1.5.5/
