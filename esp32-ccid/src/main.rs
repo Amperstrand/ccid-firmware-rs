@@ -47,7 +47,6 @@ use esp32_ccid::{
     ble_logger::BleLogger,
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GETSLOTSTAT,
-    led::LedStatus,
     nfc::NfcDriver,
     serial_framing::{
         build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
@@ -419,7 +418,7 @@ fn main() {
     });
 
     if init_ok {
-        led.set_state(esp32_ccid::led::LedState::Ready);
+        led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
     } else {
         led.set_state(esp32_ccid::led::LedState::Error);
     }
@@ -470,9 +469,19 @@ fn main() {
                                 last_card_poll_tick = now;
                                 if let Some(present) = ccid_handler.check_card_change() {
                                     if present {
-                                        led.set_state(esp32_ccid::led::LedState::CardPresent);
+                                        led.blink_state(
+                                            esp32_ccid::led::LedState::CardPresent,
+                                            3,
+                                            120,
+                                            80,
+                                        );
                                     } else {
-                                        led.set_state(esp32_ccid::led::LedState::Ready);
+                                        led.blink_state(
+                                            esp32_ccid::led::LedState::Ready,
+                                            3,
+                                            120,
+                                            80,
+                                        );
                                     }
                                     let mut notif = [0u8; 2];
                                     let notif_len =
@@ -481,8 +490,11 @@ fn main() {
                                 }
                             }
                         }
+                        let prev_led = led.state();
+                        led.set_state(esp32_ccid::led::LedState::TxRx);
                         let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
                         let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
+                        led.set_state(prev_led);
                         let mut frame_out = [0u8; MAX_FRAME_SIZE];
                         let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
                         let _ = write_all_mfrc522(&uart, &frame_out[..out_len]);
@@ -516,7 +528,16 @@ fn main() {
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
                     last_card_poll_tick = now;
-                    ccid_handler.check_card_change();
+                    if let Some(present) = ccid_handler.check_card_change() {
+                        if present {
+                            led.blink_state(esp32_ccid::led::LedState::CardPresent, 3, 120, 80);
+                        } else {
+                            led.blink_state(esp32_ccid::led::LedState::Ready, 3, 120, 80);
+                        }
+                        let mut notif = [0u8; 2];
+                        let notif_len = build_slot_change_notification(present, &mut notif);
+                        let _ = write_all_mfrc522(&uart, &notif[..notif_len]);
+                    }
                 }
             }
         }
