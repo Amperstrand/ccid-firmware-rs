@@ -86,8 +86,14 @@ pub const CARD_PRESENT: u8 = 0x03;
 pub const MAX_CCID_MESSAGE_LENGTH: u32 = 271;
 /// Maximum IFSD for T=1 protocol
 pub const MAX_IFSD: u32 = 254;
-/// Feature flags (Auto PPS, Auto baud, Auto ICC volt, etc.)
-pub const FEATURES: u32 = 0x00010230;
+/// Feature flags:
+/// 0x00000010 = Automatic ICC clock frequency change
+/// 0x00000020 = Automatic baud rate change
+/// 0x00000040 = Automatic parameters negotiation (CCID handles PPS internally)
+/// 0x00000200 = ?
+/// 0x00010000 = TPDU level exchange
+/// Contactless readers must set 0x40 to prevent pcscd from sending PPS to the card.
+pub const FEATURES: u32 = 0x00010270;
 /// Default clock frequency in kHz
 pub const DEFAULT_CLOCK: u32 = 4000;
 /// Maximum data rate in bps
@@ -350,7 +356,7 @@ mod tests {
     fn test_constants_descriptor() {
         assert_eq!(MAX_CCID_MESSAGE_LENGTH, 271);
         assert_eq!(MAX_IFSD, 254);
-        assert_eq!(FEATURES, 0x00010230);
+        assert_eq!(FEATURES, 0x00010270);
         assert_eq!(DEFAULT_CLOCK, 4000);
         assert_eq!(MAX_DATA_RATE, 344086);
         assert_eq!(MAX_SLOT_INDEX, 0);
