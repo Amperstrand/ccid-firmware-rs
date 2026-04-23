@@ -48,7 +48,7 @@ use embedded_hal::i2c::I2c;
 use esp_idf_hal::delay::FreeRtos;
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession};
+use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +117,10 @@ where
         self.transceiver
             .mfrc522
             .write_register(mfrc522::Register::ModWidthReg, 0x26)
+            .map_err(|_| NfcError::CommunicationError)?;
+        self.transceiver
+            .mfrc522
+            .set_antenna_gain(mfrc522::RxGain::DB33)
             .map_err(|_| NfcError::CommunicationError)?;
         Ok(())
     }
@@ -222,8 +226,13 @@ where
             return Err(NfcError::CommunicationError);
         }
 
+        self.transceiver
+            .mfrc522
+            .set_antenna_gain(mfrc522::RxGain::DB33)
+            .map_err(|_| NfcError::CommunicationError)?;
+
         self.is_initialized = true;
-        log::info!("MFRC522 init OK, version=0x{:02X}", version);
+        log::info!("MFRC522 init OK, version=0x{:02X}, gain=33dB", version);
         Ok(())
     }
 
@@ -251,8 +260,9 @@ where
         self.reset_activation_frontend()?;
 
         // Per ISO 14443-3A §6.2.4 and Bolty reference implementation:
-        // card needs settling time between WUPA poll and activation sequence.
-        FreeRtos::delay_ms(5);
+        // card needs settling time between register reset and activation.
+        // JavaCards (J3R180) need longer settling than DESFire.
+        FreeRtos::delay_ms(15);
 
         let activation = activation::wakeup(&mut self.transceiver).map_err(|err| {
             log::error!("power_on: activation failed: {:?}", err);
@@ -265,7 +275,7 @@ where
             return Err(NfcError::CommunicationError);
         }
 
-        let (session, ats) =
+        let (_, ats) =
             PcdSession::from_connect(&mut self.transceiver, Fsdi::Fsd64, Cid::new(0).unwrap())
                 .map_err(|err| {
                     log::error!("power_on: RATS/connect failed: {:?}", err);
@@ -273,12 +283,62 @@ where
                     NfcError::CommunicationError
                 })?;
 
+        // Per ISO 14443-4 §5.2.1: "DID equal to '0' indicates that no CID is used."
+        // RATS with DID=0 means no CID assigned. I-blocks MUST NOT include CID.
+        // from_connect hardcodes Some(cid) → would produce PCB=0x0A (CID following).
+        // Re-create session with None so I-blocks use PCB=0x02 (no CID).
+        //
+        // Enable MFRC522 HW CRC for ISO-DEP (per Tasmota/Miguelbalboa MFRC522Extended).
+        // Both TxCRCEn and RxCRCEn = 1. Must happen AFTER activation (anticollision
+        // responses lack CRC). Session uses hw_crc=true so iso14443 crate sends
+        // without SW CRC and expects raw FIFO (CRC stripped by MFRC522 HW).
+        self.transceiver
+            .enable_hw_crc()
+            .map_err(|_| NfcError::CommunicationError)?;
+        let session = PcdSession::from_ats(&ats, None, true);
+
+        let sfgt_us = ats.tb.sfgi.sfgt_us();
+        let fsc = ats.format.fsci.fsc();
+        let fwi = ats.tb.fwi.value();
+        let sfgi = ats.tb.sfgi.value();
+        let cid_supp = ats.tc.contains(Tc::CID_SUPP);
+        let nad_supp = ats.tc.contains(Tc::NAD_SUPP);
+
+        log::info!(
+            "power_on: ATS: FSC={}, SFGI={} (SFGT={}us), FWI={}, CID_SUPP={}, NAD_SUPP={}",
+            fsc,
+            sfgi,
+            sfgt_us,
+            fwi,
+            cid_supp,
+            nad_supp
+        );
+
+        if sfgt_us > 0 {
+            let sfgt_ms = (sfgt_us + 999) / 1000;
+            log::info!("power_on: SFGT delay {}ms", sfgt_ms);
+            FreeRtos::delay_ms(sfgt_ms as u32);
+        }
+
+        // FWT = (256 × 16 / fc) × 2^FWI  where fc = 13.56 MHz
+        // FWI=4 → 4.8ms, FWI=9 → 155ms, FWI=10 → 310ms, FWI=14 → ~5s
+        let fwt_ms = if fwi > 0 {
+            let fwt_us: u64 = 302 * (1u64 << fwi);
+            (fwt_us / 1000 + 10) as u32 // +10ms margin
+        } else {
+            5 // FWI=0 → ~302µs, use 5ms minimum
+        };
+        log::info!("power_on: FWT={}ms (FWI={})", fwt_ms, fwi);
+        self.transceiver
+            .set_timeout_ms(fwt_ms)
+            .map_err(|_| NfcError::CommunicationError)?;
+
         self.session = Some(session);
         self.cached_ats = Some(ats.clone());
         self.lifecycle = CardLifecycle::ActiveSession;
         self.consecutive_failures = 0;
 
-        log::info!("power_on: session established");
+        log::info!("power_on: session established (no CID, full HW CRC)");
 
         let atr_len = build_pcsc_atr(&ats, atr_buf)?;
         log::trace!(
@@ -321,6 +381,15 @@ where
 
         log::trace!("transmit_apdu: {} bytes: {:02X?}", command.len(), command);
 
+        let is_first_exchange = self.cached_ats.is_some();
+        if is_first_exchange {
+            log::info!(
+                "transmit_apdu: first exchange, {} bytes: {:02X?}",
+                command.len(),
+                command
+            );
+        }
+
         let resp = match session.exchange(&mut self.transceiver, command) {
             Ok(resp) => resp,
             Err(err) => {
@@ -332,6 +401,13 @@ where
         };
 
         let resp_slice = resp.as_slice();
+        if is_first_exchange {
+            log::info!(
+                "transmit_apdu: first response, {} bytes: {:02X?}",
+                resp_slice.len(),
+                resp_slice
+            );
+        }
         if response.len() < resp_slice.len() {
             self.session = Some(session);
             return Err(NfcError::BufferOverflow);
