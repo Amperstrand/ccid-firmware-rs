@@ -70,3 +70,11 @@ display-test/
 
 # Vendored CCID source tarballs
 ccid-1.5.5/
+
+# CCID Debian source packages
+ccid_*.tar.*
+ccid_*.dsc
+
+# GP tools (binary JARs)
+tools/gp/*.jar
+tools/gp/*.cap
