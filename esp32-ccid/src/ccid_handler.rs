@@ -191,6 +191,20 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
+        if apdu.first() == Some(&0xFF) {
+            log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
+            return self.write_message(
+                RDR_TO_PC_DATABLOCK,
+                header.slot,
+                header.seq,
+                slot_status(ICC_PRESENT_ACTIVE, CMD_STATUS_OK),
+                0,
+                0,
+                apdu,
+                response,
+            );
+        }
+
         match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
             Ok(resp_len) => self.write_message(
                 RDR_TO_PC_DATABLOCK,
