@@ -295,18 +295,28 @@ where
         self.transceiver
             .enable_hw_crc()
             .map_err(|_| NfcError::CommunicationError)?;
-        let session = PcdSession::from_ats(&ats, None, true);
+        let mut session = PcdSession::from_ats(&ats, None, true);
 
         let sfgt_us = ats.tb.sfgi.sfgt_us();
-        let fsc = ats.format.fsci.fsc();
+        let card_fsc = ats.format.fsci.fsc();
         let fwi = ats.tb.fwi.value();
         let sfgi = ats.tb.sfgi.value();
         let cid_supp = ats.tc.contains(Tc::CID_SUPP);
         let nad_supp = ats.tc.contains(Tc::NAD_SUPP);
 
+        // MFRC522 FIFO is 64 bytes. With hw_crc, an I-block in the FIFO is
+        // PCB(1) + payload(N) — CRC is appended by HW. So max payload per
+        // I-block = 63 bytes. Overhead = 1 PCB + 2 CRC = 3, so FSC = 66.
+        // But the FIFO is the hard limit: 1 + 61 = 62 fits, 1 + 62 = 63
+        // fits, 1 + 63 = 64 exactly fits. Use FSC=64 for safety margin.
+        const MFRC522_MAX_FSC: usize = 64;
+        let effective_fsc = core::cmp::min(card_fsc, MFRC522_MAX_FSC);
+        session.set_fsc(effective_fsc);
+
         log::info!(
-            "power_on: ATS: FSC={}, SFGI={} (SFGT={}us), FWI={}, CID_SUPP={}, NAD_SUPP={}",
-            fsc,
+            "power_on: ATS: card_fsc={}, effective_fsc={}, SFGI={} (SFGT={}us), FWI={}, CID_SUPP={}, NAD_SUPP={}",
+            card_fsc,
+            effective_fsc,
             sfgi,
             sfgt_us,
             fwi,
@@ -332,6 +342,7 @@ where
         self.transceiver
             .set_timeout_ms(fwt_ms)
             .map_err(|_| NfcError::CommunicationError)?;
+        session.set_base_fwt_ms(fwt_ms);
 
         self.session = Some(session);
         self.cached_ats = Some(ats.clone());

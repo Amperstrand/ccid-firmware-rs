@@ -219,6 +219,10 @@ where
     fn try_enable_hw_crc(&mut self) -> Result<(), Self::Error> {
         Err(Mfrc522TransceiverError::Protocol)
     }
+
+    fn try_set_timeout_ms(&mut self, ms: u32) -> Result<(), ()> {
+        self.set_timeout_ms(ms).map_err(|_| ())
+    }
 }
 
 #[cfg(test)]
