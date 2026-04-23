@@ -81,6 +81,28 @@ impl<I2C: I2c> Mfrc522Transceiver<I2C> {
         self.mfrc522.write_register(Register::ModWidthReg, 0x26)?;
         Ok(())
     }
+
+    pub fn set_timeout_ms(&mut self, ms: u32) -> Result<(), mfrc522::Error<I2C::Error>> {
+        let prescaler = 0xA9u16;
+        let timer_freq_hz = 13_560_000u32 / (2 * prescaler as u32 + 1);
+        let reload = (ms * timer_freq_hz / 1000).min(0xFFFF);
+        self.mfrc522.write_register(Register::TModeReg, 0x80)?;
+        self.mfrc522
+            .write_register(Register::TPrescalerReg, prescaler as u8)?;
+        self.mfrc522
+            .write_register(Register::TReloadRegHigh, (reload >> 8) as u8)?;
+        self.mfrc522
+            .write_register(Register::TReloadRegLow, reload as u8)?;
+        log::trace!("set_timeout_ms({}): reload={}", ms, reload);
+        Ok(())
+    }
+
+    pub fn enable_hw_crc(&mut self) -> Result<(), mfrc522::Error<I2C::Error>> {
+        self.mfrc522.write_register(Register::TxModeReg, 0x80)?;
+        self.mfrc522.write_register(Register::RxModeReg, 0x80)?;
+        log::info!("HW CRC enabled: TxMode=0x80 RxMode=0x80");
+        Ok(())
+    }
 }
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
@@ -134,14 +156,61 @@ where
             Frame::Standard(data) => {
                 self.mfrc522
                     .rmw_register(Register::CollReg, |b| b & !0x80)?;
-                log::trace!("TX Standard({}): {:02X?}", data.len(), data.as_slice());
-                let fifo = self.mfrc522.transceive::<64>(data.as_slice(), 0, 0)?;
+
+                log::info!("TX Standard({}): {:02X?}", data.len(), data);
+                let fifo = match self.mfrc522.transceive::<64>(data, 0, 0) {
+                    Ok(f) => f,
+                    Err(mfrc522::Error::Crc) => {
+                        let irq = self
+                            .mfrc522
+                            .read_register(Register::ComIrqReg)
+                            .unwrap_or(0xFF);
+                        let err = self
+                            .mfrc522
+                            .read_register(Register::ErrorReg)
+                            .unwrap_or(0xFF);
+                        let level = self
+                            .mfrc522
+                            .read_register(Register::FIFOLevelReg)
+                            .unwrap_or(0) as usize;
+                        let mut buf = [0u8; 64];
+                        for i in 0..level.min(64) {
+                            buf[i] = self
+                                .mfrc522
+                                .read_register(Register::FIFODataReg)
+                                .unwrap_or(0xFF);
+                        }
+                        log::warn!(
+                            "RX Standard CRC ERR: FIFO={} bytes {:02X?} [ComIrq=0x{:02X} Err=0x{:02X}]",
+                            level,
+                            &buf[..level.min(64)],
+                            irq,
+                            err
+                        );
+                        return Err(Mfrc522TransceiverError::Crc);
+                    }
+                    Err(e) => return Err(e.into()),
+                };
                 if fifo.valid_bits != 0 {
                     log::error!("RX Standard: valid_bits={} (expected 0)", fifo.valid_bits);
                     return Err(Mfrc522TransceiverError::Protocol);
                 }
+                let irq = self
+                    .mfrc522
+                    .read_register(Register::ComIrqReg)
+                    .unwrap_or(0xFF);
+                let err = self
+                    .mfrc522
+                    .read_register(Register::ErrorReg)
+                    .unwrap_or(0xFF);
+                log::info!(
+                    "RX Standard({}): {:02X?} [ComIrq=0x{:02X} Err=0x{:02X}]",
+                    fifo.valid_bytes,
+                    &fifo.buffer[..fifo.valid_bytes],
+                    irq,
+                    err
+                );
                 let result = fifo.buffer[..fifo.valid_bytes].to_vec();
-                log::trace!("RX Standard({}): {:02X?}", fifo.valid_bytes, &result);
                 Ok(result)
             }
         }
