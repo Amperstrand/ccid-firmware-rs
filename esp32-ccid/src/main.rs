@@ -47,6 +47,7 @@ use esp32_ccid::{
     ble_logger::BleLogger,
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GETSLOTSTAT,
+    led::LedStatus,
     nfc::NfcDriver,
     serial_framing::{
         build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
