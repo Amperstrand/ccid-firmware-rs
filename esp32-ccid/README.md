@@ -88,18 +88,20 @@ I2C bus runs at 400 kHz. The MFRC522 I2C address is `0x28`.
 
 | Signal | GPIO | Notes |
 |--------|------|-------|
-| WS2812C data | GPIO27 | 5x5 RGB LED matrix (log-only stub currently) |
+| WS2812C data | GPIO27 | 5×5 RGB LED matrix, driven via ESP32 RMT peripheral |
 
-The LED module is a log-only stub. Status changes are logged over UART but no physical LED output is driven yet (the `ws2812-esp32-rmt-driver` crate caused link conflicts, so this is deferred).
+The LED matrix is driven using the ESP32's built-in RMT peripheral (no external crates). Brightness is capped at 15/255 (M5Stack recommends ≤20 to avoid LED/acrylic damage). Each state displays a distinct pattern on the 5×5 grid for at-a-glance diagnostics.
 
-#### LED status colors
+#### LED status patterns
 
-| State | Color | Meaning |
-|-------|-------|---------|
-| Ready | Green | Initialized, waiting for card |
-| Card Present | Blue | Card detected |
-| Error | Red | Initialization or communication error |
-| Off | Off | Not initialized |
+| State | Pattern | Color | Meaning |
+|-------|---------|-------|---------|
+| Init | Center pixel | Amber | Hardware initializing |
+| Ready | Center pixel | Green | Initialized, waiting for card |
+| Card Present | Border ring (12 LEDs) | Blue | Card detected on NFC field |
+| TxRx | Center pixel | Yellow | CCID command in progress (flashes) |
+| Error | X pattern (both diagonals) | Red | Initialization or communication error |
+| Off | All black | — | LEDs off |
 
 ## Build
 
@@ -198,7 +200,7 @@ The included `setup.sh` automates the host setup:
 | `pn532_driver.rs` | PN532 SPI driver: SAM configuration, InListPassiveTarget, InDataExchange (PN532 backend) |
 | `mfrc522_driver.rs` | MFRC522 NFC driver: ISO 14443-4 APDU via iso14443 crate (MFRC522 backend) |
 | `mfrc522_transceiver.rs` | PcdTransceiver bridge between mfrc522 crate and iso14443 (MFRC522 backend) |
-| `led.rs` | M5Stack Atom LED status display (log-only stub) |
+| `led.rs` | M5Stack Atom LED status display (WS2812 RMT driver, 5×5 grid patterns) |
 | `nfc.rs` | NFC card management: card detection, ATR generation, APDU relay |
 | `lib.rs` | Shared types and host-testable abstractions |
 
