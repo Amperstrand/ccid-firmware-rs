@@ -23,17 +23,20 @@ embedded-hal = "1.0"
 heapless = "0.8"
 log = "0.4"
 nb = "1.1"
-mfrc522 = { path = "vendor/mfrc522", optional = true }
-iso14443 = { path = "../tmp/iso14443-rs", features = ["alloc"], optional = true }
+mfrc522 = { path = "../vendor/mfrc522", optional = true }
+iso14443 = { path = "../vendor/iso14443-rs", features = ["alloc"], optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 esp-idf-sys = { version = "0.37", features = ["binstart"] }
 esp-idf-hal = "0.46"
-esp-idf-svc = { path = "vendor/esp-idf-svc" }
+esp-idf-svc = "0.52.1"
 
 [build-dependencies]
 embuild = { version = "0.32", features = ["espidf"] }
+
+[package.metadata.esp-idf-sys]
+esp_idf_version = "tag:v5.2.4"
 
 [profile.release]
 opt-level = "s"

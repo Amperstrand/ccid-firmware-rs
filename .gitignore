@@ -2,7 +2,7 @@
 /target/
 esp32-ccid/target/
 esp32-ccid/.embuild/
-esp32-ccid/vendor/
+vendor/**/target/
 tmp/
 *.bin
 *.elf
