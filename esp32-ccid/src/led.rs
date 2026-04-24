@@ -3,11 +3,11 @@
 //! Drives the onboard 25-LED RGB matrix on GPIO27 via the ESP32 RMT peripheral.
 //! Each [`LedState`] maps to a distinct visual pattern for at-a-glance diagnostics.
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use esp_idf_hal::rmt::config::{TransmitConfig, TxChannelConfig};
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use esp_idf_hal::rmt::encoder::{BytesEncoder, BytesEncoderConfig};
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use esp_idf_hal::rmt::{PinState, Pulse, Symbol, TxChannelDriver};
 
 #[cfg(feature = "backend-mfrc522")]
@@ -39,14 +39,14 @@ impl Rgb {
     }
 }
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 pub struct LedStatus {
     tx: TxChannelDriver<'static>,
     encoder: BytesEncoder,
     current_state: LedState,
 }
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 impl LedStatus {
     pub fn new() -> Self {
         let peripherals = unsafe { esp_idf_hal::peripherals::Peripherals::steal() };
@@ -218,14 +218,72 @@ impl LedStatus {
     }
 }
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 impl Default for LedStatus {
     fn default() -> Self {
         Self::new()
     }
 }
 
-// ---- Host-testable stubs (non-xtensa) ----
+#[cfg(all(not(target_arch = "xtensa"), feature = "backend-mfrc522"))]
+pub struct LedStatus {
+    current_state: LedState,
+}
+
+#[cfg(all(not(target_arch = "xtensa"), feature = "backend-mfrc522"))]
+impl LedStatus {
+    pub fn new() -> Self {
+        Self {
+            current_state: LedState::Init,
+        }
+    }
+
+    pub fn set_state(&mut self, state: LedState) {
+        self.current_state = state;
+    }
+
+    pub fn blink_state(&mut self, state: LedState, _count: u32, _on_ms: u32, _off_ms: u32) {
+        self.current_state = state;
+    }
+
+    pub fn state(&self) -> LedState {
+        self.current_state
+    }
+
+    fn pattern_center(color: Rgb) -> [Rgb; LED_COUNT] {
+        let mut pixels = [Rgb::black(); LED_COUNT];
+        pixels[12] = color;
+        pixels
+    }
+
+    fn pattern_ring(color: Rgb) -> [Rgb; LED_COUNT] {
+        let mut pixels = [Rgb::black(); LED_COUNT];
+        for &idx in &[1, 2, 3, 5, 9, 10, 14, 15, 19, 21, 22, 23] {
+            pixels[idx] = color;
+        }
+        pixels
+    }
+
+    fn pattern_error() -> [Rgb; LED_COUNT] {
+        let red = Rgb(BRIGHT, 0, 0);
+        let mut pixels = [Rgb::black(); LED_COUNT];
+        for &idx in &[0, 4, 6, 8, 12, 16, 18, 20, 24] {
+            pixels[idx] = red;
+        }
+        pixels
+    }
+
+    fn pattern_off() -> [Rgb; LED_COUNT] {
+        [Rgb::black(); LED_COUNT]
+    }
+}
+
+#[cfg(all(not(target_arch = "xtensa"), feature = "backend-mfrc522"))]
+impl Default for LedStatus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(all(test, feature = "backend-mfrc522"))]
 mod tests {

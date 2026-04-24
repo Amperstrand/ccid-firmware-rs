@@ -83,9 +83,7 @@ mod imp {
         }
 
         pub fn has_subscribers(&self) -> bool {
-            self.state
-                .lock()
-                .unwrap()
+            self.lock_state()
                 .connections
                 .iter()
                 .any(|connection| connection.notify_enabled)

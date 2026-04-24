@@ -36,6 +36,13 @@ mod imp {
             Ok(logger)
         }
 
+        fn lock_state(&self) -> std::sync::MutexGuard<'_, LoggerState> {
+            self.state.lock().unwrap_or_else(|e| {
+                log::warn!("BLE logger lock poisoned — recovering");
+                e.into_inner()
+            })
+        }
+
         pub fn drain(&self, server: &BleDebugServer) {
             if !server.has_subscribers() {
                 return;
@@ -43,7 +50,7 @@ mod imp {
 
             loop {
                 let next = {
-                    let state = self.state.lock().unwrap();
+                    let state = self.lock_state();
                     state.queue.front().cloned()
                 };
 
@@ -52,7 +59,7 @@ mod imp {
                 };
 
                 if server.send_log_bytes(&next) {
-                    self.state.lock().unwrap().queue.pop_front();
+                    self.lock_state().queue.pop_front();
                 } else {
                     break;
                 }
@@ -60,7 +67,7 @@ mod imp {
         }
 
         fn enqueue(&self, line: Vec<u8>) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
 
             if state.queue.len() >= QUEUE_CAPACITY {
                 state.queue.pop_front();
