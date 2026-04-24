@@ -73,46 +73,15 @@ use esp_idf_hal::{
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use esp_idf_sys::EspError;
 
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
+#[cfg(target_arch = "xtensa")]
 const UART_RX_TIMEOUT_MS: u64 = 500;
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
+#[cfg(target_arch = "xtensa")]
 const CARD_POLL_INTERVAL_MS: u64 = 3000;
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
+#[cfg(target_arch = "xtensa")]
 const UART_BUF_SIZE: usize = 548;
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
+#[cfg(target_arch = "xtensa")]
 const MAX_FRAME_SIZE: usize = 274;
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
-const MAX_CCID_RESPONSE_SIZE: usize = 271;
-
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-const UART_RX_TIMEOUT_MS: u64 = 500;
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-const CARD_POLL_INTERVAL_MS: u64 = 3000;
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-const UART_BUF_SIZE: usize = 548;
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-const MAX_FRAME_SIZE: usize = 274;
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(target_arch = "xtensa")]
 const MAX_CCID_RESPONSE_SIZE: usize = 271;
 
 #[cfg(all(
@@ -146,11 +115,7 @@ impl embedded_hal::digital::InputPin for IrqPin<'_> {
     }
 }
 
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
+#[cfg(target_arch = "xtensa")]
 fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     while !bytes.is_empty() {
         let written = uart.write(bytes)?;
@@ -162,16 +127,11 @@ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     Ok(())
 }
 
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-fn write_all_mfrc522(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
-    while !bytes.is_empty() {
-        let written = uart.write(bytes)?;
-        if written == 0 {
-            continue;
-        }
-        bytes = &bytes[written..];
+#[cfg(target_arch = "xtensa")]
+fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
+    if let Err(e) = write_all(uart, bytes) {
+        log::error!("UART write failed: {:?}", e);
     }
-    Ok(())
 }
 
 #[cfg(all(
@@ -183,7 +143,7 @@ fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
 
-    let peripherals = Peripherals::take().unwrap();
+    let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
 
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))
@@ -202,12 +162,13 @@ fn main() {
         Option::<AnyIOPin>::None,
         &uart_config,
     )
-    .unwrap();
+    .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
 
-    // PN532 IRQ is active-low: idle HIGH, asserted LOW when data ready.
-    // Pull::Up ensures we don't false-trigger when PN532 isn't driving the pin.
-    let irq_pin = IrqPin(PinDriver::input(peripherals.pins.gpio16, gpio::Pull::Up).unwrap());
-    let rst_pin = PinDriver::output(peripherals.pins.gpio26).unwrap();
+    let irq_pin = IrqPin(
+        PinDriver::input(peripherals.pins.gpio16, gpio::Pull::Up)
+            .expect("GPIO16 input init failed"),
+    );
+    let rst_pin = PinDriver::output(peripherals.pins.gpio26).expect("GPIO26 output init failed");
 
     let spi_config = spi::config::Config::new()
         .baudrate(Hertz(1_000_000).into())
@@ -222,9 +183,10 @@ fn main() {
         &spi::SpiDriverConfig::new(),
         &spi_config,
     )
-    .unwrap();
+    .expect("SPI2 init failed");
 
-    let mut pn532_driver = Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).unwrap();
+    let mut pn532_driver =
+        Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).expect("PN532 driver init failed");
 
     let _pn532_ok = (0..5).any(|_| {
         if pn532_driver.init().is_ok() {
@@ -269,7 +231,7 @@ fn main() {
                 } else {
                     let mut nak = [0u8; 3];
                     let nak_len = build_nak_frame(&mut nak);
-                    let _ = write_all(&uart, &nak[..nak_len]);
+                    write_all_logged(&uart, &nak[..nak_len]);
                     frame_len = 0;
                     frame_parser.reset();
                     continue;
@@ -278,7 +240,7 @@ fn main() {
                 match frame_parser.feed(byte) {
                     Some(FrameEvent::Command { ccid_bytes }) => {
                         // GemPC Twin protocol: echo → [NotifySlotChange] → response
-                        let _ = write_all(&uart, &frame_buf[..frame_len]);
+                        write_all_logged(&uart, &frame_buf[..frame_len]);
 
                         // Time-gated card poll on GetSlotStatus only.
                         // InListPassiveTarget (PN532 UM §7.3.5) takes ~1s over SPI.
@@ -292,7 +254,7 @@ fn main() {
                                     let mut notif = [0u8; 2];
                                     let notif_len =
                                         build_slot_change_notification(present, &mut notif);
-                                    let _ = write_all(&uart, &notif[..notif_len]);
+                                    write_all_logged(&uart, &notif[..notif_len]);
                                 }
                             }
                         }
@@ -302,7 +264,7 @@ fn main() {
 
                         let mut frame_out = [0u8; MAX_FRAME_SIZE];
                         let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
-                        let _ = write_all(&uart, &frame_out[..out_len]);
+                        write_all_logged(&uart, &frame_out[..out_len]);
 
                         frame_len = 0;
                         frame_parser.reset();
@@ -310,7 +272,7 @@ fn main() {
                     Some(FrameEvent::Error(_)) => {
                         let mut nak = [0u8; 3];
                         let nak_len = build_nak_frame(&mut nak);
-                        let _ = write_all(&uart, &nak[..nak_len]);
+                        write_all_logged(&uart, &nak[..nak_len]);
                         frame_len = 0;
                         frame_parser.reset();
                     }
@@ -339,7 +301,7 @@ fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
 
-    let peripherals = Peripherals::take().unwrap();
+    let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
 
     let ble_server = (|| -> Result<BleDebugServer, EspError> {
         let nvs = EspDefaultNvsPartition::take().ok();
@@ -379,7 +341,7 @@ fn main() {
         Option::<AnyIOPin>::None,
         &uart_config,
     )
-    .unwrap();
+    .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
 
     let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
     let i2c = i2c::I2cDriver::new(
@@ -388,7 +350,7 @@ fn main() {
         peripherals.pins.gpio32,
         &i2c_config,
     )
-    .unwrap();
+    .expect("I2C1 init failed (SDA=GPIO26, SCL=GPIO32)");
 
     let mfrc522_result =
         mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28)).init();
@@ -454,14 +416,14 @@ fn main() {
                 } else {
                     let mut nak = [0u8; 3];
                     let nak_len = build_nak_frame(&mut nak);
-                    let _ = write_all_mfrc522(&uart, &nak[..nak_len]);
+                    write_all_logged(&uart, &nak[..nak_len]);
                     frame_len = 0;
                     frame_parser.reset();
                     continue;
                 }
                 match frame_parser.feed(byte) {
                     Some(FrameEvent::Command { ccid_bytes }) => {
-                        let _ = write_all_mfrc522(&uart, &frame_buf[..frame_len]);
+                        write_all_logged(&uart, &frame_buf[..frame_len]);
                         let is_get_slot_status = ccid_bytes.first() == Some(&PC_TO_RDR_GETSLOTSTAT);
                         if is_get_slot_status {
                             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
@@ -486,7 +448,7 @@ fn main() {
                                     let mut notif = [0u8; 2];
                                     let notif_len =
                                         build_slot_change_notification(present, &mut notif);
-                                    let _ = write_all_mfrc522(&uart, &notif[..notif_len]);
+                                    write_all_logged(&uart, &notif[..notif_len]);
                                 }
                             }
                         }
@@ -497,7 +459,7 @@ fn main() {
                         led.set_state(prev_led);
                         let mut frame_out = [0u8; MAX_FRAME_SIZE];
                         let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
-                        let _ = write_all_mfrc522(&uart, &frame_out[..out_len]);
+                        write_all_logged(&uart, &frame_out[..out_len]);
                         frame_len = 0;
                         frame_parser.reset();
 
@@ -510,7 +472,7 @@ fn main() {
                         led.set_state(esp32_ccid::led::LedState::Error);
                         let mut nak = [0u8; 3];
                         let nak_len = build_nak_frame(&mut nak);
-                        let _ = write_all_mfrc522(&uart, &nak[..nak_len]);
+                        write_all_logged(&uart, &nak[..nak_len]);
                         frame_len = 0;
                         frame_parser.reset();
                     }
@@ -536,7 +498,7 @@ fn main() {
                         }
                         let mut notif = [0u8; 2];
                         let notif_len = build_slot_change_notification(present, &mut notif);
-                        let _ = write_all_mfrc522(&uart, &notif[..notif_len]);
+                        write_all_logged(&uart, &notif[..notif_len]);
                     }
                 }
             }

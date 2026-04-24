@@ -57,6 +57,13 @@ mod imp {
             }
         }
 
+        fn lock_state(&self) -> std::sync::MutexGuard<'_, BleState> {
+            self.state.lock().unwrap_or_else(|e| {
+                log::warn!("BLE state lock poisoned — recovering");
+                e.into_inner()
+            })
+        }
+
         pub fn subscribe(&self) -> Result<(), EspError> {
             let gap_server = self.clone();
             self.gap.subscribe(move |event| {
@@ -94,7 +101,7 @@ mod imp {
             }
 
             let mut delivered = false;
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
 
             let Some(gatt_if) = state.gatt_if else {
                 return false;
@@ -230,7 +237,7 @@ mod imp {
         }
 
         fn create_service(&self, gatt_if: GattInterface) -> Result<(), EspError> {
-            self.state.lock().unwrap().gatt_if = Some(gatt_if);
+            self.lock_state().gatt_if = Some(gatt_if);
 
             self.gap.set_device_name(DEVICE_NAME)?;
             self.set_adv_conf()?;
@@ -250,7 +257,7 @@ mod imp {
         }
 
         fn configure_and_start_service(&self, service_handle: Handle) -> Result<(), EspError> {
-            self.state.lock().unwrap().service_handle = Some(service_handle);
+            self.lock_state().service_handle = Some(service_handle);
             self.gatts.start_service(service_handle)?;
             self.gatts.add_characteristic(
                 service_handle,
@@ -274,7 +281,7 @@ mod imp {
             char_uuid: BtUuid,
         ) -> Result<(), EspError> {
             let should_add_cccd = {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.lock_state();
 
                 if state.service_handle != Some(service_handle)
                     || char_uuid != BtUuid::uuid128(LOG_CHAR_UUID)
@@ -305,7 +312,7 @@ mod imp {
             attr_handle: Handle,
             descr_uuid: BtUuid,
         ) -> Result<(), EspError> {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
 
             if state.service_handle == Some(service_handle)
                 && descr_uuid == BtUuid::uuid16(CCCD_UUID)
@@ -318,7 +325,7 @@ mod imp {
 
         fn create_conn(&self, conn_id: ConnectionId, addr: BdAddr) -> Result<(), EspError> {
             {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.lock_state();
 
                 if let Some(existing) = state.connections.iter_mut().find(|conn| conn.peer == addr)
                 {
@@ -343,7 +350,7 @@ mod imp {
 
         fn delete_conn(&self, addr: BdAddr) -> Result<(), EspError> {
             {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.lock_state();
                 state
                     .connections
                     .retain(|connection| connection.peer != addr);
@@ -355,7 +362,7 @@ mod imp {
         }
 
         fn register_conn_mtu(&self, conn_id: ConnectionId, mtu: u16) -> Result<(), EspError> {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
 
             if let Some(connection) = state
                 .connections
@@ -381,7 +388,7 @@ mod imp {
             value: &[u8],
         ) -> Result<(), EspError> {
             let handled = {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.lock_state();
                 let cccd_handle = state.cccd_handle;
 
                 if Some(handle) != cccd_handle || offset != 0 || value.len() < 2 {
