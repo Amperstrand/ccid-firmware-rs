@@ -216,4 +216,135 @@ mod tests {
         assert_eq!(RDR_TO_PC_SLOTSTATUS, 0x81);
         assert_eq!(RDR_TO_PC_NOTIFY_SLOT_CHANGE, 0x50);
     }
+
+    /// Simple xorshift32 PRNG — deterministic, zero dependencies.
+    struct Xorshift32(u32);
+    impl Xorshift32 {
+        fn next_u32(&mut self) -> u32 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.0 = x;
+            x
+        }
+        fn next_u8(&mut self) -> u8 {
+            self.next_u32() as u8
+        }
+        fn fill_bytes(&mut self, buf: &mut [u8]) {
+            for b in buf.iter_mut() {
+                *b = self.next_u8();
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_random_bytes_no_panic() {
+        let mut rng = Xorshift32(0xDEAD_BEEF);
+        for _ in 0..1000 {
+            let mut buf = [0u8; 10];
+            rng.fill_bytes(&mut buf);
+            let _ = CcidHeader::parse(&buf); // must not panic
+        }
+    }
+
+    #[test]
+    fn test_parse_short_inputs() {
+        for len in 0..10 {
+            let buf = [0u8; 10];
+            assert!(
+                CcidHeader::parse(&buf[..len]).is_none(),
+                "expected None for input of length {}",
+                len
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_exactly_10_bytes_always_succeeds() {
+        let mut rng = Xorshift32(0xCAFE_F00D);
+        for _ in 0..100 {
+            let mut buf = [0u8; 10];
+            rng.fill_bytes(&mut buf);
+            assert!(
+                CcidHeader::parse(&buf).is_some(),
+                "expected Some for 10-byte input"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_then_parse_roundtrip() {
+        let mut rng = Xorshift32(0x1234_5678);
+        for _ in 0..100 {
+            let msg_type = rng.next_u8();
+            let length = rng.next_u32();
+            let slot = rng.next_u8();
+            let seq = rng.next_u8();
+            let status = rng.next_u8();
+            let error = rng.next_u8();
+            let specific = rng.next_u8();
+
+            let built = CcidHeader::build(msg_type, length, slot, seq, status, error, specific);
+            let parsed = CcidHeader::parse(&built).unwrap();
+
+            assert_eq!(parsed.message_type, msg_type);
+            assert_eq!(parsed.length, length);
+            assert_eq!(parsed.slot, slot);
+            assert_eq!(parsed.seq, seq);
+            assert_eq!(parsed.specific, [status, error, specific]);
+        }
+    }
+
+    #[test]
+    fn test_header_length_field_max_value() {
+        let built = CcidHeader::build(0x62, u32::MAX, 0, 0, 0, 0, 0);
+        let parsed = CcidHeader::parse(&built).unwrap();
+        assert_eq!(parsed.length, u32::MAX);
+    }
+
+    #[test]
+    fn test_header_length_field_zero() {
+        let built = CcidHeader::build(0x62, 0, 0, 0, 0, 0, 0);
+        let parsed = CcidHeader::parse(&built).unwrap();
+        assert_eq!(parsed.length, 0);
+    }
+
+    #[test]
+    fn test_header_length_max_apdu_response() {
+        let built = CcidHeader::build(0x80, 261, 0, 0, 0, 0, 0);
+        let parsed = CcidHeader::parse(&built).unwrap();
+        assert_eq!(parsed.length, 261);
+    }
+
+    #[test]
+    fn test_header_length_exceeds_max_ccid_message() {
+        let built = CcidHeader::build(0x80, 272, 0, 0, 0, 0, 0);
+        let parsed = CcidHeader::parse(&built).unwrap();
+        assert_eq!(parsed.length, 272);
+    }
+
+    #[test]
+    fn test_header_length_one_byte() {
+        let built = CcidHeader::build(0x6F, 1, 0, 0, 0, 0, 0);
+        let parsed = CcidHeader::parse(&built).unwrap();
+        assert_eq!(parsed.length, 1);
+    }
+
+    #[test]
+    fn test_header_length_260_bytes() {
+        let built = CcidHeader::build(0x6F, 260, 0, 0, 0, 0, 0);
+        let parsed = CcidHeader::parse(&built).unwrap();
+        assert_eq!(parsed.length, 260);
+    }
+
+    #[test]
+    fn test_max_ccid_message_length_constant() {
+        assert_eq!(MAX_CCID_MESSAGE_LENGTH, 271);
+    }
+
+    #[test]
+    fn test_ccid_header_size_constant() {
+        assert_eq!(CCID_HEADER_SIZE, 10);
+    }
 }

@@ -254,4 +254,96 @@ mod tests {
         assert_eq!(p.protocol, 0);
         assert!(verify_atr_tck(&atr, p.protocol));
     }
+
+    /// Simple xorshift32 PRNG — no external deps.
+    fn xorshift32(state: &mut u32) -> u32 {
+        *state ^= *state << 13;
+        *state ^= *state >> 17;
+        *state ^= *state << 5;
+        *state
+    }
+
+    #[test]
+    fn test_parse_atr_random_bytes_no_panic() {
+        let mut rng: u32 = 0xDEAD_BEEF;
+        let mut buf = [0u8; 33];
+        for _ in 0..1000 {
+            let len = (xorshift32(&mut rng) as usize) % 34;
+            for b in buf.iter_mut() {
+                *b = xorshift32(&mut rng) as u8;
+            }
+            let _ = parse_atr(&buf[..len]);
+        }
+    }
+
+    #[test]
+    fn test_parse_atr_empty() {
+        let p = parse_atr(&[]);
+        assert_eq!(p, AtrParams::default());
+    }
+
+    #[test]
+    fn test_parse_atr_single_byte() {
+        let p = parse_atr(&[0x3B]);
+        assert_eq!(p, AtrParams::default());
+    }
+
+    #[test]
+    fn test_parse_atr_malformed_td_chain() {
+        // TS=0x3B, T0=0x89 (Y1: TA1+TD1 present, no TB1/TC1)
+        // TA1=0x11, TD1=0x81 (Y2: TA2 present, T=1)
+        // Truncated at 4 bytes — TA2 is missing.
+        let atr = [0x3B, 0x89, 0x11, 0x81];
+        let p = parse_atr(&atr);
+        // Should not panic; protocol=1 from TD1.
+        assert_eq!(p.protocol, 1);
+    }
+
+    #[test]
+    fn test_verify_tck_random_bytes_no_panic() {
+        let mut rng: u32 = 0xCAFE_BABE;
+        let mut buf = [0u8; 64];
+        for _ in 0..1000 {
+            let len = (xorshift32(&mut rng) as usize) % 65;
+            let protocol = xorshift32(&mut rng) as u8;
+            for b in buf.iter_mut() {
+                *b = xorshift32(&mut rng) as u8;
+            }
+            let _ = verify_atr_tck(&buf[..len], protocol);
+        }
+    }
+
+    #[test]
+    fn test_verify_tck_empty_atr() {
+        assert!(verify_atr_tck(&[], 1));
+    }
+
+    #[test]
+    fn test_procedure_byte_all_values() {
+        for pb in 0..=255u8 {
+            let result = classify_t0_procedure_byte(0xA4, pb);
+            match result {
+                ProcedureByte::Null
+                | ProcedureByte::AckAll
+                | ProcedureByte::AckOne
+                | ProcedureByte::Status(_)
+                | ProcedureByte::Unexpected(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_fi_di_table_complete() {
+        // Known values from ISO 7816-3
+        assert_eq!(fi_from_ta1_high(1), 372);
+        assert_eq!(fi_from_ta1_high(2), 558);
+        assert_eq!(di_from_ta1_low(1), 1);
+        assert_eq!(di_from_ta1_low(2), 2);
+
+        // All 16 nibble values must not panic
+        for i in 0..16u8 {
+            let _ = fi_from_ta1_high(i);
+            let _ = di_from_ta1_low(i);
+        }
+    }
 }
