@@ -463,4 +463,207 @@ mod tests {
         assert!(parser.received_frame_bytes().is_empty());
         assert_eq!(parser.feed(SYNC), None);
     }
+
+    #[test]
+    fn test_corrupted_lrc_every_bit_position() {
+        let ccid = [0x81u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut buf = [0u8; 274];
+        let n = build_response_frame(&ccid, &mut buf);
+        let correct_lrc = buf[n - 1];
+
+        for bit in 0..8u8 {
+            buf[n - 1] = correct_lrc ^ (1 << bit);
+            let mut parser = FrameParser::new();
+            let mut event = None;
+            for b in &buf[..n] {
+                event = parser.feed(*b);
+                if event.is_some() {
+                    break;
+                }
+            }
+            assert!(
+                matches!(event, Some(FrameEvent::Error(FrameError::InvalidLrc))),
+                "bit {} should cause InvalidLrc",
+                bit
+            );
+        }
+    }
+
+    #[test]
+    fn test_missing_sync_byte() {
+        let ccid = [0x81u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut buf = [0u8; 274];
+        let n = build_response_frame(&ccid, &mut buf);
+
+        let mut parser = FrameParser::new();
+        for b in &buf[1..n] {
+            assert!(parser.feed(*b).is_none());
+        }
+    }
+
+    #[test]
+    fn test_truncated_after_sync_ctrl() {
+        let mut parser = FrameParser::new();
+        assert_eq!(parser.feed(SYNC), None);
+        assert_eq!(parser.feed(CTRL_ACK), None);
+        assert_eq!(parser.feed(0x81), None);
+    }
+
+    #[test]
+    fn test_truncated_mid_header() {
+        let mut parser = FrameParser::new();
+        assert_eq!(parser.feed(SYNC), None);
+        assert_eq!(parser.feed(CTRL_ACK), None);
+        assert_eq!(parser.feed(0x81), None);
+        assert_eq!(parser.feed(0x00), None);
+        assert_eq!(parser.feed(0x00), None);
+        assert_eq!(parser.feed(0x00), None);
+        assert_eq!(parser.feed(0x00), None);
+    }
+
+    #[test]
+    fn test_truncated_mid_payload() {
+        let ccid: StdVec<u8> = {
+            let mut v = StdVec::from(header_with_payload_len(0x80, 4));
+            v.extend_from_slice(&[0xAA, 0xBB]);
+            v
+        };
+        let mut buf = [0u8; 274];
+        let n = build_response_frame(&ccid, &mut buf);
+
+        let mut parser = FrameParser::new();
+        for b in &buf[..n - 3] {
+            assert!(parser.feed(*b).is_none());
+        }
+    }
+
+    #[test]
+    fn test_sync_byte_in_payload_treated_as_data() {
+        let ccid: StdVec<u8> = {
+            let mut v = StdVec::from(header_with_payload_len(0x80, 1));
+            v.push(0x03);
+            v
+        };
+        let mut buf = [0u8; 274];
+        let n = build_response_frame(&ccid, &mut buf);
+
+        let mut parser = FrameParser::new();
+        let mut event = None;
+        for b in &buf[..n] {
+            event = parser.feed(*b);
+            if event.is_some() {
+                break;
+            }
+        }
+        match event.unwrap() {
+            FrameEvent::Command { ccid_bytes } => {
+                assert_eq!(ccid_bytes[10], 0x03);
+            }
+            FrameEvent::Error(e) => panic!("Expected command, got error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_slot_change_byte_in_payload_treated_as_data() {
+        let ccid: StdVec<u8> = {
+            let mut v = StdVec::from(header_with_payload_len(0x80, 1));
+            v.push(0x50);
+            v
+        };
+        let mut buf = [0u8; 274];
+        let n = build_response_frame(&ccid, &mut buf);
+
+        let mut parser = FrameParser::new();
+        let mut event = None;
+        for b in &buf[..n] {
+            event = parser.feed(*b);
+            if event.is_some() {
+                break;
+            }
+        }
+        match event.unwrap() {
+            FrameEvent::Command { ccid_bytes } => {
+                assert_eq!(ccid_bytes[10], 0x50);
+            }
+            FrameEvent::Error(e) => panic!("Expected command, got error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_consecutive_invalid_frames_then_valid() {
+        let ccid = [0x81u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut valid_buf = [0u8; 274];
+        let valid_n = build_response_frame(&ccid, &mut valid_buf);
+
+        let mut parser = FrameParser::new();
+        let mut events = StdVec::new();
+
+        for _ in 0..3 {
+            let mut bad_buf = [0u8; 274];
+            let n = build_response_frame(&ccid, &mut bad_buf);
+            bad_buf[n - 1] ^= 0xFF;
+            for b in &bad_buf[..n] {
+                if let Some(e) = parser.feed(*b) {
+                    events.push(e);
+                }
+            }
+        }
+
+        for b in &valid_buf[..valid_n] {
+            if let Some(e) = parser.feed(*b) {
+                events.push(e);
+            }
+        }
+
+        assert_eq!(events.len(), 4);
+        for i in 0..3 {
+            assert!(matches!(
+                events[i],
+                FrameEvent::Error(FrameError::InvalidLrc)
+            ));
+        }
+        assert!(matches!(events[3], FrameEvent::Command { .. }));
+    }
+
+    #[test]
+    fn test_max_payload_boundary() {
+        let max_payload: StdVec<u8> = {
+            let mut v = StdVec::from(header_with_payload_len(0x80, 261));
+            v.extend_from_slice(&[0xAB; 261]);
+            v
+        };
+        let mut buf = [0u8; 274];
+        let n = build_response_frame(&max_payload, &mut buf);
+
+        let mut parser = FrameParser::new();
+        let mut event = None;
+        for b in &buf[..n] {
+            event = parser.feed(*b);
+            if event.is_some() {
+                break;
+            }
+        }
+        match event.unwrap() {
+            FrameEvent::Command { ccid_bytes } => {
+                assert_eq!(ccid_bytes.len(), 271);
+            }
+            FrameEvent::Error(e) => panic!("Expected command, got error: {:?}", e),
+        }
+
+        let over = header_with_payload_len(0x80, 262);
+        let mut parser2 = FrameParser::new();
+        assert_eq!(parser2.feed(SYNC), None);
+        assert_eq!(parser2.feed(CTRL_ACK), None);
+        let mut event2 = None;
+        for byte in over {
+            event2 = parser2.feed(byte);
+            if event2.is_some() {
+                break;
+            }
+        }
+        assert!(matches!(
+            event2,
+            Some(FrameEvent::Error(FrameError::Overflow))
+        ));
+    }
 }
