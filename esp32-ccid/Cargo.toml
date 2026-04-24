@@ -39,5 +39,4 @@ embuild = { version = "0.32", features = ["espidf"] }
 [package.metadata.esp-idf-sys]
 esp_idf_version = "tag:v5.2.4"
 
-[profile.release]
-opt-level = "s"
+
