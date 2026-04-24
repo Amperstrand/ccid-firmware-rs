@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  stm32-build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -68,7 +68,7 @@ jobs:
             ccid-firmware.bin.sha256
             ccid-firmware.hex.sha256
 
-  lint:
+  stm32-lint:
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
@@ -94,7 +94,7 @@ jobs:
         run: |
           python3 -m py_compile tests/hardware/*.py
 
-  test:
+  stm32-test:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
@@ -114,3 +114,58 @@ jobs:
       
       - name: Run tests
         run: cargo test
+
+  esp32-host-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: esp32-ccid
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            esp32-ccid -> target
+            vendor/iso14443-rs -> target
+
+      - name: Run ESP32 host-side tests
+        run: cargo test --target x86_64-unknown-linux-gnu
+
+  iso14443-host-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vendor/iso14443-rs
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            vendor/iso14443-rs -> target
+
+      - name: Run vendored iso14443 host-side tests
+        run: cargo test --features std --target x86_64-unknown-linux-gnu
