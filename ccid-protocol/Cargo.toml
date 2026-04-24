@@ -1,0 +1,13 @@
+[package]
+name = "ccid-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared CCID protocol types, constants, and utilities for smartcard reader firmware"
+license = "GPL-2.0-or-later"
+keywords = ["ccid", "smartcard", "iso7816", "embedded"]
+categories = ["embedded", "hardware-support", "no-std"]
+
+[features]
+default = []
+
+[dependencies]

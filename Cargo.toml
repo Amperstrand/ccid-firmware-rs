@@ -9,6 +9,9 @@ readme = "README.md"
 keywords = ["ccid", "usb", "smartcard", "stm32", "embedded"]
 categories = ["embedded", "hardware-support", "no-std"]
 
+[workspace]
+members = ["ccid-protocol"]
+
 [[bin]]
 name = "ccid-firmware"
 path = "src/main.rs"
@@ -16,6 +19,7 @@ test = false
 bench = false
 
 [dependencies]
+ccid-protocol = { path = "ccid-protocol" }
 
 [target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]
 log = "0.4"
@@ -35,16 +39,12 @@ stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", 
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
 
 [features]
-# Default device profile
 default = ["profile-cherry-smartterminal-st2xxx"]
 
-# Device profile selection (mutually exclusive, pick one)
-# Naming convention: profile-{vendor}-{product}-{model} (aligned with CCID project)
-profile-cherry-smartterminal-st2xxx = []  # Cherry SmartTerminal ST-2xxx (PIN pad reader)
-profile-gemalto-idbridge-ct30 = []        # Gemalto IDBridge CT30 (basic reader)
-profile-gemalto-idbridge-k30 = []         # Gemalto IDBridge K30 (basic reader, no PIN pad!)
+profile-cherry-smartterminal-st2xxx = []
+profile-gemalto-idbridge-ct30 = []
+profile-gemalto-idbridge-k30 = []
 
-# Optional features
 display = ["embedded-graphics", "embedded-hal"]
 
 [dependencies.embedded-graphics]
@@ -55,16 +55,6 @@ optional = true
 version = "0.2"
 optional = true
 
-# ============================================================================
-# Build Profiles
-# ============================================================================
-#
-# debug = 2: Full DWARF debug info (needed for probe-rs RTT location info)
-# opt-level = "z": Optimize for size (embedded target)
-# lto = true: Link-time optimization for smaller binary
-# codegen-units = 1: Better optimization (slower compile)
-# panic = "abort": No unwinding (reduces binary size)
-#
 [profile.release]
 debug = 2
 opt-level = "z"
