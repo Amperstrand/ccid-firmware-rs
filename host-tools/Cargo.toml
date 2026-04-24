@@ -1,0 +1,12 @@
+[package]
+name = "ccid-host-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Host-side PC/SC smoke tests for CCID firmware"
+
+[dependencies]
+pcsc = "2.9"
+
+[[example]]
+name = "list-readers"
+path = "examples/list-readers.rs"
