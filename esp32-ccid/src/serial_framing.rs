@@ -1,16 +1,17 @@
 use heapless::Vec;
 
 use crate::ccid_types::{
-    CARD_ABSENT, CARD_PRESENT, MAX_CCID_MESSAGE_LENGTH, RDR_TO_PC_NOTIFYSLOTCHANGE,
+    CARD_ABSENT, CARD_PRESENT, CCID_HEADER_SIZE, MAX_CCID_MESSAGE_LENGTH,
+    RDR_TO_PC_NOTIFY_SLOT_CHANGE,
 };
 
 pub const SYNC: u8 = 0x03;
 pub const CTRL_ACK: u8 = 0x06;
 pub const CTRL_NAK: u8 = 0x15;
 
-const CCID_HEADER_LEN: usize = 10;
-const MAX_CCID_BYTES: usize = MAX_CCID_MESSAGE_LENGTH as usize;
-const MAX_CCID_PAYLOAD: usize = MAX_CCID_BYTES - CCID_HEADER_LEN;
+const MAX_CCID_HEADER_LEN: usize = CCID_HEADER_SIZE;
+const MAX_CCID_BYTES: usize = MAX_CCID_MESSAGE_LENGTH;
+const MAX_CCID_PAYLOAD: usize = MAX_CCID_BYTES - MAX_CCID_HEADER_LEN;
 const MAX_FRAME_BYTES: usize = 2 + MAX_CCID_BYTES + 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +81,7 @@ pub fn build_slot_change_notification(card_present: bool, buf: &mut [u8]) -> usi
         buf.len() >= 2,
         "buffer too small for slot change notification"
     );
-    buf[0] = RDR_TO_PC_NOTIFYSLOTCHANGE;
+    buf[0] = RDR_TO_PC_NOTIFY_SLOT_CHANGE;
     buf[1] = if card_present {
         CARD_PRESENT
     } else {
@@ -103,7 +104,7 @@ impl FrameParser {
     pub fn feed(&mut self, byte: u8) -> Option<FrameEvent> {
         match self.state {
             ParserState::WaitSync => {
-                if byte == RDR_TO_PC_NOTIFYSLOTCHANGE {
+                if byte == RDR_TO_PC_NOTIFY_SLOT_CHANGE {
                     self.reset();
                 } else if byte == SYNC {
                     self.start_frame(byte);
@@ -125,7 +126,7 @@ impl FrameParser {
             ParserState::ReadHeader(read) => {
                 self.push_frame_and_ccid_byte(byte);
                 let next_read = read + 1;
-                if next_read == CCID_HEADER_LEN {
+                if next_read == MAX_CCID_HEADER_LEN {
                     self.payload_len = u32::from_le_bytes([
                         self.ccid_bytes[1],
                         self.ccid_bytes[2],
@@ -407,7 +408,7 @@ mod tests {
     #[test]
     fn test_parser_ignores_slot_change_notification_prefix() {
         let mut parser = FrameParser::new();
-        assert_eq!(parser.feed(RDR_TO_PC_NOTIFYSLOTCHANGE), None);
+        assert_eq!(parser.feed(RDR_TO_PC_NOTIFY_SLOT_CHANGE), None);
         assert!(parser.received_frame_bytes().is_empty());
         assert_eq!(parser.feed(SYNC), None);
     }

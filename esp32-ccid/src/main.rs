@@ -13,7 +13,7 @@ use core::convert::Infallible;
 ))]
 use esp32_ccid::{
     ccid_handler::CcidHandler,
-    ccid_types::PC_TO_RDR_GETSLOTSTAT,
+    ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
     nfc::NfcDriver,
     pn532_driver::Pn532NfcDriver,
     serial_framing::{
@@ -46,7 +46,7 @@ use esp32_ccid::{
     ble_debug::BleDebugServer,
     ble_logger::BleLogger,
     ccid_handler::CcidHandler,
-    ccid_types::PC_TO_RDR_GETSLOTSTAT,
+    ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
     nfc::NfcDriver,
     serial_framing::{
         build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
@@ -245,7 +245,8 @@ fn main() {
                         // Time-gated card poll on GetSlotStatus only.
                         // InListPassiveTarget (PN532 UM §7.3.5) takes ~1s over SPI.
                         // libccidtwin readTimeout is 3s so this is safe.
-                        let is_get_slot_status = ccid_bytes.first() == Some(&PC_TO_RDR_GETSLOTSTAT);
+                        let is_get_slot_status =
+                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
                         if is_get_slot_status {
                             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                             if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
@@ -424,7 +425,8 @@ fn main() {
                 match frame_parser.feed(byte) {
                     Some(FrameEvent::Command { ccid_bytes }) => {
                         write_all_logged(&uart, &frame_buf[..frame_len]);
-                        let is_get_slot_status = ccid_bytes.first() == Some(&PC_TO_RDR_GETSLOTSTAT);
+                        let is_get_slot_status =
+                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
                         if is_get_slot_status {
                             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                             if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {

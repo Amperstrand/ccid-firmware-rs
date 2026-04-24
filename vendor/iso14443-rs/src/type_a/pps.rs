@@ -2,7 +2,7 @@ use bounded_integer::BoundedU8;
 use core::fmt;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-use super::{crc_a, Cid, TypeAError};
+use super::{Cid, TypeAError, crc_a};
 
 impl From<&Cid> for u8 {
     fn from(value: &Cid) -> Self {

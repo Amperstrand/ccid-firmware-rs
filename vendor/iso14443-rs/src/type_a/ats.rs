@@ -4,7 +4,7 @@
 use core::fmt;
 
 use super::vec::{FrameVec, VecExt};
-use super::{crc::crc_a, TypeAError};
+use super::{TypeAError, crc::crc_a};
 use bitflags::bitflags;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: © 2025 Foundation Devices, Inc. <hello@foundation.xyz>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::vec::{FrameVec, VecExt};
 use super::TypeAError;
+use super::vec::{FrameVec, VecExt};
 
 /// 6.1.6 CRC_A
 pub(crate) fn crc_a(data: &[u8]) -> (u8, u8) {

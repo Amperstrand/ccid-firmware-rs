@@ -10,7 +10,7 @@ keywords = ["ccid", "usb", "smartcard", "stm32", "embedded"]
 categories = ["embedded", "hardware-support", "no-std"]
 
 [workspace]
-members = ["ccid-protocol"]
+members = ["ccid-protocol", "esp32-ccid"]
 
 [[bin]]
 name = "ccid-firmware"

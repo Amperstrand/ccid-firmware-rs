@@ -19,6 +19,7 @@ backend-mfrc522 = ["dep:mfrc522", "dep:iso14443"]
 backend-pn532 = ["dep:pn532"]
 
 [dependencies]
+ccid-protocol = { path = "../ccid-protocol" }
 embedded-hal = "1.0"
 heapless = "0.8"
 log = "0.4"

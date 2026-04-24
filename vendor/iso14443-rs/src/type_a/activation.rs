@@ -4,11 +4,11 @@
 //! ISO14443-3A tag activation: REQA → anticollision cascade → SELECT.
 
 use super::{
+    Command, Frame, PcdTransceiver, Sak, TypeAError,
     anticol_select::{NumberOfValidBits, SEL_CL1, SEL_CL2, SEL_CL3},
     atqa::AtqA,
     crc::append_crc_a,
     vec::{FrameVec, VecExt},
-    Command, Frame, PcdTransceiver, Sak, TypeAError,
 };
 
 /// Error during tag activation.

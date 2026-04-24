@@ -7,6 +7,7 @@
 //! (REQA/anticollision/SELECT), RATS/ATS, and ISO14443-4 block exchange.
 
 use super::{
+    Ats, Block, Cid, Frame, PiccTransceiver, Sak, TypeAError,
     anticol_select::{SEL_CL1, SEL_CL2, SEL_CL3},
     atqa::AtqA,
     crc::{append_crc_a, crc_a},
@@ -15,7 +16,6 @@ use super::{
     protocol::{Action, ProtocolHandler},
     rats::RatsParam,
     vec::{ChainVec, FrameVec, VecExt},
-    Ats, Block, Cid, Frame, PiccTransceiver, Sak, TypeAError,
 };
 
 /// Error during PICC protocol operations.

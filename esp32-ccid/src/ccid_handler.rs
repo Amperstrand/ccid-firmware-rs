@@ -1,14 +1,13 @@
 use crate::ccid_types::{
-    slot_status, CcidHeader, CMD_NOT_SUPPORTED, CMD_STATUS_FAILED, CMD_STATUS_OK,
-    DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS, HW_ERROR, ICC_NOT_ACTIVE, ICC_NOT_PRESENT,
-    ICC_PRESENT_ACTIVE, ICC_PRESENT_INACTIVE, PC_TO_RDR_ESCAPE, PC_TO_RDR_GETPARAMETERS,
-    PC_TO_RDR_GETSLOTSTAT, PC_TO_RDR_ICCPOWEROFF, PC_TO_RDR_ICCPOWERON, PC_TO_RDR_RESETPARAMETERS,
-    PC_TO_RDR_SETPARAMETERS, PC_TO_RDR_XFRBLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE,
-    RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
+    build_bstatus, CcidHeader, SlotState, CCID_HEADER_SIZE, CMD_NOT_SUPPORTED,
+    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS, HW_ERROR,
+    ICC_NOT_ACTIVE, ICC_STATUS_NO_ICC, PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS,
+    PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
+    PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK,
+    RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
 };
 use crate::nfc::{NfcDriver, PresenceState};
 
-const CCID_HEADER_LEN: usize = 10;
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
 pub struct CcidHandler<D: NfcDriver> {
@@ -20,18 +19,11 @@ pub struct CcidHandler<D: NfcDriver> {
     current_protocol: u8,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum SlotState {
-    NotPresent,
-    PresentInactive,
-    PresentActive,
-}
-
 impl<D: NfcDriver> CcidHandler<D> {
     pub fn new(nfc: D) -> Self {
         Self {
             nfc,
-            slot_state: SlotState::NotPresent,
+            slot_state: SlotState::Absent,
             presence_state: PresenceState { present: false },
             tx_buf: [0u8; 271],
             sync_notifications: false,
@@ -45,33 +37,33 @@ impl<D: NfcDriver> CcidHandler<D> {
         };
 
         let payload_len = header.length as usize;
-        if ccid_msg.len() < CCID_HEADER_LEN + payload_len {
+        if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
             return self.write_slot_status(
                 header.slot,
                 header.seq,
                 self.current_icc_status(),
-                CMD_STATUS_FAILED,
+                COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
                 response,
             );
         }
 
-        let payload = &ccid_msg[CCID_HEADER_LEN..CCID_HEADER_LEN + payload_len];
+        let payload = &ccid_msg[CCID_HEADER_SIZE..CCID_HEADER_SIZE + payload_len];
 
         match header.message_type {
-            PC_TO_RDR_ICCPOWERON => self.handle_power_on(&header, response),
-            PC_TO_RDR_ICCPOWEROFF => self.handle_power_off(&header, response),
-            PC_TO_RDR_GETSLOTSTAT => self.handle_get_slot_status(&header, response),
-            PC_TO_RDR_XFRBLOCK => self.handle_xfr_block(&header, payload, response),
-            PC_TO_RDR_GETPARAMETERS => self.write_parameters(&header, response),
-            PC_TO_RDR_SETPARAMETERS => self.handle_set_parameters(&header, response),
-            PC_TO_RDR_RESETPARAMETERS => self.handle_reset_parameters(&header, response),
+            PC_TO_RDR_ICC_POWER_ON => self.handle_power_on(&header, response),
+            PC_TO_RDR_ICC_POWER_OFF => self.handle_power_off(&header, response),
+            PC_TO_RDR_GET_SLOT_STATUS => self.handle_get_slot_status(&header, response),
+            PC_TO_RDR_XFR_BLOCK => self.handle_xfr_block(&header, payload, response),
+            PC_TO_RDR_GET_PARAMETERS => self.write_parameters(&header, response),
+            PC_TO_RDR_SET_PARAMETERS => self.handle_set_parameters(&header, response),
+            PC_TO_RDR_RESET_PARAMETERS => self.handle_reset_parameters(&header, response),
             PC_TO_RDR_ESCAPE => self.handle_escape(&header, payload, response),
             _ => self.write_slot_status(
                 header.slot,
                 header.seq,
                 self.current_icc_status(),
-                CMD_STATUS_FAILED,
+                COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
                 response,
             ),
@@ -91,7 +83,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             self.slot_state = if presence.present {
                 SlotState::PresentInactive
             } else {
-                SlotState::NotPresent
+                SlotState::Absent
             };
             Some(presence.present)
         } else {
@@ -104,8 +96,8 @@ impl<D: NfcDriver> CcidHandler<D> {
             return self.write_slot_status(
                 header.slot,
                 header.seq,
-                ICC_NOT_PRESENT,
-                CMD_STATUS_FAILED,
+                ICC_STATUS_NO_ICC,
+                COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
                 response,
             );
@@ -119,7 +111,10 @@ impl<D: NfcDriver> CcidHandler<D> {
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
-                    slot_status(ICC_PRESENT_ACTIVE, CMD_STATUS_OK),
+                    build_bstatus(
+                        COMMAND_STATUS_NO_ERROR,
+                        SlotState::PresentActive.icc_status(),
+                    ),
                     0,
                     0,
                     &self.tx_buf[..atr_len],
@@ -138,7 +133,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                     header.slot,
                     header.seq,
                     self.current_icc_status(),
-                    CMD_STATUS_FAILED,
+                    COMMAND_STATUS_FAILED,
                     HW_ERROR,
                     response,
                 )
@@ -160,7 +155,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             header.slot,
             header.seq,
             self.current_icc_status(),
-            CMD_STATUS_OK,
+            COMMAND_STATUS_NO_ERROR,
             0,
             response,
         )
@@ -171,7 +166,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             header.slot,
             header.seq,
             self.current_icc_status(),
-            CMD_STATUS_OK,
+            COMMAND_STATUS_NO_ERROR,
             0,
             response,
         )
@@ -183,7 +178,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
-                slot_status(self.current_icc_status(), CMD_STATUS_FAILED),
+                build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
                 ICC_NOT_ACTIVE,
                 0,
                 &[],
@@ -197,7 +192,10 @@ impl<D: NfcDriver> CcidHandler<D> {
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
-                slot_status(ICC_PRESENT_ACTIVE, CMD_STATUS_OK),
+                build_bstatus(
+                    COMMAND_STATUS_NO_ERROR,
+                    SlotState::PresentActive.icc_status(),
+                ),
                 0,
                 0,
                 apdu,
@@ -210,7 +208,10 @@ impl<D: NfcDriver> CcidHandler<D> {
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
-                slot_status(ICC_PRESENT_ACTIVE, CMD_STATUS_OK),
+                build_bstatus(
+                    COMMAND_STATUS_NO_ERROR,
+                    SlotState::PresentActive.icc_status(),
+                ),
                 0,
                 0,
                 &self.tx_buf[..resp_len],
@@ -222,7 +223,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
-                    slot_status(self.current_icc_status(), CMD_STATUS_FAILED),
+                    build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
                     HW_ERROR,
                     0,
                     &[],
@@ -248,7 +249,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
-                slot_status(self.current_icc_status(), CMD_STATUS_OK),
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
                 0,
                 0,
                 FIRMWARE_VERSION,
@@ -261,7 +262,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
-                slot_status(self.current_icc_status(), CMD_STATUS_OK),
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
                 0,
                 0,
                 &[],
@@ -275,7 +276,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
-                slot_status(self.current_icc_status(), CMD_STATUS_OK),
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
                 0,
                 0,
                 &[0x01, 0x01, 0x01],
@@ -287,7 +288,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             header.slot,
             header.seq,
             self.current_icc_status(),
-            CMD_STATUS_FAILED,
+            COMMAND_STATUS_FAILED,
             CMD_NOT_SUPPORTED,
             response,
         )
@@ -299,7 +300,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             RDR_TO_PC_PARAMETERS,
             header.slot,
             header.seq,
-            slot_status(self.current_icc_status(), CMD_STATUS_OK),
+            build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
             0,
             protocol,
             payload,
@@ -320,7 +321,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             RDR_TO_PC_SLOTSTATUS,
             slot,
             seq,
-            slot_status(icc_status, cmd_status),
+            build_bstatus(cmd_status, icc_status),
             error,
             0,
             &[],
@@ -339,7 +340,7 @@ impl<D: NfcDriver> CcidHandler<D> {
         payload: &[u8],
         response: &mut [u8],
     ) -> usize {
-        let total_len = CCID_HEADER_LEN + payload.len();
+        let total_len = CCID_HEADER_SIZE + payload.len();
         if response.len() < total_len {
             return 0;
         }
@@ -353,17 +354,13 @@ impl<D: NfcDriver> CcidHandler<D> {
             error,
             specific,
         );
-        response[..CCID_HEADER_LEN].copy_from_slice(&header);
-        response[CCID_HEADER_LEN..total_len].copy_from_slice(payload);
+        response[..CCID_HEADER_SIZE].copy_from_slice(&header);
+        response[CCID_HEADER_SIZE..total_len].copy_from_slice(payload);
         total_len
     }
 
     fn current_icc_status(&self) -> u8 {
-        match self.slot_state {
-            SlotState::NotPresent => ICC_NOT_PRESENT,
-            SlotState::PresentInactive => ICC_PRESENT_INACTIVE,
-            SlotState::PresentActive => ICC_PRESENT_ACTIVE,
-        }
+        self.slot_state.icc_status()
     }
 
     fn parameter_payload(&self) -> (&[u8], u8) {
@@ -379,9 +376,9 @@ impl<D: NfcDriver> CcidHandler<D> {
 mod tests {
     use super::*;
     use crate::ccid_types::{
-        PC_TO_RDR_ESCAPE, PC_TO_RDR_GETPARAMETERS, PC_TO_RDR_GETSLOTSTAT, PC_TO_RDR_ICCPOWEROFF,
-        PC_TO_RDR_ICCPOWERON, PC_TO_RDR_RESETPARAMETERS, PC_TO_RDR_SETPARAMETERS,
-        PC_TO_RDR_XFRBLOCK,
+        PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS,
+        PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_RESET_PARAMETERS,
+        PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK,
     };
     use crate::nfc::MockNfcDriver;
     use std::vec::Vec;
@@ -404,7 +401,7 @@ mod tests {
     }
 
     fn build_set_parameters_cmd(slot: u8, seq: u8, protocol: u8, payload: &[u8]) -> Vec<u8> {
-        let mut msg = build_ccid_cmd(PC_TO_RDR_SETPARAMETERS, slot, seq, payload);
+        let mut msg = build_ccid_cmd(PC_TO_RDR_SET_PARAMETERS, slot, seq, payload);
         msg[7] = protocol;
         msg
     }
@@ -414,7 +411,7 @@ mod tests {
         let payload_len = header.length as usize;
         (
             header.clone(),
-            &bytes[CCID_HEADER_LEN..CCID_HEADER_LEN + payload_len],
+            &bytes[CCID_HEADER_SIZE..CCID_HEADER_SIZE + payload_len],
         )
     }
 
@@ -426,7 +423,7 @@ mod tests {
     fn test_power_on_with_card_returns_atr() {
         let mut handler = new_handler(true);
         handler.check_card_change(); // simulate card detection poll
-        let cmd = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 7, &[]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 7, &[]);
         let mut response = [0u8; 271];
 
         let len = handler.process_command(&cmd, &mut response);
@@ -437,7 +434,14 @@ mod tests {
         assert_eq!(header.seq, 7);
         assert_eq!(
             header.specific,
-            [slot_status(ICC_PRESENT_ACTIVE, CMD_STATUS_OK), 0, 0]
+            [
+                build_bstatus(
+                    COMMAND_STATUS_NO_ERROR,
+                    SlotState::PresentActive.icc_status()
+                ),
+                0,
+                0
+            ]
         );
         assert_eq!(payload, ATR);
         assert_eq!(handler.slot_state, SlotState::PresentActive);
@@ -446,7 +450,7 @@ mod tests {
     #[test]
     fn test_power_on_without_card_returns_slot_status_error() {
         let mut handler = new_handler(false);
-        let cmd = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 1, &[]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 1, &[]);
         let mut response = [0u8; 271];
 
         let len = handler.process_command(&cmd, &mut response);
@@ -456,10 +460,10 @@ mod tests {
         assert!(payload.is_empty());
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_NOT_PRESENT, CMD_STATUS_FAILED)
+            build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
         );
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
-        assert_eq!(handler.slot_state, SlotState::NotPresent);
+        assert_eq!(handler.slot_state, SlotState::Absent);
     }
 
     #[test]
@@ -467,10 +471,10 @@ mod tests {
         let mut handler = new_handler(true);
         handler.check_card_change();
         let mut response = [0u8; 271];
-        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 2, &[]);
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 2, &[]);
         handler.process_command(&power_on, &mut response);
 
-        let cmd = build_ccid_cmd(PC_TO_RDR_ICCPOWEROFF, 0, 3, &[]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ICC_POWER_OFF, 0, 3, &[]);
         let len = handler.process_command(&cmd, &mut response);
         let (header, payload) = parse_response(&response[..len]);
 
@@ -478,7 +482,10 @@ mod tests {
         assert!(payload.is_empty());
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_PRESENT_INACTIVE, CMD_STATUS_OK)
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentInactive.icc_status()
+            )
         );
         assert_eq!(handler.slot_state, SlotState::PresentInactive);
     }
@@ -488,7 +495,7 @@ mod tests {
         let mut handler = new_handler(true);
         // Card presence not known until first poll
         handler.check_card_change();
-        let cmd = build_ccid_cmd(PC_TO_RDR_GETSLOTSTAT, 0, 4, &[]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_GET_SLOT_STATUS, 0, 4, &[]);
         let mut response = [0u8; 271];
 
         let len = handler.process_command(&cmd, &mut response);
@@ -497,7 +504,10 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_SLOTSTATUS);
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_PRESENT_INACTIVE, CMD_STATUS_OK)
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentInactive.icc_status()
+            )
         );
         assert_eq!(handler.slot_state, SlotState::PresentInactive);
     }
@@ -505,7 +515,7 @@ mod tests {
     #[test]
     fn test_get_slot_status_without_card_reports_not_present() {
         let mut handler = new_handler(false);
-        let cmd = build_ccid_cmd(PC_TO_RDR_GETSLOTSTAT, 0, 5, &[]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_GET_SLOT_STATUS, 0, 5, &[]);
         let mut response = [0u8; 271];
 
         let len = handler.process_command(&cmd, &mut response);
@@ -514,9 +524,9 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_SLOTSTATUS);
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_NOT_PRESENT, CMD_STATUS_OK)
+            build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC)
         );
-        assert_eq!(handler.slot_state, SlotState::NotPresent);
+        assert_eq!(handler.slot_state, SlotState::Absent);
     }
 
     #[test]
@@ -524,17 +534,20 @@ mod tests {
         let mut handler = new_handler(true);
         handler.check_card_change();
         let mut response = [0u8; 271];
-        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 6, &[]);
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 6, &[]);
         handler.process_command(&power_on, &mut response);
 
-        let cmd = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00, 0x00]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00, 0x00]);
         let len = handler.process_command(&cmd, &mut response);
         let (header, payload) = parse_response(&response[..len]);
 
         assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_PRESENT_ACTIVE, CMD_STATUS_OK)
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentActive.icc_status()
+            )
         );
         assert_eq!(payload, APDU_RESPONSE);
     }
@@ -544,7 +557,7 @@ mod tests {
         let mut handler = new_handler(true);
         // Poll so handler knows card is present (but not powered)
         handler.check_card_change();
-        let cmd = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 8, &[0x00, 0x84, 0x00, 0x00]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 8, &[0x00, 0x84, 0x00, 0x00]);
         let mut response = [0u8; 271];
 
         let len = handler.process_command(&cmd, &mut response);
@@ -554,7 +567,10 @@ mod tests {
         assert!(payload.is_empty());
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_PRESENT_INACTIVE, CMD_STATUS_FAILED)
+            build_bstatus(
+                COMMAND_STATUS_FAILED,
+                SlotState::PresentInactive.icc_status()
+            )
         );
         assert_eq!(header.specific[1], ICC_NOT_ACTIVE);
     }
@@ -571,7 +587,7 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_NOT_PRESENT, CMD_STATUS_OK)
+            build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC)
         );
         assert_eq!(payload, FIRMWARE_VERSION);
     }
@@ -603,7 +619,7 @@ mod tests {
         assert!(payload.is_empty());
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_NOT_PRESENT, CMD_STATUS_FAILED)
+            build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
         );
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
     }
@@ -620,7 +636,7 @@ mod tests {
         handler.slot_state = SlotState::PresentActive;
         handler.nfc.set_card_present(false);
         assert_eq!(handler.check_card_change(), Some(false));
-        assert_eq!(handler.slot_state, SlotState::NotPresent);
+        assert_eq!(handler.slot_state, SlotState::Absent);
     }
 
     #[test]
@@ -629,7 +645,7 @@ mod tests {
         handler.check_card_change();
 
         let mut response = [0u8; 271];
-        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 16, &[]);
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 16, &[]);
         let power_on_len = handler.process_command(&power_on, &mut response);
         let (power_on_header, power_on_payload) = parse_response(&response[..power_on_len]);
 
@@ -638,7 +654,7 @@ mod tests {
         assert_eq!(handler.slot_state, SlotState::PresentActive);
         assert!(handler.nfc.session_active());
 
-        let xfr = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 17, &[0x00, 0x84, 0x00, 0x00]);
+        let xfr = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 17, &[0x00, 0x84, 0x00, 0x00]);
         let xfr_len = handler.process_command(&xfr, &mut response);
         let (xfr_header, xfr_payload) = parse_response(&response[..xfr_len]);
 
@@ -647,7 +663,7 @@ mod tests {
         assert_eq!(handler.slot_state, SlotState::PresentActive);
         assert!(handler.nfc.session_active());
 
-        let power_off = build_ccid_cmd(PC_TO_RDR_ICCPOWEROFF, 0, 18, &[]);
+        let power_off = build_ccid_cmd(PC_TO_RDR_ICC_POWER_OFF, 0, 18, &[]);
         let power_off_len = handler.process_command(&power_off, &mut response);
         let (power_off_header, power_off_payload) = parse_response(&response[..power_off_len]);
 
@@ -663,7 +679,7 @@ mod tests {
         handler.check_card_change();
 
         let mut response = [0u8; 271];
-        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 6, &[]);
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 6, &[]);
         handler.process_command(&power_on, &mut response);
 
         assert_eq!(handler.check_card_change(), None);
@@ -677,11 +693,11 @@ mod tests {
         handler.check_card_change();
 
         let mut response = [0u8; 271];
-        let power_on = build_ccid_cmd(PC_TO_RDR_ICCPOWERON, 0, 6, &[]);
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 6, &[]);
         handler.process_command(&power_on, &mut response);
         handler.nfc.power_off();
 
-        let cmd = build_ccid_cmd(PC_TO_RDR_XFRBLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00]);
         let len = handler.process_command(&cmd, &mut response);
         let (header, payload) = parse_response(&response[..len]);
 
@@ -689,7 +705,10 @@ mod tests {
         assert!(payload.is_empty());
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_PRESENT_INACTIVE, CMD_STATUS_FAILED)
+            build_bstatus(
+                COMMAND_STATUS_FAILED,
+                SlotState::PresentInactive.icc_status()
+            )
         );
         assert_eq!(handler.slot_state, SlotState::PresentInactive);
     }
@@ -698,7 +717,7 @@ mod tests {
     fn test_get_parameters_returns_default_t1_params() {
         let mut handler = new_handler(true);
         handler.check_card_change();
-        let cmd = build_ccid_cmd(PC_TO_RDR_GETPARAMETERS, 0, 12, &[]);
+        let cmd = build_ccid_cmd(PC_TO_RDR_GET_PARAMETERS, 0, 12, &[]);
         let mut response = [0u8; 271];
 
         let len = handler.process_command(&cmd, &mut response);
@@ -707,7 +726,10 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_PARAMETERS);
         assert_eq!(
             header.specific[0],
-            slot_status(ICC_PRESENT_INACTIVE, CMD_STATUS_OK)
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentInactive.icc_status()
+            )
         );
         assert_eq!(header.specific[2], 1);
         assert_eq!(payload, DEFAULT_T1_PARAMS);
@@ -735,7 +757,7 @@ mod tests {
         let mut response = [0u8; 271];
         handler.process_command(&set_cmd, &mut response);
 
-        let reset_cmd = build_ccid_cmd(PC_TO_RDR_RESETPARAMETERS, 0, 15, &[]);
+        let reset_cmd = build_ccid_cmd(PC_TO_RDR_RESET_PARAMETERS, 0, 15, &[]);
         let len = handler.process_command(&reset_cmd, &mut response);
         let (header, payload) = parse_response(&response[..len]);
 

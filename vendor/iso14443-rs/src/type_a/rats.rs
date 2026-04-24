@@ -25,7 +25,7 @@ impl RatsParam {
 
 impl From<&RatsParam> for u8 {
     fn from(value: &RatsParam) -> Self {
-        ((value.0 as u8) << 4) | (value.1 .0)
+        ((value.0 as u8) << 4) | (value.1.0)
     }
 }
 

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: © 2025 Foundation Devices, Inc. <hello@foundation.xyz>
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::vec::{FrameVec, VecExt};
 use super::TypeAError;
+use super::vec::{FrameVec, VecExt};
 use bounded_integer::BoundedU8;
 
 /// 6.4.3 Anticollision and Select

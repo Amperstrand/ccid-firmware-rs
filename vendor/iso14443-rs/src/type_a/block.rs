@@ -3,10 +3,10 @@
 
 use core::fmt;
 
+use super::Cid;
 use super::crc::crc_a;
 use super::pcb::{BlockType, Pcb};
 use super::vec::{FrameVec, VecExt};
-use super::Cid;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Block {
