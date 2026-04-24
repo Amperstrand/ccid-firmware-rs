@@ -531,7 +531,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn intercept_xfr_special(&mut self, data: &[u8], data_len: usize, seq: u8) -> bool {
-        if data_len >= 3 && data_len <= 5 && data[0] == 0xFF {
+        if (3..=5).contains(&data_len) && data[0] == 0xFF {
             let pps0 = data[1];
             if (pps0 & 0xE0) == 0x00 && pps0 != 0x00 {
                 ccid_info!("CCID: XfrBlock PPS request intercepted");

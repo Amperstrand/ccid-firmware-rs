@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-04-24
+
+### Added
+- **ESP32 NFC CCID firmware integrated into main branch** (`esp32-ccid/`)
+  - MFRC522 NFC backend over I2C (M5Stack Atom Matrix) — primary NFC path
+  - PN532 NFC backend over SPI — secondary, remains supported
+  - GemPC Twin serial CCID protocol over UART0 (115200 8N2)
+  - 75 host-side unit tests covering serial framing, CCID parsing, NFC logic, LED patterns
+  - WS2812 LED diagnostic patterns (init, ready, card present, TxRx, error)
+  - BLE debug logger (optional, behind `backend-mfrc522` feature)
+- **Vendored patched dependencies** under `vendor/`
+  - `vendor/iso14443-rs/` — patched ISO 14443 protocol crate (PcdSession, try_set_timeout_ms, set_fsc, set_base_fwt_ms)
+  - `vendor/mfrc522/` — patched MFRC522 driver crate
+- **CI coverage for both products**: STM32, ESP32, and iso14443 host-test jobs
+- **esp-idf-svc 0.52.1** from crates.io with ESP-IDF 5.2.4 pin
+
+### Hardware Verification (2026-04-24)
+- **ESP32 + MFRC522 (GemPC Twin serial):** pcscd detects reader, NFC card responds
+  - Card: NXP P71 SmartMX3 P71D320 JCOP4 JavaCard
+  - ATR: `3B 85 80 01 80 73 C8 21 10 0E` (TCK correct)
+  - Reader: `GemPCTwin serial 00 00`
+- **STM32 + Specter DIY Shield (Cherry ST-2xxx USB CCID):** pcscd detects reader, contact card responds
+  - Card: ComSign eID (T=1, IFSC=254)
+  - ATR: `3B D5 18 FF 81 91 FE 1F C3 80 73 C8 21 10 0A` (TCK correct)
+  - Reader: `Cherry GmbH SmartTerminal ST-2xxx (ST2XXX-001) 02 00`
+- Both readers verified simultaneously on the same host
+- All host tests pass: STM32 82/82, ESP32 75/75, iso14443 52/52
+
+### Changed
+- `.gitignore`: `vendor/**/target/` instead of blanket `esp32-ccid/vendor/`
+- `esp32-ccid/src/led.rs`: Host-build gating with `#[cfg(all(target_arch, feature))]`
+- `esp32-ccid/src/ble_debug.rs`, `ble_logger.rs`: Poison-recovering lock helpers
+- `README.md`, `BUILDING.md`, `esp32-ccid/README.md`: Two-product documentation
+
+### Notes
+- `esp32-serial-ccid` branch merged into `main` via fast-forward + rebase
+- Branch `esp32-serial-ccid` deleted after successful merge
+- Known FTDI FT232 wedge bug: espflash DTR/RTS toggles require physical USB replug after flash
+
 ## [0.0.9] - 2026-03-17
 
 ### Added

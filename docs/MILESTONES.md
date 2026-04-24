@@ -6,7 +6,7 @@ This document defines the milestones required to transform the STM32F469-DISCO f
 
 **Target Device Classification:** CCID Class 4 (Advanced PIN Pad with Graphics Display)
 
-**Current Status:** Basic CCID reader functional (M0-M3 complete). PIN pad modules exist but are not integrated with CCID protocol layer.
+**Current Status:** Both STM32 contact CCID and ESP32 NFC CCID verified working on `main` branch (M0-M3 + ESP32-NFC complete). PIN pad modules exist but are not integrated with CCID protocol layer.
 
 ---
 
@@ -55,6 +55,45 @@ This document defines the milestones required to transform the STM32F469-DISCO f
 - `test_pysatochip.py --reader OMNIKEY` passes
 
 **Documentation:** [LEARNINGS.md](../LEARNINGS.md) §"STM32 CCID reader: full success"
+
+---
+
+### ESP32-NFC: ESP32 NFC CCID Integration ✅ COMPLETE
+
+**Status:** Achieved 2026-04-24
+
+**Objective:** Integrate ESP32 + MFRC522 NFC CCID firmware into `main` branch alongside STM32 contact CCID.
+
+**Evidence:**
+- `esp32-serial-ccid` branch merged into `main` via fast-forward + rebase
+- Both firmware products build and pass all tests from `main`:
+  - STM32: 82 host tests pass
+  - ESP32: 75 host tests pass
+  - Vendored iso14443-rs: 52 host tests pass
+  - ESP32 Xtensa release build passes
+- **Hardware verification on 2026-04-24 (both readers simultaneously on same host):**
+
+| Reader | Transport | Card | ATR | Protocol |
+|--------|-----------|------|-----|----------|
+| Cherry SmartTerminal ST-2xxx (STM32) | USB CCID | ComSign eID (contact) | `3B D5 18 FF 81 91 FE 1F C3 80 73 C8 21 10 0A` | T=1, IFSC=254 |
+| GemPCTwin serial (ESP32 + MFRC522) | Serial CCID | NXP P71 SmartMX3 JCOP4 (NFC) | `3B 85 80 01 80 73 C8 21 10 0E` | T=0/T=1 |
+
+**What was integrated:**
+- `esp32-ccid/` package: ESP32 firmware with MFRC522 (I2C) and PN532 (SPI) NFC backends
+- `vendor/iso14443-rs/`: Patched ISO 14443 protocol crate (local patches for PcdSession, timeouts, FSC)
+- `vendor/mfrc522/`: Patched MFRC522 driver crate
+- Vendored dependencies tracked in git (no nested `.git`, no build artifacts)
+- CI coverage for both products (STM32 + ESP32 + iso14443 host-test jobs)
+
+**Known issues:**
+- FTDI FT232 chip wedged by espflash DTR/RTS toggles — physical USB replug required after flash
+- `esp-idf-svc` requires ESP-IDF 5.2.4+ (pinned via `esp_idf_version = "tag:v5.2.4"`)
+
+**Next steps (refactoring toward shared architecture):**
+- Extract shared CCID protocol constants/types into a shared crate (GitHub issue #10)
+- Split STM32 `ccid.rs` (1270 lines) and `smartcard.rs` (936 lines) into focused modules (issues #9, #8)
+- Unify ATR parsing (issue #6)
+- Add STM32 CCID handler unit tests (issue #7)
 
 ---
 
