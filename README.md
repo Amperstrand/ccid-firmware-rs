@@ -1,4 +1,55 @@
-# STM32 CCID Firmware
+# CCID Firmware Repository
+
+This repository now carries two firmware products on the same `main` branch:
+
+- `./` — STM32 USB CCID firmware for contact smart cards
+- `./esp32-ccid/` — ESP32 serial CCID firmware for NFC cards
+
+Current supported hardware combinations:
+
+| MCU | Card frontend | Status | Notes |
+|-----|---------------|--------|-------|
+| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | Primary | Wired CCID over USB |
+| ESP32 (M5Stack Atom Matrix) | MFRC522 over I2C | Primary | NFC CCID over GemPC Twin serial protocol |
+| ESP32 dev boards | PN532 over SPI | Secondary | Kept supported, but current focus is MFRC522 |
+
+Near-term direction:
+
+- keep one repository and one `main` branch for both products
+- keep target-specific hardware initialization separate
+- gradually extract shared protocol pieces so transport and card frontend can be mixed more cleanly later
+
+The practical architecture target is a shared CCID core with interchangeable axes:
+
+- MCU target: STM32 or ESP32
+- card frontend: wired contact or NFC
+- transport: USB CCID or serial CCID
+
+That refactor is not complete yet, but `main` is now the integration branch where both products live and are tested.
+
+## Repository layout
+
+- `src/` — STM32 contact-reader firmware
+- `esp32-ccid/` — ESP32 NFC-reader firmware
+- `vendor/synopsys-usb-otg/` — STM32 USB dependency
+- `vendor/mfrc522/` — patched MFRC522 dependency used by ESP32
+- `vendor/iso14443-rs/` — tracked ISO 14443 protocol crate used by ESP32 MFRC522
+
+## Quick start
+
+### STM32 contact CCID
+
+- Build: `cargo build --release --target thumbv7em-none-eabihf`
+- Flash: `probe-rs run --chip STM32F469NI target/thumbv7em-none-eabihf/release/ccid-firmware`
+- Details: [`BUILDING.md`](BUILDING.md)
+
+### ESP32 NFC CCID
+
+- Build: `cargo +esp build --release` in `esp32-ccid/`
+- Flash/test helper: `esp32-ccid/flash_and_test.sh`
+- Details: [`esp32-ccid/README.md`](esp32-ccid/README.md)
+
+## STM32 contact CCID firmware
 
 Rust firmware for STM32-based USB CCID readers.
 
@@ -144,9 +195,11 @@ These hardware tests are intentionally not executed in CI.
 
 ## CI
 
-GitHub Actions workflow at `.github/workflows/ci.yml` runs only host-safe tests:
+GitHub Actions workflow at `.github/workflows/ci.yml` runs host-safe validation for both products:
 
-- Rust unit tests (`cargo test` on host target)
+- STM32 build/lint/test jobs at repository root
+- ESP32 host-side tests in `esp32-ccid/`
+- vendored `iso14443-rs` host-side tests
 - Python syntax checks for helper scripts
 
 ## Device Profiles

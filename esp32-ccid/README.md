@@ -230,10 +230,10 @@ All UART traffic uses the GemPC Twin framing format:
 Host-side unit tests (no hardware required):
 
 ```bash
-cargo test
+cargo test --target x86_64-unknown-linux-gnu
 ```
 
-60 tests covering serial framing, CCID message parsing, NFC logic, and MFRC522 transceiver bridging.
+75 tests covering serial framing, CCID message parsing, NFC logic, LED pattern logic, and MFRC522 transceiver bridging.
 
 ## Known limitations
 
@@ -243,4 +243,4 @@ cargo test
 - **Single slot** — only one card at a time
 - **Short APDU only** — extended APDU not supported
 - **115200 baud fixed** — no auto-baudrate negotiation
-- **LED stub** — M5Stack Atom LED matrix status is logged but not physically driven (pending ws2812 driver integration)
+- **Target-specific LED driver** — the M5Stack Atom LED matrix is driven on Xtensa hardware builds; host tests use a stubbed implementation so shared state and pattern logic stay testable without ESP32 hardware
