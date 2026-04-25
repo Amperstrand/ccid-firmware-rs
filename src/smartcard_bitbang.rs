@@ -16,7 +16,7 @@ use stm32f7xx_hal::gpio::{
     gpioi::{PI0, PI2},
     Input, OpenDrain, Output, PushPull,
 };
-use stm32f7xx_hal::pac::{gpiof, gpioi, DWT, GPIOF, GPIOI};
+use stm32f7xx_hal::pac::{gpiof, gpioi, tim10, DWT, GPIOF, GPIOI, RCC, TIM10};
 
 const ETU_CLKS: u32 = 372;
 const CLK_HALF_CYCLES: u32 = 108;
@@ -252,6 +252,87 @@ impl SmartcardBitbang {
         }
     }
 
+    #[inline(always)]
+    fn tim10_ptr() -> &'static tim10::RegisterBlock {
+        unsafe { &*TIM10::ptr() }
+    }
+
+    #[inline(always)]
+    fn rcc_ptr() -> &'static stm32f7xx_hal::pac::rcc::RegisterBlock {
+        unsafe { &*RCC::ptr() }
+    }
+
+    /// Switch PF6 from GPIO to TIM10_CH1 AF3 PWM output (1 MHz continuous clock).
+    fn start_continuous_clock(&mut self) {
+        let gpiof = Self::gpiof_ptr();
+        let rcc = Self::rcc_ptr();
+        let tim10 = Self::tim10_ptr();
+
+        // Drive PF6 high before switching mode
+        gpiof.bsrr.write(|w| unsafe { w.bits(1 << 6) });
+
+        // PF6: GPIO mode → Alternate Function (AF mode = 10)
+        let moder = gpiof.moder.read().bits();
+        gpiof
+            .moder
+            .write(|w| unsafe { w.bits((moder & !(3 << 12)) | (2 << 12)) });
+
+        // PF6: AF3 = TIM10_CH1
+        let afrl = gpiof.afrl.read().bits();
+        gpiof
+            .afrl
+            .write(|w| unsafe { w.bits((afrl & !(0xf << 24)) | (3 << 24)) });
+
+        // Enable TIM10 peripheral clock
+        rcc.apb2enr.modify(|_, w| w.tim10en().set_bit());
+        cortex_m::asm::delay(10);
+
+        // Disable timer during configuration
+        tim10.cr1.write(|w| unsafe { w.bits(0) });
+
+        // SYSCLK = 216 MHz, target 1 MHz → PSC=0, ARR=215
+        tim10.psc.write(|w| unsafe { w.bits(0) });
+        tim10.arr.write(|w| unsafe { w.bits(215) });
+        tim10.ccr1().write(|w| unsafe { w.bits(107) });
+
+        // PWM Mode 1, output compare preload enable
+        tim10.ccmr1_output().write(|w| {
+            w.oc1m().pwm_mode1();
+            w.oc1pe().set_bit();
+            w
+        });
+
+        // Enable capture/compare output
+        tim10.ccer.write(|w| w.cc1e().set_bit());
+
+        // Start timer: ARPE + CEN
+        tim10.cr1.write(|w| unsafe { w.bits((1 << 7) | 1) });
+    }
+
+    /// Switch PF6 from TIM10 AF back to GPIO push-pull output (stopped clock).
+    fn stop_continuous_clock(&mut self) {
+        let gpiof = Self::gpiof_ptr();
+        let tim10 = Self::tim10_ptr();
+
+        // Stop timer
+        tim10.cr1.write(|w| unsafe { w.bits(0) });
+        tim10.ccer.write(|w| unsafe { w.bits(0) });
+
+        // PF6: back to GPIO output mode (01)
+        let moder = gpiof.moder.read().bits();
+        gpiof
+            .moder
+            .write(|w| unsafe { w.bits((moder & !(3 << 12)) | (1 << 12)) });
+
+        // Clear AF selection
+        gpiof
+            .afrl
+            .modify(|r, w| unsafe { w.bits(r.bits() & !(0xf << 24)) });
+
+        // Drive low (idle)
+        gpiof.bsrr.write(|w| unsafe { w.bits(1 << (6 + 16)) });
+    }
+
     pub fn is_card_present(&self) -> bool {
         self.pres_pin.is_high()
     }
@@ -312,13 +393,49 @@ impl SmartcardBitbang {
                     params.di
                 );
 
-                // PPS/IFSD disabled during bring-up.
-                // Card stays at default ETU=372. Let host (pcscd) drive negotiation
-                // via SetParameters/XfrBlock once ATR is stable.
-
                 unsafe {
                     cortex_m::interrupt::enable();
                 }
+                self.start_continuous_clock();
+
+                if params.has_ta1 && params.ta1 != 0x11 {
+                    self.stop_continuous_clock();
+                    cortex_m::interrupt::disable();
+                    let pps_ok = self.negotiate_pps_fsm(&params).is_ok();
+                    unsafe {
+                        cortex_m::interrupt::enable();
+                    }
+                    self.start_continuous_clock();
+                    if pps_ok {
+                        let new_etu = (params.fi as u32) / (params.di as u32);
+                        if new_etu > 0 {
+                            self.etu_clks = new_etu;
+                        }
+                        defmt::info!("PPS OK: ETU={} clks", self.etu_clks);
+                    } else {
+                        defmt::warn!("PPS failed, staying at default ETU=372");
+                    }
+                }
+
+                if self.protocol == 1 {
+                    self.stop_continuous_clock();
+                    cortex_m::interrupt::disable();
+                    let ifs_result = self.do_ifs_negotiation_t1();
+                    unsafe {
+                        cortex_m::interrupt::enable();
+                    }
+                    self.start_continuous_clock();
+                    match ifs_result {
+                        Ok(ifsc) => {
+                            self.ifsc = ifsc;
+                            defmt::info!("IFSD negotiation OK: IFSC={}", ifsc);
+                        }
+                        Err(_) => {
+                            defmt::warn!("IFSD negotiation failed, using default IFSC=32");
+                        }
+                    }
+                }
+
                 Ok(&self.atr)
             }
             Err(e) => {
@@ -331,6 +448,7 @@ impl SmartcardBitbang {
     }
 
     pub fn power_off(&mut self) {
+        self.stop_continuous_clock();
         self.rst_pin.set_low();
         self.pwr_pin.set_high();
         self.io_release_high();
@@ -560,7 +678,7 @@ impl SmartcardBitbang {
             return Err(SmartcardError::HardwareError);
         }
 
-        // Bitbang clock must not be interrupted — disable during card I/O
+        self.stop_continuous_clock();
         cortex_m::interrupt::disable();
         let result = if self.protocol == 1 {
             let ifsc = self.ifsc;
@@ -577,6 +695,7 @@ impl SmartcardBitbang {
         unsafe {
             cortex_m::interrupt::enable();
         }
+        self.start_continuous_clock();
         result
     }
 
@@ -589,7 +708,21 @@ impl SmartcardBitbang {
             return Err(SmartcardError::HardwareError);
         }
 
+        self.stop_continuous_clock();
         cortex_m::interrupt::disable();
+        let result = self.transmit_raw_inner(data, response);
+        unsafe {
+            cortex_m::interrupt::enable();
+        }
+        self.start_continuous_clock();
+        result
+    }
+
+    fn transmit_raw_inner(
+        &mut self,
+        data: &[u8],
+        response: &mut [u8],
+    ) -> Result<usize, SmartcardError> {
         for &byte in data {
             self.send_byte(byte)?;
         }
@@ -603,16 +736,8 @@ impl SmartcardBitbang {
                     timeout_clks = SC_BYTE_TIMEOUT_CLKS;
                 }
                 Err(SmartcardError::Timeout) => break,
-                Err(e) => {
-                    unsafe {
-                        cortex_m::interrupt::enable();
-                    }
-                    return Err(e);
-                }
+                Err(e) => return Err(e),
             }
-        }
-        unsafe {
-            cortex_m::interrupt::enable();
         }
         Ok(total_len)
     }

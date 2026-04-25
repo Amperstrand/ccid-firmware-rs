@@ -398,7 +398,6 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
         | FEAT_AUTO_CLOCK
         | FEAT_AUTO_BAUD
         | FEAT_AUTO_PPS
-        | FEAT_CLOCK_STOP
         | FEAT_LEVEL_TPDU,
 
     // Message Size
