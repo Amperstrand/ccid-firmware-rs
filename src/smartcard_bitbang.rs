@@ -290,6 +290,8 @@ impl SmartcardBitbang {
         self.pwr_pin.set_low();
         Self::delay_ms(SC_POWER_ON_DELAY_MS);
 
+        // Bitbang driver IS the clock — interrupts pause it and break ISO 7816 timing.
+        // Keep disabled for entire activation: ATR + PPS + T=1 IFSD.
         cortex_m::interrupt::disable();
         self.clock_n(SC_CLK_TO_RST_DELAY_CLKS);
         self.rst_pin.set_high();
@@ -297,22 +299,55 @@ impl SmartcardBitbang {
         match self.read_atr() {
             Ok(()) => {
                 self.powered = true;
-                unsafe {
-                    cortex_m::interrupt::enable();
-                }
+
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 let params = parse_atr(atr_slice);
                 self.detect_protocol_from_atr();
 
-                // Switch to work ETU from TA1: ETU = F/D clock ticks
-                if params.has_ta1 && params.di > 0 {
-                    let work_etu = params.fi as u32 / params.di as u32;
-                    if work_etu > 0 {
-                        self.etu_clks = work_etu;
+                defmt::info!(
+                    "ATR OK: len={} proto={} TA1=0x{:02X} Fi={} Di={}",
+                    self.atr.len,
+                    params.protocol,
+                    params.ta1,
+                    params.fi,
+                    params.di
+                );
+
+                // Clock warm-up: ensure card and ST8034 are settled after ATR
+                self.clock_n(1000);
+
+                // PPS at initial ETU=372 with card's actual TA1
+                if params.has_ta1 && params.ta1 != 0x11 {
+                    defmt::info!("PPS: requesting TA1=0x{:02X}", params.ta1);
+                    match self.negotiate_pps_fsm(&params) {
+                        Ok(()) => {
+                            if params.di > 0 {
+                                self.etu_clks = params.fi as u32 / params.di as u32;
+                            }
+                            defmt::info!("PPS: accepted, ETU={} clks", self.etu_clks);
+                            self.clock_n(500);
+                        }
+                        Err(()) => {
+                            defmt::warn!("PPS: failed, staying at ETU={}", self.etu_clks);
+                        }
                     }
                 }
+
                 if self.protocol == 1 {
                     self.ifsc = params.ifsc;
+                    match self.do_ifs_negotiation_t1() {
+                        Ok(ifsc) => {
+                            self.ifsc = ifsc;
+                            defmt::info!("T=1 IFSD OK: IFSC={}", ifsc);
+                        }
+                        Err(()) => {
+                            defmt::warn!("T=1 IFSD failed, using ATR IFSC={}", self.ifsc);
+                        }
+                    }
+                }
+
+                unsafe {
+                    cortex_m::interrupt::enable();
                 }
                 Ok(&self.atr)
             }
@@ -549,19 +584,25 @@ impl SmartcardBitbang {
         if !self.powered {
             return Err(SmartcardError::HardwareError);
         }
-        if self.protocol == 1 {
+
+        // Bitbang clock must not be interrupted — disable during card I/O
+        cortex_m::interrupt::disable();
+        let result = if self.protocol == 1 {
             let ifsc = self.ifsc;
             let mut ns = self.t1_ns;
-            let result =
-                transmit_apdu_t1(self, ifsc, &mut ns, command, response).map_err(|e| match e {
-                    T1Error::Transport(se) => se,
-                    T1Error::LrcMismatch | T1Error::Timeout => SmartcardError::ProtocolError,
-                });
+            let r = transmit_apdu_t1(self, ifsc, &mut ns, command, response).map_err(|e| match e {
+                T1Error::Transport(se) => se,
+                T1Error::LrcMismatch | T1Error::Timeout => SmartcardError::ProtocolError,
+            });
             self.t1_ns = ns;
-            result
+            r
         } else {
             self.transmit_apdu_t0(command, response)
+        };
+        unsafe {
+            cortex_m::interrupt::enable();
         }
+        result
     }
 
     pub fn transmit_raw(
@@ -572,6 +613,8 @@ impl SmartcardBitbang {
         if !self.powered {
             return Err(SmartcardError::HardwareError);
         }
+
+        cortex_m::interrupt::disable();
         for &byte in data {
             self.send_byte(byte)?;
         }
@@ -585,8 +628,16 @@ impl SmartcardBitbang {
                     timeout_clks = SC_BYTE_TIMEOUT_CLKS;
                 }
                 Err(SmartcardError::Timeout) => break,
-                Err(e) => return Err(e),
+                Err(e) => {
+                    unsafe {
+                        cortex_m::interrupt::enable();
+                    }
+                    return Err(e);
+                }
             }
+        }
+        unsafe {
+            cortex_m::interrupt::enable();
         }
         Ok(total_len)
     }
