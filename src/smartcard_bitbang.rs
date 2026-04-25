@@ -31,6 +31,73 @@ const SC_CLK_TO_RST_DELAY_CLKS: u32 = 50_000;
 const SC_ATR_POST_RST_GUARD_CLKS: u32 = 400;
 const SYSCLK_HZ: u32 = 216_000_000;
 
+// ---------------------------------------------------------------------------
+// Diagnostic ring buffer — zero-overhead RAM log exposed via CCID Escape.
+// TLV format: [tag:1][len:1][data:len].  Max 261 bytes (fits one CCID msg).
+// ---------------------------------------------------------------------------
+const DIAG_BUF_SIZE: usize = 261;
+
+#[cfg(feature = "stm32f746")]
+static mut DIAG_BUF: [u8; DIAG_BUF_SIZE] = [0; DIAG_BUF_SIZE];
+#[cfg(feature = "stm32f746")]
+static mut DIAG_LEN: usize = 0;
+
+const DTAG_IO_READBACK: u8 = 0x01;
+const DTAG_ATR: u8 = 0x02;
+const DTAG_TX_SINGLE: u8 = 0x03;
+const DTAG_TX_BYTE_ERR: u8 = 0x04;
+const DTAG_DWT_STAMP: u8 = 0x05;
+const DTAG_END: u8 = 0xFF;
+
+#[cfg(feature = "stm32f746")]
+fn diag_clear() {
+    unsafe {
+        DIAG_BUF = [0; DIAG_BUF_SIZE];
+        DIAG_LEN = 0;
+    }
+}
+
+#[inline(always)]
+#[cfg(feature = "stm32f746")]
+fn diag_push(byte: u8) {
+    unsafe {
+        if DIAG_LEN < DIAG_BUF.len() {
+            DIAG_BUF[DIAG_LEN] = byte;
+            DIAG_LEN += 1;
+        }
+    }
+}
+
+#[cfg(feature = "stm32f746")]
+fn diag_tlv(tag: u8, data: &[u8]) {
+    if data.len() > 255 {
+        return;
+    }
+    diag_push(tag);
+    diag_push(data.len() as u8);
+    for &b in data {
+        diag_push(b);
+    }
+}
+
+#[cfg(feature = "stm32f746")]
+fn diag_end() {
+    diag_push(DTAG_END);
+    diag_push(0);
+}
+
+#[cfg(feature = "stm32f746")]
+pub fn read_diag() -> &'static [u8] {
+    unsafe { &DIAG_BUF[..DIAG_LEN] }
+}
+
+#[cfg(feature = "stm32f746")]
+pub fn seal_diag() {
+    let cyccnt = unsafe { (*DWT::PTR).cyccnt.read() };
+    diag_tlv(DTAG_DWT_STAMP, &cyccnt.to_le_bytes());
+    diag_end();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum SmartcardError {
     NoCard,
@@ -364,6 +431,8 @@ impl SmartcardBitbang {
             return Err(SmartcardError::NoCard);
         }
 
+        diag_clear();
+
         self.pwr_pin.set_high();
         self.rst_pin.set_low();
         self.io_release_high();
@@ -391,6 +460,7 @@ impl SmartcardBitbang {
 
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 let params = parse_atr(atr_slice);
+                diag_tlv(DTAG_ATR, atr_slice);
                 self.detect_protocol_from_atr();
 
                 defmt::info!(
@@ -408,14 +478,10 @@ impl SmartcardBitbang {
 
                 self.io_readback_test();
 
-                // PPS disabled: card ATR offers T=1 (TD1=0x81) and TA2 is absent (negotiable).
-                // Per ISO 7816-3, the first protocol in the TD chain is active at default ETU=372.
-                // Speed negotiation via PPS can be added later once basic T=1 works.
-                // IFSD skipped: TA3=0xFE means card IFSC=254, default IFSD=32 is fine.
-                // TIM10 disabled: pure GPIO bitbang clock avoids TIM10↔GPIO handoff glitch.
-
                 self.tx_single_byte_diagnostic();
                 self.tx_waveform_test(2);
+
+                seal_diag();
 
                 Ok(&self.atr)
             }
@@ -529,6 +595,7 @@ impl SmartcardBitbang {
                 low_ok,
                 high_ok
             );
+            diag_tlv(DTAG_TX_BYTE_ERR, &[byte, low_ok as u8, high_ok as u8]);
         }
         Ok(())
     }
@@ -546,6 +613,7 @@ impl SmartcardBitbang {
             self.tick_clock();
         }
         defmt::info!("IO readback: high={} low={} (expect 1,1)", high_ok, low_ok);
+        diag_tlv(DTAG_IO_READBACK, &[high_ok as u8, low_ok as u8]);
     }
 
     fn tx_waveform_test(&mut self, count: u8) {
@@ -581,14 +649,27 @@ impl SmartcardBitbang {
             after_high
         );
         defmt::info!("TX diag: waiting for card response (40ms)...");
-        match self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS) {
-            Ok(b) => defmt::info!("TX diag: card responded 0x{:02X}!", b),
-            Err(SmartcardError::Timeout) => defmt::warn!("TX diag: no card response (timeout)"),
-            Err(e) => defmt::error!("TX diag: error {:?}", e),
-        }
+        let result = match self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS) {
+            Ok(b) => {
+                defmt::info!("TX diag: card responded 0x{:02X}!", b);
+                0u8
+            }
+            Err(SmartcardError::Timeout) => {
+                defmt::warn!("TX diag: no card response (timeout)");
+                1u8
+            }
+            Err(_) => {
+                defmt::error!("TX diag: error");
+                2u8
+            }
+        };
         unsafe {
             cortex_m::interrupt::enable();
         }
+        diag_tlv(
+            DTAG_TX_SINGLE,
+            &[before_high as u8, after_high as u8, result],
+        );
     }
 
     fn read_atr(&mut self) -> Result<(), SmartcardError> {

@@ -18,7 +18,7 @@ use crate::pinpad::{
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use crate::smartcard::{parse_atr, AtrParams};
 #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
-use crate::smartcard_bitbang::{parse_atr, AtrParams};
+use crate::smartcard_bitbang::{parse_atr, read_diag, AtrParams};
 
 // ============================================================================
 // CCID Message Types (Bulk OUT - Host to Device)
@@ -428,8 +428,28 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             // - Mechanical: Card eject/capture (no mechanical parts in this reader)
             // ========================================================================
             PC_TO_RDR_ESCAPE => {
-                defmt::debug!("CCID: Escape command (stub - vendor-specific)");
-                self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+                #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+                {
+                    let diag = read_diag();
+                    let diag_len = diag.len().min(MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE);
+                    self.tx_buffer[0] = RDR_TO_PC_ESCAPE;
+                    self.tx_buffer[1..5].copy_from_slice(&(diag_len as u32).to_le_bytes());
+                    self.tx_buffer[5] = 0;
+                    self.tx_buffer[6] = seq;
+                    self.tx_buffer[7] =
+                        Self::build_status(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
+                    self.tx_buffer[8] = 0;
+                    self.tx_buffer[9] = 0;
+                    self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + diag_len]
+                        .copy_from_slice(&diag[..diag_len]);
+                    self.tx_len = CCID_HEADER_SIZE + diag_len;
+                    defmt::debug!("CCID: Escape → diag {} bytes", diag_len);
+                }
+                #[cfg(not(all(feature = "stm32f746", target_arch = "arm", target_os = "none")))]
+                {
+                    defmt::debug!("CCID: Escape command (stub - vendor-specific)");
+                    self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+                }
             }
             PC_TO_RDR_ICC_CLOCK => {
                 self.handle_icc_clock(seq);
