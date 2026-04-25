@@ -1,3 +1,6 @@
+# Default: STM32F469I-DISCO
+# For F746: override with --config runner='probe-rs run --chip STM32F746NGHx'
+# Or: cargo run --release --features stm32f746 --config 'target.thumbv7em-none-eabihf.runner="probe-rs run --chip STM32F746NGHx"'
 [target.thumbv7em-none-eabihf]
 runner = "probe-rs run --chip STM32F469NIHx"
 rustflags = ["-C", "link-arg=-Tlink.x", "-C", "link-arg=-Tdefmt.x", "--remap-path-prefix", "${PWD}="]

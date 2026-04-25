@@ -41,8 +41,10 @@ mod device_profile;
 mod pinpad;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod pps_fsm;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 mod smartcard;
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+mod smartcard_bitbang;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod t1_engine;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
@@ -50,21 +52,37 @@ mod usb_identity;
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use cortex_m_rt::entry;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::gpio::{
     gpioa::{PA2, PA4},
     gpioc::{PC2, PC5},
     gpiog::PG10,
     Alternate, Input, OpenDrain, Output, PushPull,
 };
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::otg_fs::{UsbBus, USB};
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::pac;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::prelude::*;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::rcc::Config;
+
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use stm32f7xx_hal::gpio::{
+    gpiof::{PF6, PF7},
+    gpioi::{PI0, PI2},
+    OpenDrain, Output, PushPull,
+};
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use stm32f7xx_hal::otg_fs::{UsbBus, USB};
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use stm32f7xx_hal::pac;
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use stm32f7xx_hal::prelude::*;
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use stm32f7xx_hal::rcc::{HSEClock, HSEClockMode};
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_device::endpoint::In;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
@@ -103,8 +121,10 @@ mod ccid;
 use app_enum::AppEnumerationState;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use smartcard::{SmartcardError, SmartcardUart};
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use smartcard_bitbang::{SmartcardBitbang, SmartcardError as BitbangError};
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_identity::{
     USB_MANUFACTURER, USB_PRODUCT, USB_PRODUCT_ID, USB_SERIAL_NUMBER, USB_VENDOR_ID,
@@ -155,19 +175,19 @@ enum AppMode {
 }
 
 /// Wrapper to adapt SmartcardUart to the ccid::SmartcardDriver trait
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 struct SmartcardWrapper {
     uart: SmartcardUart,
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 impl SmartcardWrapper {
     fn new(uart: SmartcardUart) -> Self {
         Self { uart }
     }
 }
 
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 impl CcidSmartcardDriver for SmartcardWrapper {
     type Error = SmartcardError;
 
@@ -214,6 +234,68 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.uart.set_clock_and_rate(clock_hz, rate_bps)
+    }
+}
+
+/// Wrapper to adapt SmartcardBitbang to the ccid::SmartcardDriver trait
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+struct SmartcardWrapper {
+    bitbang: SmartcardBitbang,
+}
+
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+impl SmartcardWrapper {
+    fn new(bitbang: SmartcardBitbang) -> Self {
+        Self { bitbang }
+    }
+}
+
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+impl CcidSmartcardDriver for SmartcardWrapper {
+    type Error = BitbangError;
+
+    fn power_on(&mut self) -> core::result::Result<&[u8], Self::Error> {
+        self.bitbang.power_on()
+    }
+
+    fn power_off(&mut self) {
+        self.bitbang.power_off()
+    }
+
+    fn is_card_present(&self) -> bool {
+        self.bitbang.is_card_present()
+    }
+
+    fn transmit_apdu(
+        &mut self,
+        command: &[u8],
+        response: &mut [u8],
+    ) -> core::result::Result<usize, Self::Error> {
+        self.bitbang.transmit_apdu(command, response)
+    }
+
+    fn transmit_raw(
+        &mut self,
+        data: &[u8],
+        response: &mut [u8],
+    ) -> core::result::Result<usize, Self::Error> {
+        self.bitbang.transmit_raw(data, response)
+    }
+
+    fn set_protocol(&mut self, protocol: u8) {
+        self.bitbang.set_protocol(protocol)
+    }
+
+    fn set_clock(&mut self, enable: bool) {
+        self.bitbang.set_clock(enable)
+    }
+
+    fn set_clock_and_rate(
+        &mut self,
+        clock_hz: u32,
+        rate_bps: u32,
+    ) -> core::result::Result<(u32, u32), Self::Error> {
+        self.bitbang.set_clock_and_rate(clock_hz, rate_bps)
     }
 }
 
@@ -437,11 +519,9 @@ fn main() -> ! {
     // =========================================================================
     // Step 2: Configure clocks
     // =========================================================================
-    // Use HSE (8MHz external crystal) for display compatibility
-    // Falls back to HSI if HSE not available
     defmt::info!("Configuring clocks...");
 
-    #[cfg(feature = "display")]
+    #[cfg(all(feature = "stm32f469", feature = "display"))]
     let (mut rcc, mut delay) = {
         use cortex_m::peripheral::Peripherals;
         let cp = Peripherals::take().unwrap();
@@ -456,7 +536,7 @@ fn main() -> ! {
         (rcc, delay)
     };
 
-    #[cfg(not(feature = "display"))]
+    #[cfg(all(feature = "stm32f469", not(feature = "display")))]
     let mut rcc = dp.RCC.freeze(
         Config::hse(8.MHz())
             .sysclk(168.MHz())
@@ -465,63 +545,133 @@ fn main() -> ! {
             .require_pll48clk(),
     );
 
+    #[cfg(feature = "stm32f746")]
+    let clocks = {
+        let rcc = dp.RCC.constrain();
+        rcc.cfgr
+            .hse(HSEClock::new(25.MHz(), HSEClockMode::Oscillator))
+            .sysclk(216.MHz())
+            .pclk1(54.MHz())
+            .pclk2(108.MHz())
+            .use_pll48clk(stm32f7xx_hal::rcc::PLL48CLK::Pllq)
+            .freeze()
+    };
+    #[cfg(feature = "stm32f746")]
+    defmt::info!("PLL48CLK valid: {}", clocks.is_pll48clk_valid());
+
     defmt::info!("Clocks OK");
 
     // =========================================================================
     // Step 3: Configure GPIO for smartcard and USB
     // =========================================================================
-    let mut gpioa = dp.GPIOA.split(&mut rcc);
-    let mut gpioc = dp.GPIOC.split(&mut rcc);
-    let mut gpiog = dp.GPIOG.split(&mut rcc);
 
-    // Smartcard pins (PA2, PA4)
-    let io_pin: PA2<Alternate<7, OpenDrain>> = gpioa
-        .pa2
-        .into_alternate_open_drain::<7>()
-        .internal_pull_up(true)
-        .speed(stm32f4xx_hal::gpio::Speed::High);
+    #[cfg(feature = "stm32f469")]
+    let smartcard_driver = {
+        let mut gpioa = dp.GPIOA.split(&mut rcc);
+        let mut gpioc = dp.GPIOC.split(&mut rcc);
+        let mut gpiog = dp.GPIOG.split(&mut rcc);
 
-    let clk_pin: PA4<Alternate<7, PushPull>> = gpioa
-        .pa4
-        .into_alternate::<7>()
-        .speed(stm32f4xx_hal::gpio::Speed::High);
+        let io_pin: PA2<Alternate<7, OpenDrain>> = gpioa
+            .pa2
+            .into_alternate_open_drain::<7>()
+            .internal_pull_up(true)
+            .speed(stm32f4xx_hal::gpio::Speed::High);
 
-    let rst_pin: PG10<Output<PushPull>> = gpiog
-        .pg10
-        .into_push_pull_output_in_state(stm32f4xx_hal::gpio::PinState::High);
+        let clk_pin: PA4<Alternate<7, PushPull>> = gpioa
+            .pa4
+            .into_alternate::<7>()
+            .speed(stm32f4xx_hal::gpio::Speed::High);
 
-    let pres_pin: PC2<Input> = gpioc.pc2.into_input();
-    let pwr_pin: PC5<Output<PushPull>> = gpioc
-        .pc5
-        .into_push_pull_output_in_state(stm32f4xx_hal::gpio::PinState::High);
+        let rst_pin: PG10<Output<PushPull>> = gpiog
+            .pg10
+            .into_push_pull_output_in_state(stm32f4xx_hal::gpio::PinState::High);
 
-    defmt::info!("Smartcard GPIO OK");
+        let pres_pin: PC2<Input> = gpioc.pc2.into_input();
+        let pwr_pin: PC5<Output<PushPull>> = gpioc
+            .pc5
+            .into_push_pull_output_in_state(stm32f4xx_hal::gpio::PinState::High);
 
-    // USB pins (PA11, PA12)
-    let usb_dm = gpioa.pa11.into_alternate::<10>();
-    let usb_dp = gpioa.pa12.into_alternate::<10>();
+        defmt::info!("Smartcard GPIO OK");
 
-    // =========================================================================
-    // Step 4: Smartcard UART
-    // =========================================================================
-    let smartcard_uart = SmartcardUart::new(
-        dp.USART2,
-        io_pin,
-        clk_pin,
-        rst_pin,
-        pres_pin,
-        pwr_pin,
-        &rcc.clocks,
-    );
-    defmt::info!("Smartcard UART OK");
+        let usb_dm = gpioa.pa11.into_alternate::<10>();
+        let usb_dp = gpioa.pa12.into_alternate::<10>();
+
+        let uart = SmartcardUart::new(
+            dp.USART2,
+            io_pin,
+            clk_pin,
+            rst_pin,
+            pres_pin,
+            pwr_pin,
+            &rcc.clocks,
+        );
+        defmt::info!("Smartcard UART OK");
+
+        (SmartcardWrapper::new(uart), usb_dm, usb_dp)
+    };
+
+    #[cfg(feature = "stm32f746")]
+    let smartcard_driver = {
+        let mut gpiof = dp.GPIOF.split();
+        let mut gpioi = dp.GPIOI.split();
+
+        // PI0: Smartcard IO (open-drain, pulled up)
+        let io_pin: PI0<Output<OpenDrain>> = gpioi
+            .pi0
+            .into_open_drain_output()
+            .internal_pull_up(true)
+            .set_speed(stm32f7xx_hal::gpio::Speed::High);
+
+        // PF6: Smartcard CLK (GPIO toggle for bitbang)
+        let clk_pin: PF6<Output<PushPull>> = gpiof
+            .pf6
+            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::Low)
+            .set_speed(stm32f7xx_hal::gpio::Speed::VeryHigh);
+
+        // PI2: Smartcard RST (output, active LOW, initial HIGH)
+        let rst_pin: PI2<Output<PushPull>> = gpioi
+            .pi2
+            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::High);
+
+        // PF10: Smartcard PRES (input, HIGH = card present)
+        let pres_pin = gpiof.pf10.into_floating_input();
+
+        // PF7: Smartcard PWR (output, LOW = power ON, initial HIGH = OFF)
+        let pwr_pin: PF7<Output<PushPull>> = gpiof
+            .pf7
+            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::High);
+
+        defmt::info!("Smartcard GPIO OK");
+
+        let mut gpioa = dp.GPIOA.split();
+        let usb_dm = gpioa.pa11.into_alternate::<10>();
+        let usb_dp = gpioa.pa12.into_alternate::<10>();
+
+        let sysclk_hz = clocks.sysclk().raw();
+        let bitbang = SmartcardBitbang::new(io_pin, clk_pin, rst_pin, pres_pin, pwr_pin, sysclk_hz);
+        defmt::info!("Smartcard bitbang OK");
+
+        (SmartcardWrapper::new(bitbang), usb_dm, usb_dp)
+    };
+
+    let (smartcard_wrapper, usb_dm, usb_dp) = smartcard_driver;
 
     // =========================================================================
     // Step 5: USB OTG FS
     // =========================================================================
+    #[cfg(feature = "stm32f469")]
     let usb_otg = USB::new(
         (dp.OTG_FS_GLOBAL, dp.OTG_FS_DEVICE, dp.OTG_FS_PWRCLK),
         (usb_dm, usb_dp),
         &rcc.clocks,
+    );
+    #[cfg(feature = "stm32f746")]
+    let usb_otg = USB::new(
+        dp.OTG_FS_GLOBAL,
+        dp.OTG_FS_DEVICE,
+        dp.OTG_FS_PWRCLK,
+        (usb_dm, usb_dp),
+        &clocks,
     );
     let usb_bus = UsbBus::new(usb_otg, unsafe { &mut USB_EP_MEMORY });
     defmt::info!("USB bus OK");
@@ -530,7 +680,6 @@ fn main() -> ! {
     // Step 6: CCID class
     // =========================================================================
     let ep_int = usb_bus.interrupt::<In>(8, 10);
-    let smartcard_wrapper = SmartcardWrapper::new(smartcard_uart);
     let mut ccid_class = CcidClass::new(&usb_bus, smartcard_wrapper, ep_int);
     defmt::info!("CCID class OK");
 

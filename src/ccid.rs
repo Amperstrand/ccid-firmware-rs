@@ -15,7 +15,10 @@ use usb_device::{Result, UsbError};
 use crate::pinpad::{
     ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder,
 };
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use crate::smartcard::{parse_atr, AtrParams};
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use crate::smartcard_bitbang::{parse_atr, AtrParams};
 
 // ============================================================================
 // CCID Message Types (Bulk OUT - Host to Device)
