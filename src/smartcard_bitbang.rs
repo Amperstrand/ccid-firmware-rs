@@ -404,48 +404,12 @@ impl SmartcardBitbang {
                 unsafe {
                     cortex_m::interrupt::enable();
                 }
-                self.start_continuous_clock();
 
-                if params.has_ta1 && params.ta1 != 0x11 {
-                    self.stop_continuous_clock();
-                    cortex_m::interrupt::disable();
-                    // EMV direction-change guard: 4 ETU delay after ATR RX before PPS TX
-                    self.delay_etu(4);
-                    let pps_ok = self.negotiate_pps_fsm(&params).is_ok();
-                    unsafe {
-                        cortex_m::interrupt::enable();
-                    }
-                    self.start_continuous_clock();
-                    if pps_ok {
-                        let new_etu = (params.fi as u32) / (params.di as u32);
-                        if new_etu > 0 {
-                            self.etu_clks = new_etu;
-                        }
-                        defmt::info!("PPS OK: ETU={} clks", self.etu_clks);
-                    } else {
-                        defmt::warn!("PPS failed, staying at default ETU=372");
-                    }
-                }
-
-                if false && self.protocol == 1 {
-                    self.stop_continuous_clock();
-                    cortex_m::interrupt::disable();
-                    self.delay_etu(4);
-                    let ifs_result = self.do_ifs_negotiation_t1();
-                    unsafe {
-                        cortex_m::interrupt::enable();
-                    }
-                    self.start_continuous_clock();
-                    match ifs_result {
-                        Ok(ifsc) => {
-                            self.ifsc = ifsc;
-                            defmt::info!("IFSD negotiation OK: IFSC={}", ifsc);
-                        }
-                        Err(_) => {
-                            defmt::warn!("IFSD negotiation failed, using default IFSC=32");
-                        }
-                    }
-                }
+                // PPS disabled: card ATR offers T=1 (TD1=0x81) and TA2 is absent (negotiable).
+                // Per ISO 7816-3, the first protocol in the TD chain is active at default ETU=372.
+                // Speed negotiation via PPS can be added later once basic T=1 works.
+                // IFSD skipped: TA3=0xFE means card IFSC=254, default IFSD=32 is fine.
+                // TIM10 disabled: pure GPIO bitbang clock avoids TIM10↔GPIO handoff glitch.
 
                 Ok(&self.atr)
             }
@@ -459,7 +423,6 @@ impl SmartcardBitbang {
     }
 
     pub fn power_off(&mut self) {
-        self.stop_continuous_clock();
         self.rst_pin.set_low();
         self.pwr_pin.set_high();
         self.io_release_high();
@@ -689,8 +652,8 @@ impl SmartcardBitbang {
             return Err(SmartcardError::HardwareError);
         }
 
-        self.stop_continuous_clock();
         cortex_m::interrupt::disable();
+        self.delay_etu(4);
         let result = if self.protocol == 1 {
             let ifsc = self.ifsc;
             let mut ns = self.t1_ns;
@@ -706,7 +669,6 @@ impl SmartcardBitbang {
         unsafe {
             cortex_m::interrupt::enable();
         }
-        self.start_continuous_clock();
         result
     }
 
@@ -719,13 +681,12 @@ impl SmartcardBitbang {
             return Err(SmartcardError::HardwareError);
         }
 
-        self.stop_continuous_clock();
         cortex_m::interrupt::disable();
+        self.delay_etu(4);
         let result = self.transmit_raw_inner(data, response);
         unsafe {
             cortex_m::interrupt::enable();
         }
-        self.start_continuous_clock();
         result
     }
 
