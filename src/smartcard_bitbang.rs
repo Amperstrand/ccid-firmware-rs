@@ -19,7 +19,7 @@ use stm32f7xx_hal::gpio::{
 use stm32f7xx_hal::pac::{gpiof, gpioi, DWT, GPIOF, GPIOI};
 
 const ETU_CLKS: u32 = 372;
-const CLK_HALF_CYCLES: u32 = 540;
+const CLK_HALF_CYCLES: u32 = 108;
 const SC_ATR_TIMEOUT_CLKS: u32 = 4_000_000;
 const SC_ATR_BYTE_TIMEOUT_CLKS: u32 = 40_000;
 const SC_BYTE_TIMEOUT_CLKS: u32 = 40_000;
@@ -290,7 +290,6 @@ impl SmartcardBitbang {
         cortex_m::interrupt::disable();
         self.clock_n(SC_CLK_TO_RST_DELAY_CLKS);
         self.rst_pin.set_high();
-        self.clock_n(SC_ATR_POST_RST_GUARD_CLKS);
 
         match self.read_atr() {
             Ok(()) => {
@@ -331,6 +330,20 @@ impl SmartcardBitbang {
     fn recv_byte_timeout_clks(&mut self, timeout_clks: u32) -> Result<u8, SmartcardError> {
         self.io_release_high();
 
+        // Phase 1: Wait for idle-high (line should be high between characters)
+        let mut waited: u32 = 0;
+        loop {
+            if self.io_is_high() {
+                break;
+            }
+            self.tick_clock();
+            waited += 1;
+            if waited >= timeout_clks {
+                return Err(SmartcardError::Timeout);
+            }
+        }
+
+        // Phase 2: Wait for falling edge (start bit = high→low transition)
         let mut waited: u32 = 0;
         while self.io_is_high() {
             self.tick_clock();
@@ -340,6 +353,7 @@ impl SmartcardBitbang {
             }
         }
 
+        // 1.5 ETU after start-bit falling edge → center of data bit 0
         self.clock_n(ETU_CLKS + ETU_CLKS / 2);
 
         let mut byte = 0u8;
@@ -352,6 +366,7 @@ impl SmartcardBitbang {
             self.clock_n(ETU_CLKS);
         }
 
+        // Parity bit
         let _parity_high = self.io_is_high();
         self.clock_n(ETU_CLKS);
 
