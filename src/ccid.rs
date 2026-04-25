@@ -912,7 +912,13 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         let mut response_buf = [0u8; MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE];
         let resp_len: usize;
 
-        match self.driver.transmit_apdu(apdu, &mut response_buf) {
+        let result = if self.current_protocol == 1 && !CURRENT_PROFILE.is_short_apdu() {
+            self.driver.transmit_raw(apdu, &mut response_buf)
+        } else {
+            self.driver.transmit_apdu(apdu, &mut response_buf)
+        };
+
+        match result {
             Ok(len) => {
                 resp_len = len;
                 defmt::info!("CCID: XfrBlock OK resp_len={}", resp_len);
