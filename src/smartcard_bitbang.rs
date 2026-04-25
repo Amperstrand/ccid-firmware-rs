@@ -378,6 +378,7 @@ impl SmartcardBitbang {
 
         self.pwr_pin.set_low();
         Self::delay_ms(SC_POWER_ON_DELAY_MS);
+        self.io_readback_test();
 
         // Bitbang driver IS the clock — interrupts pause it and break ISO 7816 timing.
         cortex_m::interrupt::disable();
@@ -405,11 +406,16 @@ impl SmartcardBitbang {
                     cortex_m::interrupt::enable();
                 }
 
+                self.io_readback_test();
+
                 // PPS disabled: card ATR offers T=1 (TD1=0x81) and TA2 is absent (negotiable).
                 // Per ISO 7816-3, the first protocol in the TD chain is active at default ETU=372.
                 // Speed negotiation via PPS can be added later once basic T=1 works.
                 // IFSD skipped: TA3=0xFE means card IFSC=254, default IFSD=32 is fine.
                 // TIM10 disabled: pure GPIO bitbang clock avoids TIM10↔GPIO handoff glitch.
+
+                self.tx_single_byte_diagnostic();
+                self.tx_waveform_test(2);
 
                 Ok(&self.atr)
             }
@@ -490,10 +496,10 @@ impl SmartcardBitbang {
     }
 
     fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError> {
-        // ISO 7816-3 odd parity: parity bit makes total 1-bits odd
         let parity_is_one = (byte.count_ones() % 2) == 0;
 
         self.io_drive_low();
+        let low_ok = !self.io_is_high();
         self.clock_n(self.etu_clks);
 
         for bit_index in 0..8 {
@@ -513,9 +519,76 @@ impl SmartcardBitbang {
         self.clock_n(self.etu_clks);
 
         self.io_release_high();
+        let high_ok = self.io_is_high();
         self.clock_n(self.etu_clks * 2);
 
+        if !low_ok || !high_ok {
+            defmt::error!(
+                "TX IO readback FAIL: byte=0x{:02X} low_ok={} high_ok={}",
+                byte,
+                low_ok,
+                high_ok
+            );
+        }
         Ok(())
+    }
+
+    fn io_readback_test(&mut self) {
+        self.io_release_high();
+        for _ in 0..100 {
+            self.tick_clock();
+        }
+        let high_ok = self.io_is_high();
+        self.io_drive_low();
+        let low_ok = !self.io_is_high();
+        self.io_release_high();
+        for _ in 0..100 {
+            self.tick_clock();
+        }
+        defmt::info!("IO readback: high={} low={} (expect 1,1)", high_ok, low_ok);
+    }
+
+    fn tx_waveform_test(&mut self, count: u8) {
+        defmt::info!("TX waveform test: {} rounds of [00 FF 55 AA]", count);
+        cortex_m::interrupt::disable();
+        let pattern: [u8; 4] = [0x00, 0xFF, 0x55, 0xAA];
+        for round in 0..count {
+            for &b in &pattern {
+                let _ = self.send_byte(b);
+            }
+            self.io_release_high();
+            self.clock_n(self.etu_clks * 20);
+            if round % 4 == 0 {
+                defmt::info!("TX waveform round {}", round);
+            }
+        }
+        unsafe {
+            cortex_m::interrupt::enable();
+        }
+        defmt::info!("TX waveform test done");
+    }
+
+    fn tx_single_byte_diagnostic(&mut self) {
+        defmt::info!("TX diagnostic: sending 0xFF (PPSS) after ATR");
+        cortex_m::interrupt::disable();
+        self.delay_etu(4);
+        let before_high = self.io_is_high();
+        let _ = self.send_byte(0xFF);
+        let after_high = self.io_is_high();
+        defmt::info!(
+            "TX diag: before_tx_high={} after_tx_high={}",
+            before_high,
+            after_high
+        );
+        defmt::info!("TX diag: waiting for card response (40ms)...");
+        match self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS) {
+            Ok(b) => defmt::info!("TX diag: card responded 0x{:02X}!", b),
+            Err(SmartcardError::Timeout) => defmt::warn!("TX diag: no card response (timeout)"),
+            Err(e) => defmt::error!("TX diag: error {:?}", e),
+        }
+        unsafe {
+            cortex_m::interrupt::enable();
+        }
     }
 
     fn read_atr(&mut self) -> Result<(), SmartcardError> {
