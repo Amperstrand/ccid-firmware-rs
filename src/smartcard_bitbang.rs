@@ -300,10 +300,17 @@ impl SmartcardBitbang {
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 let params = parse_atr(atr_slice);
                 self.detect_protocol_from_atr();
-                let _ = self.negotiate_pps_fsm(&params);
+                // Request default parameters (TA1=0x11 → DI=1, keep ETU=372)
+                let default_params = AtrParams {
+                    fi: 372,
+                    di: 1,
+                    ta1: 0x11,
+                    has_ta1: true,
+                    ..AtrParams::default()
+                };
+                let _ = self.negotiate_pps_fsm(&default_params);
                 if self.protocol == 1 {
                     self.ifsc = params.ifsc;
-                    let _ = self.do_ifs_negotiation_t1();
                 }
                 Ok(&self.atr)
             }
