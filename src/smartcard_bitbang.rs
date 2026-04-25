@@ -23,6 +23,7 @@ const CARD_CLK_HZ: u32 = 1_000_000;
 const FI_DEFAULT: u32 = 372;
 const DI_DEFAULT: u32 = 1;
 const ETU_CPU_CYCLES: u32 = (SYSCLK_HZ / CARD_CLK_HZ) * FI_DEFAULT / DI_DEFAULT; // 80,352
+const GPIO_CLK_HALF_CYCLES: u32 = SYSCLK_HZ / (CARD_CLK_HZ * 2); // 108
 
 const SC_ATR_TIMEOUT_CYCLES: u32 = SYSCLK_HZ * 4; // 4 seconds
 const SC_ATR_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
@@ -31,7 +32,7 @@ const SC_PROCEDURE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 5; // 200 ms
 const SC_T0_GET_RESPONSE_MAX: u8 = 32;
 const SC_ATR_MAX_LEN: usize = 33;
 const SC_POWER_ON_DELAY_MS: u32 = 50;
-const SC_CLK_TO_RST_DELAY_MS: u32 = 50; // ISO 7816-3: ≥40k CLK cycles at 1 MHz = 40ms
+const SC_CLK_TO_RST_DELAY_CARD_CLKS: u32 = 50_000;
 
 // ---------------------------------------------------------------------------
 // Diagnostic ring buffer — zero-overhead RAM log exposed via CCID Escape.
@@ -281,7 +282,7 @@ impl SmartcardBitbang {
     }
 
     fn delay_until(deadline: u32) {
-        while Self::cyccnt().wrapping_sub(deadline) < 0x8000_0000 {}
+        while deadline.wrapping_sub(Self::cyccnt()) < 0x8000_0000 {}
     }
 
     fn delay_cycles(n: u32) {
@@ -442,8 +443,14 @@ impl SmartcardBitbang {
         self.pwr_pin.set_low(); // VCC on
         Self::delay_ms(SC_POWER_ON_DELAY_MS);
 
-        self.start_continuous_clock(); // TIM10 PWM 1 MHz on PF6
-        Self::delay_ms(SC_CLK_TO_RST_DELAY_MS); // ISO 7816-3: ≥40k CLK before RST
+        // H5 test: GPIO-toggled clock instead of TIM10
+        let gpiof = Self::gpiof_ptr();
+        for _ in 0..SC_CLK_TO_RST_DELAY_CARD_CLKS {
+            gpiof.bsrr.write(|w| unsafe { w.bits(1 << 6) });
+            cortex_m::asm::delay(GPIO_CLK_HALF_CYCLES);
+            gpiof.bsrr.write(|w| unsafe { w.bits(1 << (6 + 16)) });
+            cortex_m::asm::delay(GPIO_CLK_HALF_CYCLES);
+        }
 
         self.rst_pin.set_high(); // Release RST → card sends ATR
 
@@ -503,26 +510,26 @@ impl SmartcardBitbang {
     fn recv_byte_timeout(&mut self, timeout_cycles: u32) -> Result<u8, SmartcardError> {
         self.io_release_high();
         let etu = self.etu_cycles;
-
-        // Phase 1: Wait for start-bit falling edge (high → low)
+        let gpiof = Self::gpiof_ptr();
         let deadline = Self::cyccnt().wrapping_add(timeout_cycles);
-        while Self::cyccnt().wrapping_sub(deadline) < 0x8000_0000 {
-            if !self.io_is_high() {
+
+        // Toggle clock while polling for start-bit falling edge
+        loop {
+            gpiof.bsrr.write(|w| unsafe { w.bits(1 << 6) });
+            let io_high = self.io_is_high();
+            gpiof.bsrr.write(|w| unsafe { w.bits(1 << (6 + 16)) });
+            if !io_high {
                 break;
             }
-        }
-        // If we didn't break (still high), check timeout
-        if self.io_is_high() {
-            return Err(SmartcardError::Timeout);
+            if deadline.wrapping_sub(Self::cyccnt()) >= 0x8000_0000 {
+                return Err(SmartcardError::Timeout);
+            }
         }
 
-        // t0 = moment we detected start-bit falling edge
         let t0 = Self::cyccnt();
 
-        // Confirm start bit: sample at t0 + 0.5 ETU (should still be low)
         Self::delay_until(t0.wrapping_add(etu / 2));
 
-        // Sample data bits at t0 + 1.5 ETU, t0 + 2.5 ETU, ... t0 + 8.5 ETU
         let mut byte = 0u8;
         for bit_index in 0..8 {
             let sample_time = t0.wrapping_add(etu + (etu / 2) + (etu * bit_index as u32));
@@ -532,7 +539,6 @@ impl SmartcardBitbang {
             }
         }
 
-        // Parity bit at t0 + 9.5 ETU
         let parity_time = t0.wrapping_add(etu * 9 + (etu / 2));
         Self::delay_until(parity_time);
         let parity_high = self.io_is_high();
@@ -546,7 +552,6 @@ impl SmartcardBitbang {
             );
         }
 
-        // Wait for guard time (2 ETU after parity)
         Self::delay_until(t0.wrapping_add(etu * 12));
 
         Ok(byte)
