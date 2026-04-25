@@ -229,6 +229,14 @@ impl SmartcardBitbang {
         }
     }
 
+    /// Delay for `n` ETU periods while keeping clock running and IO released (idle-high).
+    /// Used for direction-change guard times per EMV/ISO 7816-3.
+    #[inline(always)]
+    fn delay_etu(&mut self, n: u32) {
+        self.io_release_high();
+        self.clock_n(n * self.etu_clks);
+    }
+
     #[inline(always)]
     fn io_is_high(&self) -> bool {
         (Self::gpioi_ptr().idr.read().bits() & (1 << 0)) != 0
@@ -401,6 +409,8 @@ impl SmartcardBitbang {
                 if params.has_ta1 && params.ta1 != 0x11 {
                     self.stop_continuous_clock();
                     cortex_m::interrupt::disable();
+                    // EMV direction-change guard: 4 ETU delay after ATR RX before PPS TX
+                    self.delay_etu(4);
                     let pps_ok = self.negotiate_pps_fsm(&params).is_ok();
                     unsafe {
                         cortex_m::interrupt::enable();
@@ -417,9 +427,10 @@ impl SmartcardBitbang {
                     }
                 }
 
-                if self.protocol == 1 {
+                if false && self.protocol == 1 {
                     self.stop_continuous_clock();
                     cortex_m::interrupt::disable();
+                    self.delay_etu(4);
                     let ifs_result = self.do_ifs_negotiation_t1();
                     unsafe {
                         cortex_m::interrupt::enable();
