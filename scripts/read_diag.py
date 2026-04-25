@@ -39,11 +39,14 @@ TAG_NAMES = {
 
 
 def find_ccid_device(bus=None, addr=None):
-    devs = usb.core.find(find_all=True, bDeviceClass=0x0B)
-    for d in devs:
-        if bus is not None and (d.bus != bus or d.address != addr):
-            continue
-        return d
+    # CCID is an interface class (0x0B), not device class. Search by known VIDs.
+    VIDS = [0x046a, 0x08e6]
+    for vid in VIDS:
+        dev = usb.core.find(idVendor=vid)
+        if dev:
+            if bus is not None and (dev.bus != bus or dev.address != addr):
+                continue
+            return dev
     return None
 
 
@@ -65,9 +68,11 @@ def send_escape(dev):
             dev.detach_kernel_driver(intf.bInterfaceNumber) if dev.is_kernel_driver_active(intf.bInterfaceNumber) else None
             usb.util.claim_interface(dev, intf.bInterfaceNumber)
             for ep in intf:
-                if ep.bEndpointAddress & 0x80:
+                is_in = ep.bEndpointAddress & 0x80 != 0
+                is_bulk = (ep.bmAttributes & 0x03) == 2
+                if is_in and is_bulk:
                     ep_in = ep
-                else:
+                elif not is_in and is_bulk:
                     ep_out = ep
             break
 

@@ -18,18 +18,20 @@ use stm32f7xx_hal::gpio::{
 };
 use stm32f7xx_hal::pac::{gpiof, gpioi, tim10, DWT, GPIOF, GPIOI, RCC, TIM10};
 
-const ETU_CLKS: u32 = 372;
-const CLK_HALF_CYCLES: u32 = 108;
-const SC_ATR_TIMEOUT_CLKS: u32 = 4_000_000;
-const SC_ATR_BYTE_TIMEOUT_CLKS: u32 = 40_000;
-const SC_BYTE_TIMEOUT_CLKS: u32 = 40_000;
-const SC_PROCEDURE_TIMEOUT_CLKS: u32 = 200_000;
+const SYSCLK_HZ: u32 = 216_000_000;
+const CARD_CLK_HZ: u32 = 1_000_000;
+const FI_DEFAULT: u32 = 372;
+const DI_DEFAULT: u32 = 1;
+const ETU_CPU_CYCLES: u32 = (SYSCLK_HZ / CARD_CLK_HZ) * FI_DEFAULT / DI_DEFAULT; // 80,352
+
+const SC_ATR_TIMEOUT_CYCLES: u32 = SYSCLK_HZ * 4; // 4 seconds
+const SC_ATR_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
+const SC_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
+const SC_PROCEDURE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 5; // 200 ms
 const SC_T0_GET_RESPONSE_MAX: u8 = 32;
 const SC_ATR_MAX_LEN: usize = 33;
 const SC_POWER_ON_DELAY_MS: u32 = 50;
-const SC_CLK_TO_RST_DELAY_CLKS: u32 = 50_000;
-const SC_ATR_POST_RST_GUARD_CLKS: u32 = 400;
-const SYSCLK_HZ: u32 = 216_000_000;
+const SC_CLK_TO_RST_DELAY_MS: u32 = 50; // ISO 7816-3: ≥40k CLK cycles at 1 MHz = 40ms
 
 // ---------------------------------------------------------------------------
 // Diagnostic ring buffer — zero-overhead RAM log exposed via CCID Escape.
@@ -47,6 +49,7 @@ const DTAG_ATR: u8 = 0x02;
 const DTAG_TX_SINGLE: u8 = 0x03;
 const DTAG_TX_BYTE_ERR: u8 = 0x04;
 const DTAG_DWT_STAMP: u8 = 0x05;
+const DTAG_TIM10_REGS: u8 = 0x06;
 const DTAG_END: u8 = 0xFF;
 
 #[cfg(feature = "stm32f746")]
@@ -230,7 +233,8 @@ pub struct SmartcardBitbang {
     protocol: u8,
     ifsc: u8,
     t1_ns: u8,
-    etu_clks: u32,
+    etu_cycles: u32,
+    clock_running: bool,
 }
 
 impl SmartcardBitbang {
@@ -257,7 +261,8 @@ impl SmartcardBitbang {
             protocol: 0,
             ifsc: 32,
             t1_ns: 0,
-            etu_clks: ETU_CLKS,
+            etu_cycles: ETU_CPU_CYCLES,
+            clock_running: false,
         }
     }
 
@@ -271,6 +276,20 @@ impl SmartcardBitbang {
     }
 
     #[inline(always)]
+    fn cyccnt() -> u32 {
+        unsafe { (*DWT::PTR).cyccnt.read() }
+    }
+
+    fn delay_until(deadline: u32) {
+        while Self::cyccnt().wrapping_sub(deadline) < 0x8000_0000 {}
+    }
+
+    fn delay_cycles(n: u32) {
+        let deadline = Self::cyccnt().wrapping_add(n);
+        Self::delay_until(deadline);
+    }
+
+    #[inline(always)]
     fn gpiof_ptr() -> &'static gpiof::RegisterBlock {
         unsafe { &*GPIOF::ptr() }
     }
@@ -278,30 +297,6 @@ impl SmartcardBitbang {
     #[inline(always)]
     fn gpioi_ptr() -> &'static gpioi::RegisterBlock {
         unsafe { &*GPIOI::ptr() }
-    }
-
-    #[inline(always)]
-    fn tick_clock(&mut self) {
-        let regs = Self::gpiof_ptr();
-        regs.bsrr.write(|w| unsafe { w.bits(1 << 6) });
-        cortex_m::asm::delay(CLK_HALF_CYCLES);
-        regs.bsrr.write(|w| unsafe { w.bits(1 << (6 + 16)) });
-        cortex_m::asm::delay(CLK_HALF_CYCLES);
-    }
-
-    #[inline(always)]
-    fn clock_n(&mut self, n: u32) {
-        for _ in 0..n {
-            self.tick_clock();
-        }
-    }
-
-    /// Delay for `n` ETU periods while keeping clock running and IO released (idle-high).
-    /// Used for direction-change guard times per EMV/ISO 7816-3.
-    #[inline(always)]
-    fn delay_etu(&mut self, n: u32) {
-        self.io_release_high();
-        self.clock_n(n * self.etu_clks);
     }
 
     #[inline(always)]
@@ -337,16 +332,14 @@ impl SmartcardBitbang {
         unsafe { &*RCC::ptr() }
     }
 
-    /// Switch PF6 from GPIO to TIM10_CH1 AF3 PWM output (1 MHz continuous clock).
     fn start_continuous_clock(&mut self) {
         let gpiof = Self::gpiof_ptr();
         let rcc = Self::rcc_ptr();
         let tim10 = Self::tim10_ptr();
 
-        // Drive PF6 high before switching mode
         gpiof.bsrr.write(|w| unsafe { w.bits(1 << 6) });
 
-        // PF6: GPIO mode → Alternate Function (AF mode = 10)
+        // PF6: GPIO → AF mode (10)
         let moder = gpiof.moder.read().bits();
         gpiof
             .moder
@@ -358,38 +351,35 @@ impl SmartcardBitbang {
             .afrl
             .write(|w| unsafe { w.bits((afrl & !(0xf << 24)) | (3 << 24)) });
 
-        // Enable TIM10 peripheral clock
         rcc.apb2enr.modify(|_, w| w.tim10en().set_bit());
         cortex_m::asm::delay(10);
 
-        // Disable timer during configuration
         tim10.cr1.write(|w| unsafe { w.bits(0) });
 
-        // SYSCLK = 216 MHz, target 1 MHz → PSC=0, ARR=215
+        // TIM10 kernel clock = 216 MHz (APB2=108 MHz × 2 multiplier).
+        // Target 1 MHz → PSC=0, ARR=215 (216 MHz / 216 = 1 MHz).
         tim10.psc.write(|w| unsafe { w.bits(0) });
         tim10.arr.write(|w| unsafe { w.bits(215) });
-        tim10.ccr1().write(|w| unsafe { w.bits(107) });
+        tim10.ccr1().write(|w| unsafe { w.bits(107) }); // 50% duty
 
-        // PWM Mode 1, output compare preload enable
         tim10.ccmr1_output().write(|w| {
             w.oc1m().pwm_mode1();
             w.oc1pe().set_bit();
             w
         });
 
-        // Enable capture/compare output
         tim10.ccer.write(|w| w.cc1e().set_bit());
-
-        // Start timer: ARPE + CEN
-        tim10.cr1.write(|w| unsafe { w.bits((1 << 7) | 1) });
+        tim10.cr1.write(|w| unsafe { w.bits((1 << 7) | 1) }); // ARPE + CEN
+        self.clock_running = true;
     }
 
-    /// Switch PF6 from TIM10 AF back to GPIO push-pull output (stopped clock).
     fn stop_continuous_clock(&mut self) {
+        if !self.clock_running {
+            return;
+        }
         let gpiof = Self::gpiof_ptr();
         let tim10 = Self::tim10_ptr();
 
-        // Stop timer
         tim10.cr1.write(|w| unsafe { w.bits(0) });
         tim10.ccer.write(|w| unsafe { w.bits(0) });
 
@@ -399,13 +389,12 @@ impl SmartcardBitbang {
             .moder
             .write(|w| unsafe { w.bits((moder & !(3 << 12)) | (1 << 12)) });
 
-        // Clear AF selection
         gpiof
             .afrl
             .modify(|r, w| unsafe { w.bits(r.bits() & !(0xf << 24)) });
 
-        // Drive low (idle)
         gpiof.bsrr.write(|w| unsafe { w.bits(1 << (6 + 16)) });
+        self.clock_running = false;
     }
 
     pub fn is_card_present(&self) -> bool {
@@ -433,27 +422,33 @@ impl SmartcardBitbang {
 
         diag_clear();
 
-        self.pwr_pin.set_high();
+        // Full cold reset: power off, RST low, IO released
+        self.stop_continuous_clock();
+        self.pwr_pin.set_high(); // VCC off
         self.rst_pin.set_low();
         self.io_release_high();
-        self.clk_pin.set_low();
         Self::delay_ms(200);
+
         self.atr = Atr::default();
         self.powered = false;
         self.protocol = 0;
         self.ifsc = 32;
         self.t1_ns = 0;
-        self.etu_clks = ETU_CLKS;
+        self.etu_cycles = ETU_CPU_CYCLES;
 
-        self.pwr_pin.set_low();
-        Self::delay_ms(SC_POWER_ON_DELAY_MS);
         self.io_readback_test();
 
-        // Bitbang driver IS the clock — interrupts pause it and break ISO 7816 timing.
-        cortex_m::interrupt::disable();
-        self.clock_n(SC_CLK_TO_RST_DELAY_CLKS);
-        self.rst_pin.set_high();
+        // Activation: VCC on → start CLK → wait → RST high
+        self.pwr_pin.set_low(); // VCC on
+        Self::delay_ms(SC_POWER_ON_DELAY_MS);
 
+        self.start_continuous_clock(); // TIM10 PWM 1 MHz on PF6
+        Self::delay_ms(SC_CLK_TO_RST_DELAY_MS); // ISO 7816-3: ≥40k CLK before RST
+
+        self.rst_pin.set_high(); // Release RST → card sends ATR
+
+        // Mask interrupts only during ATR byte reception
+        cortex_m::interrupt::disable();
         match self.read_atr() {
             Ok(()) => {
                 self.powered = true;
@@ -477,9 +472,7 @@ impl SmartcardBitbang {
                 }
 
                 self.io_readback_test();
-
                 self.tx_single_byte_diagnostic();
-                self.tx_waveform_test(2);
 
                 seal_diag();
 
@@ -496,6 +489,7 @@ impl SmartcardBitbang {
 
     pub fn power_off(&mut self) {
         self.rst_pin.set_low();
+        self.stop_continuous_clock();
         self.pwr_pin.set_high();
         self.io_release_high();
         self.powered = false;
@@ -503,49 +497,46 @@ impl SmartcardBitbang {
         self.protocol = 0;
         self.ifsc = 32;
         self.t1_ns = 0;
-        self.etu_clks = ETU_CLKS;
+        self.etu_cycles = ETU_CPU_CYCLES;
     }
 
-    fn recv_byte_timeout_clks(&mut self, timeout_clks: u32) -> Result<u8, SmartcardError> {
+    fn recv_byte_timeout(&mut self, timeout_cycles: u32) -> Result<u8, SmartcardError> {
         self.io_release_high();
+        let etu = self.etu_cycles;
 
-        // Phase 1: Wait for idle-high (line should be high between characters)
-        let mut waited: u32 = 0;
-        loop {
-            if self.io_is_high() {
+        // Phase 1: Wait for start-bit falling edge (high → low)
+        let deadline = Self::cyccnt().wrapping_add(timeout_cycles);
+        while Self::cyccnt().wrapping_sub(deadline) < 0x8000_0000 {
+            if !self.io_is_high() {
                 break;
             }
-            self.tick_clock();
-            waited += 1;
-            if waited >= timeout_clks {
-                return Err(SmartcardError::Timeout);
-            }
+        }
+        // If we didn't break (still high), check timeout
+        if self.io_is_high() {
+            return Err(SmartcardError::Timeout);
         }
 
-        // Phase 2: Wait for falling edge (start bit = high→low transition)
-        let mut waited: u32 = 0;
-        while self.io_is_high() {
-            self.tick_clock();
-            waited += 1;
-            if waited >= timeout_clks {
-                return Err(SmartcardError::Timeout);
-            }
-        }
+        // t0 = moment we detected start-bit falling edge
+        let t0 = Self::cyccnt();
 
-        // 1.5 ETU after start-bit falling edge → center of data bit 0
-        self.clock_n(self.etu_clks + self.etu_clks / 2);
+        // Confirm start bit: sample at t0 + 0.5 ETU (should still be low)
+        Self::delay_until(t0.wrapping_add(etu / 2));
 
+        // Sample data bits at t0 + 1.5 ETU, t0 + 2.5 ETU, ... t0 + 8.5 ETU
         let mut byte = 0u8;
-        let mut _ones = 0u8;
         for bit_index in 0..8 {
+            let sample_time = t0.wrapping_add(etu + (etu / 2) + (etu * bit_index as u32));
+            Self::delay_until(sample_time);
             if self.io_is_high() {
                 byte |= 1 << bit_index;
-                _ones += 1;
             }
-            self.clock_n(self.etu_clks);
         }
 
+        // Parity bit at t0 + 9.5 ETU
+        let parity_time = t0.wrapping_add(etu * 9 + (etu / 2));
+        Self::delay_until(parity_time);
         let parity_high = self.io_is_high();
+
         let total_ones = byte.count_ones() + if parity_high { 1 } else { 0 };
         if total_ones % 2 != 1 {
             defmt::warn!(
@@ -554,39 +545,45 @@ impl SmartcardBitbang {
                 parity_high
             );
         }
-        self.clock_n(self.etu_clks);
 
-        self.io_release_high();
+        // Wait for guard time (2 ETU after parity)
+        Self::delay_until(t0.wrapping_add(etu * 12));
 
         Ok(byte)
     }
 
     fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError> {
         let parity_is_one = (byte.count_ones() % 2) == 0;
+        let etu = self.etu_cycles;
 
+        // Start bit: drive low
         self.io_drive_low();
+        let t0 = Self::cyccnt();
         let low_ok = !self.io_is_high();
-        self.clock_n(self.etu_clks);
+        Self::delay_until(t0.wrapping_add(etu));
 
+        // Data bits 0-7
         for bit_index in 0..8 {
             if (byte >> bit_index) & 1 != 0 {
                 self.io_release_high();
             } else {
                 self.io_drive_low();
             }
-            self.clock_n(self.etu_clks);
+            Self::delay_until(t0.wrapping_add(etu * (1 + bit_index as u32 + 1)));
         }
 
+        // Parity bit
         if parity_is_one {
             self.io_release_high();
         } else {
             self.io_drive_low();
         }
-        self.clock_n(self.etu_clks);
+        Self::delay_until(t0.wrapping_add(etu * 10));
 
+        // Guard time: release high, wait 2 ETU
         self.io_release_high();
         let high_ok = self.io_is_high();
-        self.clock_n(self.etu_clks * 2);
+        Self::delay_until(t0.wrapping_add(etu * 12));
 
         if !low_ok || !high_ok {
             defmt::error!(
@@ -602,44 +599,21 @@ impl SmartcardBitbang {
 
     fn io_readback_test(&mut self) {
         self.io_release_high();
-        for _ in 0..100 {
-            self.tick_clock();
-        }
+        Self::delay_cycles(self.etu_cycles);
         let high_ok = self.io_is_high();
         self.io_drive_low();
         let low_ok = !self.io_is_high();
         self.io_release_high();
-        for _ in 0..100 {
-            self.tick_clock();
-        }
+        Self::delay_cycles(self.etu_cycles);
         defmt::info!("IO readback: high={} low={} (expect 1,1)", high_ok, low_ok);
         diag_tlv(DTAG_IO_READBACK, &[high_ok as u8, low_ok as u8]);
-    }
-
-    fn tx_waveform_test(&mut self, count: u8) {
-        defmt::info!("TX waveform test: {} rounds of [00 FF 55 AA]", count);
-        cortex_m::interrupt::disable();
-        let pattern: [u8; 4] = [0x00, 0xFF, 0x55, 0xAA];
-        for round in 0..count {
-            for &b in &pattern {
-                let _ = self.send_byte(b);
-            }
-            self.io_release_high();
-            self.clock_n(self.etu_clks * 20);
-            if round % 4 == 0 {
-                defmt::info!("TX waveform round {}", round);
-            }
-        }
-        unsafe {
-            cortex_m::interrupt::enable();
-        }
-        defmt::info!("TX waveform test done");
     }
 
     fn tx_single_byte_diagnostic(&mut self) {
         defmt::info!("TX diagnostic: sending 0xFF (PPSS) after ATR");
         cortex_m::interrupt::disable();
-        self.delay_etu(4);
+        // 4 ETU direction-change guard time
+        Self::delay_cycles(self.etu_cycles * 4);
         let before_high = self.io_is_high();
         let _ = self.send_byte(0xFF);
         let after_high = self.io_is_high();
@@ -649,7 +623,7 @@ impl SmartcardBitbang {
             after_high
         );
         defmt::info!("TX diag: waiting for card response (40ms)...");
-        let result = match self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS) {
+        let result = match self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES) {
             Ok(b) => {
                 defmt::info!("TX diag: card responded 0x{:02X}!", b);
                 0u8
@@ -677,12 +651,12 @@ impl SmartcardBitbang {
 
         loop {
             let timeout = if len == 0 {
-                SC_ATR_TIMEOUT_CLKS
+                SC_ATR_TIMEOUT_CYCLES
             } else {
-                SC_ATR_BYTE_TIMEOUT_CLKS
+                SC_ATR_BYTE_TIMEOUT_CYCLES
             };
 
-            match self.recv_byte_timeout_clks(timeout) {
+            match self.recv_byte_timeout(timeout) {
                 Ok(b) => {
                     if len == 0 && b == 0x00 {
                         continue;
@@ -739,7 +713,7 @@ impl SmartcardBitbang {
         }
         fsm.start_response();
         loop {
-            match self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS) {
+            match self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES) {
                 Ok(byte) => {
                     let state = fsm.process_byte(byte);
                     if state == PpsState::Done {
@@ -769,22 +743,22 @@ impl SmartcardBitbang {
         self.send_byte(IFSD).map_err(|_| ())?;
         self.send_byte(lrc_val).map_err(|_| ())?;
         let nad = self
-            .recv_byte_timeout_clks(SC_PROCEDURE_TIMEOUT_CLKS)
+            .recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)
             .map_err(|_| ())?;
         let pcb = self
-            .recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)
+            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
             .map_err(|_| ())?;
         let len = self
-            .recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)
+            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
             .map_err(|_| ())?;
         if (pcb & 0xC0) != 0xC0 || len != 1 {
             return Err(());
         }
         let ifsc = self
-            .recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)
+            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
             .map_err(|_| ())?;
         let lrc_recv = self
-            .recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)
+            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
             .map_err(|_| ())?;
         let lrc_exp = nad ^ pcb ^ len ^ ifsc;
         if lrc_recv != lrc_exp {
@@ -807,7 +781,8 @@ impl SmartcardBitbang {
         }
 
         cortex_m::interrupt::disable();
-        self.delay_etu(4);
+        self.io_release_high();
+        Self::delay_cycles(self.etu_cycles * 4);
         let result = if self.protocol == 1 {
             let ifsc = self.ifsc;
             let mut ns = self.t1_ns;
@@ -836,7 +811,8 @@ impl SmartcardBitbang {
         }
 
         cortex_m::interrupt::disable();
-        self.delay_etu(4);
+        self.io_release_high();
+        Self::delay_cycles(self.etu_cycles * 4);
         let result = self.transmit_raw_inner(data, response);
         unsafe {
             cortex_m::interrupt::enable();
@@ -853,13 +829,13 @@ impl SmartcardBitbang {
             self.send_byte(byte)?;
         }
         let mut total_len = 0usize;
-        let mut timeout_clks = SC_PROCEDURE_TIMEOUT_CLKS;
+        let mut timeout_cycles = SC_PROCEDURE_TIMEOUT_CYCLES;
         while total_len < response.len() {
-            match self.recv_byte_timeout_clks(timeout_clks) {
+            match self.recv_byte_timeout(timeout_cycles) {
                 Ok(byte) => {
                     response[total_len] = byte;
                     total_len += 1;
-                    timeout_clks = SC_BYTE_TIMEOUT_CLKS;
+                    timeout_cycles = SC_BYTE_TIMEOUT_CYCLES;
                 }
                 Err(SmartcardError::Timeout) => break,
                 Err(e) => return Err(e),
@@ -895,13 +871,13 @@ impl SmartcardBitbang {
             }
 
             loop {
-                let mut pb = self.recv_byte_timeout_clks(SC_PROCEDURE_TIMEOUT_CLKS)?;
+                let mut pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
                 while pb == 0x60 {
-                    pb = self.recv_byte_timeout_clks(SC_PROCEDURE_TIMEOUT_CLKS)?;
+                    pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
                 }
                 if pb == ins {
-                    let sw1 = self.recv_byte_timeout_clks(SC_PROCEDURE_TIMEOUT_CLKS)?;
-                    let sw2 = self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
+                    let sw1 = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
+                    let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                     if response_len + 2 <= max_response {
                         response[response_len] = sw1;
                         response[response_len + 1] = sw2;
@@ -917,19 +893,19 @@ impl SmartcardBitbang {
                         for b in [0x00u8, 0xC0, 0x00, 0x00, sw2] {
                             self.send_byte(b)?;
                         }
-                        pb = self.recv_byte_timeout_clks(SC_PROCEDURE_TIMEOUT_CLKS)?;
+                        pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
                         while pb == 0x60 {
-                            pb = self.recv_byte_timeout_clks(SC_PROCEDURE_TIMEOUT_CLKS)?;
+                            pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
                         }
                         if pb == 0xC0 || pb == 0x4F {
                             let n = (sw2 as usize).min(max_response.saturating_sub(response_len));
                             for i in 0..n {
                                 response[response_len + i] =
-                                    self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
+                                    self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                             }
                             response_len += n;
-                            let sw1 = self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
-                            let sw2 = self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
+                            let sw1 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
+                            let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                             if response_len + 2 <= max_response {
                                 response[response_len] = sw1;
                                 response[response_len + 1] = sw2;
@@ -953,7 +929,7 @@ impl SmartcardBitbang {
                     continue;
                 }
                 if pb == 0x61 {
-                    let sw2 = self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
+                    let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                     if get_response_count >= SC_T0_GET_RESPONSE_MAX {
                         if response_len + 2 <= max_response {
                             response[response_len] = 0x61;
@@ -967,12 +943,12 @@ impl SmartcardBitbang {
                     continue 'send;
                 }
                 if pb == 0x6C {
-                    let sw2 = self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
+                    let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                     header[4] = sw2;
                     body_offset = 5;
                     continue 'send;
                 }
-                let sw2 = self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)?;
+                let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                 if response_len + 2 <= max_response {
                     response[response_len] = pb;
                     response[response_len + 1] = sw2;
@@ -991,7 +967,7 @@ impl T1Transport for SmartcardBitbang {
     }
 
     fn recv_byte_timeout(&mut self, _ms: u32) -> Result<u8, Self::Error> {
-        self.recv_byte_timeout_clks(SC_BYTE_TIMEOUT_CLKS)
+        self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
     }
 
     fn prepare_rx(&mut self) {}
