@@ -163,6 +163,7 @@ pub struct SmartcardBitbang {
     protocol: u8,
     ifsc: u8,
     t1_ns: u8,
+    etu_clks: u32,
 }
 
 impl SmartcardBitbang {
@@ -189,6 +190,7 @@ impl SmartcardBitbang {
             protocol: 0,
             ifsc: 32,
             t1_ns: 0,
+            etu_clks: ETU_CLKS,
         }
     }
 
@@ -283,6 +285,7 @@ impl SmartcardBitbang {
         self.protocol = 0;
         self.ifsc = 32;
         self.t1_ns = 0;
+        self.etu_clks = ETU_CLKS;
 
         self.pwr_pin.set_low();
         Self::delay_ms(SC_POWER_ON_DELAY_MS);
@@ -300,15 +303,14 @@ impl SmartcardBitbang {
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 let params = parse_atr(atr_slice);
                 self.detect_protocol_from_atr();
-                // Request default parameters (TA1=0x11 → DI=1, keep ETU=372)
-                let default_params = AtrParams {
-                    fi: 372,
-                    di: 1,
-                    ta1: 0x11,
-                    has_ta1: true,
-                    ..AtrParams::default()
-                };
-                let _ = self.negotiate_pps_fsm(&default_params);
+
+                // Switch to work ETU from TA1: ETU = F/D clock ticks
+                if params.has_ta1 && params.di > 0 {
+                    let work_etu = params.fi as u32 / params.di as u32;
+                    if work_etu > 0 {
+                        self.etu_clks = work_etu;
+                    }
+                }
                 if self.protocol == 1 {
                     self.ifsc = params.ifsc;
                 }
@@ -332,6 +334,7 @@ impl SmartcardBitbang {
         self.protocol = 0;
         self.ifsc = 32;
         self.t1_ns = 0;
+        self.etu_clks = ETU_CLKS;
     }
 
     fn recv_byte_timeout_clks(&mut self, timeout_clks: u32) -> Result<u8, SmartcardError> {
@@ -361,7 +364,7 @@ impl SmartcardBitbang {
         }
 
         // 1.5 ETU after start-bit falling edge → center of data bit 0
-        self.clock_n(ETU_CLKS + ETU_CLKS / 2);
+        self.clock_n(self.etu_clks + self.etu_clks / 2);
 
         let mut byte = 0u8;
         let mut _ones = 0u8;
@@ -370,12 +373,12 @@ impl SmartcardBitbang {
                 byte |= 1 << bit_index;
                 _ones += 1;
             }
-            self.clock_n(ETU_CLKS);
+            self.clock_n(self.etu_clks);
         }
 
         // Parity bit
         let _parity_high = self.io_is_high();
-        self.clock_n(ETU_CLKS);
+        self.clock_n(self.etu_clks);
 
         self.io_release_high();
 
@@ -389,7 +392,7 @@ impl SmartcardBitbang {
         }
 
         self.io_drive_low();
-        self.clock_n(ETU_CLKS);
+        self.clock_n(self.etu_clks);
 
         for bit_index in 0..8 {
             if (byte >> bit_index) & 1 != 0 {
@@ -397,7 +400,7 @@ impl SmartcardBitbang {
             } else {
                 self.io_drive_low();
             }
-            self.clock_n(ETU_CLKS);
+            self.clock_n(self.etu_clks);
         }
 
         if ones & 1 != 0 {
@@ -405,10 +408,10 @@ impl SmartcardBitbang {
         } else {
             self.io_drive_low();
         }
-        self.clock_n(ETU_CLKS);
+        self.clock_n(self.etu_clks);
 
         self.io_release_high();
-        self.clock_n(ETU_CLKS * 2);
+        self.clock_n(self.etu_clks * 2);
 
         Ok(())
     }
