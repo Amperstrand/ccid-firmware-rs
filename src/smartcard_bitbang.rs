@@ -291,7 +291,6 @@ impl SmartcardBitbang {
         Self::delay_ms(SC_POWER_ON_DELAY_MS);
 
         // Bitbang driver IS the clock — interrupts pause it and break ISO 7816 timing.
-        // Keep disabled for entire activation: ATR + PPS + T=1 IFSD.
         cortex_m::interrupt::disable();
         self.clock_n(SC_CLK_TO_RST_DELAY_CLKS);
         self.rst_pin.set_high();
@@ -313,38 +312,9 @@ impl SmartcardBitbang {
                     params.di
                 );
 
-                // Clock warm-up: ensure card and ST8034 are settled after ATR
-                self.clock_n(1000);
-
-                // PPS at initial ETU=372 with card's actual TA1
-                if params.has_ta1 && params.ta1 != 0x11 {
-                    defmt::info!("PPS: requesting TA1=0x{:02X}", params.ta1);
-                    match self.negotiate_pps_fsm(&params) {
-                        Ok(()) => {
-                            if params.di > 0 {
-                                self.etu_clks = params.fi as u32 / params.di as u32;
-                            }
-                            defmt::info!("PPS: accepted, ETU={} clks", self.etu_clks);
-                            self.clock_n(500);
-                        }
-                        Err(()) => {
-                            defmt::warn!("PPS: failed, staying at ETU={}", self.etu_clks);
-                        }
-                    }
-                }
-
-                if self.protocol == 1 {
-                    self.ifsc = params.ifsc;
-                    match self.do_ifs_negotiation_t1() {
-                        Ok(ifsc) => {
-                            self.ifsc = ifsc;
-                            defmt::info!("T=1 IFSD OK: IFSC={}", ifsc);
-                        }
-                        Err(()) => {
-                            defmt::warn!("T=1 IFSD failed, using ATR IFSC={}", self.ifsc);
-                        }
-                    }
-                }
+                // PPS/IFSD disabled during bring-up.
+                // Card stays at default ETU=372. Let host (pcscd) drive negotiation
+                // via SetParameters/XfrBlock once ATR is stable.
 
                 unsafe {
                     cortex_m::interrupt::enable();
@@ -411,8 +381,15 @@ impl SmartcardBitbang {
             self.clock_n(self.etu_clks);
         }
 
-        // Parity bit
-        let _parity_high = self.io_is_high();
+        let parity_high = self.io_is_high();
+        let total_ones = byte.count_ones() + if parity_high { 1 } else { 0 };
+        if total_ones % 2 != 1 {
+            defmt::warn!(
+                "RX parity error: byte=0x{:02X} parity={}",
+                byte,
+                parity_high
+            );
+        }
         self.clock_n(self.etu_clks);
 
         self.io_release_high();
@@ -421,10 +398,8 @@ impl SmartcardBitbang {
     }
 
     fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError> {
-        let mut ones = 0u8;
-        for i in 0..8 {
-            ones ^= (byte >> i) & 1;
-        }
+        // ISO 7816-3 odd parity: parity bit makes total 1-bits odd
+        let parity_is_one = (byte.count_ones() % 2) == 0;
 
         self.io_drive_low();
         self.clock_n(self.etu_clks);
@@ -438,7 +413,7 @@ impl SmartcardBitbang {
             self.clock_n(self.etu_clks);
         }
 
-        if ones & 1 != 0 {
+        if parity_is_one {
             self.io_release_high();
         } else {
             self.io_drive_low();
