@@ -15,6 +15,9 @@ pub trait SmartcardDriver {
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error>;
     fn set_protocol(&mut self, protocol: u8);
+    fn get_protocol(&self) -> u8 {
+        0
+    }
     fn set_clock(&mut self, _enable: bool) {}
     fn set_clock_and_rate(
         &mut self,
