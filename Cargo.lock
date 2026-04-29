@@ -204,6 +204,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "bxcan"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40ac3d0c0a542d0ab5521211f873f62706a7136df415676f676d347e5a41dd80"
+dependencies = [
+ "bitflags 1.3.2",
+ "embedded-hal 0.2.7",
+ "nb 1.1.0",
+ "vcell",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -242,6 +254,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cast"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
 name = "cc"
 version = "1.2.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -267,6 +285,7 @@ dependencies = [
  "panic-probe 0.3.2",
  "stm32f469i-disc",
  "stm32f4xx-hal",
+ "stm32f7xx-hal",
  "usb-device",
 ]
 
@@ -1865,6 +1884,15 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stm32-fmc"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7f0639399e2307c2446c54d91d4f1596343a1e1d5cab605b9cce11d0ab3858c"
+dependencies = [
+ "embedded-hal 0.2.7",
+]
+
+[[package]]
+name = "stm32-fmc"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72692594faa67f052e5e06dd34460951c21e83bc55de4feb8d2666e2f15480a2"
@@ -1899,7 +1927,7 @@ dependencies = [
  "ft6x06",
  "nt35510",
  "otm8009a",
- "stm32-fmc",
+ "stm32-fmc 0.4.0",
  "stm32f4xx-hal",
 ]
 
@@ -1929,9 +1957,47 @@ dependencies = [
  "rand_core 0.6.4",
  "rand_core 0.9.5",
  "sdio-host",
- "stm32-fmc",
+ "stm32-fmc 0.4.0",
  "stm32f4",
- "synopsys-usb-otg",
+ "synopsys-usb-otg 0.5.0",
+ "time",
+ "void",
+]
+
+[[package]]
+name = "stm32f7"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "194f877786053e5797371d084cc9dd6dc5d70f45470550af944013a298e7db9f"
+dependencies = [
+ "bare-metal 1.0.0",
+ "cortex-m",
+ "cortex-m-rt",
+ "vcell",
+]
+
+[[package]]
+name = "stm32f7xx-hal"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "864a474a57e6a9c51482358a239eef920752526aea85ce20adb1bb621c36b889"
+dependencies = [
+ "as-slice",
+ "bare-metal 1.0.0",
+ "bitflags 2.11.1",
+ "bxcan",
+ "cast",
+ "cortex-m",
+ "cortex-m-rt",
+ "embedded-hal 0.2.7",
+ "fugit",
+ "fugit-timer",
+ "micromath",
+ "nb 1.1.0",
+ "rand_core 0.6.4",
+ "stm32-fmc 0.3.2",
+ "stm32f7",
+ "synopsys-usb-otg 0.4.0",
  "time",
  "void",
 ]
@@ -2005,6 +2071,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "synopsys-usb-otg"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e948d523b316939545d8b21a48c27aef150ce25321b9f95ff7978647a806a6fe"
+dependencies = [
+ "cortex-m",
+ "embedded-hal 0.2.7",
+ "usb-device",
+ "vcell",
 ]
 
 [[package]]
