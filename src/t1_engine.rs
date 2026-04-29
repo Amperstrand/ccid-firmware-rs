@@ -38,7 +38,7 @@ const I_M_CHAIN: u8 = 0x20;
 const S_RESYNC_REQ: u8 = 0x00;
 const S_RESYNC_RESP: u8 = 0x20;
 const S_WTX_REQ: u8 = 0x03;
-const S_WTX_RESP: u8 = 0x0B;
+const S_WTX_RESP: u8 = 0x03;
 
 /// Max INF size (IFSC)
 const T1_MAX_IFSC: usize = 254;
@@ -52,6 +52,8 @@ pub trait T1Transport {
     /// Called after TX phase is complete, before starting to receive.
     /// Implementations should drain any stale data (e.g., echoes on half-duplex USART).
     fn prepare_rx(&mut self) {}
+    /// Block Guard Time: minimum 22 ETU delay at RX→TX direction change (ISO 7816-3).
+    fn delay_bgt(&mut self) {}
 }
 
 fn lrc(buf: &[u8]) -> u8 {
@@ -144,9 +146,10 @@ fn recv_block<T: T1Transport>(
     }
     if lrc_recv != lrc_exp {
         defmt::error!(
-            "T1 RX: LRC mismatch recv=0x{:02X} exp=0x{:02X}",
+            "T1 RX: LRC mismatch recv=0x{:02X} exp=0x{:02X} block=[{=u8:02x} {=u8:02x} {=u8:02x}..]",
             lrc_recv,
-            lrc_exp
+            lrc_exp,
+            buf[0], buf[1], len as u8
         );
         return Err(T1Error::LrcMismatch);
     }
@@ -184,11 +187,13 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                     if retransmit_count > MAX_RETRANSMIT {
                         return Err(T1Error::LrcMismatch);
                     }
+                    t.delay_bgt();
                     continue; // resend same chunk (offset unchanged)
                 }
                 retransmit_count = 0;
                 *ns = (*ns + 1) & 1;
                 offset += chunk_len;
+                t.delay_bgt();
                 continue;
             }
             if (pcb & PCB_MASK) == PCB_S_BLOCK {
@@ -198,6 +203,7 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                     let resp_pcb = PCB_S_BLOCK | 0x20 | S_WTX_RESP;
                     let l = 0 ^ resp_pcb ^ 1 ^ wtx;
                     defmt::info!("T1: S(WTX req) wtx={}, sending S(WTX resp)", wtx);
+                    t.delay_bgt();
                     t.send_byte(0).map_err(T1Error::Transport)?;
                     t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
                     t.send_byte(1).map_err(T1Error::Transport)?;
@@ -207,6 +213,7 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                     let resp_pcb = PCB_S_BLOCK | 0x20 | S_RESYNC_RESP;
                     let l = 0 ^ resp_pcb ^ 0;
                     defmt::info!("T1: S(RESYNC req), sending S(RESYNC resp)");
+                    t.delay_bgt();
                     t.send_byte(0).map_err(T1Error::Transport)?;
                     t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
                     t.send_byte(0).map_err(T1Error::Transport)?;
@@ -229,45 +236,24 @@ pub fn transmit_apdu_t1<T: T1Transport>(
         let mut block = [0u8; T1_BLOCK_BUF];
         let (pcb, inf_len) = recv_block(t, &mut block, 5000)?;
         if (pcb & 0x80) == 0 {
-            // I-block: bit 7 = 0
             let n = min(inf_len, response.len().saturating_sub(resp_len));
             response[resp_len..resp_len + n].copy_from_slice(&block[3..3 + n]);
             resp_len += n;
-            defmt::info!(
-                "T1 RX I-block: PCB=0x{:02X} inf_len={} copied={} total_resp_len={} M={}",
-                pcb,
-                inf_len,
-                n,
-                resp_len,
-                (pcb & I_M_CHAIN) != 0
-            );
             let m = (pcb & I_M_CHAIN) != 0;
             if !m {
                 *ns = (*ns + 1) & 1;
                 return Ok(resp_len);
             }
-            // Extract card's N(S) from PCB bit 6, compute N(R) = (N(S) + 1) % 2
-            // N(R) indicates the NEXT expected block number (ISO 7816-3)
-            // If card sent N(S)=1, we send N(R)=0 meaning "I got block 1, send block 0 next"
             let card_ns = (pcb >> 6) & 1;
-            let nr = (card_ns + 1) & 1; // N(R) = (N(S) + 1) mod 2
+            let nr = (card_ns + 1) & 1;
             let r_pcb = PCB_R_BLOCK | (nr << 4);
             let r_lrc = 0u8 ^ r_pcb ^ 0u8;
-            defmt::info!(
-                "T1 TX R-block: NAD=00 PCB=0x{:02X} LEN=00 LRC=0x{:02X} (card_ns={} nr={})",
-                r_pcb,
-                r_lrc,
-                card_ns,
-                nr
-            );
+            t.delay_bgt();
             t.send_byte(0).map_err(T1Error::Transport)?;
             t.send_byte(r_pcb).map_err(T1Error::Transport)?;
             t.send_byte(0).map_err(T1Error::Transport)?;
             t.send_byte(r_lrc).map_err(T1Error::Transport)?;
-            // Small delay to allow our R-block echoes to arrive before draining
-            // In half-duplex smartcard mode, the card won't start transmitting
-            // until after our transmission is complete
-            cortex_m::asm::delay(10_000); // ~60us at 168MHz
+            cortex_m::asm::delay(10_000);
             t.prepare_rx();
         } else if (pcb & PCB_MASK) == PCB_S_BLOCK {
             let s_type = pcb & 0x1F;
@@ -275,7 +261,7 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                 let wtx = block.get(3).copied().unwrap_or(0);
                 let resp_pcb = PCB_S_BLOCK | 0x20 | S_WTX_RESP;
                 let l = 0 ^ resp_pcb ^ 1 ^ wtx;
-                defmt::info!("T1 RX: S(WTX req) wtx={}, sending S(WTX resp)", wtx);
+                t.delay_bgt();
                 t.send_byte(0).map_err(T1Error::Transport)?;
                 t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
                 t.send_byte(1).map_err(T1Error::Transport)?;
@@ -284,7 +270,7 @@ pub fn transmit_apdu_t1<T: T1Transport>(
             } else if s_type == S_RESYNC_REQ {
                 let resp_pcb = PCB_S_BLOCK | 0x20 | S_RESYNC_RESP;
                 let l = 0 ^ resp_pcb ^ 0;
-                defmt::info!("T1 RX: S(RESYNC req), sending S(RESYNC resp)");
+                t.delay_bgt();
                 t.send_byte(0).map_err(T1Error::Transport)?;
                 t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
                 t.send_byte(0).map_err(T1Error::Transport)?;

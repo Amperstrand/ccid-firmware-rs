@@ -119,13 +119,38 @@ impl PpsFsm {
         &self.tx_buf[..self.tx_len]
     }
 
-    /// Build minimal PPS request (protocol only, no PPS1 Fi/Di negotiation)
-    ///
-    /// Sends only [PPSS, PPS0, PCK] without PPS1. Many cards indicate non-default
-    /// Fi/Di in TA1 but don't actually support PPS1 negotiation. Using minimal PPS
-    /// avoids rejection while still confirming the protocol.
-    ///
-    /// Matches the specter-diy MicroPython T=1 implementation approach.
+    pub fn build_request(&mut self, protocol: u8, ta1: u8) -> &[u8] {
+        self.tx_len = 0;
+        self.rx_len = 0;
+        self.pps0_recv = 0;
+        self.protocol = protocol;
+
+        self.tx_buf[self.tx_len] = 0xFF;
+        self.tx_len += 1;
+
+        let pps0 = 0x10u8 | (protocol & 0x0F);
+        self.tx_buf[self.tx_len] = pps0;
+        self.tx_len += 1;
+
+        self.tx_buf[self.tx_len] = ta1;
+        self.tx_len += 1;
+
+        let mut pck = 0u8;
+        for i in 0..self.tx_len {
+            pck ^= self.tx_buf[i];
+        }
+        self.tx_buf[self.tx_len] = pck;
+        self.tx_len += 1;
+
+        self.state = PpsState::TxRequest;
+        defmt::debug!(
+            "PPS: built request len={} {:?}",
+            self.tx_len,
+            &self.tx_buf[..self.tx_len]
+        );
+        &self.tx_buf[..self.tx_len]
+    }
+
     pub fn build_minimal_request(&mut self, protocol: u8) -> &[u8] {
         self.tx_len = 0;
         self.rx_len = 0;
@@ -149,51 +174,6 @@ impl PpsFsm {
         self.state = PpsState::TxRequest;
         defmt::debug!(
             "PPS: built minimal request len={} {:?}",
-            self.tx_len,
-            &self.tx_buf[..self.tx_len]
-        );
-        &self.tx_buf[..self.tx_len]
-    }
-
-    /// Build PPS request from ATR parameters
-    ///
-    /// # Arguments
-    /// * `protocol` - Protocol to negotiate (0=T=0, 1=T=1)
-    /// * `ta1` - TA1 byte from ATR (contains Fi/Di)
-    ///
-    /// # Returns
-    /// PPS request bytes to transmit
-    pub fn build_request(&mut self, protocol: u8, ta1: u8) -> &[u8] {
-        self.tx_len = 0;
-        self.rx_len = 0;
-        self.pps0_recv = 0;
-        self.protocol = protocol;
-
-        // PPSS = 0xFF (initial byte)
-        self.tx_buf[self.tx_len] = 0xFF;
-        self.tx_len += 1;
-
-        // PPS0 = bit 4 (PPS1 present) | protocol
-        // We always include PPS1 if TA1 is present and not default
-        let pps0 = 0x10u8 | (protocol & 0x0F);
-        self.tx_buf[self.tx_len] = pps0;
-        self.tx_len += 1;
-
-        // PPS1 = TA1 value (Fi/Di)
-        self.tx_buf[self.tx_len] = ta1;
-        self.tx_len += 1;
-
-        // PCK = XOR of all previous bytes
-        let mut pck = 0u8;
-        for i in 0..self.tx_len {
-            pck ^= self.tx_buf[i];
-        }
-        self.tx_buf[self.tx_len] = pck;
-        self.tx_len += 1;
-
-        self.state = PpsState::TxRequest;
-        defmt::debug!(
-            "PPS: built request len={} {:?}",
             self.tx_len,
             &self.tx_buf[..self.tx_len]
         );
@@ -396,35 +376,6 @@ mod tests {
         // PCK = 0xFF ^ 0x10 ^ 0x11 = 0xDE
         assert_eq!(req, &[0xFF, 0x10, 0x11, 0xDE]);
         assert_eq!(fsm.state(), PpsState::TxRequest);
-    }
-
-    #[test]
-    fn test_build_minimal_request() {
-        let mut fsm = PpsFsm::new();
-        let req = fsm.build_minimal_request(1); // T=1 only, no PPS1
-
-        // [0xFF, 0x01, 0xFE]
-        // PPS0 = 0x01 (T=1, no PPS1-3)
-        // PCK = 0xFF ^ 0x01 = 0xFE
-        assert_eq!(req, &[0xFF, 0x01, 0xFE]);
-        assert_eq!(fsm.state(), PpsState::TxRequest);
-    }
-
-    #[test]
-    fn test_minimal_negotiation() {
-        let mut fsm = PpsFsm::new();
-        let req = fsm.build_minimal_request(1); // T=1
-
-        fsm.start_response();
-
-        for &byte in req {
-            let state = fsm.process_byte(byte);
-            if byte == req[req.len() - 1] {
-                assert_eq!(state, PpsState::Done);
-            }
-        }
-
-        assert_eq!(fsm.result(), PpsResult::Success);
     }
 
     #[test]
