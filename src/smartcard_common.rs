@@ -158,3 +158,77 @@ pub fn detect_protocol_from_atr(atr: &[u8]) -> u8 {
     }
     0
 }
+
+/// Byte-level I/O for smartcard protocol functions.
+/// Both USART and bitbang drivers implement this; timeouts are always in milliseconds.
+pub trait SmartcardIo {
+    fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError>;
+    fn recv_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError>;
+    /// Called after TX phase to drain stale data (e.g., USART echoes on half-duplex).
+    /// Default: no-op (bitbang drivers don't need it).
+    fn prepare_rx(&mut self) {}
+}
+
+/// Verify TCK (check byte) for T=1 ATRs per ISO 7816-3 §8.2.4.
+/// TCK is the XOR of all bytes from T0 to the byte before TCK.
+/// Returns true if verification passes (or TCK is not required for T=0).
+pub fn verify_atr_tck(atr: &[u8], protocol: u8) -> bool {
+    if protocol != 1 {
+        return true;
+    }
+    if atr.len() < 3 {
+        return true;
+    }
+    let expected: u8 = atr[1..atr.len() - 1].iter().fold(0u8, |acc, &b| acc ^ b);
+    expected == atr[atr.len() - 1]
+}
+
+/// T=1 IFSD negotiation (ISO 7816-3 §11.4.2).
+/// Send S(IFS request) with IFSD=254, parse S(IFS response) to get card's IFSC.
+/// S-block format: NAD=0, PCB=0xC1/0xE1, LEN=1, INF=IFS value, LRC.
+pub fn do_ifs_negotiation_t1(io: &mut dyn SmartcardIo) -> Result<u8, ()> {
+    const S_IFS_REQ: u8 = 0xC1;
+    const S_IFS_RESP: u8 = 0xE1;
+    const IFSD: u8 = 254;
+    let lrc_val = 0u8 ^ S_IFS_REQ ^ 1u8 ^ IFSD;
+    defmt::info!("T=1 IFSD: sending S(IFS req) IFSD={}", IFSD);
+    io.send_byte(0).map_err(|_| ())?; // NAD
+    io.send_byte(S_IFS_REQ).map_err(|_| ())?; // PCB
+    io.send_byte(1).map_err(|_| ())?; // LEN
+    io.send_byte(IFSD).map_err(|_| ())?; // INF
+    io.send_byte(lrc_val).map_err(|_| ())?; // LRC
+
+    io.prepare_rx(); // Drain TX echoes (no-op on bitbang)
+
+    let nad = io.recv_byte_timeout(2000).map_err(|_| ())?;
+    let pcb = io.recv_byte_timeout(500).map_err(|_| ())?;
+    let len = io.recv_byte_timeout(500).map_err(|_| ())?;
+    defmt::info!(
+        "T=1 IFSD resp: NAD=0x{:02X} PCB=0x{:02X} LEN={}",
+        nad,
+        pcb,
+        len
+    );
+    if (pcb & 0xC0) != 0xC0 || len != 1 {
+        defmt::warn!("T=1 IFSD: unexpected PCB/LEN");
+        return Err(());
+    }
+    let ifsc = io.recv_byte_timeout(500).map_err(|_| ())?;
+    let lrc_recv = io.recv_byte_timeout(500).map_err(|_| ())?;
+    let lrc_exp = nad ^ pcb ^ len ^ ifsc;
+    if lrc_recv != lrc_exp {
+        defmt::warn!(
+            "T=1 IFSD: LRC mismatch recv=0x{:02X} exp=0x{:02X}",
+            lrc_recv,
+            lrc_exp
+        );
+        return Err(());
+    }
+    if pcb == S_IFS_RESP {
+        defmt::info!("T=1 IFSD: card confirmed IFSC={}", ifsc);
+        Ok(ifsc)
+    } else {
+        defmt::warn!("T=1 IFSD: unexpected response PCB=0x{:02X}", pcb);
+        Err(())
+    }
+}

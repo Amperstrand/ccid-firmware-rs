@@ -7,7 +7,7 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, DEFAULT_TA1,
+    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, SmartcardIo, DEFAULT_TA1,
     INS_GET_RESPONSE, SC_ATR_MAX_LEN, SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL,
 };
 use crate::t1_engine::{transmit_apdu_t1, T1Error, T1Transport};
@@ -626,45 +626,6 @@ impl SmartcardBitbang {
         }
     }
 
-    fn do_ifs_negotiation_t1(&mut self) -> Result<u8, ()> {
-        const S_IFS_REQ: u8 = 0xC1;
-        const S_IFS_RESP: u8 = 0xE1;
-        const IFSD: u8 = 254;
-        let lrc_val = 0u8 ^ S_IFS_REQ ^ 1u8 ^ IFSD;
-        self.send_byte(0).map_err(|_| ())?;
-        self.send_byte(S_IFS_REQ).map_err(|_| ())?;
-        self.send_byte(1).map_err(|_| ())?;
-        self.send_byte(IFSD).map_err(|_| ())?;
-        self.send_byte(lrc_val).map_err(|_| ())?;
-        let nad = self
-            .recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)
-            .map_err(|_| ())?;
-        let pcb = self
-            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
-            .map_err(|_| ())?;
-        let len = self
-            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
-            .map_err(|_| ())?;
-        if (pcb & 0xC0) != 0xC0 || len != 1 {
-            return Err(());
-        }
-        let ifsc = self
-            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
-            .map_err(|_| ())?;
-        let lrc_recv = self
-            .recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)
-            .map_err(|_| ())?;
-        let lrc_exp = nad ^ pcb ^ len ^ ifsc;
-        if lrc_recv != lrc_exp {
-            return Err(());
-        }
-        if pcb == S_IFS_RESP {
-            Ok(ifsc)
-        } else {
-            Err(())
-        }
-    }
-
     pub fn transmit_apdu(
         &mut self,
         command: &[u8],
@@ -894,6 +855,18 @@ impl SmartcardBitbang {
         }
         Ok(pb)
     }
+}
+
+impl SmartcardIo for SmartcardBitbang {
+    fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError> {
+        SmartcardBitbang::send_byte(self, byte)
+    }
+    fn recv_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError> {
+        // Convert ms to CPU cycles (timeout_ms * SYSCLK_HZ / 1000)
+        let cycles = timeout_ms.saturating_mul(SYSCLK_HZ / 1000);
+        SmartcardBitbang::recv_byte_timeout(self, cycles)
+    }
+    // prepare_rx: default no-op (bitbang is not half-duplex, no echoes)
 }
 
 impl T1Transport for SmartcardBitbang {

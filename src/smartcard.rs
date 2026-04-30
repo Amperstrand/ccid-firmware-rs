@@ -7,9 +7,9 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, DEFAULT_TA1,
-    INS_GET_RESPONSE, SC_ATR_MAX_LEN, SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL,
-    SW1_WRONG_LENGTH,
+    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, verify_atr_tck, Atr, AtrParams,
+    SmartcardError, SmartcardIo, DEFAULT_TA1, INS_GET_RESPONSE, SC_ATR_MAX_LEN,
+    SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL, SW1_WRONG_LENGTH,
 };
 
 use crate::t1_engine::T1Transport;
@@ -37,20 +37,6 @@ const SC_BYTE_TIMEOUT_MS: u32 = 200;
 const SC_PROCEDURE_TIMEOUT_MS: u32 = 5000;
 const SC_DEFAULT_ETU: u32 = 372;
 const SC_MAX_CLK_HZ: u32 = 5_000_000;
-
-/// Verify TCK (check byte) for T=1 ATRs per ISO 7816-3 §8.2.4.
-/// TCK is the XOR of all bytes from T0 to the byte before TCK.
-/// Returns true if verification passes (or TCK is not required for T=0).
-pub fn verify_atr_tck(atr: &[u8], protocol: u8) -> bool {
-    if protocol != 1 {
-        return true;
-    }
-    if atr.len() < 3 {
-        return true;
-    }
-    let expected: u8 = atr[1..atr.len() - 1].iter().fold(0u8, |acc, &b| acc ^ b);
-    expected == atr[atr.len() - 1]
-}
 
 pub struct SmartcardUart {
     usart: USART2,
@@ -212,62 +198,6 @@ impl SmartcardUart {
         defmt::info!("PPS: baud updated to {} (Fi={}, Di={})", baudrate, fi, di);
     }
 
-    /// T=1 IFSD negotiation (ISO 7816-3 §11.4.2).
-    /// Send S(IFS request) with IFSD=254, parse S(IFS response) to get card's IFSC.
-    /// S-block format: NAD=0, PCB=0xC1 (request)/0xE1 (response), LEN=1, INF=IFS value, LRC.
-    fn do_ifs_negotiation_t1(&mut self) -> Result<u8, ()> {
-        const S_IFS_REQ: u8 = 0xC1; // S(IFS request)
-        const S_IFS_RESP: u8 = 0xE1; // S(IFS response) -- bit 5 set for response
-        const IFSD: u8 = 254;
-        let lrc_val = 0u8 ^ S_IFS_REQ ^ 1u8 ^ IFSD;
-        defmt::info!("T=1 IFSD: sending S(IFS req) IFSD={}", IFSD);
-        self.send_byte(0).map_err(|_| ())?; // NAD
-        self.send_byte(S_IFS_REQ).map_err(|_| ())?; // PCB
-        self.send_byte(1).map_err(|_| ())?; // LEN
-        self.send_byte(IFSD).map_err(|_| ())?; // INF = IFSD value
-        self.send_byte(lrc_val).map_err(|_| ())?; // LRC
-                                                  // Drain TX echoes before receiving
-        loop {
-            let sr = self.usart.sr().read().bits();
-            if (sr & ((1 << 5) | (1 << 3))) != 0 {
-                let _ = self.usart.dr().read().dr().bits();
-            } else {
-                break;
-            }
-        }
-        let nad = self.receive_byte_timeout(2000).map_err(|_| ())?;
-        let pcb = self.receive_byte_timeout(500).map_err(|_| ())?;
-        let len = self.receive_byte_timeout(500).map_err(|_| ())?;
-        defmt::info!(
-            "T=1 IFSD resp: NAD=0x{:02X} PCB=0x{:02X} LEN={}",
-            nad,
-            pcb,
-            len
-        );
-        if (pcb & 0xC0) != 0xC0 || len != 1 {
-            defmt::warn!("T=1 IFSD: unexpected PCB/LEN");
-            return Err(());
-        }
-        let ifsc = self.receive_byte_timeout(500).map_err(|_| ())?;
-        let lrc_recv = self.receive_byte_timeout(500).map_err(|_| ())?;
-        let lrc_exp = nad ^ pcb ^ len ^ ifsc;
-        if lrc_recv != lrc_exp {
-            defmt::warn!(
-                "T=1 IFSD: LRC mismatch recv=0x{:02X} exp=0x{:02X}",
-                lrc_recv,
-                lrc_exp
-            );
-            return Err(());
-        }
-        if pcb == S_IFS_RESP {
-            defmt::info!("T=1 IFSD: card confirmed IFSC={}", ifsc);
-            Ok(ifsc)
-        } else {
-            defmt::warn!("T=1 IFSD: unexpected response PCB=0x{:02X}", pcb);
-            Err(())
-        }
-    }
-
     fn negotiate_pps_fsm(&mut self, params: &AtrParams) -> Result<(), ()> {
         if !params.has_ta1 || params.ta1 == DEFAULT_TA1 {
             defmt::debug!("PPS: skipping (no TA1 or default Fi/Di)");
@@ -416,7 +346,7 @@ impl SmartcardUart {
                         self.ifsc,
                         self.usart.cr2().read().bits()
                     );
-                    match self.do_ifs_negotiation_t1() {
+                    match do_ifs_negotiation_t1(self) {
                         Ok(ifsc) => {
                             self.ifsc = ifsc;
                             defmt::info!("T=1 IFSD OK: card IFSC={}", self.ifsc);
@@ -811,6 +741,26 @@ impl T1Transport for SmartcardUart {
         }
         if drained > 0 {
             defmt::debug!("prepare_rx: drained {} stale bytes", drained);
+        }
+    }
+}
+
+impl SmartcardIo for SmartcardUart {
+    fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError> {
+        SmartcardUart::send_byte(self, byte)
+    }
+    fn recv_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError> {
+        self.receive_byte_timeout(timeout_ms)
+    }
+    fn prepare_rx(&mut self) {
+        // Drain TX echoes on half-duplex USART smartcard I/O
+        loop {
+            let sr = self.usart.sr().read().bits();
+            if (sr & ((1 << 5) | (1 << 3))) != 0 {
+                let _ = self.usart.dr().read().dr().bits();
+            } else {
+                break;
+            }
         }
     }
 }
