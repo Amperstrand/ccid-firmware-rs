@@ -7,8 +7,8 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, SC_ATR_MAX_LEN,
-    SC_T0_GET_RESPONSE_MAX,
+    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, DEFAULT_TA1,
+    INS_GET_RESPONSE, SC_ATR_MAX_LEN, SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL,
 };
 use crate::t1_engine::{transmit_apdu_t1, T1Error, T1Transport};
 use cortex_m::peripheral::DCB;
@@ -578,7 +578,7 @@ impl SmartcardBitbang {
     }
 
     fn negotiate_pps_fsm(&mut self, params: &AtrParams) -> Result<(), ()> {
-        if !params.has_ta1 || params.ta1 == 0x11 {
+        if !params.has_ta1 || params.ta1 == DEFAULT_TA1 {
             defmt::debug!("PPS: skipping (no TA1 or default Fi/Di)");
             return Ok(());
         }
@@ -765,7 +765,7 @@ impl SmartcardBitbang {
                 let pb = self.wait_procedure_byte()?;
 
                 // NULL — card needs more time
-                if pb == 0x60 {
+                if pb == SW1_NULL {
                     continue;
                 }
 
@@ -777,7 +777,7 @@ impl SmartcardBitbang {
                         data_offset += 1;
                     }
                     // Receive response data if header[4] indicates incoming
-                    if header[1] == 0xC0 && header[4] > 0 {
+                    if header[1] == INS_GET_RESPONSE && header[4] > 0 {
                         let n = (header[4] as usize).min(max_response.saturating_sub(response_len));
                         for i in 0..n {
                             response[response_len + i] =
@@ -848,10 +848,10 @@ impl SmartcardBitbang {
         }
         *response_len += 2;
 
-        // 0x61 XX: response data available, need GET RESPONSE
-        if sw1 == 0x61 && *get_response_count < SC_T0_GET_RESPONSE_MAX {
+        // SW1_GET_RESPONSE XX: response data available, need GET RESPONSE
+        if sw1 == SW1_GET_RESPONSE && *get_response_count < SC_T0_GET_RESPONSE_MAX {
             *get_response_count += 1;
-            *header = [0x00, 0xC0, 0x00, 0x00, sw2];
+            *header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
             // Continue in the 'send loop — but we need to return to 'send
             // Instead, inline the GET RESPONSE handling
             for &b in header.iter() {
@@ -859,7 +859,7 @@ impl SmartcardBitbang {
             }
             // Wait for procedure byte
             let pb = self.wait_procedure_byte()?;
-            if pb == 0xC0 {
+            if pb == INS_GET_RESPONSE {
                 // Receive response data
                 let n = (sw2 as usize).min(max_response.saturating_sub(*response_len));
                 for i in 0..n {
@@ -874,7 +874,7 @@ impl SmartcardBitbang {
                     response[*response_len + 1] = fsw2;
                 }
                 *response_len += 2;
-            } else if pb != 0x60 {
+            } else if pb != SW1_NULL {
                 // Got SW1 instead of procedure byte
                 let fsw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
                 if *response_len + 2 <= max_response {
@@ -889,7 +889,7 @@ impl SmartcardBitbang {
 
     fn wait_procedure_byte(&mut self) -> Result<u8, SmartcardError> {
         let mut pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
-        while pb == 0x60 {
+        while pb == SW1_NULL {
             pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
         }
         Ok(pb)

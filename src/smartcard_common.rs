@@ -7,6 +7,14 @@ use crate::pps_fsm::{di_from_ta1, fi_from_ta1};
 pub const SC_ATR_MAX_LEN: usize = 33;
 pub const SC_T0_GET_RESPONSE_MAX: u8 = 32;
 
+// ISO 7816-3 T=0 procedure byte and SW1 constants
+pub const SW1_NULL: u8 = 0x60; // NULL procedure byte — card needs more time
+pub const SW1_GET_RESPONSE: u8 = 0x61; // Response data available (GET RESPONSE needed)
+#[allow(dead_code)]
+pub const SW1_WRONG_LENGTH: u8 = 0x6C; // Wrong Le — card proposes new Le in SW2
+pub const INS_GET_RESPONSE: u8 = 0xC0; // GET RESPONSE instruction byte
+pub const DEFAULT_TA1: u8 = 0x11; // Fi=372, Di=1 (default clock rate conversion)
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
 pub enum SmartcardError {
     NoCard,

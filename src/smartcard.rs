@@ -7,8 +7,9 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, SC_ATR_MAX_LEN,
-    SC_T0_GET_RESPONSE_MAX,
+    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, DEFAULT_TA1,
+    INS_GET_RESPONSE, SC_ATR_MAX_LEN, SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL,
+    SW1_WRONG_LENGTH,
 };
 
 use crate::t1_engine::T1Transport;
@@ -268,7 +269,7 @@ impl SmartcardUart {
     }
 
     fn negotiate_pps_fsm(&mut self, params: &AtrParams) -> Result<(), ()> {
-        if !params.has_ta1 || params.ta1 == 0x11 {
+        if !params.has_ta1 || params.ta1 == DEFAULT_TA1 {
             defmt::debug!("PPS: skipping (no TA1 or default Fi/Di)");
             return Ok(());
         }
@@ -636,8 +637,8 @@ impl SmartcardUart {
 
             loop {
                 let mut pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                while pb == 0x60 {
-                    defmt::info!("T=0 NULL 0x60");
+                while pb == SW1_NULL {
+                    defmt::info!("T=0 NULL procedure byte");
                     pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
                 }
                 defmt::info!("T=0 procedure 0x{:02X}", pb);
@@ -650,21 +651,21 @@ impl SmartcardUart {
                         response[response_len + 1] = sw2;
                     }
                     response_len += 2;
-                    if sw1 == 0x6C {
+                    if sw1 == SW1_WRONG_LENGTH {
                         header[4] = sw2;
                         body_offset = 5;
                         continue 'send;
                     }
-                    if sw1 == 0x61 && get_response_count < SC_T0_GET_RESPONSE_MAX {
+                    if sw1 == SW1_GET_RESPONSE && get_response_count < SC_T0_GET_RESPONSE_MAX {
                         get_response_count += 1;
-                        for b in &[0x00u8, 0xC0, 0x00, 0x00, sw2] {
+                        for b in &[0x00u8, INS_GET_RESPONSE, 0x00, 0x00, sw2] {
                             self.send_byte(*b)?;
                         }
                         pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                        while pb == 0x60 {
+                        while pb == SW1_NULL {
                             pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
                         }
-                        if pb == 0xC0 || pb == 0x4F {
+                        if pb == INS_GET_RESPONSE || pb == 0x4F {
                             let le = if sw2 == 0 { 256usize } else { sw2 as usize };
                             let n = le.min(max_response.saturating_sub(response_len));
                             for i in 0..n {
@@ -679,8 +680,8 @@ impl SmartcardUart {
                                 response[response_len + 1] = sw2;
                             }
                             response_len += 2;
-                            if sw1 == 0x61 {
-                                header = [0x00, 0xC0, 0x00, 0x00, sw2];
+                            if sw1 == SW1_GET_RESPONSE {
+                                header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
                                 body_offset = 5;
                                 continue 'send;
                             }
@@ -696,21 +697,21 @@ impl SmartcardUart {
                     }
                     continue;
                 }
-                if pb == 0x61 {
+                if pb == SW1_GET_RESPONSE {
                     let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
                     if get_response_count >= SC_T0_GET_RESPONSE_MAX {
                         if response_len + 2 <= max_response {
-                            response[response_len] = 0x61;
+                            response[response_len] = SW1_GET_RESPONSE;
                             response[response_len + 1] = sw2;
                         }
                         return Ok(response_len + 2);
                     }
                     get_response_count += 1;
-                    header = [0x00, 0xC0, 0x00, 0x00, sw2];
+                    header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
                     body_offset = 5;
                     continue 'send;
                 }
-                if pb == 0x6C {
+                if pb == SW1_WRONG_LENGTH {
                     let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
                     header[4] = sw2;
                     body_offset = 5;
