@@ -5,9 +5,11 @@
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::needless_range_loop)]
 
-use core::convert::Infallible;
-
-use crate::pps_fsm::{di_from_ta1, fi_from_ta1, PpsFsm, PpsState};
+use crate::pps_fsm::{PpsFsm, PpsState};
+use crate::smartcard_common::{
+    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, SC_ATR_MAX_LEN,
+    SC_T0_GET_RESPONSE_MAX,
+};
 use crate::t1_engine::{transmit_apdu_t1, T1Error, T1Transport};
 use cortex_m::peripheral::DCB;
 use stm32f7xx_hal::gpio::{
@@ -28,8 +30,6 @@ const SC_ATR_TIMEOUT_CYCLES: u32 = SYSCLK_HZ * 4; // 4 seconds
 const SC_ATR_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
 const SC_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
 const SC_PROCEDURE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ; // 1000 ms
-const SC_T0_GET_RESPONSE_MAX: u8 = 32;
-const SC_ATR_MAX_LEN: usize = 33;
 const SC_POWER_ON_DELAY_MS: u32 = 50;
 const SC_CLK_TO_RST_DELAY_CARD_CLKS: u32 = 50_000;
 
@@ -99,127 +99,6 @@ pub fn seal_diag() {
     let cyccnt = unsafe { (*DWT::PTR).cyccnt.read() };
     diag_tlv(DTAG_DWT_STAMP, &cyccnt.to_le_bytes());
     diag_end();
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum SmartcardError {
-    NoCard,
-    Timeout,
-    InvalidATR,
-    ParityError,
-    ProtocolError,
-    BufferOverflow,
-    HardwareError,
-}
-
-impl From<Infallible> for SmartcardError {
-    fn from(_: Infallible) -> Self {
-        SmartcardError::HardwareError
-    }
-}
-
-struct Atr {
-    raw: [u8; SC_ATR_MAX_LEN],
-    len: usize,
-}
-
-impl Default for Atr {
-    fn default() -> Self {
-        Self {
-            raw: [0; SC_ATR_MAX_LEN],
-            len: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AtrParams {
-    pub fi: u16,
-    pub di: u8,
-    pub ta1: u8,
-    pub protocol: u8,
-    pub guard_time_n: u8,
-    pub ifsc: u8,
-    pub bwi: u8,
-    pub cwi: u8,
-    pub edc_type: u8,
-    pub has_ta1: bool,
-}
-
-pub fn parse_atr(atr: &[u8]) -> AtrParams {
-    let mut p = AtrParams {
-        fi: 372,
-        di: 1,
-        ifsc: 32,
-        bwi: 4,
-        cwi: 13,
-        ..AtrParams::default()
-    };
-    if atr.len() < 2 {
-        return p;
-    }
-    let t0 = atr[1];
-    let mut y = (t0 >> 4) & 0x0F;
-    let mut idx = 2usize;
-    let mut level = 1u8;
-    let mut td_protocol: u8 = 0;
-
-    loop {
-        if (y & 0x01) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let ta = atr[idx];
-            idx += 1;
-            if level == 1 {
-                p.ta1 = ta;
-                p.has_ta1 = true;
-                p.fi = fi_from_ta1(ta);
-                p.di = di_from_ta1(ta);
-            } else if level >= 3 && td_protocol == 1 {
-                p.ifsc = ta;
-            }
-        }
-        if (y & 0x02) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let tb = atr[idx];
-            idx += 1;
-            if level >= 2 && td_protocol == 1 {
-                p.bwi = (tb >> 4) & 0x0F;
-                p.cwi = tb & 0x0F;
-            }
-        }
-        if (y & 0x04) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let tc = atr[idx];
-            idx += 1;
-            if level == 1 {
-                p.guard_time_n = tc;
-            } else if td_protocol == 1 {
-                p.edc_type = tc & 1;
-            }
-        }
-        if (y & 0x08) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let td = atr[idx];
-            idx += 1;
-            td_protocol = td & 0x0F;
-            if level == 1 {
-                p.protocol = td_protocol;
-            }
-            y = (td >> 4) & 0x0F;
-            level += 1;
-        } else {
-            break;
-        }
-    }
-    p
 }
 
 pub struct SmartcardBitbang {
@@ -474,7 +353,7 @@ impl SmartcardBitbang {
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 let params = parse_atr(atr_slice);
                 diag_tlv(DTAG_ATR, atr_slice);
-                self.detect_protocol_from_atr();
+                self.protocol = detect_protocol_from_atr(atr_slice);
 
                 defmt::info!(
                     "ATR OK: len={} proto={} TA1=0x{:02X} Fi={} Di={} IFSC={}",
@@ -696,29 +575,6 @@ impl SmartcardBitbang {
             return Err(SmartcardError::InvalidATR);
         }
         Ok(())
-    }
-
-    fn detect_protocol_from_atr(&mut self) {
-        if self.atr.len < 3 {
-            self.protocol = 0;
-            return;
-        }
-        let t0 = self.atr.raw[1];
-        let y1 = (t0 >> 4) & 0x0F;
-        let mut idx = 2;
-        if y1 & 0x01 != 0 {
-            idx += 1;
-        }
-        if y1 & 0x02 != 0 {
-            idx += 1;
-        }
-        if y1 & 0x04 != 0 {
-            idx += 1;
-        }
-        if y1 & 0x08 != 0 && idx < self.atr.len {
-            let td1 = self.atr.raw[idx];
-            self.protocol = td1 & 0x0F;
-        }
     }
 
     fn negotiate_pps_fsm(&mut self, params: &AtrParams) -> Result<(), ()> {

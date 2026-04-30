@@ -44,6 +44,8 @@ mod smartcard;
 #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
 mod smartcard_bitbang;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
+mod smartcard_common;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod t1_engine;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod usb_identity;
@@ -122,9 +124,13 @@ use app_enum::AppEnumerationState;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
-use smartcard::{SmartcardError, SmartcardUart};
+use smartcard::SmartcardUart;
 #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
-use smartcard_bitbang::{SmartcardBitbang, SmartcardError as BitbangError};
+use smartcard_bitbang::SmartcardBitbang;
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
+use smartcard_common::SmartcardError;
+#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
+use smartcard_common::SmartcardError as BitbangError;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_identity::{
     USB_MANUFACTURER, USB_PRODUCT, USB_PRODUCT_ID, USB_SERIAL_NUMBER, USB_VENDOR_ID,

@@ -5,9 +5,11 @@
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::needless_range_loop)]
 
-use crate::pps_fsm::{di_from_ta1, fi_from_ta1, PpsFsm, PpsState};
-
-use core::convert::Infallible;
+use crate::pps_fsm::{PpsFsm, PpsState};
+use crate::smartcard_common::{
+    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, SC_ATR_MAX_LEN,
+    SC_T0_GET_RESPONSE_MAX,
+};
 
 use crate::t1_engine::T1Transport;
 use stm32f4xx_hal::gpio::{
@@ -32,135 +34,8 @@ const SC_ATR_TIMEOUT_MS: u32 = 400;
 const SC_ATR_BYTE_TIMEOUT_MS: u32 = 1000;
 const SC_BYTE_TIMEOUT_MS: u32 = 200;
 const SC_PROCEDURE_TIMEOUT_MS: u32 = 5000;
-const SC_T0_GET_RESPONSE_MAX: u8 = 32;
-const SC_ATR_MAX_LEN: usize = 33;
 const SC_DEFAULT_ETU: u32 = 372;
 const SC_MAX_CLK_HZ: u32 = 5_000_000;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]
-pub enum SmartcardError {
-    NoCard,
-    Timeout,
-    InvalidATR,
-    ParityError,
-    ProtocolError,
-    BufferOverflow,
-    HardwareError,
-}
-
-impl From<Infallible> for SmartcardError {
-    fn from(_: Infallible) -> Self {
-        SmartcardError::HardwareError
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Atr {
-    pub raw: [u8; SC_ATR_MAX_LEN],
-    pub len: usize,
-}
-
-impl Default for Atr {
-    fn default() -> Self {
-        Self {
-            raw: [0u8; SC_ATR_MAX_LEN],
-            len: 0,
-        }
-    }
-}
-
-/// Parsed ATR parameters (ISO 7816-3)
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AtrParams {
-    pub fi: u16,
-    pub di: u8,
-    pub ta1: u8,
-    pub protocol: u8,
-    pub guard_time_n: u8,
-    pub ifsc: u8,
-    pub bwi: u8,
-    pub cwi: u8,
-    pub edc_type: u8,
-    pub has_ta1: bool,
-}
-
-/// Parse ATR into AtrParams (ISO 7816-3 §8.2)
-pub fn parse_atr(atr: &[u8]) -> AtrParams {
-    let mut p = AtrParams {
-        fi: 372,
-        di: 1,
-        ifsc: 32,
-        bwi: 4,
-        cwi: 13,
-        ..AtrParams::default()
-    };
-    if atr.len() < 2 {
-        return p;
-    }
-    let t0 = atr[1];
-    let mut y = (t0 >> 4) & 0x0F;
-    let mut idx = 2usize;
-    let mut level = 1u8;
-    let mut td_protocol: u8 = 0;
-
-    loop {
-        if (y & 0x01) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let ta = atr[idx];
-            idx += 1;
-            if level == 1 {
-                p.ta1 = ta;
-                p.has_ta1 = true;
-                p.fi = fi_from_ta1(ta);
-                p.di = di_from_ta1(ta);
-            } else if level >= 3 && td_protocol == 1 {
-                // TA for T=1 (level ≥ 3, since TA2 is global "specific mode")
-                p.ifsc = ta;
-            }
-        }
-        if (y & 0x02) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let tb = atr[idx];
-            idx += 1;
-            if level >= 2 && td_protocol == 1 {
-                p.bwi = (tb >> 4) & 0x0F;
-                p.cwi = tb & 0x0F;
-            }
-        }
-        if (y & 0x04) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let tc = atr[idx];
-            idx += 1;
-            if level == 1 {
-                p.guard_time_n = tc;
-            } else if td_protocol == 1 {
-                p.edc_type = tc & 1;
-            }
-        }
-        if (y & 0x08) != 0 {
-            if idx >= atr.len() {
-                break;
-            }
-            let td = atr[idx];
-            idx += 1;
-            td_protocol = td & 0x0F;
-            if level == 1 {
-                p.protocol = td_protocol;
-            }
-            y = (td >> 4) & 0x0F;
-            level += 1;
-        } else {
-            break;
-        }
-    }
-    p
-}
 
 /// Verify TCK (check byte) for T=1 ATRs per ISO 7816-3 §8.2.4.
 /// TCK is the XOR of all bytes from T0 to the byte before TCK.
@@ -505,7 +380,8 @@ impl SmartcardUart {
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 defmt::info!("ATR len={} hex={=[u8]:x}", self.atr.len, atr_slice);
                 let params = parse_atr(&self.atr.raw[..self.atr.len]);
-                self.detect_protocol_from_atr();
+                self.protocol = detect_protocol_from_atr(&self.atr.raw[..self.atr.len]);
+                defmt::info!("Detected protocol T={} from ATR", self.protocol);
 
                 if !verify_atr_tck(&self.atr.raw[..self.atr.len], self.protocol) {
                     defmt::error!("ATR TCK mismatch for T=1, rejecting ATR");
@@ -658,43 +534,6 @@ impl SmartcardUart {
         let atr_slice = &self.atr.raw[..len];
         defmt::info!("ATR: {} bytes: {=[u8]:x}", len, atr_slice);
         Ok(())
-    }
-
-    /// Detect protocol from ATR TD1 byte
-    fn detect_protocol_from_atr(&mut self) {
-        // Parse ATR to find TD1
-        // T0 byte format: Y1 (bits 8-5), K (bits 4-1)
-        if self.atr.len < 3 {
-            self.protocol = 0;
-            return;
-        }
-
-        let t0 = self.atr.raw[1];
-        let y1 = (t0 >> 4) & 0x0F;
-        let mut idx = 2;
-
-        // Skip interface bytes based on Y1
-        if y1 & 0x01 != 0 {
-            idx += 1;
-        } // TA1
-        if y1 & 0x02 != 0 {
-            idx += 1;
-        } // TB1
-        if y1 & 0x04 != 0 {
-            idx += 1;
-        } // TC1
-        if y1 & 0x08 != 0 {
-            // TD1 present - contains protocol
-            if idx < self.atr.len {
-                let td1 = self.atr.raw[idx];
-                self.protocol = td1 & 0x0F;
-                defmt::info!(
-                    "Detected protocol T={} from TD1=0x{:02X}",
-                    self.protocol,
-                    td1
-                );
-            }
-        }
     }
 
     /// Transmit APDU using current protocol
