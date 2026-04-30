@@ -7,8 +7,8 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, parse_atr, Atr, AtrParams, SmartcardError, SmartcardIo, DEFAULT_TA1,
-    INS_GET_RESPONSE, SC_ATR_MAX_LEN, SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL,
+    detect_protocol_from_atr, parse_atr, transmit_apdu_t0, Atr, AtrParams, SmartcardError,
+    SmartcardIo, DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
 use crate::t1_engine::{transmit_apdu_t1, T1Error, T1Transport};
 use cortex_m::peripheral::DCB;
@@ -649,7 +649,13 @@ impl SmartcardBitbang {
             self.t1_ns = ns;
             r
         } else {
-            self.transmit_apdu_t0(command, response)
+            transmit_apdu_t0(
+                self,
+                command,
+                response,
+                SC_PROCEDURE_TIMEOUT_CYCLES / (SYSCLK_HZ / 1000),
+                SC_BYTE_TIMEOUT_CYCLES / (SYSCLK_HZ / 1000),
+            )
         };
         unsafe {
             cortex_m::interrupt::enable();
@@ -698,162 +704,6 @@ impl SmartcardBitbang {
             }
         }
         Ok(total_len)
-    }
-
-    fn transmit_apdu_t0(
-        &mut self,
-        command: &[u8],
-        response: &mut [u8],
-    ) -> Result<usize, SmartcardError> {
-        if command.len() < 5 {
-            return Err(SmartcardError::ProtocolError);
-        }
-        let ins = command[1];
-        let mut header = [command[0], command[1], command[2], command[3], command[4]];
-        let mut data_offset = 5usize;
-        let mut response_len = 0usize;
-        let max_response = response.len();
-        let mut get_response_count: u8 = 0;
-
-        #[allow(clippy::never_loop)]
-        loop {
-            for &b in &header {
-                self.send_byte(b)?;
-            }
-
-            // Process procedure bytes
-            loop {
-                let pb = self.wait_procedure_byte()?;
-
-                // NULL — card needs more time
-                if pb == SW1_NULL {
-                    continue;
-                }
-
-                // ACK all remaining data
-                if pb == ins {
-                    // Send all remaining command body bytes
-                    while data_offset < command.len() {
-                        self.send_byte(command[data_offset])?;
-                        data_offset += 1;
-                    }
-                    // Receive response data if header[4] indicates incoming
-                    if header[1] == INS_GET_RESPONSE && header[4] > 0 {
-                        let n = (header[4] as usize).min(max_response.saturating_sub(response_len));
-                        for i in 0..n {
-                            response[response_len + i] =
-                                self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                        }
-                        response_len += n;
-                    }
-                    // After ACK + data transfer, card sends final SW1 SW2
-                    let sw1 = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
-                    let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                    return Self::handle_sw12(
-                        self,
-                        sw1,
-                        sw2,
-                        response,
-                        &mut response_len,
-                        max_response,
-                        &mut header,
-                        &mut get_response_count,
-                        data_offset,
-                        command.len(),
-                    );
-                }
-
-                // ACK one data byte
-                if pb == (ins ^ 0xFF) {
-                    if data_offset < command.len() {
-                        self.send_byte(command[data_offset])?;
-                        data_offset += 1;
-                    }
-                    continue;
-                }
-
-                // SW1 bytes — procedure byte IS the status word SW1
-                let sw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                return Self::handle_sw12(
-                    self,
-                    pb,
-                    sw2,
-                    response,
-                    &mut response_len,
-                    max_response,
-                    &mut header,
-                    &mut get_response_count,
-                    data_offset,
-                    command.len(),
-                );
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn handle_sw12(
-        &mut self,
-        sw1: u8,
-        sw2: u8,
-        response: &mut [u8],
-        response_len: &mut usize,
-        max_response: usize,
-        header: &mut [u8; 5],
-        get_response_count: &mut u8,
-        _data_offset: usize,
-        _data_len: usize,
-    ) -> Result<usize, SmartcardError> {
-        if *response_len + 2 <= max_response {
-            response[*response_len] = sw1;
-            response[*response_len + 1] = sw2;
-        }
-        *response_len += 2;
-
-        // SW1_GET_RESPONSE XX: response data available, need GET RESPONSE
-        if sw1 == SW1_GET_RESPONSE && *get_response_count < SC_T0_GET_RESPONSE_MAX {
-            *get_response_count += 1;
-            *header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
-            // Continue in the 'send loop — but we need to return to 'send
-            // Instead, inline the GET RESPONSE handling
-            for &b in header.iter() {
-                self.send_byte(b)?;
-            }
-            // Wait for procedure byte
-            let pb = self.wait_procedure_byte()?;
-            if pb == INS_GET_RESPONSE {
-                // Receive response data
-                let n = (sw2 as usize).min(max_response.saturating_sub(*response_len));
-                for i in 0..n {
-                    response[*response_len + i] = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                }
-                *response_len += n;
-                // Final SW1 SW2
-                let fsw1 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                let fsw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                if *response_len + 2 <= max_response {
-                    response[*response_len] = fsw1;
-                    response[*response_len + 1] = fsw2;
-                }
-                *response_len += 2;
-            } else if pb != SW1_NULL {
-                // Got SW1 instead of procedure byte
-                let fsw2 = self.recv_byte_timeout(SC_BYTE_TIMEOUT_CYCLES)?;
-                if *response_len + 2 <= max_response {
-                    response[*response_len] = pb;
-                    response[*response_len + 1] = fsw2;
-                }
-                *response_len += 2;
-            }
-        }
-        Ok(*response_len)
-    }
-
-    fn wait_procedure_byte(&mut self) -> Result<u8, SmartcardError> {
-        let mut pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
-        while pb == SW1_NULL {
-            pb = self.recv_byte_timeout(SC_PROCEDURE_TIMEOUT_CYCLES)?;
-        }
-        Ok(pb)
     }
 }
 

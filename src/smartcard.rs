@@ -7,9 +7,8 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, verify_atr_tck, Atr, AtrParams,
-    SmartcardError, SmartcardIo, DEFAULT_TA1, INS_GET_RESPONSE, SC_ATR_MAX_LEN,
-    SC_T0_GET_RESPONSE_MAX, SW1_GET_RESPONSE, SW1_NULL, SW1_WRONG_LENGTH,
+    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, transmit_apdu_t0, verify_atr_tck,
+    Atr, AtrParams, SmartcardError, SmartcardIo, DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
 
 use crate::t1_engine::T1Transport;
@@ -490,7 +489,13 @@ impl SmartcardUart {
         if self.protocol == 1 {
             self.transmit_raw(command, response)
         } else {
-            self.transmit_apdu_t0(command, response)
+            transmit_apdu_t0(
+                self,
+                command,
+                response,
+                SC_PROCEDURE_TIMEOUT_MS,
+                SC_BYTE_TIMEOUT_MS,
+            )
         }
     }
 
@@ -536,125 +541,6 @@ impl SmartcardUart {
 
         defmt::info!("transmit_raw: RX {} bytes", total_len);
         Ok(total_len)
-    }
-
-    /// T=0 protocol APDU transmission (procedure bytes, GET RESPONSE 61 XX, wrong Le 6C XX)
-    fn transmit_apdu_t0(
-        &mut self,
-        command: &[u8],
-        response: &mut [u8],
-    ) -> Result<usize, SmartcardError> {
-        if command.len() < 5 {
-            return Err(SmartcardError::ProtocolError);
-        }
-        let ins = command[1];
-        let mut header = [command[0], command[1], command[2], command[3], command[4]];
-        let mut body_offset = 5usize;
-        let mut response_len = 0usize;
-        let max_response = response.len();
-        let mut get_response_count: u8 = 0;
-
-        'send: loop {
-            for i in 0..5 {
-                self.send_byte(header[i])?;
-            }
-            if body_offset < command.len() {
-                for i in body_offset..command.len() {
-                    self.send_byte(command[i])?;
-                }
-                body_offset = command.len();
-            }
-
-            loop {
-                let mut pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                while pb == SW1_NULL {
-                    defmt::info!("T=0 NULL procedure byte");
-                    pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                }
-                defmt::info!("T=0 procedure 0x{:02X}", pb);
-
-                if pb == ins {
-                    let sw1 = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                    let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                    if response_len + 2 <= max_response {
-                        response[response_len] = sw1;
-                        response[response_len + 1] = sw2;
-                    }
-                    response_len += 2;
-                    if sw1 == SW1_WRONG_LENGTH {
-                        header[4] = sw2;
-                        body_offset = 5;
-                        continue 'send;
-                    }
-                    if sw1 == SW1_GET_RESPONSE && get_response_count < SC_T0_GET_RESPONSE_MAX {
-                        get_response_count += 1;
-                        for b in &[0x00u8, INS_GET_RESPONSE, 0x00, 0x00, sw2] {
-                            self.send_byte(*b)?;
-                        }
-                        pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                        while pb == SW1_NULL {
-                            pb = self.receive_byte_timeout(SC_PROCEDURE_TIMEOUT_MS)?;
-                        }
-                        if pb == INS_GET_RESPONSE || pb == 0x4F {
-                            let le = if sw2 == 0 { 256usize } else { sw2 as usize };
-                            let n = le.min(max_response.saturating_sub(response_len));
-                            for i in 0..n {
-                                response[response_len + i] =
-                                    self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                            }
-                            response_len += n;
-                            let sw1 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                            let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                            if response_len + 2 <= max_response {
-                                response[response_len] = sw1;
-                                response[response_len + 1] = sw2;
-                            }
-                            response_len += 2;
-                            if sw1 == SW1_GET_RESPONSE {
-                                header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
-                                body_offset = 5;
-                                continue 'send;
-                            }
-                        }
-                        return Ok(response_len);
-                    }
-                    return Ok(response_len);
-                }
-                if pb == (ins ^ 0xFF) {
-                    if body_offset < command.len() {
-                        self.send_byte(command[body_offset])?;
-                        body_offset += 1;
-                    }
-                    continue;
-                }
-                if pb == SW1_GET_RESPONSE {
-                    let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                    if get_response_count >= SC_T0_GET_RESPONSE_MAX {
-                        if response_len + 2 <= max_response {
-                            response[response_len] = SW1_GET_RESPONSE;
-                            response[response_len + 1] = sw2;
-                        }
-                        return Ok(response_len + 2);
-                    }
-                    get_response_count += 1;
-                    header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
-                    body_offset = 5;
-                    continue 'send;
-                }
-                if pb == SW1_WRONG_LENGTH {
-                    let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                    header[4] = sw2;
-                    body_offset = 5;
-                    continue 'send;
-                }
-                let sw2 = self.receive_byte_timeout(SC_BYTE_TIMEOUT_MS)?;
-                if response_len + 2 <= max_response {
-                    response[response_len] = pb;
-                    response[response_len + 1] = sw2;
-                }
-                return Ok(response_len + 2);
-            }
-        }
     }
 
     pub fn receive_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError> {

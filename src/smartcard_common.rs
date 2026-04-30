@@ -232,3 +232,124 @@ pub fn do_ifs_negotiation_t1(io: &mut dyn SmartcardIo) -> Result<u8, ()> {
         Err(())
     }
 }
+
+/// T=0 protocol APDU transmission (procedure bytes, GET RESPONSE 61 XX, wrong Le 6C XX).
+/// Generic over SmartcardIo so both USART and bitbang drivers share the same logic.
+pub fn transmit_apdu_t0(
+    io: &mut dyn SmartcardIo,
+    command: &[u8],
+    response: &mut [u8],
+    procedure_timeout_ms: u32,
+    byte_timeout_ms: u32,
+) -> Result<usize, SmartcardError> {
+    if command.len() < 5 {
+        return Err(SmartcardError::ProtocolError);
+    }
+    let ins = command[1];
+    let mut header = [command[0], command[1], command[2], command[3], command[4]];
+    let mut body_offset = 5usize;
+    let mut response_len = 0usize;
+    let max_response = response.len();
+    let mut get_response_count: u8 = 0;
+
+    'send: loop {
+        for i in 0..5 {
+            io.send_byte(header[i])?;
+        }
+        if body_offset < command.len() {
+            for i in body_offset..command.len() {
+                io.send_byte(command[i])?;
+            }
+            body_offset = command.len();
+        }
+
+        loop {
+            let mut pb = io.recv_byte_timeout(procedure_timeout_ms)?;
+            while pb == SW1_NULL {
+                defmt::info!("T=0 NULL procedure byte");
+                pb = io.recv_byte_timeout(procedure_timeout_ms)?;
+            }
+            defmt::info!("T=0 procedure 0x{:02X}", pb);
+
+            if pb == ins {
+                let sw1 = io.recv_byte_timeout(procedure_timeout_ms)?;
+                let sw2 = io.recv_byte_timeout(byte_timeout_ms)?;
+                if response_len + 2 <= max_response {
+                    response[response_len] = sw1;
+                    response[response_len + 1] = sw2;
+                }
+                response_len += 2;
+                if sw1 == SW1_WRONG_LENGTH {
+                    header[4] = sw2;
+                    body_offset = 5;
+                    continue 'send;
+                }
+                if sw1 == SW1_GET_RESPONSE && get_response_count < SC_T0_GET_RESPONSE_MAX {
+                    get_response_count += 1;
+                    for b in &[0x00u8, INS_GET_RESPONSE, 0x00, 0x00, sw2] {
+                        io.send_byte(*b)?;
+                    }
+                    pb = io.recv_byte_timeout(procedure_timeout_ms)?;
+                    while pb == SW1_NULL {
+                        pb = io.recv_byte_timeout(procedure_timeout_ms)?;
+                    }
+                    if pb == INS_GET_RESPONSE || pb == 0x4F {
+                        let le = if sw2 == 0 { 256usize } else { sw2 as usize };
+                        let n = le.min(max_response.saturating_sub(response_len));
+                        for i in 0..n {
+                            response[response_len + i] = io.recv_byte_timeout(byte_timeout_ms)?;
+                        }
+                        response_len += n;
+                        let sw1 = io.recv_byte_timeout(byte_timeout_ms)?;
+                        let sw2 = io.recv_byte_timeout(byte_timeout_ms)?;
+                        if response_len + 2 <= max_response {
+                            response[response_len] = sw1;
+                            response[response_len + 1] = sw2;
+                        }
+                        response_len += 2;
+                        if sw1 == SW1_GET_RESPONSE {
+                            header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
+                            body_offset = 5;
+                            continue 'send;
+                        }
+                    }
+                    return Ok(response_len);
+                }
+                return Ok(response_len);
+            }
+            if pb == (ins ^ 0xFF) {
+                if body_offset < command.len() {
+                    io.send_byte(command[body_offset])?;
+                    body_offset += 1;
+                }
+                continue;
+            }
+            if pb == SW1_GET_RESPONSE {
+                let sw2 = io.recv_byte_timeout(byte_timeout_ms)?;
+                if get_response_count >= SC_T0_GET_RESPONSE_MAX {
+                    if response_len + 2 <= max_response {
+                        response[response_len] = SW1_GET_RESPONSE;
+                        response[response_len + 1] = sw2;
+                    }
+                    return Ok(response_len + 2);
+                }
+                get_response_count += 1;
+                header = [0x00, INS_GET_RESPONSE, 0x00, 0x00, sw2];
+                body_offset = 5;
+                continue 'send;
+            }
+            if pb == SW1_WRONG_LENGTH {
+                let sw2 = io.recv_byte_timeout(byte_timeout_ms)?;
+                header[4] = sw2;
+                body_offset = 5;
+                continue 'send;
+            }
+            let sw2 = io.recv_byte_timeout(byte_timeout_ms)?;
+            if response_len + 2 <= max_response {
+                response[response_len] = pb;
+                response[response_len + 1] = sw2;
+            }
+            return Ok(response_len + 2);
+        }
+    }
+}
