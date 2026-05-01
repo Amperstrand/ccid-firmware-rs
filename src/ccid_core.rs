@@ -484,31 +484,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             }
         }
 
-        if data_len == 5 && data[0] == 0x00 && (data[1] == 0xC1 || data[1] == 0xE1) {
-            let lrc_check: u8 = data.iter().take(4).fold(0u8, |a, &b| a ^ b);
-            if lrc_check == data[4] {
-                ccid_info!("CCID: XfrBlock S(IFS) request intercepted");
-                let mut resp = [0u8; 5];
-                resp[0] = 0x00;
-                resp[1] = if data[1] == 0xC1 { 0xE1 } else { 0xC1 };
-                resp[2] = data[2];
-                resp[3] = data[3];
-                resp[4] = 0;
-                resp[4] = resp.iter().fold(0u8, |a, &b| a ^ b);
-                let status = build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE);
-                self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
-                self.tx_buffer[1..5].copy_from_slice(&5u32.to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] = status;
-                self.tx_buffer[8] = 0;
-                self.tx_buffer[9] = 0;
-                self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + 5].copy_from_slice(&resp);
-                self.tx_len = CCID_HEADER_SIZE + 5;
-                return true;
-            }
-        }
-
         false
     }
 
@@ -584,7 +559,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 if p.has_ta1 { p.ta1 } else { 0x11 },
                 (p.edc_type & 1) << 4,
                 p.guard_time_n,
-                p.bwi.wrapping_sub(1).min(0x0A),
+                (p.bwi << 4) | (p.cwi & 0x0F),
                 0x00,
                 p.ifsc.min(254),
                 0x00,
@@ -604,7 +579,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 if p.has_ta1 { p.ta1 } else { 0x11 },
                 0x00,
                 p.guard_time_n,
-                p.bwi.wrapping_sub(1).min(0x0A),
+                (p.bwi << 4) | (p.cwi & 0x0F),
                 0x00,
             ];
             self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
@@ -647,7 +622,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 if p.has_ta1 { p.ta1 } else { 0x11 },
                 (p.edc_type & 1) << 4,
                 p.guard_time_n,
-                p.bwi.wrapping_sub(1).min(0x0A),
+                (p.bwi << 4) | (p.cwi & 0x0F),
                 0x00,
                 p.ifsc.min(254),
                 0x00,
@@ -666,7 +641,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 if p.has_ta1 { p.ta1 } else { 0x11 },
                 0x00,
                 p.guard_time_n,
-                p.bwi.wrapping_sub(1).min(0x0A),
+                (p.bwi << 4) | (p.cwi & 0x0F),
                 0x00,
             ];
             self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;

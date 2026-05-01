@@ -660,11 +660,16 @@ fn test_xfrblock_minimal_pps_intercepted() {
 }
 
 #[test]
-fn test_xfrblock_ifs_intercepted() {
-    let mut h = ccid_harness::gemalto_ct30_with_atr(&[0x3B, 0x00]);
+fn test_xfrblock_ifs_forwarded_to_card() {
+    let driver = ccid_firmware_rs::mock_driver::MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&[0x3B, 0x00])
+        .with_protocol(0x01)
+        .with_apdu_response(&[0x00, 0xE1, 0x01, 0xFE, 0x1E]);
+    let mut h = ccid_harness::CcidTestHarness::new(driver, 0x08E6);
     h.send(PC_TO_RDR_ICC_POWER_ON, &[], 0x01);
 
-    let ifs_req = &[0x00, 0xC1, 0x01, 0xFE, 0x3E]; // NAD=0, PCB=C1(IFS req), LEN=1, INF=254, LRC
+    let ifs_req = &[0x00, 0xC1, 0x01, 0xFE, 0x3E];
     let resp = h.send(PC_TO_RDR_XFR_BLOCK, ifs_req, 0x02);
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_DATABLOCK);
@@ -673,11 +678,16 @@ fn test_xfrblock_ifs_intercepted() {
 }
 
 #[test]
-fn test_xfrblock_ifs_response_intercepted() {
-    let mut h = ccid_harness::gemalto_ct30_with_atr(&[0x3B, 0x00]);
+fn test_xfrblock_ifs_response_forwarded_to_card() {
+    let driver = ccid_firmware_rs::mock_driver::MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&[0x3B, 0x00])
+        .with_protocol(0x01)
+        .with_apdu_response(&[0x00, 0xC1, 0x01, 0xFE, 0x3E]);
+    let mut h = ccid_harness::CcidTestHarness::new(driver, 0x08E6);
     h.send(PC_TO_RDR_ICC_POWER_ON, &[], 0x01);
 
-    let ifs_resp = &[0x00, 0xE1, 0x01, 0xFE, 0x1E]; // NAD=0, PCB=E1(IFS resp), LEN=1, INF=254, LRC
+    let ifs_resp = &[0x00, 0xE1, 0x01, 0xFE, 0x1E];
     let resp = h.send(PC_TO_RDR_XFR_BLOCK, ifs_resp, 0x02);
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_DATABLOCK);

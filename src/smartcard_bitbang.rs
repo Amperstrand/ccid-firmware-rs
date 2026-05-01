@@ -10,7 +10,7 @@ use crate::smartcard_common::{
     detect_protocol_from_atr, parse_atr, transmit_apdu_t0, Atr, AtrParams, SmartcardError,
     SmartcardIo, DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
-use crate::t1_engine::{transmit_apdu_t1, T1Error, T1Transport};
+use crate::t1_engine::T1Transport;
 use cortex_m::peripheral::DCB;
 use stm32f7xx_hal::gpio::{
     gpiof::{PF10, PF6, PF7},
@@ -23,13 +23,15 @@ const SYSCLK_HZ: u32 = 216_000_000;
 const CARD_CLK_HZ: u32 = 1_000_000;
 const FI_DEFAULT: u32 = 372;
 const DI_DEFAULT: u32 = 1;
-const ETU_CPU_CYCLES: u32 = (SYSCLK_HZ / CARD_CLK_HZ) * FI_DEFAULT / DI_DEFAULT; // 80,352
-const GPIO_CLK_HALF_CYCLES: u32 = SYSCLK_HZ / (CARD_CLK_HZ * 2); // 108
+const ETU_CPU_CYCLES: u32 = (SYSCLK_HZ / CARD_CLK_HZ) * FI_DEFAULT / DI_DEFAULT; // 16,070
+const GPIO_CLK_HALF_CYCLES: u32 = SYSCLK_HZ / (CARD_CLK_HZ * 2); // 21
 
 const SC_ATR_TIMEOUT_CYCLES: u32 = SYSCLK_HZ * 4; // 4 seconds
 const SC_ATR_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
-const SC_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
-const SC_PROCEDURE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ; // 1000 ms
+const SC_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 20; // 50 ms — matches F469 USART driver
+/// Max ~9 s — limited by u32 wrapping deadline check (2^31 / SYSCLK_HZ ≈ 9.93 s).
+/// Must exceed BWT at default ETU (BWI=4, DI=1, 1 MHz → BWT ≈ 5.72 s).
+const SC_PROCEDURE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ * 9; // 9,000 ms
 const SC_POWER_ON_DELAY_MS: u32 = 50;
 const SC_CLK_TO_RST_DELAY_CARD_CLKS: u32 = 50_000;
 
@@ -236,10 +238,10 @@ impl SmartcardBitbang {
         tim10.cr1.write(|w| unsafe { w.bits(0) });
 
         // TIM10 kernel clock = 216 MHz (APB2=108 MHz × 2 multiplier).
-        // Target 1 MHz → PSC=0, ARR=215 (216 MHz / 216 = 1 MHz).
+        // ARR = SYSCLK_HZ / CARD_CLK_HZ - 1, CCR1 = ARR/2 (50% duty).
         tim10.psc.write(|w| unsafe { w.bits(0) });
-        tim10.arr.write(|w| unsafe { w.bits(215) });
-        tim10.ccr1().write(|w| unsafe { w.bits(107) }); // 50% duty
+        tim10.arr.write(|w| unsafe { w.bits(SYSCLK_HZ / CARD_CLK_HZ - 1) });
+        tim10.ccr1().write(|w| unsafe { w.bits(SYSCLK_HZ / CARD_CLK_HZ / 2) });
 
         tim10.ccmr1_output().write(|w| {
             w.oc1m().pwm_mode1();
@@ -455,7 +457,10 @@ impl SmartcardBitbang {
     fn send_byte(&mut self, byte: u8) -> Result<(), SmartcardError> {
         let parity_is_one = (byte.count_ones() % 2) == 1;
         let etu = self.etu_cycles;
-        let guard_etu: u32 = if self.protocol == 1 { 1 } else { 2 };
+        // Bias T=1 toward slow-but-working on the bitbang transport.
+        // ISO 7816-3 minimum is 1 ETU, but giving the card an extra ETU of
+        // inter-character idle time is harmless and widens timing margin.
+        let guard_etu: u32 = if self.protocol == 1 { 2 } else { 2 };
         let total_etu = 10 + guard_etu;
 
         self.io_drive_low();
@@ -583,7 +588,12 @@ impl SmartcardBitbang {
             return Ok(());
         }
         let mut fsm = PpsFsm::new();
-        let req = fsm.build_request(params.protocol, params.ta1);
+        // Use minimal PPS (protocol only, no Fi/Di change) to match the proven
+        // USART driver behavior. The USART never changes ETU and works reliably.
+        // Bitbang with full PPS (Fi/Di change) caused INIT UPDATE failures:
+        // short responses worked but long (~34 byte) responses timed out.
+        // Keeping the default ETU (Fi=372, Di=1) gives maximum timing margin.
+        let req = fsm.build_minimal_request(params.protocol);
         defmt::info!("PPS: sending {} bytes", req.len());
         for &b in req.iter() {
             self.send_byte(b).map_err(|_| ())?;
@@ -594,18 +604,7 @@ impl SmartcardBitbang {
                 Ok(byte) => {
                     let state = fsm.process_byte(byte);
                     if state == PpsState::Done {
-                        // PPS succeeded — switch to TA1's F/D parameters
-                        // (matches F469 USART: set_baud_from_fi_di in smartcard.rs:403)
-                        if params.di > 0 {
-                            self.etu_cycles =
-                                (SYSCLK_HZ / CARD_CLK_HZ) * params.fi as u32 / params.di as u32;
-                        }
-                        defmt::info!(
-                            "PPS OK: Fi={} Di={} etu_cycles={}",
-                            params.fi,
-                            params.di,
-                            self.etu_cycles
-                        );
+                        defmt::info!("PPS OK (minimal, protocol confirmed)");
                         return Ok(());
                     }
                     if state == PpsState::Failed {
@@ -635,31 +634,20 @@ impl SmartcardBitbang {
             return Err(SmartcardError::HardwareError);
         }
 
-        cortex_m::interrupt::disable();
-        self.io_release_high();
-        Self::delay_cycles(self.etu_cycles * 4);
-
         let result = if self.protocol == 1 {
-            let ifsc = self.ifsc;
-            let mut ns = self.t1_ns;
-            let r = transmit_apdu_t1(self, ifsc, &mut ns, command, response).map_err(|e| match e {
-                T1Error::Transport(se) => se,
-                T1Error::LrcMismatch | T1Error::Timeout => SmartcardError::ProtocolError,
-            });
-            self.t1_ns = ns;
-            r
+            self.transmit_raw_inner(command, response)
         } else {
-            transmit_apdu_t0(
+            cortex_m::interrupt::disable();
+            let r = transmit_apdu_t0(
                 self,
                 command,
                 response,
                 SC_PROCEDURE_TIMEOUT_CYCLES / (SYSCLK_HZ / 1000),
                 SC_BYTE_TIMEOUT_CYCLES / (SYSCLK_HZ / 1000),
-            )
+            );
+            unsafe { cortex_m::interrupt::enable(); }
+            r
         };
-        unsafe {
-            cortex_m::interrupt::enable();
-        }
         result
     }
 
@@ -689,7 +677,7 @@ impl SmartcardBitbang {
             self.send_byte(byte)?;
         }
         self.io_release_high();
-        Self::delay_cycles(self.etu_cycles * 22);
+
         let mut total_len = 0usize;
         let mut timeout_cycles = SC_PROCEDURE_TIMEOUT_CYCLES;
         while total_len < response.len() {
@@ -702,6 +690,9 @@ impl SmartcardBitbang {
                 Err(SmartcardError::Timeout) => break,
                 Err(e) => return Err(e),
             }
+        }
+        if total_len == 0 {
+            return Err(SmartcardError::Timeout);
         }
         Ok(total_len)
     }
@@ -738,7 +729,9 @@ impl T1Transport for SmartcardBitbang {
         SmartcardBitbang::recv_byte_timeout(self, cycles)
     }
 
-    fn prepare_rx(&mut self) {}
+    fn prepare_rx(&mut self) {
+        self.io_release_high();
+    }
 
     fn delay_bgt(&mut self) {
         Self::delay_cycles(self.etu_cycles * 22);

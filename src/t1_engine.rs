@@ -64,12 +64,6 @@ fn lrc(buf: &[u8]) -> u8 {
 fn send_i_block<T: T1Transport>(t: &mut T, inf: &[u8], ns: u8, m: bool) -> Result<(), T::Error> {
     let pcb = PCB_I_BLOCK | (ns << 6) | if m { I_M_CHAIN } else { 0 };
     let len = inf.len() as u8;
-    defmt::info!(
-        "T1 TX: [00 {:02x} {:02x}] + {} INF bytes + LRC",
-        pcb,
-        len,
-        inf.len()
-    );
     t.send_byte(0)?;
     t.send_byte(pcb)?;
     t.send_byte(len)?;
@@ -78,11 +72,6 @@ fn send_i_block<T: T1Transport>(t: &mut T, inf: &[u8], ns: u8, m: bool) -> Resul
     }
     let lrc_val = 0 ^ pcb ^ len ^ lrc(inf);
     t.send_byte(lrc_val)?;
-    defmt::info!(
-        "T1 TX done: LRC=0x{:02X} ({} total bytes sent)",
-        lrc_val,
-        4 + inf.len()
-    );
     Ok(())
 }
 
@@ -122,28 +111,6 @@ fn recv_block<T: T1Transport>(
         .recv_byte_timeout(INTER_BYTE_MS)
         .map_err(T1Error::Transport)?;
     let lrc_exp = buf[0] ^ buf[1] ^ (len as u8) ^ lrc(&buf[3..3 + len]);
-    // Now safe to log (all bytes received).
-    // Hex dump the full block for debugging
-    if len <= 20 {
-        let end = 3 + len;
-        defmt::info!(
-            "T1 RX raw: [{=u8:02x} {=u8:02x} {=u8:02x}] INF={=[u8]:02x} LRC=0x{:02X}",
-            buf[0],
-            buf[1],
-            len as u8,
-            &buf[3..end],
-            lrc_recv
-        );
-    } else {
-        defmt::info!(
-            "T1 RX raw: [{=u8:02x} {=u8:02x} {=u8:02x}] len={} LRC=0x{:02X}",
-            buf[0],
-            buf[1],
-            len as u8,
-            len,
-            lrc_recv
-        );
-    }
     if lrc_recv != lrc_exp {
         defmt::error!(
             "T1 RX: LRC mismatch recv=0x{:02X} exp=0x{:02X} block=[{=u8:02x} {=u8:02x} {=u8:02x}..]",
@@ -153,7 +120,6 @@ fn recv_block<T: T1Transport>(
         );
         return Err(T1Error::LrcMismatch);
     }
-    defmt::info!("T1 RX: OK PCB=0x{:02X} LEN={}", buf[1], len);
     Ok((buf[1], len))
 }
 
@@ -202,7 +168,6 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                     let wtx = block.get(3).copied().unwrap_or(0);
                     let resp_pcb = PCB_S_BLOCK | 0x20 | S_WTX_RESP;
                     let l = 0 ^ resp_pcb ^ 1 ^ wtx;
-                    defmt::info!("T1: S(WTX req) wtx={}, sending S(WTX resp)", wtx);
                     t.delay_bgt();
                     t.send_byte(0).map_err(T1Error::Transport)?;
                     t.send_byte(resp_pcb).map_err(T1Error::Transport)?;
@@ -212,7 +177,6 @@ pub fn transmit_apdu_t1<T: T1Transport>(
                 } else if s_type == S_RESYNC_REQ {
                     let resp_pcb = PCB_S_BLOCK | 0x20 | S_RESYNC_RESP;
                     let l = 0 ^ resp_pcb ^ 0;
-                    defmt::info!("T1: S(RESYNC req), sending S(RESYNC resp)");
                     t.delay_bgt();
                     t.send_byte(0).map_err(T1Error::Transport)?;
                     t.send_byte(resp_pcb).map_err(T1Error::Transport)?;

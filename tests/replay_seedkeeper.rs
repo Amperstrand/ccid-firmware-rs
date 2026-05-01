@@ -139,6 +139,7 @@ fn build_mock_driver() -> MockSmartcardDriver {
         .card_present(true)
         .with_atr(SEEDKEEPER_ATR)
         .with_protocol(0x01)
+        .with_apdu_response(&[0x00, 0xE1, 0x01, 0xFE, 0x1E])
         .with_apdu_response(&[0x00, 0x00, 0x02, 0x67, 0x00, 0x65])
         .with_apdu_response(&[0x00, 0x40, 0x02, 0x6E, 0x00, 0x2C])
 }
@@ -403,6 +404,7 @@ fn replay_full_session_with_verify() {
         .card_present(true)
         .with_atr(SEEDKEEPER_ATR)
         .with_protocol(0x01)
+        .with_apdu_response(&[0x00, 0xE1, 0x01, 0xFE, 0x1E]) // S(IFS) response
         .with_apdu_response(&[0x00, 0x00, 0x02, 0x67, 0x00, 0x65]) // SELECT response
         .with_apdu_response(&[0x00, 0x40, 0x02, 0x6E, 0x00, 0x2C]); // VERIFY response
     let mut h = CcidTestHarness::new(driver, 0x08E6);
