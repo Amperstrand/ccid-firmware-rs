@@ -1,0 +1,14 @@
+[package]
+name = "ccid-core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared CCID command handling utilities for smartcard reader firmware"
+license = "GPL-2.0-or-later"
+
+[features]
+default = []
+std = []
+
+[dependencies]
+ccid-protocol = { path = "../../ccid-protocol" }
+card-interface = { path = "../card-interface" }

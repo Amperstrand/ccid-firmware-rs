@@ -274,6 +274,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccid-core"
+version = "0.1.0"
+dependencies = [
+ "card-interface",
+ "ccid-protocol",
+]
+
+[[package]]
 name = "ccid-firmware-rs"
 version = "0.0.8"
 dependencies = [
