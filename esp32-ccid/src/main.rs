@@ -43,8 +43,6 @@ use esp_idf_sys::EspError;
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use esp32_ccid::{
-    ble_debug::BleDebugServer,
-    ble_logger::BleLogger,
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
     nfc::NfcDriver,
@@ -53,12 +51,14 @@ use esp32_ccid::{
         FrameParser,
     },
 };
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
+use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
 use esp_idf_svc::{
     bt::{ble::gap::EspBleGap, ble::gatt::server::EspGatts, Ble, BtDriver},
     nvs::EspDefaultNvsPartition,
 };
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
 use std::sync::Arc;
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
@@ -304,6 +304,7 @@ fn main() {
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
 
+    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     let ble_server = (|| -> Result<BleDebugServer, EspError> {
         let nvs = EspDefaultNvsPartition::take().ok();
         let bt = Arc::new(BtDriver::<Ble>::new(peripherals.modem, nvs)?);
@@ -316,9 +317,17 @@ fn main() {
     })()
     .ok();
 
+    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     let _ = BleLogger::install();
+    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     log::set_max_level(log::LevelFilter::Debug);
+    // When BLE is disabled, suppress ALL log output — UART0 is reserved
+    // exclusively for CCID serial protocol, no debug output allowed.
+    #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
+    log::set_max_level(log::LevelFilter::Off);
+    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     log::info!("ESP32-CCID: BLE logger installed");
+    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     if ble_server.is_some() {
         log::info!("ESP32-CCID: BLE server started, advertising");
     } else {
@@ -466,6 +475,7 @@ fn main() {
                         frame_parser.reset();
 
                         // Drain BLE logs after every command (not just on timeout)
+                        #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
                         if let Some(server) = ble_server.as_ref() {
                             BleLogger::global().drain(server);
                         }
@@ -485,6 +495,7 @@ fn main() {
                 frame_len = 0;
                 frame_parser.reset();
 
+                #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
                 if let Some(server) = ble_server.as_ref() {
                     BleLogger::global().drain(server);
                 }

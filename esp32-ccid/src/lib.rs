@@ -25,8 +25,8 @@ pub mod mfrc522_transceiver;
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
 pub mod ble_debug;
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
 pub mod ble_logger;

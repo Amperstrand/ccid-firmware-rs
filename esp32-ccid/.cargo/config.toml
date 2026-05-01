@@ -8,3 +8,6 @@ rustflags = ["--cfg", "espidf_time64", "-Zunstable-options", "-C", "panic=immedi
 
 [unstable]
 build-std = ["std", "panic_abort"]
+
+[env]
+ESP_IDF_SYS_ROOT_CRATE = { value = "esp32-ccid" }

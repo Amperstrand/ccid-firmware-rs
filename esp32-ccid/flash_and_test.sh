@@ -32,7 +32,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 build() {
     echo ""
     echo "=== Building firmware ==="
-    cargo +esp build --release --features backend-mfrc522
+    cargo +esp build --release --features backend-mfrc522 --no-default-features
     info "Build complete."
 }
 

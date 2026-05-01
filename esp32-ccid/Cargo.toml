@@ -17,6 +17,7 @@ path = "src/lib.rs"
 default = ["backend-mfrc522"]
 backend-mfrc522 = ["dep:mfrc522", "dep:iso14443"]
 backend-pn532 = ["dep:pn532"]
+ble = []
 
 [dependencies]
 ccid-protocol = { path = "../ccid-protocol" }
@@ -38,5 +39,6 @@ embuild = { version = "0.32", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
 esp_idf_version = "tag:v5.2.4"
+esp_idf_sdkconfig_defaults = ["esp32-ccid/sdkconfig.defaults", "esp32-ccid/sdkconfig.defaults.esp32"]
 
 
