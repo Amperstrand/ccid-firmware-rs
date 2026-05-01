@@ -1,8 +1,7 @@
 # Build artifacts
 /target/
-esp32-ccid/target/
+**/target/
 esp32-ccid/.embuild/
-vendor/**/target/
 tmp/
 *.bin
 *.elf

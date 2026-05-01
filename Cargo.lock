@@ -231,6 +231,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "card-interface"
+version = "0.1.0"
+
+[[package]]
 name = "cargo-platform"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
