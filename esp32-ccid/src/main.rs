@@ -41,6 +41,8 @@ use esp_idf_hal::{
 ))]
 use esp_idf_sys::EspError;
 
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
+use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use esp32_ccid::{
     ccid_handler::CcidHandler,
@@ -51,8 +53,6 @@ use esp32_ccid::{
         FrameParser,
     },
 };
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
-use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
 use esp_idf_svc::{
     bt::{ble::gap::EspBleGap, ble::gatt::server::EspGatts, Ble, BtDriver},
