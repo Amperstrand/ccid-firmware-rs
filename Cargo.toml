@@ -19,6 +19,7 @@ test = false
 bench = false
 
 [dependencies]
+ccid-core = { path = "crates/ccid-core" }
 ccid-protocol = { path = "ccid-protocol" }
 
 [target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]

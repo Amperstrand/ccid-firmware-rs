@@ -285,6 +285,7 @@ dependencies = [
 name = "ccid-firmware-rs"
 version = "0.0.8"
 dependencies = [
+ "ccid-core",
  "ccid-protocol",
  "cortex-m",
  "cortex-m-rt",

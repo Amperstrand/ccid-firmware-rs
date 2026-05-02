@@ -8,6 +8,7 @@ use crate::pinpad::{
     ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder,
 };
 use crate::protocol_unit::{parse_atr, AtrParams};
+use ::ccid_core::response::{write_data_block, write_message, write_parameters, write_slot_status};
 use ccid_protocol::status::build_bstatus;
 pub use ccid_protocol::types::*;
 
@@ -229,14 +230,16 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         let status = build_bstatus(COMMAND_STATUS_FAILED, icc);
         match msg_type {
             PC_TO_RDR_ICC_POWER_ON | PC_TO_RDR_XFR_BLOCK | PC_TO_RDR_SECURE => {
-                self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
-                self.tx_buffer[1..5].copy_from_slice(&0u32.to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] = status;
-                self.tx_buffer[8] = error;
-                self.tx_buffer[9] = 0;
-                self.tx_len = CCID_HEADER_SIZE;
+                self.tx_len = write_message(
+                    RDR_TO_PC_DATABLOCK,
+                    0,
+                    seq,
+                    status,
+                    error,
+                    0,
+                    &[],
+                    &mut self.tx_buffer,
+                );
             }
             PC_TO_RDR_ICC_POWER_OFF
             | PC_TO_RDR_GET_SLOT_STATUS
@@ -248,24 +251,28 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 self.send_slot_status(seq, COMMAND_STATUS_FAILED, icc, error);
             }
             PC_TO_RDR_GET_PARAMETERS | PC_TO_RDR_RESET_PARAMETERS | PC_TO_RDR_SET_PARAMETERS => {
-                self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
-                self.tx_buffer[1..5].copy_from_slice(&0u32.to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] = status;
-                self.tx_buffer[8] = error;
-                self.tx_buffer[9] = 0;
-                self.tx_len = CCID_HEADER_SIZE;
+                self.tx_len = write_message(
+                    RDR_TO_PC_PARAMETERS,
+                    0,
+                    seq,
+                    status,
+                    error,
+                    0,
+                    &[],
+                    &mut self.tx_buffer,
+                );
             }
             PC_TO_RDR_ESCAPE => {
-                self.tx_buffer[0] = RDR_TO_PC_ESCAPE;
-                self.tx_buffer[1..5].copy_from_slice(&0u32.to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] = status;
-                self.tx_buffer[8] = error;
-                self.tx_buffer[9] = 0;
-                self.tx_len = CCID_HEADER_SIZE;
+                self.tx_len = write_message(
+                    RDR_TO_PC_ESCAPE,
+                    0,
+                    seq,
+                    status,
+                    error,
+                    0,
+                    &[],
+                    &mut self.tx_buffer,
+                );
             }
             _ => {
                 self.send_slot_status(seq, COMMAND_STATUS_FAILED, icc, CCID_ERR_CMD_NOT_SUPPORTED);
@@ -322,20 +329,16 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 self.atr_params = parse_atr(atr);
                 self.current_protocol = self.atr_params.protocol;
                 let atr_len = atr.len().min(MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE);
-
-                self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
-                self.tx_buffer[1..5].copy_from_slice(&(atr_len as u32).to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] =
-                    build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE);
-                self.tx_buffer[8] = 0;
-                self.tx_buffer[9] = 0;
-
-                self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + atr_len]
-                    .copy_from_slice(&atr[..atr_len]);
-
-                self.tx_len = CCID_HEADER_SIZE + atr_len;
+                self.tx_len = write_data_block(
+                    0,
+                    seq,
+                    ICC_STATUS_PRESENT_ACTIVE,
+                    COMMAND_STATUS_NO_ERROR,
+                    0,
+                    0,
+                    &atr[..atr_len],
+                    &mut self.tx_buffer,
+                );
                 ccid_info!("CCID: PowerOn success, ATR len={}", atr_len);
             }
             Err(_e) => {
@@ -354,23 +357,23 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     fn handle_reset_parameters(&mut self, seq: u8) {
         self.atr_params = AtrParams::default();
         self.current_protocol = 0;
-
-        let params: [u8; 5] = [
+        let params = [
             0x11, // bmFindexDindex (Fi=372, Di=1)
             0x00, // bmTCCKST0
             0x00, // bGuardTimeT0
             0x00, // bWaitingIntegerT0
             0x00, // bClockStop
         ];
-        self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
-        self.tx_buffer[1..5].copy_from_slice(&5u32.to_le_bytes());
-        self.tx_buffer[5] = 0;
-        self.tx_buffer[6] = seq;
-        self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
-        self.tx_buffer[8] = 0;
-        self.tx_buffer[9] = 0;
-        self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + 5].copy_from_slice(&params);
-        self.tx_len = CCID_HEADER_SIZE + 5;
+        self.tx_len = write_parameters(
+            0,
+            seq,
+            self.get_icc_status(),
+            COMMAND_STATUS_NO_ERROR,
+            0,
+            self.current_protocol,
+            &params,
+            &mut self.tx_buffer,
+        );
     }
 
     fn handle_set_data_rate_and_clock(&mut self, seq: u8) {
@@ -398,16 +401,26 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         ]);
         match self.driver.set_clock_and_rate(clock_hz, rate_bps) {
             Ok((actual_clock, actual_rate)) => {
-                self.tx_buffer[0] = RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQ;
-                self.tx_buffer[1..5].copy_from_slice(&8u32.to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
-                self.tx_buffer[8] = 0;
-                self.tx_buffer[9] = 0;
-                self.tx_buffer[10..14].copy_from_slice(&actual_clock.to_le_bytes());
-                self.tx_buffer[14..18].copy_from_slice(&actual_rate.to_le_bytes());
-                self.tx_len = CCID_HEADER_SIZE + 8;
+                let payload = [
+                    actual_clock.to_le_bytes()[0],
+                    actual_clock.to_le_bytes()[1],
+                    actual_clock.to_le_bytes()[2],
+                    actual_clock.to_le_bytes()[3],
+                    actual_rate.to_le_bytes()[0],
+                    actual_rate.to_le_bytes()[1],
+                    actual_rate.to_le_bytes()[2],
+                    actual_rate.to_le_bytes()[3],
+                ];
+                self.tx_len = write_message(
+                    RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQ,
+                    0,
+                    seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status()),
+                    0,
+                    0,
+                    &payload,
+                    &mut self.tx_buffer,
+                );
             }
             Err(_) => {
                 self.send_slot_status(
@@ -441,16 +454,15 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.driver.power_off();
         self.slot_state = SlotState::PresentInactive;
         self.current_protocol = 0;
-
-        self.tx_buffer[0] = RDR_TO_PC_SLOTSTATUS;
-        self.tx_buffer[1..5].copy_from_slice(&0u32.to_le_bytes());
-        self.tx_buffer[5] = 0;
-        self.tx_buffer[6] = seq;
-        self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_INACTIVE);
-        self.tx_buffer[8] = 0;
-        self.tx_buffer[9] = 0;
-
-        self.tx_len = CCID_HEADER_SIZE;
+        self.tx_len = write_slot_status(
+            0,
+            seq,
+            ICC_STATUS_PRESENT_INACTIVE,
+            COMMAND_STATUS_NO_ERROR,
+            0,
+            0,
+            &mut self.tx_buffer,
+        );
         ccid_info!("CCID: PowerOff");
     }
 
@@ -469,17 +481,16 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             let pps0 = data[1];
             if (pps0 & 0xE0) == 0x00 && pps0 != 0x00 {
                 ccid_info!("CCID: XfrBlock PPS request intercepted");
-                let status = build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE);
-                self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
-                self.tx_buffer[1..5].copy_from_slice(&(data_len as u32).to_le_bytes());
-                self.tx_buffer[5] = 0;
-                self.tx_buffer[6] = seq;
-                self.tx_buffer[7] = status;
-                self.tx_buffer[8] = 0;
-                self.tx_buffer[9] = 0;
-                self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + data_len]
-                    .copy_from_slice(&data[..data_len]);
-                self.tx_len = CCID_HEADER_SIZE + data_len;
+                self.tx_len = write_data_block(
+                    0,
+                    seq,
+                    ICC_STATUS_PRESENT_ACTIVE,
+                    COMMAND_STATUS_NO_ERROR,
+                    0,
+                    0,
+                    &data[..data_len],
+                    &mut self.tx_buffer,
+                );
                 return true;
             }
         }
@@ -536,63 +547,31 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         }
 
         let resp_len = resp_len.min(response_buf.len());
-
-        self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
-        self.tx_buffer[1..5].copy_from_slice(&(resp_len as u32).to_le_bytes());
-        self.tx_buffer[5] = 0;
-        self.tx_buffer[6] = seq;
-        self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE);
-        self.tx_buffer[8] = 0;
-        self.tx_buffer[9] = 0;
-
-        self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + resp_len]
-            .copy_from_slice(&response_buf[..resp_len]);
-
-        self.tx_len = CCID_HEADER_SIZE + resp_len;
+        self.tx_len = write_data_block(
+            0,
+            seq,
+            ICC_STATUS_PRESENT_ACTIVE,
+            COMMAND_STATUS_NO_ERROR,
+            0,
+            0,
+            &response_buf[..resp_len],
+            &mut self.tx_buffer,
+        );
         ccid_debug!("CCID: XfrBlock success, resp_len={}", resp_len);
     }
 
     fn handle_get_parameters(&mut self, seq: u8) {
-        let p = &self.atr_params;
-        if self.current_protocol == 1 {
-            let params: [u8; 7] = [
-                if p.has_ta1 { p.ta1 } else { 0x11 },
-                (p.edc_type & 1) << 4,
-                p.guard_time_n,
-                (p.bwi << 4) | (p.cwi & 0x0F),
-                0x00,
-                p.ifsc.min(254),
-                0x00,
-            ];
-            self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
-            self.tx_buffer[1..5].copy_from_slice(&(params.len() as u32).to_le_bytes());
-            self.tx_buffer[5] = 0;
-            self.tx_buffer[6] = seq;
-            self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
-            self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 0;
-            self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + params.len()]
-                .copy_from_slice(&params);
-            self.tx_len = CCID_HEADER_SIZE + params.len();
-        } else {
-            let params: [u8; 5] = [
-                if p.has_ta1 { p.ta1 } else { 0x11 },
-                0x00,
-                p.guard_time_n,
-                (p.bwi << 4) | (p.cwi & 0x0F),
-                0x00,
-            ];
-            self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
-            self.tx_buffer[1..5].copy_from_slice(&(params.len() as u32).to_le_bytes());
-            self.tx_buffer[5] = 0;
-            self.tx_buffer[6] = seq;
-            self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
-            self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 0;
-            self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + params.len()]
-                .copy_from_slice(&params);
-            self.tx_len = CCID_HEADER_SIZE + params.len();
-        }
+        let (params, params_len) = self.build_params_array();
+        self.tx_len = write_parameters(
+            0,
+            seq,
+            self.get_icc_status(),
+            COMMAND_STATUS_NO_ERROR,
+            0,
+            self.current_protocol,
+            &params[..params_len],
+            &mut self.tx_buffer,
+        );
     }
 
     fn handle_set_parameters(&mut self, seq: u8) {
@@ -615,45 +594,17 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
         self.driver.set_protocol(requested_protocol);
         self.current_protocol = requested_protocol;
-
-        let p = &self.atr_params;
-        if self.current_protocol == 1 {
-            let params: [u8; 7] = [
-                if p.has_ta1 { p.ta1 } else { 0x11 },
-                (p.edc_type & 1) << 4,
-                p.guard_time_n,
-                (p.bwi << 4) | (p.cwi & 0x0F),
-                0x00,
-                p.ifsc.min(254),
-                0x00,
-            ];
-            self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
-            self.tx_buffer[1..5].copy_from_slice(&7u32.to_le_bytes());
-            self.tx_buffer[5] = 0;
-            self.tx_buffer[6] = seq;
-            self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
-            self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 0;
-            self.tx_buffer[10..17].copy_from_slice(&params);
-            self.tx_len = CCID_HEADER_SIZE + 7;
-        } else {
-            let params: [u8; 5] = [
-                if p.has_ta1 { p.ta1 } else { 0x11 },
-                0x00,
-                p.guard_time_n,
-                (p.bwi << 4) | (p.cwi & 0x0F),
-                0x00,
-            ];
-            self.tx_buffer[0] = RDR_TO_PC_PARAMETERS;
-            self.tx_buffer[1..5].copy_from_slice(&5u32.to_le_bytes());
-            self.tx_buffer[5] = 0;
-            self.tx_buffer[6] = seq;
-            self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status());
-            self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 0;
-            self.tx_buffer[10..15].copy_from_slice(&params);
-            self.tx_len = CCID_HEADER_SIZE + 5;
-        }
+        let (params, params_len) = self.build_params_array();
+        self.tx_len = write_parameters(
+            0,
+            seq,
+            self.get_icc_status(),
+            COMMAND_STATUS_NO_ERROR,
+            0,
+            self.current_protocol,
+            &params[..params_len],
+            &mut self.tx_buffer,
+        );
     }
 
     fn handle_secure(&mut self, seq: u8) {
@@ -727,17 +678,16 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
             let firmware_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-            let icc = self.get_icc_status();
-            self.tx_buffer[0] = RDR_TO_PC_ESCAPE;
-            self.tx_buffer[1..5].copy_from_slice(&(firmware_features.len() as u32).to_le_bytes());
-            self.tx_buffer[5] = 0;
-            self.tx_buffer[6] = seq;
-            self.tx_buffer[7] = build_bstatus(COMMAND_STATUS_NO_ERROR, icc);
-            self.tx_buffer[8] = 0;
-            self.tx_buffer[9] = 0;
-            self.tx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + firmware_features.len()]
-                .copy_from_slice(&firmware_features);
-            self.tx_len = CCID_HEADER_SIZE + firmware_features.len();
+            self.tx_len = write_message(
+                RDR_TO_PC_ESCAPE,
+                0,
+                seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status()),
+                0,
+                0,
+                &firmware_features,
+                &mut self.tx_buffer,
+            );
         } else {
             ccid_debug!(
                 "CCID: ESCAPE unknown command 0x{:02X}",
@@ -1042,24 +992,26 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         error: u8,
     ) {
         let data_len = data.len() as u32;
-
-        self.tx_buffer[0] = RDR_TO_PC_DATABLOCK;
-        self.tx_buffer[1..5].copy_from_slice(&data_len.to_le_bytes());
-        self.tx_buffer[5] = 0;
-        self.tx_buffer[6] = seq;
-        self.tx_buffer[7] = build_bstatus(cmd_status, icc_status);
-        self.tx_buffer[8] = error;
-        self.tx_buffer[9] = 0;
-
-        let header_len = CCID_HEADER_SIZE;
-        if data.len() + header_len <= self.tx_buffer.len() {
-            self.tx_buffer[header_len..header_len + data.len()].copy_from_slice(data);
-            self.tx_len = header_len + data.len();
+        let max_payload_len = self.tx_buffer.len().saturating_sub(CCID_HEADER_SIZE);
+        let payload = if data.len() <= max_payload_len {
+            data
         } else {
             ccid_warn!("CCID: DataBlock response truncated");
-            let truncated_len = self.tx_buffer.len() - header_len;
-            self.tx_buffer[header_len..].copy_from_slice(&data[..truncated_len]);
-            self.tx_len = self.tx_buffer.len();
+            &data[..max_payload_len]
+        };
+
+        self.tx_len = write_data_block(
+            0,
+            seq,
+            icc_status,
+            cmd_status,
+            error,
+            0,
+            payload,
+            &mut self.tx_buffer,
+        );
+        if payload.len() != data.len() {
+            self.tx_buffer[1..5].copy_from_slice(&data_len.to_le_bytes());
         }
 
         ccid_trace!(
@@ -1083,15 +1035,46 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         error: u8,
         b_clock_status: u8,
     ) {
-        self.tx_buffer[0] = RDR_TO_PC_SLOTSTATUS;
-        self.tx_buffer[1..5].copy_from_slice(&0u32.to_le_bytes());
-        self.tx_buffer[5] = 0;
-        self.tx_buffer[6] = seq;
-        self.tx_buffer[7] = build_bstatus(cmd_status, icc_status);
-        self.tx_buffer[8] = error;
-        self.tx_buffer[9] = b_clock_status;
+        self.tx_len = write_slot_status(
+            0,
+            seq,
+            icc_status,
+            cmd_status,
+            error,
+            b_clock_status,
+            &mut self.tx_buffer,
+        );
+    }
 
-        self.tx_len = CCID_HEADER_SIZE;
+    fn build_params_array(&self) -> ([u8; 7], usize) {
+        let p = &self.atr_params;
+        if self.current_protocol == 1 {
+            (
+                [
+                    if p.has_ta1 { p.ta1 } else { 0x11 },
+                    (p.edc_type & 1) << 4,
+                    p.guard_time_n,
+                    (p.bwi << 4) | (p.cwi & 0x0F),
+                    0x00,
+                    p.ifsc.min(254),
+                    0x00,
+                ],
+                7,
+            )
+        } else {
+            (
+                [
+                    if p.has_ta1 { p.ta1 } else { 0x11 },
+                    0x00,
+                    p.guard_time_n,
+                    (p.bwi << 4) | (p.cwi & 0x0F),
+                    0x00,
+                    0x00,
+                    0x00,
+                ],
+                5,
+            )
+        }
     }
 
     pub fn set_card_present(&mut self, present: bool) {
