@@ -20,11 +20,11 @@ use stm32f7xx_hal::gpio::{
 use stm32f7xx_hal::pac::{gpiof, gpioi, tim10, DWT, GPIOF, GPIOI, RCC, TIM10};
 
 const SYSCLK_HZ: u32 = 216_000_000;
-const CARD_CLK_HZ: u32 = 1_000_000;
+const CARD_CLK_HZ: u32 = 5_000_000;
 const FI_DEFAULT: u32 = 372;
 const DI_DEFAULT: u32 = 1;
-const ETU_CPU_CYCLES: u32 = (SYSCLK_HZ / CARD_CLK_HZ) * FI_DEFAULT / DI_DEFAULT; // 16,070
-const GPIO_CLK_HALF_CYCLES: u32 = SYSCLK_HZ / (CARD_CLK_HZ * 2); // 21
+const ETU_CPU_CYCLES: u32 = (SYSCLK_HZ / CARD_CLK_HZ) * FI_DEFAULT / DI_DEFAULT;
+const GPIO_CLK_HALF_CYCLES: u32 = SYSCLK_HZ / (CARD_CLK_HZ * 2);
 
 const SC_ATR_TIMEOUT_CYCLES: u32 = SYSCLK_HZ * 4; // 4 seconds
 const SC_ATR_BYTE_TIMEOUT_CYCLES: u32 = SYSCLK_HZ / 25; // 40 ms
