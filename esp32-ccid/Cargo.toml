@@ -20,6 +20,7 @@ backend-pn532 = ["dep:pn532"]
 ble = []
 
 [dependencies]
+card-interface = { path = "../crates/card-interface" }
 ccid-core = { path = "../crates/ccid-core" }
 ccid-protocol = { path = "../ccid-protocol" }
 ccid-transport-serial = { path = "../crates/ccid-transport-serial" }

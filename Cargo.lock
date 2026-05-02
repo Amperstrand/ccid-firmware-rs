@@ -971,6 +971,7 @@ dependencies = [
 name = "esp32-ccid"
 version = "0.1.0"
 dependencies = [
+ "card-interface",
  "ccid-core",
  "ccid-protocol",
  "ccid-transport-serial",
