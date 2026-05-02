@@ -14,7 +14,15 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        profile: [profile-cherry-smartterminal-st2xxx, profile-gemalto-idbridge-ct30, profile-gemalto-idbridge-k30]
+        include:
+          - profile: profile-cherry-smartterminal-st2xxx
+            features: ""
+          - profile: profile-gemalto-idbridge-ct30
+            features: "profile-gemalto-idbridge-ct30"
+          - profile: profile-gemalto-idbridge-k30
+            features: "profile-gemalto-idbridge-k30"
+          - profile: stm32f746-bitbang
+            features: "stm32f746"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,24 +44,20 @@ jobs:
       
       - name: Build firmware
         run: |
-          if [[ "${{ matrix.profile }}" == "profile-cherry-smartterminal-st2xxx" ]]; then
-            cargo build --release
+          if [[ -z "${{ matrix.features }}" ]]; then
+            cargo build --release --target thumbv7em-none-eabihf
           else
-            cargo build --release --no-default-features --features ${{ matrix.profile }}
+            cargo build --release --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }}
           fi
       
       - name: Generate binary artifacts
         run: |
-          if [[ "${{ matrix.profile }}" == "profile-cherry-smartterminal-st2xxx" ]]; then
-            cargo objcopy --release -- \
-              -O binary ccid-firmware.bin
-            cargo objcopy --release -- \
-              -O ihex ccid-firmware.hex
+          if [[ -z "${{ matrix.features }}" ]]; then
+            cargo objcopy --release -- -O binary ccid-firmware.bin
+            cargo objcopy --release -- -O ihex ccid-firmware.hex
           else
-            cargo objcopy --release --no-default-features --features ${{ matrix.profile }} -- \
-              -O binary ccid-firmware.bin
-            cargo objcopy --release --no-default-features --features ${{ matrix.profile }} -- \
-              -O ihex ccid-firmware.hex
+            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O binary ccid-firmware.bin
+            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O ihex ccid-firmware.hex
           fi
           sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
           sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
@@ -87,8 +91,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Run clippy
+      - name: Run clippy (F469 default)
         run: cargo clippy --release --target thumbv7em-none-eabihf -- -D warnings
+
+      - name: Run clippy (F746 bitbang)
+        run: cargo clippy --release --target thumbv7em-none-eabihf --no-default-features --features stm32f746 -- -D warnings
 
       - name: Check Python syntax
         run: |
@@ -112,8 +119,8 @@ jobs:
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
       
-      - name: Run tests
-        run: cargo test
+      - name: Run workspace tests
+        run: cargo test --workspace --target x86_64-unknown-linux-gnu
 
   esp32-host-test:
     runs-on: ubuntu-latest
