@@ -144,6 +144,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(feature = "std")]
 mod test {
     use crate::comm::blocking::spi::SpiInterface;
     use crate::comm::Interface;

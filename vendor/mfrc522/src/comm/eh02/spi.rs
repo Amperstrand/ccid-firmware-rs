@@ -234,6 +234,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(feature = "std")]
 mod test {
     use crate::comm::eh02::spi::SpiInterface;
     use crate::comm::Interface;

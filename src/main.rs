@@ -121,7 +121,7 @@ use stm32f469i_disc as board;
 
 #[cfg(feature = "display")]
 use app_enum::AppEnumerationState;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
+#[cfg(all(any(feature = "stm32f469", feature = "stm32f746"), target_arch = "arm", target_os = "none"))]
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use smartcard::SmartcardUart;

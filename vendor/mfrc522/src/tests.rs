@@ -1,4 +1,4 @@
-#[cfg(all(test, feature = "eh02"))]
+#[cfg(all(test, feature = "eh02", feature = "std"))]
 mod test_eh02_spi {
     use crate::comm::eh02::spi::SpiInterface;
     use crate::Mfrc522;
@@ -69,7 +69,7 @@ mod test_eh02_spi {
     }
 }
 
-#[cfg(all(test, feature = "eh02"))]
+#[cfg(all(test, feature = "eh02", feature = "std"))]
 mod test_eh02_i2c {
     use crate::comm::eh02::i2c::I2cInterface;
     use crate::Mfrc522;
@@ -137,7 +137,7 @@ mod test_eh02_i2c {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test_eh1_spi {
     use crate::comm::blocking::spi::SpiInterface;
     use crate::Mfrc522;
@@ -257,7 +257,7 @@ mod test_eh1_spi {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test_eh1_i2c {
     use crate::comm::blocking::i2c::I2cInterface;
     use crate::Mfrc522;

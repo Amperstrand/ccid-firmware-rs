@@ -63,6 +63,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(feature = "std")]
 mod test {
     use crate::comm::eh02::i2c::I2cInterface;
     use crate::comm::Interface;

@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
 
 pub use card_interface::{CardBackend, ContactCardExt, NfcCardExt, PresenceState};
 pub use ccid_protocol::*;

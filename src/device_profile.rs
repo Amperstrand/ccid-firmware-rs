@@ -548,8 +548,8 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     ..BASE_PROFILE
 };
 
-/// Compile error if no profile feature is selected.
-/// Use `--features profile-cherry-smartterminal-st2xxx` (default) or another profile.
+// Compile error if no profile feature is selected.
+// Use `--features profile-cherry-smartterminal-st2xxx` (default) or another profile.
 #[cfg(not(any(
     feature = "profile-cherry-smartterminal-st2xxx",
     feature = "profile-gemalto-idbridge-ct30",
