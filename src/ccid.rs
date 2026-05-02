@@ -151,29 +151,6 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         self.core.process_pin_modify_result();
     }
 
-    #[cfg(feature = "display")]
-    pub fn process_pin_result(&mut self) {
-        self.core.process_pin_result();
-    }
-
-    #[cfg(feature = "display")]
-    pub fn set_pin_modify_result(
-        &mut self,
-        seq: u8,
-        result: crate::pinpad::PinResult,
-        old_buffer: crate::pinpad::PinBuffer,
-        new_buffer: crate::pinpad::PinBuffer,
-        params: crate::pinpad::PinModifyParams,
-    ) {
-        self.core
-            .set_pin_modify_result(seq, result, old_buffer, new_buffer, params);
-    }
-
-    #[cfg(feature = "display")]
-    pub fn process_pin_modify_result(&mut self) {
-        self.core.process_pin_modify_result();
-    }
-
     fn send_notify_slot_change(&mut self, card_present: bool, changed: bool) {
         let msg = self.core.notify_slot_change_bytes(card_present, changed);
         let _ = self.ep_int.write(&msg);

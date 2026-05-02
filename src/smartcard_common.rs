@@ -1,4 +1,5 @@
 #![cfg(all(target_arch = "arm", target_os = "none"))]
+#![allow(dead_code)]
 
 use core::convert::Infallible;
 
