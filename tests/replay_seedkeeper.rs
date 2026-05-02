@@ -74,7 +74,7 @@ fn captures() -> Vec<ReplayCapture> {
         },
         // 5: SET_PARAMETERS: T=1 protocol
         // Firmware returns ATR-derived protocol params (correct per CCID spec).
-        // SeedKeeper ATR gives: ta1=0x18, edc=CRC(1), guard=0, bwi=4->3, ifsc=254
+        // SeedKeeper ATR gives: ta1=0x18, edc=CRC(1), guard=0, bwi=4, cwi=5, ifsc=254
         ReplayCapture {
             name: "SETPARAMETERS: T=1, IFSC=254",
             tx: &[
@@ -84,7 +84,7 @@ fn captures() -> Vec<ReplayCapture> {
             rx_msg_type: RDR_TO_PC_PARAMETERS,
             rx_status: 0x00,
             rx_error: 0x00,
-            rx_payload: &[0x18, 0x00, 0x00, 0x03, 0x00, 0xFE, 0x00],
+            rx_payload: &[0x18, 0x00, 0x00, 0x45, 0x00, 0xFE, 0x00],
         },
         // 6: XFRBLOCK: IFS negotiation (S-block)
         ReplayCapture {
