@@ -1,0 +1,10 @@
+[package]
+name = "ccid-transport-serial"
+version = "0.1.0"
+edition = "2021"
+description = "Shared serial framing transport for CCID firmware"
+license = "GPL-2.0-or-later"
+
+[dependencies]
+heapless = "0.8"
+ccid-protocol = { path = "../../ccid-protocol" }
