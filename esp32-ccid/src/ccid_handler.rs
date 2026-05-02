@@ -8,7 +8,7 @@ use crate::ccid_types::{
 use crate::nfc::{NfcDriver, PresenceState};
 use ccid_core::params::default_params;
 use ccid_core::pps::is_pps_request;
-use ccid_core::response::{write_message, write_slot_status as shared_write_slot_status};
+use ccid_core::response::{write_message, write_slot_status};
 
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
@@ -40,7 +40,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let payload_len = header.length as usize;
         if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
-            return shared_write_slot_status(
+            return write_slot_status(
                 header.slot,
                 header.seq,
                 self.current_icc_status(),
@@ -62,7 +62,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             PC_TO_RDR_SET_PARAMETERS => self.handle_set_parameters(&header, response),
             PC_TO_RDR_RESET_PARAMETERS => self.handle_reset_parameters(&header, response),
             PC_TO_RDR_ESCAPE => self.handle_escape(&header, payload, response),
-            _ => shared_write_slot_status(
+            _ => write_slot_status(
                 header.slot,
                 header.seq,
                 self.current_icc_status(),
@@ -97,7 +97,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     fn handle_power_on(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         if !self.presence_state.present {
-            return shared_write_slot_status(
+            return write_slot_status(
                 header.slot,
                 header.seq,
                 ICC_STATUS_NO_ICC,
@@ -134,7 +134,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                 // Instead, assume the card is still physically present and let
                 // the next scheduled poll cycle verify.
                 self.slot_state = SlotState::PresentInactive;
-                shared_write_slot_status(
+                write_slot_status(
                     header.slot,
                     header.seq,
                     self.current_icc_status(),
@@ -157,7 +157,7 @@ impl<D: NfcDriver> CcidHandler<D> {
         // so the next PowerUp must succeed.
         self.slot_state = SlotState::PresentInactive;
 
-        shared_write_slot_status(
+        write_slot_status(
             header.slot,
             header.seq,
             self.current_icc_status(),
@@ -169,7 +169,7 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_get_slot_status(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        shared_write_slot_status(
+        write_slot_status(
             header.slot,
             header.seq,
             self.current_icc_status(),
@@ -292,7 +292,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
-        shared_write_slot_status(
+        write_slot_status(
             header.slot,
             header.seq,
             self.current_icc_status(),
