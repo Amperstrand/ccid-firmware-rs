@@ -663,6 +663,42 @@ fn main() -> ! {
     // =========================================================================
     // USB OTG FS
     // =========================================================================
+
+    // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
+    // can be left in an inconsistent state where the PHY doesn't re-enumerate.
+    // Cycling the RCC clock + core soft reset + PHY power cycle ensures a clean
+    // start regardless of how we got here. See GitHub issue #15.
+    #[cfg(feature = "stm32f746")]
+    {
+        let rcc = unsafe { &*stm32f7xx_hal::pac::RCC::ptr() };
+
+        rcc.ahb2enr.modify(|_, w| w.otgfsen().clear_bit());
+        cortex_m::asm::delay(100);
+        rcc.ahb2enr.modify(|_, w| w.otgfsen().set_bit());
+
+        rcc.ahb2rstr.modify(|_, w| w.otgfsrst().set_bit());
+        cortex_m::asm::delay(100);
+        rcc.ahb2rstr.modify(|_, w| w.otgfsrst().clear_bit());
+        cortex_m::asm::delay(100);
+
+        // USB_OTG_FS_GLOBAL base: 0x5000_0000
+        // GRSTCTL offset: 0x010, GCCFG offset: 0x038
+        let otg_global = 0x5000_0000usize as *mut u32;
+        unsafe {
+            // GRSTCTL = CSRST (bit 0)
+            otg_global.add(0x010 / 4).write_volatile(1);
+            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {}
+
+            // GCCFG = clear PWRDWN (bit 16)
+            otg_global.add(0x038 / 4).write_volatile(0);
+            cortex_m::asm::delay(100);
+            // GCCFG = set PWRDWN
+            otg_global.add(0x038 / 4).write_volatile(1 << 16);
+        }
+
+        defmt::info!("USB PHY pre-init reset");
+    }
+
     #[cfg(feature = "stm32f469")]
     let usb_otg = USB::new(
         (dp.OTG_FS_GLOBAL, dp.OTG_FS_DEVICE, dp.OTG_FS_PWRCLK),

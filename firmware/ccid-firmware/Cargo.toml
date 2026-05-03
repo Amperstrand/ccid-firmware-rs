@@ -9,6 +9,12 @@ readme = "../../README.md"
 keywords = ["ccid", "usb", "smartcard", "stm32", "embedded"]
 categories = ["embedded", "hardware-support", "no-std"]
 
+[[bin]]
+name = "ccid-firmware"
+path = "src/main.rs"
+test = false
+bench = false
+
 [dependencies]
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
