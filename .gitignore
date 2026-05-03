@@ -1,7 +1,8 @@
 # Build artifacts
 /target/
 **/target/
-esp32-ccid/.embuild/
+.embuild/
+specter-diy-satochip/
 tmp/
 *.bin
 *.elf

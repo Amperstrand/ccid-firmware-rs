@@ -126,7 +126,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: esp32-ccid
+        working-directory: firmware/esp32-ccid
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
     steps:
@@ -144,7 +144,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            esp32-ccid -> target
+            firmware/esp32-ccid -> target
             vendor/iso14443-rs -> target
 
       - name: Run ESP32 host-side tests

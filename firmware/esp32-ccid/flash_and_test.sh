@@ -17,6 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 FIRMWARE="target/xtensa-esp32-espidf/release/esp32-ccid"
 PORT="${ESPFLASH_PORT:-/dev/ttyUSB0}"
 
@@ -32,7 +33,7 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 build() {
     echo ""
     echo "=== Building firmware ==="
-    cargo +esp build --release --features backend-mfrc522 --no-default-features
+    cargo +esp build --manifest-path "${SCRIPT_DIR}/Cargo.toml" --release --features backend-mfrc522 --no-default-features
     info "Build complete."
 }
 
@@ -44,12 +45,12 @@ flash() {
 
     echo ""
     echo "=== Flashing firmware ==="
-    if [ ! -f "${SCRIPT_DIR}/${FIRMWARE}" ]; then
+    if [ ! -f "${WORKSPACE_ROOT}/${FIRMWARE}" ]; then
         error "Firmware not found. Build first."
         exit 1
     fi
 
-    if ! espflash flash --port "$PORT" --after no-reset-no-stub "${SCRIPT_DIR}/${FIRMWARE}"; then
+    if ! espflash flash --port "$PORT" --after no-reset-no-stub "${WORKSPACE_ROOT}/${FIRMWARE}"; then
         error "Flash failed. Is the ESP32 connected at ${PORT}?"
         exit 1
     fi

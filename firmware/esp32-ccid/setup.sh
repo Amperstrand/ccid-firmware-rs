@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 CONFIG_SRC="${SCRIPT_DIR}/reader.conf"
 CONFIG_DST="/etc/reader.conf.d/GemPCTwin.conf"
 FIRMWARE="target/xtensa-esp32-espidf/release/esp32-ccid"
@@ -72,17 +73,17 @@ flash_firmware() {
     echo ""
     echo "=== Flashing firmware ==="
 
-    if [ ! -f "${SCRIPT_DIR}/${FIRMWARE}" ]; then
-        error "Firmware not found at ${SCRIPT_DIR}/${FIRMWARE}"
+    if [ ! -f "${WORKSPACE_ROOT}/${FIRMWARE}" ]; then
+        error "Firmware not found at ${WORKSPACE_ROOT}/${FIRMWARE}"
         echo "  Build first: cargo build --release --target xtensa-esp32-espidf"
         exit 1
     fi
 
     info "Flashing ${FIRMWARE} to ESP32..."
     if command -v espflash &>/dev/null; then
-        espflash flash --monitor "${SCRIPT_DIR}/${FIRMWARE}"
+        espflash flash --monitor "${WORKSPACE_ROOT}/${FIRMWARE}"
     else
-        cargo espflash flash --monitor "${SCRIPT_DIR}/${FIRMWARE}"
+        cargo espflash flash --monitor "${WORKSPACE_ROOT}/${FIRMWARE}"
     fi
 }
 

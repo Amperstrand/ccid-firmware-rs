@@ -147,7 +147,7 @@ sudo apt install pcscd libccid pcsc-tools
 Copy the provided `reader.conf` to the pcscd config directory:
 
 ```bash
-sudo cp esp32-ccid/reader.conf /etc/reader.conf.d/GemPCTwin.conf
+sudo cp firmware/esp32-ccid/reader.conf /etc/reader.conf.d/GemPCTwin.conf
 ```
 
 This tells `pcscd` to use `libccidtwin.so` for `/dev/ttyUSB0`.

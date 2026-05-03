@@ -1,68 +1,18 @@
-[package]
-name = "ccid-firmware-rs"
-version = "0.0.8"
-edition = "2021"
-description = "USB CCID firmware for STM32 microcontrollers in Rust"
-license = "GPL-2.0-or-later"
-repository = "https://github.com/Amperstrand/ccid-firmware-rs"
-readme = "README.md"
-keywords = ["ccid", "usb", "smartcard", "stm32", "embedded"]
-categories = ["embedded", "hardware-support", "no-std"]
-
 [workspace]
-members = ["ccid-protocol", "crates/card-interface", "crates/ccid-core", "crates/ccid-transport-serial", "esp32-ccid", "host-tools"]
-
-[[bin]]
-name = "ccid-firmware"
-path = "src/main.rs"
-test = false
-bench = false
-
-[dependencies]
-ccid-core = { path = "crates/ccid-core" }
-ccid-protocol = { path = "ccid-protocol" }
-
-[target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]
-log = "0.4"
-
-[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
-cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7"
-defmt = "0.3"
-defmt-rtt = "0.4"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
-usb-device = "0.3"
-embedded-alloc = "0.5"
-
-# MCU target HALs (mutually exclusive via features)
-stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal", rev = "789e5e86f5d93ae80b2f50e861c3c76980733bca", features = ["stm32f469", "usb_fs", "framebuffer"], optional = true }
-stm32f7xx-hal = { version = "0.8", features = ["stm32f746", "usb_fs", "gpiok"], optional = true }
-stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", branch = "sdio-support", optional = true }
+members = [
+    "crates/ccid-protocol",
+    "crates/card-interface",
+    "crates/ccid-core",
+    "crates/ccid-transport-serial",
+    "firmware/ccid-firmware",
+    "firmware/esp32-ccid",
+    "host-tools",
+]
+default-members = ["firmware/ccid-firmware"]
+resolver = "2"
 
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
-
-[features]
-default = ["profile-cherry-smartterminal-st2xxx"]
-
-# MCU target selection (mutually exclusive)
-stm32f469 = ["dep:stm32f4xx-hal", "dep:stm32f469i-disc"]
-stm32f746 = ["dep:stm32f7xx-hal"]
-
-# Device profile selection (mutually exclusive, pick one)
-profile-cherry-smartterminal-st2xxx = []
-profile-gemalto-idbridge-ct30 = []
-profile-gemalto-idbridge-k30 = []
-
-display = ["embedded-graphics", "embedded-hal"]
-
-[dependencies.embedded-graphics]
-version = "0.8"
-optional = true
-
-[dependencies.embedded-hal]
-version = "0.2"
-optional = true
 
 [profile.release]
 debug = 2
@@ -71,9 +21,6 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# ESP32 workspace member needs opt-level "s" (size) instead of "z" because
-# ESP-IDF build system expects it. Package-level profiles are ignored for
-# workspace members, so the override lives here.
 [profile.release.package.esp32-ccid]
 opt-level = "s"
 

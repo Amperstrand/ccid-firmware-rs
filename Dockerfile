@@ -27,18 +27,23 @@ RUN rustup target add thumbv7em-none-eabihf
 WORKDIR /app
 
 # Copy manifests first for dependency caching
-COPY Cargo.toml Cargo.lock ./
-COPY build.rs memory.x ./
-COPY src ./src
+COPY Cargo.toml Cargo.lock README.md ./
+COPY crates ./crates
+COPY firmware ./firmware
+COPY host-tools ./host-tools
 COPY vendor ./vendor
 COPY .cargo ./.cargo
 COPY rust-toolchain.toml ./
 
 # Build firmware with profile-specific features
 RUN if [ "$PROFILE" = "profile-cherry-st2100" ]; then \
-      cargo build --release --target thumbv7em-none-eabihf; \
+      cargo build --release -p ccid-firmware-rs --target thumbv7em-none-eabihf; \
     else \
-      cargo build --release --no-default-features --features "$PROFILE" --target thumbv7em-none-eabihf; \
-    fi
+      cargo build --release -p ccid-firmware-rs --no-default-features --features "$PROFILE" --target thumbv7em-none-eabihf; \
+    fi && \
+    mkdir -p /app/output && \
+    cp target/thumbv7em-none-eabihf/release/ccid-firmware /app/output/ccid-firmware.elf && \
+    arm-none-eabi-objcopy -O binary target/thumbv7em-none-eabihf/release/ccid-firmware /app/output/ccid-firmware-${PROFILE}.bin && \
+    sha256sum /app/output/ccid-firmware-${PROFILE}.bin > /app/output/ccid-firmware-${PROFILE}.bin.sha256
 
 # Output: /app/target/thumbv7em-none-eabihf/release/ccid-firmware

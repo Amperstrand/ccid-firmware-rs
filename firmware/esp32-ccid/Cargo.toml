@@ -20,16 +20,16 @@ backend-pn532 = ["dep:pn532"]
 ble = []
 
 [dependencies]
-card-interface = { path = "../crates/card-interface" }
-ccid-core = { path = "../crates/ccid-core" }
-ccid-protocol = { path = "../ccid-protocol" }
-ccid-transport-serial = { path = "../crates/ccid-transport-serial" }
+card-interface = { path = "../../crates/card-interface" }
+ccid-core = { path = "../../crates/ccid-core" }
+ccid-protocol = { path = "../../crates/ccid-protocol" }
+ccid-transport-serial = { path = "../../crates/ccid-transport-serial" }
 embedded-hal = "1.0"
 heapless = "0.8"
 log = "0.4"
 nb = "1.1"
-mfrc522 = { path = "../vendor/mfrc522", optional = true }
-iso14443 = { path = "../vendor/iso14443-rs", features = ["alloc"], optional = true }
+mfrc522 = { path = "../../vendor/mfrc522", optional = true }
+iso14443 = { path = "../../vendor/iso14443-rs", features = ["alloc"], optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]

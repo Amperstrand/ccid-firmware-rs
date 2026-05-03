@@ -2,8 +2,8 @@
 
 This repository now contains two firmware packages on the same `main` branch:
 
-- `./` — STM32 USB CCID firmware for contact smart cards
-- `./esp32-ccid/` — ESP32 serial CCID firmware for NFC cards
+- `./firmware/ccid-firmware/` — STM32 USB CCID firmware for contact smart cards
+- `./firmware/esp32-ccid/` — ESP32 serial CCID firmware for NFC cards
 
 Current practical focus:
 
@@ -14,12 +14,12 @@ PN532 remains supported in the ESP32 package, but MFRC522 is the primary NFC pat
 
 ## Build the right package
 
-The repository root has a default Cargo target of `thumbv7em-none-eabihf` in `.cargo/config.toml`. That is correct for STM32, but it means ESP32 commands should be run from `esp32-ccid/` (or with an explicit target override) so they do not inherit the STM32 default.
+The repository root has a default Cargo target of `thumbv7em-none-eabihf` in `.cargo/config.toml`. That is correct for STM32, but it means ESP32 commands should be run from `firmware/esp32-ccid/` (or with an explicit target override) so they do not inherit the STM32 default.
 
 ## Repository layout
 
-- `src/` — STM32 firmware
-- `esp32-ccid/` — ESP32 firmware
+- `firmware/ccid-firmware/` — STM32 firmware
+- `firmware/esp32-ccid/` — ESP32 firmware
 - `vendor/mfrc522/` — tracked MFRC522 dependency used by ESP32
 - `vendor/iso14443-rs/` — tracked ISO 14443 dependency used by the ESP32 MFRC522 path
 
@@ -37,7 +37,7 @@ rustup target add xtensa-esp32-espidf
 
 ### Build
 
-Run these commands from `esp32-ccid/`.
+Run these commands from `firmware/esp32-ccid/`.
 
 **Default build (MFRC522 backend):**
 
@@ -60,18 +60,18 @@ cargo +esp build --release --no-default-features --features backend-pn532
 Binary location:
 
 ```text
-esp32-ccid/target/xtensa-esp32-espidf/release/esp32-ccid
+target/xtensa-esp32-espidf/release/esp32-ccid
 ```
 
 ### Flash and host verification
 
-- Flash and basic verification helper: `esp32-ccid/flash_and_test.sh`
-- Host setup helper: `esp32-ccid/setup.sh`
-- Reader documentation: `esp32-ccid/README.md`
+- Flash and basic verification helper: `firmware/esp32-ccid/flash_and_test.sh`
+- Host setup helper: `firmware/esp32-ccid/setup.sh`
+- Reader documentation: `firmware/esp32-ccid/README.md`
 
 ### Host-side tests (safe without hardware)
 
-Run from `esp32-ccid/`:
+Run from `firmware/esp32-ccid/`:
 
 ```bash
 cargo test --target x86_64-unknown-linux-gnu
@@ -80,7 +80,7 @@ cargo test --target x86_64-unknown-linux-gnu
 The vendored ISO 14443 crate used by the MFRC522 path also has host-safe tests:
 
 ```bash
-cd ../vendor/iso14443-rs
+cd ../../vendor/iso14443-rs
 cargo test --features std --target x86_64-unknown-linux-gnu
 ```
 
@@ -377,7 +377,7 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs host-safe validation f
 
 - STM32 profile builds at the repository root
 - STM32 host-side tests and linting
-- ESP32 host-side tests in `esp32-ccid/`
+- ESP32 host-side tests in `firmware/esp32-ccid/`
 - Vendored `iso14443-rs` host-side tests used by the ESP32 MFRC522 path
 
 The current workflow intentionally avoids requiring a full ESP-IDF/Xtensa toolchain in every CI job. Xtensa release builds are still expected locally before shipping ESP32 firmware.

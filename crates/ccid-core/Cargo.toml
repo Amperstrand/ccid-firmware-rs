@@ -10,5 +10,5 @@ default = []
 std = []
 
 [dependencies]
-ccid-protocol = { path = "../../ccid-protocol" }
+ccid-protocol = { path = "../ccid-protocol" }
 card-interface = { path = "../card-interface" }
