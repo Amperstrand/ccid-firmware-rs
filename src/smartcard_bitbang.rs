@@ -240,8 +240,12 @@ impl SmartcardBitbang {
         // TIM10 kernel clock = 216 MHz (APB2=108 MHz × 2 multiplier).
         // ARR = SYSCLK_HZ / CARD_CLK_HZ - 1, CCR1 = ARR/2 (50% duty).
         tim10.psc.write(|w| unsafe { w.bits(0) });
-        tim10.arr.write(|w| unsafe { w.bits(SYSCLK_HZ / CARD_CLK_HZ - 1) });
-        tim10.ccr1().write(|w| unsafe { w.bits(SYSCLK_HZ / CARD_CLK_HZ / 2) });
+        tim10
+            .arr
+            .write(|w| unsafe { w.bits(SYSCLK_HZ / CARD_CLK_HZ - 1) });
+        tim10
+            .ccr1()
+            .write(|w| unsafe { w.bits(SYSCLK_HZ / CARD_CLK_HZ / 2) });
 
         tim10.ccmr1_output().write(|w| {
             w.oc1m().pwm_mode1();
@@ -645,7 +649,9 @@ impl SmartcardBitbang {
                 SC_PROCEDURE_TIMEOUT_CYCLES / (SYSCLK_HZ / 1000),
                 SC_BYTE_TIMEOUT_CYCLES / (SYSCLK_HZ / 1000),
             );
-            unsafe { cortex_m::interrupt::enable(); }
+            unsafe {
+                cortex_m::interrupt::enable();
+            }
             r
         };
         result

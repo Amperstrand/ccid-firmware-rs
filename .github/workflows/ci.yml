@@ -22,7 +22,7 @@ jobs:
           - profile: profile-gemalto-idbridge-k30
             features: "profile-gemalto-idbridge-k30"
           - profile: stm32f746-bitbang
-            features: "stm32f746"
+            features: "stm32f746,profile-cherry-smartterminal-st2xxx"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -95,7 +95,7 @@ jobs:
         run: cargo clippy --release --target thumbv7em-none-eabihf -- -D warnings
 
       - name: Run clippy (F746 bitbang)
-        run: cargo clippy --release --target thumbv7em-none-eabihf --no-default-features --features stm32f746 -- -D warnings
+        run: cargo clippy --release --target thumbv7em-none-eabihf --no-default-features --features "stm32f746,profile-cherry-smartterminal-st2xxx" -- -D warnings
 
       - name: Check Python syntax
         run: |

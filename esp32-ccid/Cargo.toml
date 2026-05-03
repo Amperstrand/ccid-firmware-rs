@@ -20,7 +20,10 @@ backend-pn532 = ["dep:pn532"]
 ble = []
 
 [dependencies]
+card-interface = { path = "../crates/card-interface" }
+ccid-core = { path = "../crates/ccid-core" }
 ccid-protocol = { path = "../ccid-protocol" }
+ccid-transport-serial = { path = "../crates/ccid-transport-serial" }
 embedded-hal = "1.0"
 heapless = "0.8"
 log = "0.4"
@@ -40,5 +43,3 @@ embuild = { version = "0.32", features = ["espidf"] }
 [package.metadata.esp-idf-sys]
 esp_idf_version = "tag:v5.2.4"
 esp_idf_sdkconfig_defaults = ["esp32-ccid/sdkconfig.defaults", "esp32-ccid/sdkconfig.defaults.esp32"]
-
-

@@ -314,6 +314,14 @@ name = "ccid-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "ccid-transport-serial"
+version = "0.1.0"
+dependencies = [
+ "ccid-protocol",
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "cexpr"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -963,7 +971,10 @@ dependencies = [
 name = "esp32-ccid"
 version = "0.1.0"
 dependencies = [
+ "card-interface",
+ "ccid-core",
  "ccid-protocol",
+ "ccid-transport-serial",
  "embedded-hal 1.0.0",
  "embuild 0.32.0",
  "esp-idf-hal",

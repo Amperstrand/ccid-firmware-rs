@@ -1,12 +1,14 @@
 use crate::ccid_types::{
     build_bstatus, CcidHeader, SlotState, CCID_HEADER_SIZE, CMD_NOT_SUPPORTED,
-    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS, HW_ERROR,
-    ICC_NOT_ACTIVE, ICC_STATUS_NO_ICC, PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS,
-    PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
-    PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK,
-    RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
+    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, HW_ERROR, ICC_NOT_ACTIVE, ICC_STATUS_NO_ICC,
+    PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF,
+    PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS,
+    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS,
 };
 use crate::nfc::{NfcDriver, PresenceState};
+use ccid_core::params::default_params;
+use ccid_core::pps::is_pps_request;
+use ccid_core::response::{write_message, write_slot_status};
 
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
@@ -38,12 +40,13 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let payload_len = header.length as usize;
         if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
-            return self.write_slot_status(
+            return write_slot_status(
                 header.slot,
                 header.seq,
                 self.current_icc_status(),
                 COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
+                0,
                 response,
             );
         }
@@ -59,12 +62,13 @@ impl<D: NfcDriver> CcidHandler<D> {
             PC_TO_RDR_SET_PARAMETERS => self.handle_set_parameters(&header, response),
             PC_TO_RDR_RESET_PARAMETERS => self.handle_reset_parameters(&header, response),
             PC_TO_RDR_ESCAPE => self.handle_escape(&header, payload, response),
-            _ => self.write_slot_status(
+            _ => write_slot_status(
                 header.slot,
                 header.seq,
                 self.current_icc_status(),
                 COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
+                0,
                 response,
             ),
         }
@@ -93,12 +97,13 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     fn handle_power_on(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         if !self.presence_state.present {
-            return self.write_slot_status(
+            return write_slot_status(
                 header.slot,
                 header.seq,
                 ICC_STATUS_NO_ICC,
                 COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
+                0,
                 response,
             );
         }
@@ -107,7 +112,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             Ok(atr_len) => {
                 self.presence_state.present = true;
                 self.slot_state = SlotState::PresentActive;
-                self.write_message(
+                write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
@@ -129,12 +134,13 @@ impl<D: NfcDriver> CcidHandler<D> {
                 // Instead, assume the card is still physically present and let
                 // the next scheduled poll cycle verify.
                 self.slot_state = SlotState::PresentInactive;
-                self.write_slot_status(
+                write_slot_status(
                     header.slot,
                     header.seq,
                     self.current_icc_status(),
                     COMMAND_STATUS_FAILED,
                     HW_ERROR,
+                    0,
                     response,
                 )
             }
@@ -151,22 +157,24 @@ impl<D: NfcDriver> CcidHandler<D> {
         // so the next PowerUp must succeed.
         self.slot_state = SlotState::PresentInactive;
 
-        self.write_slot_status(
+        write_slot_status(
             header.slot,
             header.seq,
             self.current_icc_status(),
             COMMAND_STATUS_NO_ERROR,
+            0,
             0,
             response,
         )
     }
 
     fn handle_get_slot_status(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        self.write_slot_status(
+        write_slot_status(
             header.slot,
             header.seq,
             self.current_icc_status(),
             COMMAND_STATUS_NO_ERROR,
+            0,
             0,
             response,
         )
@@ -174,7 +182,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
         if self.slot_state != SlotState::PresentActive {
-            return self.write_message(
+            return write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
@@ -186,9 +194,9 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
-        if apdu.first() == Some(&0xFF) {
+        if is_pps_request(apdu) {
             log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
-            return self.write_message(
+            return write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
@@ -204,7 +212,7 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
 
         match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
-            Ok(resp_len) => self.write_message(
+            Ok(resp_len) => write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
@@ -219,7 +227,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             ),
             Err(_) => {
                 self.slot_state = SlotState::PresentInactive;
-                self.write_message(
+                write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
@@ -245,7 +253,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
         if payload.first() == Some(&0x02) {
-            return self.write_message(
+            return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
@@ -258,7 +266,7 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
 
         if payload == &[0x1F, 0x02] {
-            return self.write_message(
+            return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
@@ -272,7 +280,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         if payload.starts_with(&[0x01, 0x01, 0x01]) {
             self.sync_notifications = true;
-            return self.write_message(
+            return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
@@ -284,19 +292,20 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
-        self.write_slot_status(
+        write_slot_status(
             header.slot,
             header.seq,
             self.current_icc_status(),
             COMMAND_STATUS_FAILED,
             CMD_NOT_SUPPORTED,
+            0,
             response,
         )
     }
 
     fn write_parameters(&self, header: &CcidHeader, response: &mut [u8]) -> usize {
         let (payload, protocol) = self.parameter_payload();
-        self.write_message(
+        write_message(
             RDR_TO_PC_PARAMETERS,
             header.slot,
             header.seq,
@@ -308,67 +317,12 @@ impl<D: NfcDriver> CcidHandler<D> {
         )
     }
 
-    fn write_slot_status(
-        &self,
-        slot: u8,
-        seq: u8,
-        icc_status: u8,
-        cmd_status: u8,
-        error: u8,
-        response: &mut [u8],
-    ) -> usize {
-        self.write_message(
-            RDR_TO_PC_SLOTSTATUS,
-            slot,
-            seq,
-            build_bstatus(cmd_status, icc_status),
-            error,
-            0,
-            &[],
-            response,
-        )
-    }
-
-    fn write_message(
-        &self,
-        msg_type: u8,
-        slot: u8,
-        seq: u8,
-        status: u8,
-        error: u8,
-        specific: u8,
-        payload: &[u8],
-        response: &mut [u8],
-    ) -> usize {
-        let total_len = CCID_HEADER_SIZE + payload.len();
-        if response.len() < total_len {
-            return 0;
-        }
-
-        let header = CcidHeader::build(
-            msg_type,
-            payload.len() as u32,
-            slot,
-            seq,
-            status,
-            error,
-            specific,
-        );
-        response[..CCID_HEADER_SIZE].copy_from_slice(&header);
-        response[CCID_HEADER_SIZE..total_len].copy_from_slice(payload);
-        total_len
-    }
-
     fn current_icc_status(&self) -> u8 {
         self.slot_state.icc_status()
     }
 
     fn parameter_payload(&self) -> (&[u8], u8) {
-        if self.current_protocol == 0 {
-            (&DEFAULT_T0_PARAMS, 0)
-        } else {
-            (&DEFAULT_T1_PARAMS, self.current_protocol)
-        }
+        (default_params(self.current_protocol), self.current_protocol)
     }
 }
 
@@ -376,9 +330,10 @@ impl<D: NfcDriver> CcidHandler<D> {
 mod tests {
     use super::*;
     use crate::ccid_types::{
-        PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS,
-        PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_RESET_PARAMETERS,
-        PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK,
+        DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS, PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS,
+        PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
+        PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK,
+        RDR_TO_PC_SLOTSTATUS,
     };
     use crate::nfc::MockNfcDriver;
     use std::vec::Vec;

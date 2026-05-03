@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub use card_interface::PresenceState;
+
 /// NFC driver error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NfcError {
@@ -13,11 +15,6 @@ pub enum NfcError {
     Timeout,
     /// Buffer overflow during data transfer
     BufferOverflow,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PresenceState {
-    pub present: bool,
 }
 
 /// NFC driver trait for smartcard communication

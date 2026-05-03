@@ -170,9 +170,7 @@ extern crate std;
 mod tests {
     use super::params::{default_params, protocol_from_specific, validate_params_length};
     use super::pps::{build_pps_response, is_pps_request};
-    use super::response::{
-        write_data_block, write_message, write_parameters, write_slot_status,
-    };
+    use super::response::{write_data_block, write_message, write_parameters, write_slot_status};
     use super::*;
     use ccid_protocol::types::{
         CCID_HEADER_SIZE, COMMAND_STATUS_FAILED, DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS,
@@ -204,7 +202,14 @@ mod tests {
         assert_eq!(header.length, 0);
         assert_eq!(header.slot, 1);
         assert_eq!(header.seq, 2);
-        assert_eq!(header.specific, [build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE), 3, 4]);
+        assert_eq!(
+            header.specific,
+            [
+                build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE),
+                3,
+                4
+            ]
+        );
         assert!(payload.is_empty());
     }
 

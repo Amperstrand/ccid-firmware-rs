@@ -211,7 +211,13 @@ mod tests {
 
     #[test]
     fn test_presence_state_equality() {
-        assert_eq!(PresenceState { present: true }, PresenceState { present: true });
-        assert_ne!(PresenceState { present: true }, PresenceState { present: false });
+        assert_eq!(
+            PresenceState { present: true },
+            PresenceState { present: true }
+        );
+        assert_ne!(
+            PresenceState { present: true },
+            PresenceState { present: false }
+        );
     }
 }
