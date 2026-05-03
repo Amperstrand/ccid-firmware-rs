@@ -464,7 +464,7 @@ impl SmartcardBitbang {
         // Bias T=1 toward slow-but-working on the bitbang transport.
         // ISO 7816-3 minimum is 1 ETU, but giving the card an extra ETU of
         // inter-character idle time is harmless and widens timing margin.
-        let guard_etu: u32 = if self.protocol == 1 { 2 } else { 2 };
+        let guard_etu: u32 = 2;
         let total_etu = 10 + guard_etu;
 
         self.io_drive_low();
@@ -638,7 +638,7 @@ impl SmartcardBitbang {
             return Err(SmartcardError::HardwareError);
         }
 
-        let result = if self.protocol == 1 {
+        if self.protocol == 1 {
             self.transmit_raw_inner(command, response)
         } else {
             cortex_m::interrupt::disable();
@@ -653,8 +653,7 @@ impl SmartcardBitbang {
                 cortex_m::interrupt::enable();
             }
             r
-        };
-        result
+        }
     }
 
     pub fn transmit_raw(
