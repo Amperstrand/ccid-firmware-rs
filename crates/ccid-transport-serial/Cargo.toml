@@ -7,4 +7,4 @@ license = "GPL-2.0-or-later"
 
 [dependencies]
 heapless = "0.8"
-ccid-protocol = { path = "../../ccid-protocol" }
+ccid-protocol = { path = "../ccid-protocol" }

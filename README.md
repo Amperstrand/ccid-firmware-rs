@@ -2,8 +2,8 @@
 
 This repository now carries two firmware products on the same `main` branch:
 
-- `./` — STM32 USB CCID firmware for contact smart cards
-- `./esp32-ccid/` — ESP32 serial CCID firmware for NFC cards
+- `./firmware/ccid-firmware/` — STM32 USB CCID firmware for contact smart cards
+- `./firmware/esp32-ccid/` — ESP32 serial CCID firmware for NFC cards
 
 Current supported hardware combinations:
 
@@ -29,8 +29,8 @@ That refactor is not complete yet, but `main` is now the integration branch wher
 
 ## Repository layout
 
-- `src/` — STM32 contact-reader firmware
-- `esp32-ccid/` — ESP32 NFC-reader firmware
+- `firmware/ccid-firmware/` — STM32 contact-reader firmware
+- `firmware/esp32-ccid/` — ESP32 NFC-reader firmware
 - `vendor/synopsys-usb-otg/` — STM32 USB dependency
 - `vendor/mfrc522/` — patched MFRC522 dependency used by ESP32
 - `vendor/iso14443-rs/` — tracked ISO 14443 protocol crate used by ESP32 MFRC522
@@ -45,9 +45,9 @@ That refactor is not complete yet, but `main` is now the integration branch wher
 
 ### ESP32 NFC CCID
 
-- Build: `cargo +esp build --release` in `esp32-ccid/`
-- Flash/test helper: `esp32-ccid/flash_and_test.sh`
-- Details: [`esp32-ccid/README.md`](esp32-ccid/README.md)
+- Build: `cargo +esp build --release` in `firmware/esp32-ccid/`
+- Flash/test helper: `firmware/esp32-ccid/flash_and_test.sh`
+- Details: [`firmware/esp32-ccid/README.md`](firmware/esp32-ccid/README.md)
 
 ## STM32 contact CCID firmware
 
@@ -198,7 +198,7 @@ These hardware tests are intentionally not executed in CI.
 GitHub Actions workflow at `.github/workflows/ci.yml` runs host-safe validation for both products:
 
 - STM32 build/lint/test jobs at repository root
-- ESP32 host-side tests in `esp32-ccid/`
+- ESP32 host-side tests in `firmware/esp32-ccid/`
 - vendored `iso14443-rs` host-side tests
 - Python syntax checks for helper scripts
 
@@ -221,9 +221,9 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
 
 ## Repository guide
 
-- Firmware entrypoint: `src/main.rs`
-- Smartcard transport: `src/smartcard.rs`
-- CCID protocol handling: `src/ccid.rs`
-- Unit-testable protocol helpers: `src/protocol_unit.rs`
-- Unit tests inspired by osmo test files: `src/protocol_unit.rs` (`#[cfg(test)]` module)
+- Firmware entrypoint: `firmware/ccid-firmware/src/main.rs`
+- Smartcard transport: `firmware/ccid-firmware/src/smartcard.rs`
+- CCID protocol handling: `firmware/ccid-firmware/src/ccid.rs`
+- Unit-testable protocol helpers: `firmware/ccid-firmware/src/protocol_unit.rs`
+- Unit tests inspired by osmo test files: `firmware/ccid-firmware/src/protocol_unit.rs` (`#[cfg(test)]` module)
 - Pinout: `PINOUT.md`
