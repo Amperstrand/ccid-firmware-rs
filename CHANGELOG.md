@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-05-03
+
+### Added
+- **Shared CCID architecture** — four new shared crates under `crates/`:
+  - `ccid-protocol` — protocol types, constants, ATR parsing (moved from root)
+  - `card-interface` — card frontend trait and types (no_std)
+  - `ccid-core` — CCID response builders, PPS validation, parameter lookup (21 tests)
+  - `ccid-transport-serial` — GemPC Twin serial CCID framing (25 tests)
+- **Workspace directory reorganization** (Phase 6):
+  - `firmware/ccid-firmware/` — STM32 USB CCID firmware (moved from root)
+  - `firmware/esp32-ccid/` — ESP32 serial CCID firmware (moved from `esp32-ccid/`)
+  - `crates/ccid-protocol/` — shared protocol (moved from `ccid-protocol/`)
+  - Root `Cargo.toml` is now a pure workspace manifest with profiles and patches
+- **ESP32 ccid_handler refactor** — uses shared `ccid_core` response builders, PPS validation, parameter lookup instead of local duplicates
+- **PresenceState** — defined once in `card-interface`, shared across STM32 and ESP32
+- **CI** — F746 build matrix entries now include profile feature flag
+- 337 total tests across all workspace members
+
+### Changed
+- F746 card clock increased from 1 MHz to 5 MHz (ISO 7816 maximum), 2x APDU throughput
+- All 5 clippy warnings in STM32 firmware eliminated (semantic no-ops)
+- `BUILDING.md`, `README.md`, `Dockerfile`, CI workflow updated for new directory layout
+
+### Fixed
+- F746 performance: card clock 1->5 MHz (hardware verified at 74.4ms avg round-trip)
+- CI F746 build entries missing profile feature flag
+- `replay_seedkeeper_full_session` test: expected byte corrected for ATR-derived TB3 params
+
+### Hardware Verification (May 2026)
+- STM32F746-DISCO (Cherry ST-2xxx USB CCID): 74.4ms avg, ComSign eID T=1 contact card
+- Both F746 and F469 firmware builds verified clean
+- ESP32 hardware testing pending (M5Stack Atom disconnected)
+
 ## [0.1.0] - 2026-04-24
 
 ### Added

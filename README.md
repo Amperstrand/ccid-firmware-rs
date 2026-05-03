@@ -17,20 +17,24 @@ Near-term direction:
 
 - keep one repository and one `main` branch for both products
 - keep target-specific hardware initialization separate
-- gradually extract shared protocol pieces so transport and card frontend can be mixed more cleanly later
+- shared CCID core crates now extracted under `crates/` (protocol, response builders, serial framing)
+- remaining work: evaluate usbd-ccid as USB transport, board pin config trait, NFC crate extraction
 
-The practical architecture target is a shared CCID core with interchangeable axes:
+The practical architecture is a shared CCID core with interchangeable axes:
 
 - MCU target: STM32 or ESP32
 - card frontend: wired contact or NFC
 - transport: USB CCID or serial CCID
 
-That refactor is not complete yet, but `main` is now the integration branch where both products live and are tested.
-
 ## Repository layout
 
+- `crates/ccid-protocol/` — shared CCID protocol types, constants, ATR parsing
+- `crates/card-interface/` — shared card frontend trait and types
+- `crates/ccid-core/` — shared CCID response builders, PPS validation, parameter lookup
+- `crates/ccid-transport-serial/` — GemPC Twin serial CCID framing
 - `firmware/ccid-firmware/` — STM32 contact-reader firmware
 - `firmware/esp32-ccid/` — ESP32 NFC-reader firmware
+- `host-tools/` — host-side PC/SC utilities
 - `vendor/synopsys-usb-otg/` — STM32 USB dependency
 - `vendor/mfrc522/` — patched MFRC522 dependency used by ESP32
 - `vendor/iso14443-rs/` — tracked ISO 14443 protocol crate used by ESP32 MFRC522
