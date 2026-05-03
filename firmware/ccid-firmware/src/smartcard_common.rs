@@ -191,7 +191,7 @@ pub fn do_ifs_negotiation_t1(io: &mut dyn SmartcardIo) -> Result<u8, ()> {
     const S_IFS_REQ: u8 = 0xC1;
     const S_IFS_RESP: u8 = 0xE1;
     const IFSD: u8 = 254;
-    let lrc_val = 0u8 ^ S_IFS_REQ ^ 1u8 ^ IFSD;
+    let lrc_val = S_IFS_REQ ^ 1u8 ^ IFSD;
     io.send_byte(0).map_err(|_| ())?; // NAD
     io.send_byte(S_IFS_REQ).map_err(|_| ())?; // PCB
     io.send_byte(1).map_err(|_| ())?; // LEN
@@ -239,12 +239,12 @@ pub fn transmit_apdu_t0(
     let mut get_response_count: u8 = 0;
 
     'send: loop {
-        for i in 0..5 {
-            io.send_byte(header[i])?;
+        for &b in &header[..5] {
+            io.send_byte(b)?;
         }
         if body_offset < command.len() {
-            for i in body_offset..command.len() {
-                io.send_byte(command[i])?;
+            for &b in &command[body_offset..] {
+                io.send_byte(b)?;
             }
             body_offset = command.len();
         }
