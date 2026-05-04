@@ -685,14 +685,28 @@ fn main() -> ! {
         // GRSTCTL offset: 0x010, GCCFG offset: 0x038
         let otg_global = 0x5000_0000usize as *mut u32;
         unsafe {
-            // GRSTCTL = CSRST (bit 0)
-            otg_global.add(0x010 / 4).write_volatile(1);
-            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {}
+            // GRSTCTL.AHBIDL (bit 31) — wait for AHB idle before reset
+            let mut timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & (1 << 31) == 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
 
-            // GCCFG = clear PWRDWN (bit 16)
+            // GRSTCTL.CSRST (bit 0) — core soft reset, self-clearing
+            otg_global.add(0x010 / 4).write_volatile(1);
+            timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            // GCCFG.PWRDWN (bit 16) — PHY power cycle
             otg_global.add(0x038 / 4).write_volatile(0);
             cortex_m::asm::delay(100);
-            // GCCFG = set PWRDWN
             otg_global.add(0x038 / 4).write_volatile(1 << 16);
         }
 
