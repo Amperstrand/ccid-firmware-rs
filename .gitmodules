@@ -7,3 +7,6 @@
 [submodule "reference/osmo-ccid-firmware"]
 	path = reference/osmo-ccid-firmware
 	url = https://gitea.osmocom.org/sim-card/osmo-ccid-firmware
+[submodule "vendor/embassy-stm32f469i-disco"]
+	path = vendor/embassy-stm32f469i-disco
+	url = https://github.com/Amperstrand/embassy-stm32f469i-disco
