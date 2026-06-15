@@ -902,7 +902,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -987,6 +987,7 @@ dependencies = [
  "mfrc522-pcd",
  "nb 1.1.0",
  "pn532",
+ "pn532-transport",
 ]
 
 [[package]]
@@ -1420,7 +1421,7 @@ dependencies = [
 [[package]]
 name = "mfrc522-pcd"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git#4aa205db18751e5ae468b0eb0db1aafa452ea526"
+source = "git+https://github.com/Amperstrand/bolty-rs.git#308b63bae745b7d5e31d12b75cdfb018f2aa3ef2"
 dependencies = [
  "embedded-hal 1.0.0",
  "iso14443",
@@ -1620,6 +1621,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pn532-transport"
+version = "0.1.0"
+source = "git+https://github.com/Amperstrand/bolty-rs.git#308b63bae745b7d5e31d12b75cdfb018f2aa3ef2"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "esp-idf-hal",
+ "log",
+ "pn532",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1814,7 +1826,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2142,7 +2154,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2428,7 +2440,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

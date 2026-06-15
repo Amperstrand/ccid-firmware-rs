@@ -52,55 +52,11 @@ impl NfcDriver for Pn532NfcDriver {
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 use core::convert::Infallible;
-#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-use core::time::Duration;
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-use esp_idf_hal::delay::Delay;
-
+use pn532::{spi::SPIInterfaceWithIrq, Pn532};
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-use pn532::{
-    requests::{BorrowedRequest, Command, SAMMode},
-    spi::SPIInterfaceWithIrq,
-    CountDown, IntoDuration, Pn532, Request,
-};
-
-/// Adapter from esp-idf blocking delay to pn532::CountDown.
-/// `start(d)` records duration; `wait()` blocks for it then returns Ok.
-#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-pub struct EspDelayTimer {
-    deadline: Duration,
-}
-
-#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-impl EspDelayTimer {
-    pub fn new() -> Self {
-        Self {
-            deadline: Duration::ZERO,
-        }
-    }
-}
-
-#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-impl CountDown for EspDelayTimer {
-    type Time = Duration;
-
-    fn start<T>(&mut self, count: T)
-    where
-        T: Into<Self::Time>,
-    {
-        self.deadline = count.into();
-    }
-
-    fn wait(&mut self) -> nb::Result<(), Infallible> {
-        let ms = self.deadline.as_millis() as u32;
-        if ms > 0 {
-            Delay::new_default().delay_ms(ms);
-            self.deadline = Duration::ZERO;
-        }
-        Ok(())
-    }
-}
+use pn532_transport::{EspDelayTimer, Pn532Device};
 
 /// PN532 internal buffer: must satisfy N-9 >= max(response_len, request_data_len).
 /// 64 → 55 byte payload, enough for standard short APDUs.
@@ -113,16 +69,23 @@ const PN532_BUF_SIZE: usize = 64;
 const SYNTHETIC_ATR: [u8; 5] = [0x3B, 0x80, 0x80, 0x01, 0x01];
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
+fn map_transport_error(e: pn532_transport::Error) -> NfcError {
+    match e {
+        pn532_transport::Error::NotInitialized => NfcError::NotInitialized,
+        pn532_transport::Error::NoCard => NfcError::NoCard,
+        pn532_transport::Error::Communication => NfcError::CommunicationError,
+        pn532_transport::Error::BufferOverflow => NfcError::BufferOverflow,
+    }
+}
+
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
 pub struct Pn532NfcDriver<SPI, IRQ, RST>
 where
     SPI: embedded_hal::spi::SpiDevice,
     IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
     RST: embedded_hal::digital::OutputPin,
 {
-    pn532: Pn532<SPIInterfaceWithIrq<SPI, IRQ>, EspDelayTimer, PN532_BUF_SIZE>,
-    rst_pin: RST,
-    target_num: Option<u8>,
-    is_initialized: bool,
+    device: Pn532Device<Pn532<SPIInterfaceWithIrq<SPI, IRQ>, EspDelayTimer, PN532_BUF_SIZE>, RST>,
     session_active: bool,
 }
 
@@ -137,50 +100,12 @@ where
         let interface = SPIInterfaceWithIrq { spi, irq };
         let timer = EspDelayTimer::new();
         let pn532 = Pn532::new(interface, timer);
+        let device = Pn532Device::new(pn532, rst);
 
         Ok(Self {
-            pn532,
-            rst_pin: rst,
-            target_num: None,
-            is_initialized: false,
+            device,
             session_active: false,
         })
-    }
-
-    fn hardware_reset(&mut self) -> Result<(), NfcError> {
-        self.rst_pin
-            .set_low()
-            .map_err(|_| NfcError::CommunicationError)?;
-        Delay::new_default().delay_ms(100);
-        self.rst_pin
-            .set_high()
-            .map_err(|_| NfcError::CommunicationError)?;
-        Delay::new_default().delay_ms(500);
-        Ok(())
-    }
-
-    fn get_firmware_version(&mut self) -> Result<(u8, u8), NfcError> {
-        let response = self
-            .pn532
-            .process(&Request::GET_FIRMWARE_VERSION, 4, 50.ms())
-            .map_err(|_| NfcError::CommunicationError)?;
-
-        if response.len() < 4 || response[0] != 0x32 {
-            return Err(NfcError::CommunicationError);
-        }
-
-        Ok((response[1], response[2]))
-    }
-
-    fn configure_sam(&mut self) -> Result<(), NfcError> {
-        self.pn532
-            .process(
-                &Request::sam_configuration(SAMMode::Normal, false),
-                0,
-                50.ms(),
-            )
-            .map_err(|_| NfcError::CommunicationError)?;
-        Ok(())
     }
 }
 
@@ -195,11 +120,7 @@ where
 
     /// Init: hardware reset → GetFirmwareVersion → SAMConfiguration(Normal).
     fn init(&mut self) -> Result<(), NfcError> {
-        self.hardware_reset()?;
-        self.get_firmware_version()?;
-        self.configure_sam()?;
-        self.is_initialized = true;
-        Ok(())
+        self.device.init().map_err(map_transport_error)
     }
 
     /// InListPassiveTarget for ISO 14443-A; stores target_num on success.
@@ -208,25 +129,10 @@ where
     }
 
     fn poll_card_presence(&mut self) -> PresenceState {
-        if !self.is_initialized {
-            return PresenceState { present: false };
+        let present = self.device.detect_card();
+        if !present {
+            self.session_active = false;
         }
-
-        let present = match self
-            .pn532
-            .process(&Request::INLIST_ONE_ISO_A_TARGET, 20, 1000.ms())
-        {
-            Ok(response) if !response.is_empty() && response[0] > 0 => {
-                self.target_num = Some(1);
-                true
-            }
-            _ => {
-                self.target_num = None;
-                self.session_active = false;
-                false
-            }
-        };
-
         PresenceState { present }
     }
 
@@ -236,14 +142,14 @@ where
 
     /// Returns synthetic ATR `3B 80 80 01 01` for all detected cards.
     fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
-        if !self.is_initialized {
+        if !self.device.is_initialized() {
             return Err(NfcError::NotInitialized);
         }
-        if self.target_num.is_none() && !self.poll_card_presence().present {
-            return Err(NfcError::NoCard);
-        }
-        if self.target_num.is_none() {
-            return Err(NfcError::NoCard);
+        // Defensive: try one more detection if no card is known to be present.
+        if !self.device.card_present() {
+            if !self.device.detect_card() {
+                return Err(NfcError::NoCard);
+            }
         }
         if atr_buf.len() < SYNTHETIC_ATR.len() {
             return Err(NfcError::BufferOverflow);
@@ -256,49 +162,25 @@ where
 
     /// InRelease to deselect the current target.
     fn power_off(&mut self) {
-        if let Some(target_num) = self.target_num {
-            let _ = self
-                .pn532
-                .process(&Request::new(Command::InRelease, [target_num]), 0, 50.ms());
-            self.target_num = None;
-        }
+        self.device.release_card();
         self.session_active = false;
     }
 
     /// InDataExchange with selected target.
-    /// Response[0]=status (0=ok), rest is APDU data+SW.
     fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, NfcError> {
-        if !self.is_initialized {
-            return Err(NfcError::NotInitialized);
-        }
         if !self.session_active {
             return Err(NfcError::NotInitialized);
         }
-        let target_num = self.target_num.ok_or(NfcError::NoCard)?;
-
-        let mut data = heapless::Vec::<u8, PN532_BUF_SIZE>::new();
-        data.push(target_num)
-            .map_err(|_| NfcError::BufferOverflow)?;
-        data.extend_from_slice(command)
-            .map_err(|_| NfcError::BufferOverflow)?;
-
-        let request = BorrowedRequest::new(Command::InDataExchange, &data);
 
         let result = self
-            .pn532
-            .process(request, PN532_BUF_SIZE, 1000.ms())
-            .map_err(|_| NfcError::CommunicationError)?;
+            .device
+            .exchange_apdu(command)
+            .map_err(map_transport_error)?;
 
-        if result.is_empty() || result[0] != 0x00 {
-            self.session_active = false;
-            return Err(NfcError::CommunicationError);
-        }
-
-        let apdu_response = &result[1..];
-        if response.len() < apdu_response.len() {
+        if response.len() < result.len() {
             return Err(NfcError::BufferOverflow);
         }
-        response[..apdu_response.len()].copy_from_slice(apdu_response);
-        Ok(apdu_response.len())
+        response[..result.len()].copy_from_slice(&result);
+        Ok(result.len())
     }
 }
