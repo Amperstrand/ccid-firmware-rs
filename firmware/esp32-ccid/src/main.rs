@@ -377,7 +377,7 @@ fn main() {
         }
     };
 
-    let transceiver = esp32_ccid::mfrc522_transceiver::Mfrc522Transceiver::new(mfrc522_hw);
+    let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(mfrc522_hw);
     let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
 
     let init_ok = (0..5).any(|_| {

@@ -902,7 +902,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -984,6 +984,7 @@ dependencies = [
  "iso14443",
  "log",
  "mfrc522",
+ "mfrc522-pcd",
  "nb 1.1.0",
  "pn532",
 ]
@@ -1417,6 +1418,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mfrc522-pcd"
+version = "0.1.0"
+source = "git+https://github.com/Amperstrand/bolty-rs.git#4aa205db18751e5ae468b0eb0db1aafa452ea526"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "iso14443",
+ "log",
+ "mfrc522",
+]
+
+[[package]]
 name = "micromath"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1802,7 +1814,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2130,7 +2142,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2416,7 +2428,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

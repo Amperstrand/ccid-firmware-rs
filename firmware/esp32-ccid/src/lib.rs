@@ -20,9 +20,6 @@ pub mod serial_framing;
 pub mod mfrc522_driver;
 
 #[cfg(feature = "backend-mfrc522")]
-pub mod mfrc522_transceiver;
-
-#[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
 #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]

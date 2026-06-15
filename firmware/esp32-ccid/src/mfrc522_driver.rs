@@ -60,7 +60,7 @@ enum CardLifecycle {
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 pub struct Mfrc522NfcDriver<I2C: I2c> {
-    transceiver: crate::mfrc522_transceiver::Mfrc522Transceiver<I2C>,
+    transceiver: mfrc522_pcd::Mfrc522Transceiver<I2C>,
     is_initialized: bool,
     lifecycle: CardLifecycle,
     session: Option<PcdSession>,
@@ -73,7 +73,7 @@ impl<I2C> Mfrc522NfcDriver<I2C>
 where
     I2C: I2c,
 {
-    pub fn new(transceiver: crate::mfrc522_transceiver::Mfrc522Transceiver<I2C>) -> Self {
+    pub fn new(transceiver: mfrc522_pcd::Mfrc522Transceiver<I2C>) -> Self {
         Self {
             transceiver,
             is_initialized: false,
@@ -112,11 +112,7 @@ where
 
     fn reset_activation_frontend(&mut self) -> Result<(), NfcError> {
         self.transceiver
-            .reset_comm_regs()
-            .map_err(|_| NfcError::CommunicationError)?;
-        self.transceiver
-            .mfrc522
-            .write_register(mfrc522::Register::ModWidthReg, 0x26)
+            .reset_frontend()
             .map_err(|_| NfcError::CommunicationError)?;
         self.transceiver
             .mfrc522
