@@ -115,7 +115,7 @@ where
             .reset_frontend()
             .map_err(|_| NfcError::CommunicationError)?;
         self.transceiver
-            .mfrc522
+            .raw()
             .set_antenna_gain(mfrc522::RxGain::DB33)
             .map_err(|_| NfcError::CommunicationError)?;
         Ok(())
@@ -141,7 +141,7 @@ where
             };
         }
 
-        match self.transceiver.mfrc522.wupa() {
+        match self.transceiver.raw().wupa() {
             Ok(atqa) => {
                 let atqa_bytes = atqa.as_bytes();
                 log::trace!(
@@ -213,7 +213,7 @@ where
     fn init(&mut self) -> Result<(), NfcError> {
         let version = self
             .transceiver
-            .mfrc522
+            .raw()
             .version()
             .map_err(|_| NfcError::CommunicationError)?;
 
@@ -223,7 +223,7 @@ where
         }
 
         self.transceiver
-            .mfrc522
+            .raw()
             .set_antenna_gain(mfrc522::RxGain::DB33)
             .map_err(|_| NfcError::CommunicationError)?;
 
