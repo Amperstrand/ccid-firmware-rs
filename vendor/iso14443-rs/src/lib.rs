@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(clippy::result_unit_err)]
 //! # iso14443
 //!
 //! Rust implementation of the ISO/IEC 14443 NFC/RFID proximity card protocol.

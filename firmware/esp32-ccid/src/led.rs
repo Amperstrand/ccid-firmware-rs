@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! M5Stack Atom Matrix 5×5 WS2812C LED diagnostic display.
 //!
 //! Drives the onboard 25-LED RGB matrix on GPIO27 via the ESP32 RMT peripheral.

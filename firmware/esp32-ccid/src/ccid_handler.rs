@@ -265,7 +265,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
-        if payload == &[0x1F, 0x02] {
+        if payload == [0x1F, 0x02] {
             return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,

@@ -19,6 +19,7 @@ const MAX_CCID_PAYLOAD: usize = MAX_CCID_BYTES - MAX_CCID_HEADER_LEN;
 const MAX_FRAME_BYTES: usize = 2 + MAX_CCID_BYTES + 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum FrameEvent {
     Command { ccid_bytes: Vec<u8, MAX_CCID_BYTES> },
     Error(FrameError),
