@@ -37,7 +37,7 @@ stm32f7xx-hal = { version = "0.8", features = ["stm32f746", "usb_fs", "gpiok"], 
 stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", branch = "sdio-support", optional = true }
 
 [features]
-default = ["profile-cherry-smartterminal-st2xxx"]
+default = ["stm32f469", "profile-cherry-smartterminal-st2xxx"]
 
 # MCU target selection (mutually exclusive)
 stm32f469 = ["dep:stm32f4xx-hal", "dep:stm32f469i-disc"]
