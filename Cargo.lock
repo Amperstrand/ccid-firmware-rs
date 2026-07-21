@@ -297,7 +297,7 @@ dependencies = [
  "log",
  "panic-probe 0.3.2",
  "stm32f469i-disc",
- "stm32f4xx-hal",
+ "stm32f4xx-hal 0.23.0 (git+https://github.com/Amperstrand/stm32f4xx-hal?rev=05d999d600d457f99aeb23ff93275d2c8f998908)",
  "stm32f7xx-hal",
  "usb-device",
 ]
@@ -1976,7 +1976,37 @@ dependencies = [
  "nt35510",
  "otm8009a",
  "stm32-fmc 0.4.0",
- "stm32f4xx-hal",
+ "stm32f4xx-hal 0.23.0 (git+https://github.com/Amperstrand/stm32f4xx-hal?rev=789e5e86f5d93ae80b2f50e861c3c76980733bca)",
+]
+
+[[package]]
+name = "stm32f4xx-hal"
+version = "0.23.0"
+source = "git+https://github.com/Amperstrand/stm32f4xx-hal?rev=05d999d600d457f99aeb23ff93275d2c8f998908#05d999d600d457f99aeb23ff93275d2c8f998908"
+dependencies = [
+ "bare-metal 1.0.0",
+ "cortex-m",
+ "cortex-m-rt",
+ "document-features",
+ "embedded-display-controller",
+ "embedded-dma",
+ "embedded-graphics-core",
+ "embedded-hal 0.2.7",
+ "embedded-hal 1.0.0",
+ "embedded-hal-nb",
+ "embedded-io 0.6.1",
+ "embedded-storage",
+ "enumflags2",
+ "fugit",
+ "fugit-timer",
+ "micromath",
+ "nb 1.1.0",
+ "rand_core 0.6.4",
+ "rand_core 0.9.5",
+ "stm32f4",
+ "synopsys-usb-otg 0.5.0",
+ "time",
+ "void",
 ]
 
 [[package]]
@@ -1991,7 +2021,6 @@ dependencies = [
  "document-features",
  "embedded-display-controller",
  "embedded-dma",
- "embedded-graphics-core",
  "embedded-hal 0.2.7",
  "embedded-hal 1.0.0",
  "embedded-hal-nb",

@@ -661,6 +661,63 @@ fn main() -> ! {
     };
 
     // =========================================================================
+    // USB OTG FS PHY reset (fix for issue #22)
+    // =========================================================================
+    // After a soft reset (SYSRESETREQ from st-flash), the USB OTG FS peripheral
+    // can retain stale PHY state that prevents re-enumeration. This sequence
+    // (clock disable, peripheral reset, core soft reset, PHY power-cycle) ensures
+    // a clean start regardless of how we got here. Pattern from microfips project.
+
+    #[cfg(feature = "stm32f469")]
+    {
+        unsafe {
+            // Access RCC via PAC for clock and reset control
+            let rcc = &*stm32f4xx_hal::pac::RCC::ptr();
+
+            // Disable then re-enable USB OTG FS clock (AHB2ENR.OTGFSEN)
+            rcc.ahb2enr().modify(|_, w| w.otgfsen().clear_bit());
+            cortex_m::asm::delay(100);
+            rcc.ahb2enr().modify(|_, w| w.otgfsen().set_bit());
+
+            // Reset the USB OTG FS peripheral (AHB2RSTR.OTGFSRST)
+            rcc.ahb2rstr().modify(|_, w| w.otgfsrst().set_bit());
+            cortex_m::asm::delay(100);
+            rcc.ahb2rstr().modify(|_, w| w.otgfsrst().clear_bit());
+            cortex_m::asm::delay(100);
+
+            // USB_OTG_FS_GLOBAL base: 0x5000_0000
+            // GRSTCTL offset: 0x010, GCCFG offset: 0x038
+            let otg_global = 0x5000_0000usize as *mut u32;
+
+            // Wait for AHB idle (GRSTCTL.AHBIDL, bit 31)
+            let mut timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & (1 << 31) == 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            // Core soft reset (GRSTCTL.CSRST, bit 0, self-clearing)
+            otg_global.add(0x010 / 4).write_volatile(1);
+            timeout = 100_000u32;
+            while otg_global.add(0x010 / 4).read_volatile() & 1 != 0 {
+                timeout -= 1;
+                if timeout == 0 {
+                    break;
+                }
+            }
+
+            // PHY power cycle (GCCFG.PWRDWN, bit 16)
+            otg_global.add(0x038 / 4).write_volatile(0);
+            cortex_m::asm::delay(100);
+            otg_global.add(0x038 / 4).write_volatile(1 << 16);
+        }
+
+        defmt::info!("USB PHY pre-init reset");
+    }
+
+    // =========================================================================
     // USB OTG FS
     // =========================================================================
 
