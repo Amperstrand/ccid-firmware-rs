@@ -32,7 +32,7 @@ usb-device = "0.3"
 embedded-alloc = "0.5"
 
 # MCU target HALs (mutually exclusive via features)
-stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal", rev = "789e5e86f5d93ae80b2f50e861c3c76980733bca", features = ["stm32f469", "usb_fs", "framebuffer"], optional = true }
+stm32f4xx-hal = { git = "https://github.com/Amperstrand/stm32f4xx-hal", rev = "05d999d600d457f99aeb23ff93275d2c8f998908", features = ["stm32f469", "usb_fs", "framebuffer"], optional = true }
 stm32f7xx-hal = { version = "0.8", features = ["stm32f746", "usb_fs", "gpiok"], optional = true }
 stm32f469i-disc = { git = "https://github.com/Amperstrand/stm32f469i-disc.git", branch = "sdio-support", optional = true }
 
