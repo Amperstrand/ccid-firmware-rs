@@ -36,6 +36,8 @@ use panic_probe as _;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod app_enum;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
+mod board_config;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod ccid;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod pps_fsm;
@@ -57,13 +59,6 @@ use ccid_firmware_rs::pinpad;
 use cortex_m_rt::entry;
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
-use stm32f4xx_hal::gpio::{
-    gpioa::{PA2, PA4},
-    gpioc::{PC2, PC5},
-    gpiog::PG10,
-    Alternate, Input, OpenDrain, Output, PushPull,
-};
-#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::otg_fs::{UsbBus, USB};
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::pac;
@@ -72,13 +67,6 @@ use stm32f4xx_hal::prelude::*;
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use stm32f4xx_hal::rcc::Config;
 
-#[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
-use stm32f7xx_hal::gpio::{
-    gpiof::{PF6, PF7},
-    gpioi::{PI0, PI2},
-    gpiok::PK3,
-    OpenDrain, Output, PushPull,
-};
 #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
 use stm32f7xx_hal::otg_fs::{UsbBus, USB};
 #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
@@ -572,93 +560,14 @@ fn main() -> ! {
     // =========================================================================
 
     #[cfg(feature = "stm32f469")]
-    let (smartcard_wrapper, usb_dm, usb_dp) = {
-        let mut gpioa = dp.GPIOA.split(&mut rcc);
-        let mut gpioc = dp.GPIOC.split(&mut rcc);
-        let mut gpiog = dp.GPIOG.split(&mut rcc);
-
-        let io_pin: PA2<Alternate<7, OpenDrain>> = gpioa
-            .pa2
-            .into_alternate_open_drain::<7>()
-            .internal_pull_up(true)
-            .speed(stm32f4xx_hal::gpio::Speed::High);
-
-        let clk_pin: PA4<Alternate<7, PushPull>> = gpioa
-            .pa4
-            .into_alternate::<7>()
-            .speed(stm32f4xx_hal::gpio::Speed::High);
-
-        let rst_pin: PG10<Output<PushPull>> = gpiog
-            .pg10
-            .into_push_pull_output_in_state(stm32f4xx_hal::gpio::PinState::High);
-
-        let pres_pin: PC2<Input> = gpioc.pc2.into_input();
-        let pwr_pin: PC5<Output<PushPull>> = gpioc
-            .pc5
-            .into_push_pull_output_in_state(stm32f4xx_hal::gpio::PinState::High);
-
-        defmt::info!("Smartcard GPIO OK");
-
-        let usb_dm = gpioa.pa11.into_alternate::<10>();
-        let usb_dp = gpioa.pa12.into_alternate::<10>();
-
-        let uart = SmartcardUart::new(
-            dp.USART2,
-            io_pin,
-            clk_pin,
-            rst_pin,
-            pres_pin,
-            pwr_pin,
-            &rcc.clocks,
-        );
-        defmt::info!("Smartcard UART OK");
-
-        (SmartcardWrapper::new(uart), usb_dm, usb_dp)
-    };
+    let hw = board_config::f469::setup(dp.GPIOA, dp.GPIOC, dp.GPIOG, dp.USART2, &mut rcc);
 
     #[cfg(feature = "stm32f746")]
-    let (smartcard_wrapper, usb_dm, usb_dp) = {
-        let mut gpiof = dp.GPIOF.split();
-        let mut gpioi = dp.GPIOI.split();
-        let mut gpiok = dp.GPIOK.split();
+    let hw = board_config::f746::setup(dp.GPIOA, dp.GPIOF, dp.GPIOI, dp.GPIOK, &clocks);
 
-        let _backlight: PK3<Output<PushPull>> = gpiok
-            .pk3
-            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::Low);
-
-        let io_pin: PI0<Output<OpenDrain>> = gpioi
-            .pi0
-            .into_open_drain_output()
-            .internal_pull_up(true)
-            .set_speed(stm32f7xx_hal::gpio::Speed::High);
-
-        let clk_pin: PF6<Output<PushPull>> = gpiof
-            .pf6
-            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::Low)
-            .set_speed(stm32f7xx_hal::gpio::Speed::VeryHigh);
-
-        let rst_pin: PI2<Output<PushPull>> = gpioi
-            .pi2
-            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::High);
-
-        let pres_pin = gpiof.pf10.into_floating_input();
-
-        let pwr_pin: PF7<Output<PushPull>> = gpiof
-            .pf7
-            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::High);
-
-        defmt::info!("Smartcard GPIO OK");
-
-        let mut gpioa = dp.GPIOA.split();
-        let usb_dm = gpioa.pa11.into_alternate::<10>();
-        let usb_dp = gpioa.pa12.into_alternate::<10>();
-
-        let sysclk_hz = clocks.sysclk().raw();
-        let bitbang = SmartcardBitbang::new(io_pin, clk_pin, rst_pin, pres_pin, pwr_pin, sysclk_hz);
-        defmt::info!("Smartcard bitbang OK");
-
-        (SmartcardWrapper::new(bitbang), usb_dm, usb_dp)
-    };
+    let smartcard_wrapper = hw.wrapper;
+    let usb_dm = hw.usb_dm;
+    let usb_dp = hw.usb_dp;
 
     // =========================================================================
     // USB OTG FS PHY reset (fix for issue #22)
