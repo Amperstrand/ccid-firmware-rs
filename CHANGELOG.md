@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **CI clippy fix (#25)** — `default` features now include `stm32f469` MCU target. Previously default only had device profile, causing F469 clippy to fail with unresolved `pac`, `UsbBus`, `CcidClass`, `smartcard_wrapper` symbols.
+- **HAL fork pin bump (#23)** — stm32f4xx-hal bumped from `789e5e8` to `05d999d` for PLLSAI P/Q divider preservation fixes.
+- **USB OTG FS PHY reset (#22)** — added PHY reset sequence (clock disable/enable, peripheral reset, core soft reset, GCCFG power-cycle) for stm32f469 target. Fixes USB not re-enumerating after `st-flash` soft reset. Hardware verification pending.
+- **ESP32 stack overflow (#21)** — fixed incorrect `sdkconfig.defaults` option name: `CONFIG_ESP_MAIN_TASK_STACK_SIZE` → `CONFIG_MAIN_TASK_STACK_SIZE=12288`. Previous 32KB setting was never applied due to wrong option name.
+
 ## [0.1.1] - 2026-05-03
 
 ### Added
