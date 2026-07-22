@@ -18,9 +18,9 @@ jobs:
           - profile: profile-cherry-smartterminal-st2xxx
             features: ""
           - profile: profile-gemalto-idbridge-ct30
-            features: "profile-gemalto-idbridge-ct30"
+            features: "stm32f469,profile-gemalto-idbridge-ct30"
           - profile: profile-gemalto-idbridge-k30
-            features: "profile-gemalto-idbridge-k30"
+            features: "stm32f469,profile-gemalto-idbridge-k30"
           - profile: stm32f746-bitbang
             features: "stm32f746,profile-cherry-smartterminal-st2xxx"
     steps:
@@ -115,6 +115,9 @@ jobs:
         with:
           toolchain: "1.92"
           targets: x86_64-unknown-linux-gnu
+      
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
       
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
