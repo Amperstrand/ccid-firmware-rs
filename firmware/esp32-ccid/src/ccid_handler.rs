@@ -9,6 +9,7 @@ use crate::nfc::{NfcDriver, PresenceState};
 use ccid_core::params::default_params;
 use ccid_core::pps::is_pps_request;
 use ccid_core::response::{write_message, write_slot_status};
+use ccid_core::Diagnostics;
 
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
@@ -19,6 +20,7 @@ pub struct CcidHandler<D: NfcDriver> {
     tx_buf: [u8; 271],
     sync_notifications: bool,
     current_protocol: u8,
+    diagnostics: Diagnostics,
 }
 
 impl<D: NfcDriver> CcidHandler<D> {
@@ -30,7 +32,20 @@ impl<D: NfcDriver> CcidHandler<D> {
             tx_buf: [0u8; 271],
             sync_notifications: false,
             current_protocol: 1,
+            diagnostics: Diagnostics::new(),
         }
+    }
+
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+
+    pub fn diagnostics_mut(&mut self) -> &mut Diagnostics {
+        &mut self.diagnostics
+    }
+
+    pub fn record_nak(&mut self) {
+        self.diagnostics.nak_count = self.diagnostics.nak_count.saturating_add(1);
     }
 
     pub fn process_command(&mut self, ccid_msg: &[u8], response: &mut [u8]) -> usize {
@@ -53,7 +68,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let payload = &ccid_msg[CCID_HEADER_SIZE..CCID_HEADER_SIZE + payload_len];
 
-        match header.message_type {
+        let len = match header.message_type {
             PC_TO_RDR_ICC_POWER_ON => self.handle_power_on(&header, response),
             PC_TO_RDR_ICC_POWER_OFF => self.handle_power_off(&header, response),
             PC_TO_RDR_GET_SLOT_STATUS => self.handle_get_slot_status(&header, response),
@@ -71,17 +86,25 @@ impl<D: NfcDriver> CcidHandler<D> {
                 0,
                 response,
             ),
+        };
+
+        if len > 7 && response[7] & 0x40 != 0 {
+            self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
         }
+
+        len
     }
 
     pub fn check_card_change(&mut self) -> Option<bool> {
         if self.nfc.session_active() {
             self.presence_state = PresenceState { present: true };
             self.slot_state = SlotState::PresentActive;
+            self.diagnostics.card_present = true;
             return None;
         }
 
         let presence = self.nfc.poll_card_presence();
+        self.diagnostics.card_present = presence.present;
         if presence.present != self.presence_state.present {
             self.presence_state = presence;
             self.slot_state = if presence.present {
@@ -181,6 +204,8 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
+        self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
+
         if self.slot_state != SlotState::PresentActive {
             return write_message(
                 RDR_TO_PC_DATABLOCK,
@@ -196,6 +221,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         if is_pps_request(apdu) {
             log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
+            self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
             return write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
@@ -212,19 +238,22 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
 
         match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
-            Ok(resp_len) => write_message(
-                RDR_TO_PC_DATABLOCK,
-                header.slot,
-                header.seq,
-                build_bstatus(
-                    COMMAND_STATUS_NO_ERROR,
-                    SlotState::PresentActive.icc_status(),
-                ),
-                0,
-                0,
-                &self.tx_buf[..resp_len],
-                response,
-            ),
+            Ok(resp_len) => {
+                self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+                write_message(
+                    RDR_TO_PC_DATABLOCK,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(
+                        COMMAND_STATUS_NO_ERROR,
+                        SlotState::PresentActive.icc_status(),
+                    ),
+                    0,
+                    0,
+                    &self.tx_buf[..resp_len],
+                    response,
+                )
+            }
             Err(_) => {
                 self.slot_state = SlotState::PresentInactive;
                 write_message(
@@ -720,5 +749,51 @@ mod tests {
         assert_eq!(header.specific[2], 1);
         assert_eq!(payload, DEFAULT_T1_PARAMS);
         assert_eq!(handler.current_protocol, 1);
+    }
+
+    #[test]
+    fn test_xfr_block_increments_apdu_tx_count() {
+        let mut handler = new_handler(true);
+        handler.check_card_change();
+        let mut response = [0u8; 271];
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 6, &[]);
+        handler.process_command(&power_on, &mut response);
+
+        assert_eq!(handler.diagnostics().apdu_tx_count, 0);
+        assert_eq!(handler.diagnostics().apdu_rx_count, 0);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00]);
+        handler.process_command(&cmd, &mut response);
+
+        assert_eq!(handler.diagnostics().apdu_tx_count, 1);
+        assert_eq!(handler.diagnostics().apdu_rx_count, 1);
+    }
+
+    #[test]
+    fn test_error_response_increments_error_count() {
+        let mut handler = new_handler(false);
+        let mut response = [0u8; 271];
+
+        assert_eq!(handler.diagnostics().error_count, 0);
+
+        let cmd = build_ccid_cmd(0x71, 0, 11, &[]);
+        handler.process_command(&cmd, &mut response);
+
+        assert_eq!(handler.diagnostics().error_count, 1);
+    }
+
+    #[test]
+    fn test_card_present_reflected_in_diagnostics() {
+        let mut handler = new_handler(false);
+        handler.check_card_change();
+        assert!(!handler.diagnostics().card_present);
+
+        handler.nfc.set_card_present(true);
+        handler.check_card_change();
+        assert!(handler.diagnostics().card_present);
+
+        handler.nfc.set_card_present(false);
+        handler.check_card_change();
+        assert!(!handler.diagnostics().card_present);
     }
 }

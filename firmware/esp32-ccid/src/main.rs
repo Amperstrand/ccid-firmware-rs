@@ -232,6 +232,7 @@ fn main() {
                     let mut nak = [0u8; 3];
                     let nak_len = build_nak_frame(&mut nak);
                     write_all_logged(&uart, &nak[..nak_len]);
+                    ccid_handler.record_nak();
                     frame_len = 0;
                     frame_parser.reset();
                     continue;
@@ -274,6 +275,7 @@ fn main() {
                         let mut nak = [0u8; 3];
                         let nak_len = build_nak_frame(&mut nak);
                         write_all_logged(&uart, &nak[..nak_len]);
+                        ccid_handler.record_nak();
                         frame_len = 0;
                         frame_parser.reset();
                     }
@@ -427,6 +429,7 @@ fn main() {
                     let mut nak = [0u8; 3];
                     let nak_len = build_nak_frame(&mut nak);
                     write_all_logged(&uart, &nak[..nak_len]);
+                    ccid_handler.record_nak();
                     frame_len = 0;
                     frame_parser.reset();
                     continue;
@@ -485,6 +488,7 @@ fn main() {
                         let mut nak = [0u8; 3];
                         let nak_len = build_nak_frame(&mut nak);
                         write_all_logged(&uart, &nak[..nak_len]);
+                        ccid_handler.record_nak();
                         frame_len = 0;
                         frame_parser.reset();
                     }
