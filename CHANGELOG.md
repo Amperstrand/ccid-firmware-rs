@@ -7,11 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Sibling-repo improvement pass (issues #28–#32)
+
+- **DWT cycle counter watchdog (#28)** — new `dwt_watchdog` module in `firmware/ccid-firmware/src/dwt_watchdog.rs`. Provides accurate wall-clock timeouts on Cortex-M3+ using the DWT CYCCNT register. Replaces iteration-based polling in F469 `SmartcardUart::receive_byte_timeout()`. 14 host-side unit tests. Pattern sourced from gm65-scanner (commit 1d7fddc).
+- **Diagnostics struct (#29)** — new `Diagnostics` struct in `crates/ccid-core/src/diagnostics.rs`. Tracks runtime counters (apdu_tx_count, apdu_rx_count, nak_count, error_count, reinit_count, card_present, uptime_ticks). Serializes to fixed 28-byte little-endian layout for CCID Escape vendor command. 11 unit tests. no_std, zero-dep.
+- **Escape 0xD0 diagnostic query (#29)** — vendor-neutral CCID Escape path: host sends `PC_TO_RDR_ESCAPE` with payload `[0xD0]`, firmware returns serialized Diagnostics struct. Works on ALL reader profiles (Cherry, CT30, K30, F746) — not restricted to Gemalto vendor. Implemented for both STM32 (`ccid_core.rs`) and ESP32 (`ccid_handler.rs`).
+- **ESP32 diagnostics counters (#29)** — wired Diagnostics into ESP32 `CcidHandler`: apdu_tx_count on XfrBlock, apdu_rx_count on response, error_count on failures, card_present from NFC driver, nak_count from serial NAK path.
+- **SmartcardConfig struct (#31)** — replaced 10 hardcoded `const SC_*` values in `smartcard.rs:30-39` with a configurable `SmartcardConfig` struct in `smartcard_common.rs`. Values unchanged (characterization test verifies). Enables per-deployment tuning. Pattern from gm65-scanner `ScannerConfig`.
+- **Self-healing SmartcardWrapper (#30)** — STM32 `SmartcardWrapper` now re-initializes the smartcard peripheral after 3 consecutive APDU failures, increments `reinit_count`, and continues operation instead of returning errors indefinitely. Added `fn diagnostics()` default method to `SmartcardDriver` trait.
+- **Self-healing MFRC522 driver (#30)** — ESP32 `Mfrc522NfcDriver` now performs full re-init after `REINIT_THRESHOLD=3` consecutive init failures, tracks `reinit_count`. Removed permanent error-LED halt pattern. Added `fn reinit_count()` default method to `NfcDriver` trait.
+- **Labgrid HIL test harness (#32)** — new `tests/hardware/labgrid/` directory with pytest-based HIL tests. SSH-based fixtures wrap st-flash, lsusb, pcsc_scan, pyscard on the remote STM32 host. 6 HIL tests: USB enumeration, pcscd detection, ATR verification, APDU round-trip (SELECT MF, GET CHALLENGE), pinpad capability. All pass on real hardware.
+
 ### Fixed
 - **CI clippy fix (#25)** — `default` features now include `stm32f469` MCU target. Previously default only had device profile, causing F469 clippy to fail with unresolved `pac`, `UsbBus`, `CcidClass`, `smartcard_wrapper` symbols.
 - **HAL fork pin bump (#23)** — stm32f4xx-hal bumped from `789e5e8` to `05d999d` for PLLSAI P/Q divider preservation fixes.
-- **USB OTG FS PHY reset (#22)** — added PHY reset sequence (clock disable/enable, peripheral reset, core soft reset, GCCFG power-cycle) for stm32f469 target. Fixes USB not re-enumerating after `st-flash` soft reset. Hardware verification pending.
+- **USB OTG FS PHY reset (#22)** — added PHY reset sequence (clock disable/enable, peripheral reset, core soft reset, GCCFG power-cycle) for stm32f469 target. Fixes USB not re-enumerating after `st-flash` soft reset. **Hardware verified** on STM32F469I-DISCO at 192.168.13.208: Cherry ST-2xxx enumerates correctly after st-flash soft reset.
 - **ESP32 stack overflow (#21)** — fixed incorrect `sdkconfig.defaults` option name: `CONFIG_ESP_MAIN_TASK_STACK_SIZE` → `CONFIG_MAIN_TASK_STACK_SIZE=12288`. Previous 32KB setting was never applied due to wrong option name.
+
+### Hardware Verification (August 2026)
+- **STM32F469I-DISCO** at 192.168.13.208 (ST-LINK/V2.1 serial 066FFF515786534867184152):
+  - Cherry SmartTerminal ST-2xxx (VID:PID 046A:003E) enumerates after st-flash ✅
+  - pcscd detects reader, reads ComSign eID ATR `3B D5 18 FF 81 91 FE 1F C3 80 73 C8 21 10 0A` ✅
+  - APDU round-trip via pyscard: SELECT MF → SW 6A 86, GET CHALLENGE → SW 6E 00 ✅
+  - 6/6 HIL tests pass (18.9s total) ✅
+  - USB PHY reset (issue #22) confirmed working on real hardware ✅
+  - All Wave 1–3 features (DWT, Diagnostics, SmartcardConfig, self-healing, Escape 0xD0) running on-device ✅
+
+### Test count
+- Workspace host tests: 262 (was ~218 baseline pre-improvement-pass)
+- ESP32 host tests: 58
+- iso14443 vendored: 37
+- HIL tests: 6 (all pass on real hardware)
 
 ## [0.1.1] - 2026-05-03
 
