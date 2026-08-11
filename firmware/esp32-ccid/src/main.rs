@@ -382,19 +382,13 @@ fn main() {
     let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(mfrc522_hw);
     let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
 
-    let init_ok = (0..5).any(|_| {
-        if mfrc522_driver.init().is_ok() {
-            true
-        } else {
-            FreeRtos::delay_ms(1000);
-            false
+    loop {
+        if mfrc522_driver.init_with_recovery().is_ok() {
+            led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
+            break;
         }
-    });
-
-    if init_ok {
-        led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
-    } else {
-        led.set_state(esp32_ccid::led::LedState::Error);
+        led.set_state(esp32_ccid::led::LedState::Init);
+        FreeRtos::delay_ms(1000);
     }
 
     let mut ccid_handler = CcidHandler::new(mfrc522_driver);
@@ -507,6 +501,7 @@ fn main() {
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
                     last_card_poll_tick = now;
+                    ccid_handler.sync_driver_diagnostics();
                     if let Some(present) = ccid_handler.check_card_change() {
                         if present {
                             led.blink_state(esp32_ccid::led::LedState::CardPresent, 3, 120, 80);
