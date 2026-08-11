@@ -15,6 +15,8 @@ Usage:
 """
 
 import os
+import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -147,7 +149,7 @@ def flashed_firmware(request, helpers):
         pytest.fail(f"Firmware binary not found: {bin_path}")
     remote_bin = f"/tmp/{bin_path.name}"
     helpers.scp_upload(str(bin_path), remote_bin)
-    result = helpers.run(f"st-flash --reset write {remote_bin} {DEFAULT_FLASH_BASE}", timeout=30)
+    result = helpers.run(f"st-flash --reset write {shlex.quote(remote_bin)} {DEFAULT_FLASH_BASE}", timeout=30)
     if result.returncode != 0:
         pytest.fail(f"st-flash failed:\nstdout: {result.stdout}\nstderr: {result.stderr}")
     time.sleep(USB_RESCAN_DELAY_S)
@@ -187,7 +189,9 @@ def pcsc_reader_name(cherry_reader, pcscd_running):
 def remote_apdu(remote: RemoteHost, apdu_hex: str, timeout: int = 10) -> tuple[bytes, int, int]:
     """Send APDU via remote pyscard helper. Returns (data, sw1, sw2)."""
     clean = apdu_hex.replace(" ", "").replace("\t", "")
-    result = remote.run(f"python3 /tmp/hil_apdu.py {clean}", timeout=timeout)
+    if not re.match(r'^[0-9A-Fa-f]+$', clean):
+        pytest.fail(f"Invalid APDU hex: {apdu_hex!r}")
+    result = remote.run(f"python3 /tmp/hil_apdu.py {shlex.quote(clean)}", timeout=timeout)
     if result.returncode != 0:
         pytest.fail(f"APDU relay failed:\nstdout: {result.stdout}\nstderr: {result.stderr}")
     output = result.stdout.strip()
