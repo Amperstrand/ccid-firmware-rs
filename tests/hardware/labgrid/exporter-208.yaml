@@ -1,0 +1,14 @@
+# Minimal labgrid exporter config for 192.168.13.208
+# Start: labgrid-exporter tests/hardware/labgrid/exporter-208.yaml
+# Optional — the pytest harness in conftest.py uses direct SSH and does
+# NOT require this exporter. Use this for multi-user resource locking.
+
+stm32-ccid:
+  RawUSBDevice:
+    match:
+      ID_VENDOR_ID: '0483'
+      ID_MODEL_ID: '374b'
+      ID_SERIAL: 'STMicroelectronics_STM32_STLink_066FFF515786534867184152'
+  NetworkService:
+    address: '192.168.13.208'
+    username: 'root'
