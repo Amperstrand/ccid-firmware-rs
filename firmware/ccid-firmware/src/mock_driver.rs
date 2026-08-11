@@ -29,6 +29,7 @@ pub struct MockSmartcardDriver {
     raw_response_idx: usize,
     power_on_should_fail: bool,
     transmit_apdu_should_fail: bool,
+    diagnostics: ccid_core::Diagnostics,
     call_log: [MockCall; MAX_CALL_LOG],
     call_log_len: usize,
 }
@@ -62,6 +63,7 @@ impl MockSmartcardDriver {
             raw_response_idx: 0,
             power_on_should_fail: false,
             transmit_apdu_should_fail: false,
+            diagnostics: ccid_core::Diagnostics::new(),
             call_log: [MockCall::PowerOff; MAX_CALL_LOG],
             call_log_len: 0,
         }
@@ -113,6 +115,11 @@ impl MockSmartcardDriver {
 
     pub fn with_transmit_apdu_error(mut self) -> Self {
         self.transmit_apdu_should_fail = true;
+        self
+    }
+
+    pub fn with_diagnostics(mut self, diag: ccid_core::Diagnostics) -> Self {
+        self.diagnostics = diag;
         self
     }
 
