@@ -67,6 +67,10 @@ pub trait NfcDriver {
     /// # Returns
     /// The number of bytes written to the response buffer.
     fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error>;
+
+    fn reinit_count(&self) -> u32 {
+        0
+    }
 }
 
 /// Mock NFC driver for testing
