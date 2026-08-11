@@ -281,6 +281,21 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
+        if payload.first() == Some(&0xD0) {
+            let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
+            self.diagnostics.to_bytes(&mut diag_buf);
+            return write_message(
+                RDR_TO_PC_ESCAPE,
+                header.slot,
+                header.seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                0,
+                0,
+                &diag_buf,
+                response,
+            );
+        }
+
         if payload.first() == Some(&0x02) {
             return write_message(
                 RDR_TO_PC_ESCAPE,
@@ -795,5 +810,44 @@ mod tests {
         handler.nfc.set_card_present(false);
         handler.check_card_change();
         assert!(!handler.diagnostics().card_present);
+    }
+
+    #[test]
+    fn test_escape_d0_returns_diagnostics() {
+        let mut handler = new_handler(false);
+        handler.diagnostics_mut().apdu_tx_count = 7;
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 20, &[0xD0]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC)
+        );
+        assert_eq!(payload.len(), Diagnostics::SERIALIZED_SIZE);
+
+        let diag = Diagnostics::from_bytes(payload).expect("diagnostics deserialization");
+        assert_eq!(diag.apdu_tx_count, 7);
+    }
+
+    #[test]
+    fn test_escape_d0_preserves_version_path() {
+        let mut handler = new_handler(false);
+
+        let cmd_d0 = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 21, &[0xD0]);
+        let mut response = [0u8; 271];
+        let len_d0 = handler.process_command(&cmd_d0, &mut response);
+        let (_, payload_d0) = parse_response(&response[..len_d0]);
+        assert_eq!(payload_d0.len(), Diagnostics::SERIALIZED_SIZE);
+
+        let cmd_ver = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 22, &[0x02]);
+        let len_ver = handler.process_command(&cmd_ver, &mut response);
+        let (header_ver, payload_ver) = parse_response(&response[..len_ver]);
+
+        assert_eq!(header_ver.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(payload_ver, FIRMWARE_VERSION);
     }
 }
