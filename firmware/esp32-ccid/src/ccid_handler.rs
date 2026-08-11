@@ -281,6 +281,21 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
+        if payload.first() == Some(&0xD0) {
+            let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
+            self.diagnostics.to_bytes(&mut diag_buf);
+            return write_message(
+                RDR_TO_PC_ESCAPE,
+                header.slot,
+                header.seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                0,
+                0,
+                &diag_buf,
+                response,
+            );
+        }
+
         if payload.first() == Some(&0x02) {
             return write_message(
                 RDR_TO_PC_ESCAPE,
