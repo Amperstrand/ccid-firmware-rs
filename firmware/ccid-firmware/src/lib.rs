@@ -14,12 +14,19 @@
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::manual_is_multiple_of)]
+// dwt_watchdog wraps `cyccnt()` (unsafe fn on ARM, safe on host). Host
+// builds emit `unused_unsafe` on the wrappers; allow to share source.
+#![cfg_attr(
+    not(all(target_arch = "arm", target_os = "none")),
+    allow(unused_unsafe)
+)]
 
 #[macro_use]
 mod logging;
 
 pub mod ccid_core;
 pub mod driver;
+pub mod dwt_watchdog;
 pub mod pinpad;
 pub mod protocol_unit;
 
@@ -27,6 +34,9 @@ pub mod protocol_unit;
 pub mod device_profile;
 
 pub mod mock_driver;
+
+#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+pub mod smartcard_common;
 
 pub use pinpad::PinModifyParams;
 #[cfg(feature = "display")]
