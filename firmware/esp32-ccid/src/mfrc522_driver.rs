@@ -1,5 +1,41 @@
 use crate::nfc::{NfcDriver, NfcError, PresenceState};
 
+pub const REINIT_THRESHOLD: u8 = 3;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitRecoveryTracker {
+    consecutive_failures: u8,
+    reinit_count: u32,
+}
+
+impl InitRecoveryTracker {
+    pub const fn new() -> Self {
+        Self {
+            consecutive_failures: 0,
+            reinit_count: 0,
+        }
+    }
+
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    pub fn record_failure(&mut self) -> bool {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= REINIT_THRESHOLD {
+            self.consecutive_failures = 0;
+            self.reinit_count = self.reinit_count.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reinit_count(&self) -> u32 {
+        self.reinit_count
+    }
+}
+
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 const CARD_ABSENT_THRESHOLD: u8 = 3;
 
@@ -66,6 +102,7 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
     session: Option<PcdSession>,
     cached_ats: Option<Ats>,
     consecutive_failures: u8,
+    init_tracker: InitRecoveryTracker,
 }
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
@@ -81,6 +118,7 @@ where
             session: None,
             cached_ats: None,
             consecutive_failures: 0,
+            init_tracker: InitRecoveryTracker::new(),
         }
     }
 
@@ -119,6 +157,35 @@ where
             .set_antenna_gain(mfrc522::RxGain::DB33)
             .map_err(|_| NfcError::CommunicationError)?;
         Ok(())
+    }
+
+    pub fn init_with_recovery(&mut self) -> Result<(), NfcError> {
+        match self.init() {
+            Ok(()) => {
+                self.init_tracker.record_success();
+                Ok(())
+            }
+            Err(e) => {
+                if self.init_tracker.record_failure() {
+                    log::warn!(
+                        "MFRC522 init failed {} consecutive times, performing full re-init",
+                        REINIT_THRESHOLD
+                    );
+                    let _ = self.full_reinit();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn full_reinit(&mut self) -> Result<(), NfcError> {
+        self.is_initialized = false;
+        self.lifecycle = CardLifecycle::NoCard;
+        self.session = None;
+        self.cached_ats = None;
+        self.consecutive_failures = 0;
+        self.reset_activation_frontend()?;
+        self.init()
     }
 
     fn poll_physical_card(&mut self) -> PresenceState {
@@ -230,6 +297,10 @@ where
         self.is_initialized = true;
         log::info!("MFRC522 init OK, version=0x{:02X}, gain=33dB", version);
         Ok(())
+    }
+
+    fn reinit_count(&self) -> u32 {
+        self.init_tracker.reinit_count()
     }
 
     fn is_card_present(&mut self) -> bool {
@@ -505,5 +576,45 @@ mod tests {
     #[test]
     fn test_card_absent_threshold() {
         assert_eq!(3, 3);
+    }
+
+    #[test]
+    fn test_reinit_tracker_threshold() {
+        let mut tracker = InitRecoveryTracker::new();
+        assert_eq!(tracker.reinit_count(), 0);
+
+        assert!(!tracker.record_failure());
+        assert_eq!(tracker.reinit_count(), 0);
+
+        assert!(!tracker.record_failure());
+        assert_eq!(tracker.reinit_count(), 0);
+
+        assert!(tracker.record_failure());
+        assert_eq!(tracker.reinit_count(), 1);
+    }
+
+    #[test]
+    fn test_reinit_tracker_success_resets_counter() {
+        let mut tracker = InitRecoveryTracker::new();
+        tracker.record_failure();
+        tracker.record_failure();
+        tracker.record_success();
+        assert!(!tracker.record_failure());
+        assert!(!tracker.record_failure());
+        assert_eq!(tracker.reinit_count(), 0);
+    }
+
+    #[test]
+    fn test_reinit_tracker_multiple_cycles() {
+        let mut tracker = InitRecoveryTracker::new();
+        for _ in 0..7 {
+            tracker.record_failure();
+        }
+        assert_eq!(tracker.reinit_count(), 2);
+    }
+
+    #[test]
+    fn test_reinit_threshold_constant() {
+        assert_eq!(REINIT_THRESHOLD, 3);
     }
 }
