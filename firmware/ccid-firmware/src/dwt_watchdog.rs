@@ -61,7 +61,10 @@ impl DwtWatchdog {
     }
 
     pub fn remaining_cycles(&self) -> u32 {
-        unsafe { self.timeout.saturating_sub(cyccnt().wrapping_sub(self.start)) }
+        unsafe {
+            self.timeout
+                .saturating_sub(cyccnt().wrapping_sub(self.start))
+        }
     }
 
     pub const fn timeout_cycles(&self) -> u32 {
@@ -89,14 +92,21 @@ impl DwtWatchdog {
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod arm {
     const DWT: *mut u32 = 0xE000_1000usize as *mut u32;
-    const DWT_CTRL_W: usize = 0x000 / 4;
-    const DWT_CYCCNT_W: usize = 0x004 / 4;
+    const DWT_CTRL_W: usize = 0x000 >> 2;
+    const DWT_CYCCNT_W: usize = 0x004 >> 2;
     const DEMCR: *mut u32 = 0xE000_EDFCusize as *mut u32;
     const DEMCR_TRCENA: u32 = 1 << 24;
     const DWT_CTRL_CYCCNTENA: u32 = 1 << 0;
 
     /// Initialize DWT CYCCNT. Idempotent. Call once at startup before any
     /// [`super::DwtWatchdog`] use.
+    ///
+    /// # Safety
+    ///
+    /// Writes to raw ARMv7-M peripheral register addresses (DEMCR, DWT.CTRL,
+    /// DWT.CYCCNT). The addresses are architectural constants present on all
+    /// Cortex-M3+ cores (incl. M4F on STM32F469, M7 on STM32F746). Caller
+    /// responsibility: none beyond running on a Cortex-M3+ core.
     #[inline]
     pub unsafe fn init() {
         core::ptr::write_volatile(DEMCR, core::ptr::read_volatile(DEMCR) | DEMCR_TRCENA);
@@ -107,6 +117,11 @@ mod arm {
         );
     }
 
+    /// # Safety
+    ///
+    /// Volatile read from the DWT.CYCCNT peripheral register. The address is
+    /// an ARMv7-M architectural constant. Caller responsibility: ensure
+    /// [`init`] has been called once before reading.
     #[inline(always)]
     pub unsafe fn cyccnt() -> u32 {
         core::ptr::read_volatile(DWT.add(DWT_CYCCNT_W))
@@ -138,7 +153,9 @@ mod host {
     #[inline(always)]
     pub fn advance_cyccnt(by: u32) {
         HOST_CYCCNT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.wrapping_add(by)))
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                Some(v.wrapping_add(by))
+            })
             .ok();
     }
 
