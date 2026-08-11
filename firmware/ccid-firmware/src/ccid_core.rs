@@ -657,6 +657,35 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn handle_escape(&mut self, seq: u8) {
+        let data_len = u32::from_le_bytes([
+            self.rx_buffer[1],
+            self.rx_buffer[2],
+            self.rx_buffer[3],
+            self.rx_buffer[4],
+        ]) as usize;
+
+        // Diagnostic query path (issue #29): the 0xD0 magic byte is a firmware
+        // vendor extension available on ALL reader profiles (not just Gemalto).
+        // It returns the serialized `Diagnostics` struct (28 bytes LE) from the
+        // underlying SmartcardDriver.
+        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0xD0 {
+            ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
+            let diag = self.driver.diagnostics();
+            let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
+            diag.to_bytes(&mut diag_buf);
+            self.tx_len = write_message(
+                RDR_TO_PC_ESCAPE,
+                0,
+                seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status()),
+                0,
+                0,
+                &diag_buf,
+                &mut self.tx_buffer,
+            );
+            return;
+        }
+
         let is_gemalto = self.vendor_id == 0x08E6;
 
         if !is_gemalto {
@@ -667,13 +696,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
             return;
         }
-
-        let data_len = u32::from_le_bytes([
-            self.rx_buffer[1],
-            self.rx_buffer[2],
-            self.rx_buffer[3],
-            self.rx_buffer[4],
-        ]) as usize;
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
@@ -1109,5 +1131,148 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
     pub fn cmd_busy(&self) -> bool {
         self.cmd_busy
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock_driver::MockSmartcardDriver;
+
+    fn make_escape_msg(payload: &[u8], seq: u8) -> Vec<u8> {
+        let mut msg = vec![0u8; CCID_HEADER_SIZE + payload.len()];
+        msg[0] = PC_TO_RDR_ESCAPE;
+        msg[1..5].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        msg[5] = 0;
+        msg[6] = seq;
+        msg[CCID_HEADER_SIZE..CCID_HEADER_SIZE + payload.len()].copy_from_slice(payload);
+        msg
+    }
+
+    fn cmd_status_of(resp: &[u8]) -> u8 {
+        resp[7] >> 6
+    }
+
+    fn payload_len_of(resp: &[u8]) -> usize {
+        u32::from_le_bytes([resp[1], resp[2], resp[3], resp[4]]) as usize
+    }
+
+    #[test]
+    fn escape_d0_returns_diagnostics_on_cherry() {
+        let diag = ::ccid_core::Diagnostics {
+            apdu_tx_count: 42,
+            reinit_count: 3,
+            card_present: true,
+            uptime_ticks: 999,
+            ..::ccid_core::Diagnostics::new()
+        };
+        let mock = MockSmartcardDriver::new().with_diagnostics(diag);
+        let mut handler = CcidMessageHandler::new(mock, 0x046A);
+
+        handler.set_rx_data(&make_escape_msg(&[0xD0], 0x42));
+        handler.handle_message();
+        let (len, resp) = handler.take_response();
+
+        assert_eq!(resp[0], RDR_TO_PC_ESCAPE);
+        assert_eq!(resp[6], 0x42);
+        assert_eq!(cmd_status_of(resp), COMMAND_STATUS_NO_ERROR);
+        assert_eq!(
+            payload_len_of(resp),
+            ::ccid_core::Diagnostics::SERIALIZED_SIZE
+        );
+        assert_eq!(
+            len,
+            CCID_HEADER_SIZE + ::ccid_core::Diagnostics::SERIALIZED_SIZE
+        );
+        let restored =
+            ::ccid_core::Diagnostics::from_bytes(&resp[CCID_HEADER_SIZE..len]).expect("round-trip");
+        assert_eq!(restored, diag);
+    }
+
+    #[test]
+    fn escape_d0_works_on_gemalto_vendor() {
+        let mock = MockSmartcardDriver::new();
+        let mut handler = CcidMessageHandler::new(mock, 0x08E6);
+
+        handler.set_rx_data(&make_escape_msg(&[0xD0], 0x01));
+        handler.handle_message();
+        let (len, resp) = handler.take_response();
+
+        assert_eq!(resp[0], RDR_TO_PC_ESCAPE);
+        assert_eq!(cmd_status_of(resp), COMMAND_STATUS_NO_ERROR);
+        assert_eq!(payload_len_of(resp), 28);
+        assert!(len >= CCID_HEADER_SIZE + 28);
+    }
+
+    #[test]
+    fn escape_d0_serializes_all_fields() {
+        let diag = ::ccid_core::Diagnostics {
+            apdu_tx_count: 0x0001,
+            apdu_rx_count: 0x0002,
+            nak_count: 0x0003,
+            error_count: 0x0004,
+            reinit_count: 0x0005,
+            card_present: true,
+            uptime_ticks: 0x1234_5678,
+        };
+        let mock = MockSmartcardDriver::new().with_diagnostics(diag);
+        let mut handler = CcidMessageHandler::new(mock, 0x046A);
+
+        handler.set_rx_data(&make_escape_msg(&[0xD0], 0x00));
+        handler.handle_message();
+        let (_, resp) = handler.take_response();
+
+        let payload = &resp[CCID_HEADER_SIZE..CCID_HEADER_SIZE + 28];
+        assert_eq!(&payload[0..4], 0x0001u32.to_le_bytes());
+        assert_eq!(&payload[4..8], 0x0002u32.to_le_bytes());
+        assert_eq!(&payload[8..12], 0x0003u32.to_le_bytes());
+        assert_eq!(&payload[12..16], 0x0004u32.to_le_bytes());
+        assert_eq!(&payload[16..20], 0x0005u32.to_le_bytes());
+        assert_eq!(&payload[20..24], 1u32.to_le_bytes());
+        assert_eq!(&payload[24..28], 0x1234_5678u32.to_le_bytes());
+    }
+
+    #[test]
+    fn escape_unknown_command_rejected_on_cherry() {
+        let mock = MockSmartcardDriver::new();
+        let mut handler = CcidMessageHandler::new(mock, 0x046A);
+
+        handler.set_rx_data(&make_escape_msg(&[0x6A], 0x77));
+        handler.handle_message();
+        let (_, resp) = handler.take_response();
+
+        assert_eq!(resp[0], RDR_TO_PC_ESCAPE);
+        assert_eq!(cmd_status_of(resp), COMMAND_STATUS_FAILED);
+        assert_eq!(payload_len_of(resp), 0);
+    }
+
+    #[test]
+    fn escape_gemalto_6a_still_works() {
+        let mock = MockSmartcardDriver::new();
+        let mut handler = CcidMessageHandler::new(mock, 0x08E6);
+
+        handler.set_rx_data(&make_escape_msg(&[0x6A], 0x05));
+        handler.handle_message();
+        let (len, resp) = handler.take_response();
+
+        assert_eq!(resp[0], RDR_TO_PC_ESCAPE);
+        assert_eq!(resp[6], 0x05);
+        assert_eq!(cmd_status_of(resp), COMMAND_STATUS_NO_ERROR);
+        assert_eq!(payload_len_of(resp), 15);
+        assert_eq!(len, CCID_HEADER_SIZE + 15);
+    }
+
+    #[test]
+    fn escape_empty_payload_rejected() {
+        let mock = MockSmartcardDriver::new();
+        let mut handler = CcidMessageHandler::new(mock, 0x08E6);
+
+        handler.set_rx_data(&make_escape_msg(&[], 0x10));
+        handler.handle_message();
+        let (_, resp) = handler.take_response();
+
+        assert_eq!(resp[0], RDR_TO_PC_ESCAPE);
+        assert_eq!(cmd_status_of(resp), COMMAND_STATUS_FAILED);
+        assert_eq!(payload_len_of(resp), 0);
     }
 }
