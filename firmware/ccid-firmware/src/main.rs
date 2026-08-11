@@ -115,6 +115,8 @@ use app_enum::AppEnumerationState;
     target_os = "none"
 ))]
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+use ccid_firmware_rs::dwt_watchdog;
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 use smartcard::SmartcardUart;
 #[cfg(all(feature = "stm32f746", target_arch = "arm", target_os = "none"))]
@@ -678,6 +680,11 @@ fn main() -> ! {
 
         defmt::info!("USB PHY pre-init reset");
     }
+
+    unsafe {
+        dwt_watchdog::init();
+    }
+    defmt::info!("DWT CYCCNT initialized");
 
     #[cfg(feature = "stm32f469")]
     let usb_otg = USB::new(

@@ -12,6 +12,7 @@ use crate::smartcard_common::{
 };
 
 use crate::t1_engine::T1Transport;
+use ccid_firmware_rs::dwt_watchdog::DwtWatchdog;
 use stm32f4xx_hal::gpio::{
     gpioa::{PA2, PA4},
     gpioc::{PC2, PC5},
@@ -20,6 +21,8 @@ use stm32f4xx_hal::gpio::{
 };
 use stm32f4xx_hal::pac::{RCC, USART2};
 use stm32f4xx_hal::rcc::Clocks;
+
+const SYSCLK_HZ: u32 = 168_000_000;
 
 pub struct SmartcardUart {
     usart: USART2,
@@ -528,25 +531,26 @@ impl SmartcardUart {
     }
 
     pub fn receive_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError> {
-        // Tight spin-wait for RXNE. At 168MHz, each iteration is ~6 cycles.
-        // For 1ms: ~28000 iterations. For timeout_ms: iterations = timeout_ms * 28000.
-        let iterations: u32 = timeout_ms.saturating_mul(28_000);
-        let mut countdown = iterations;
+        let mut wd = DwtWatchdog::from_ms(timeout_ms, SYSCLK_HZ);
+        wd.start();
+        let mut safety_net: u32 = timeout_ms.saturating_mul(28_000).max(1_000_000);
         loop {
             let sr = self.usart.sr().read().bits();
             if (sr & (1 << 5)) != 0 || (sr & (1 << 3)) != 0 {
-                // RXNE or ORE: read DR (valid byte in both cases)
                 let byte = self.usart.dr().read().dr().bits() as u8;
-                // Check for USART errors (PE=bit0, FE=bit1, NE=bit2, ORE=bit3)
                 if (sr & 0x0F) != 0 {
                     defmt::warn!("USART err SR=0x{:04X} byte=0x{:02X}", sr, byte);
                 }
                 return Ok(byte);
             }
-            countdown -= 1;
-            if countdown == 0 {
+            if wd.expired() {
                 let sr_final = self.usart.sr().read().bits();
                 defmt::warn!("Rx timeout {}ms SR=0x{:04X}", timeout_ms, sr_final);
+                return Err(SmartcardError::Timeout);
+            }
+            safety_net -= 1;
+            if safety_net == 0 {
+                defmt::error!("Rx safety-net timeout {}ms", timeout_ms);
                 return Err(SmartcardError::Timeout);
             }
         }
