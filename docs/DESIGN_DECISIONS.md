@@ -94,8 +94,11 @@ so the host can compute correct baud rates. The data rate parameter IS applied
 **Affects**: `PC_to_RDR_Escape` (0x6B), `PC_to_RDR_T0APDU` (0x6A), `PC_to_RDR_Mechanical` (0x71)
 **References**: `src/ccid.rs`, `CCID_SPEC_AUDIT_REPORT.md` §5.12-5.14
 
-- **Escape** is vendor-specific with no standard behavior. Gemalto profiles handle
-  escape 0x6A (firmware features query) specifically; all other escape codes return
+- **Escape** is vendor-specific. The firmware now implements a vendor-neutral
+  diagnostic extension: payload `[0xD0]` returns a 28-byte LE `Diagnostics` struct
+  (apdu counts, error count, reinit count, card_present, uptime). This works on
+  ALL reader profiles, not just Gemalto. Gemalto profiles additionally support
+  escape `0x6A` (firmware features query). All other escape codes return
   `CMD_NOT_SUPPORTED`.
 - **T0APDU** is redundant with `XfrBlock` at Short APDU level.
 - **Mechanical** requires hardware not present.

@@ -529,6 +529,48 @@ Authoritative source: `PINOUT.md`. Summary:
 | `PF7` | `PWR` | Push-pull, active LOW = ON |
 | `PK3` | Backlight | Push-pull (display) |
 
+## Sibling-Repo Improvement Pass (August 2026, issues #28–#32)
+
+Patterns sourced from the `gm65-scanner` project (same STM32F469I-DISCO board,
+same HAL fork) and the wider Amperstrand STM32 ecosystem.
+
+### New Modules
+
+| Module | Location | Purpose |
+|--------|----------|---------|
+| DWT Watchdog | `firmware/ccid-firmware/src/dwt_watchdog.rs` | Cycle-counter-based wall-clock timeouts (ARM DWT CYCCNT). Replaces iteration-based polling. 14 host tests. |
+| Diagnostics | `crates/ccid-core/src/diagnostics.rs` | Runtime counter struct (apdu_tx/rx, nak, error, reinit, card_present, uptime). 28-byte LE serialization. 11 tests. |
+| SmartcardConfig | `firmware/ccid-firmware/src/smartcard_common.rs` | Replaces 10 hardcoded `const SC_*` with a configurable struct. Values unchanged. |
+| Self-Healing | `firmware/ccid-firmware/src/main.rs` (SmartcardWrapper), `firmware/esp32-ccid/src/mfrc522_driver.rs` | Re-init peripheral after 3 consecutive failures. `reinit_count` tracked. |
+| Escape 0xD0 | `firmware/ccid-firmware/src/ccid_core.rs`, `firmware/esp32-ccid/src/ccid_handler.rs` | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |
+| HIL Harness | `tests/hardware/labgrid/` | Pytest SSH-based HIL tests. 6 tests: USB enum, pcscd, ATR, APDU relay, pinpad. |
+
+### SmartcardDriver Trait
+
+`firmware/ccid-firmware/src/driver.rs` — added default `fn diagnostics()` method.
+SmartcardWrapper (F469) overrides to return `reinit_count` + `card_present`.
+
+### NfcDriver Trait
+
+`firmware/esp32-ccid/src/nfc.rs` — added default `fn reinit_count()` method.
+MFRC522 driver overrides to return actual count.
+
+### HIL Testbed
+
+The STM32F469I-DISCO on `192.168.13.208` is managed via labgrid (coordinator on
+`.221:20408`). Security: ufw active (SSH + labgrid from `.221` only), SSH key-only.
+
+Run HIL tests:
+```bash
+pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil --ssh-host=192.168.13.208
+```
+
+### libccid Configuration
+
+To use the Escape 0xD0 diagnostic query from the host, `ifdDriverOptions` must be
+set to `0x0001` in `/usr/lib/pcsc/drivers/ifd-ccid.bundle/Contents/Info.plist` on
+the host running pcscd. This enables `FEATURE_CCID_ESC_COMMAND`.
+
 ## Recent Fixes
 
 | # | Area | Summary |
