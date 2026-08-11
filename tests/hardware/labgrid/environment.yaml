@@ -1,0 +1,25 @@
+# labgrid environment config — used by labgrid-client on the build host (.221)
+# to acquire the STM32 CCID testbed from the exporter on .208.
+#
+# Usage:
+#   export LG_ENV=tests/hardware/labgrid/environment.yaml
+#   labgrid-client resources     # list available resources
+#   labgrid-client acquire       # lock the testbed
+#   labgrid-client release       # unlock
+#
+# The exporter must be running on .208 first:
+#   ssh root@192.168.13.208 'labgrid-exporter /root/ccid-firmware-rs/tests/hardware/labgrid/exporter-208.yaml &'
+
+targets:
+  main:
+    resources: {}
+    drivers:
+      SSHDriver:
+        host: '192.168.13.208'
+        user: 'root'
+        keyfile: '~/.ssh/id_ed25519'
+
+places:
+  stm32-ccid:
+    matches:
+      - name: 'stm32-ccid'
