@@ -24,4 +24,7 @@ pub trait SmartcardDriver {
         _clock_hz: u32,
         _rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error>;
+    fn diagnostics(&self) -> ccid_core::Diagnostics {
+        ccid_core::Diagnostics::new()
+    }
 }

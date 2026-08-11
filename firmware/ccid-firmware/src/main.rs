@@ -175,14 +175,23 @@ enum AppMode {
 }
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
+const REINIT_THRESHOLD: u8 = 3;
+
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 struct SmartcardWrapper {
     uart: SmartcardUart,
+    consecutive_failures: u8,
+    reinit_count: u32,
 }
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 impl SmartcardWrapper {
     fn new(uart: SmartcardUart) -> Self {
-        Self { uart }
+        Self {
+            uart,
+            consecutive_failures: 0,
+            reinit_count: 0,
+        }
     }
 }
 
@@ -208,7 +217,26 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         command: &[u8],
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error> {
-        self.uart.transmit_apdu(command, response)
+        match self.uart.transmit_apdu(command, response) {
+            Ok(n) => {
+                self.consecutive_failures = 0;
+                Ok(n)
+            }
+            Err(e) => {
+                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+                if self.consecutive_failures >= REINIT_THRESHOLD {
+                    self.reinit_count = self.reinit_count.saturating_add(1);
+                    self.consecutive_failures = 0;
+                    defmt::warn!(
+                        "SmartcardWrapper: re-init triggered (reinit_count={})",
+                        self.reinit_count
+                    );
+                    self.uart.power_off();
+                    let _ = self.uart.power_on();
+                }
+                Err(e)
+            }
+        }
     }
 
     fn transmit_raw(
@@ -233,6 +261,13 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.uart.set_clock_and_rate(clock_hz, rate_bps)
+    }
+
+    fn diagnostics(&self) -> ccid_core::Diagnostics {
+        let mut d = ccid_core::Diagnostics::new();
+        d.reinit_count = self.reinit_count;
+        d.card_present = self.uart.is_card_present();
+        d
     }
 }
 
