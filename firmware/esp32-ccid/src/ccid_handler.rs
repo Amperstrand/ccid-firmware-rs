@@ -48,6 +48,10 @@ impl<D: NfcDriver> CcidHandler<D> {
         self.diagnostics.nak_count = self.diagnostics.nak_count.saturating_add(1);
     }
 
+    pub fn sync_driver_diagnostics(&mut self) {
+        self.diagnostics.reinit_count = self.nfc.reinit_count();
+    }
+
     pub fn process_command(&mut self, ccid_msg: &[u8], response: &mut [u8]) -> usize {
         let Some(header) = CcidHeader::parse(ccid_msg) else {
             return 0;
