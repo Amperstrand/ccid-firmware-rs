@@ -105,6 +105,7 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let presence = self.nfc.poll_card_presence();
         self.diagnostics.card_present = presence.present;
+        self.diagnostics.reinit_count = self.nfc.reinit_count();
         if presence.present != self.presence_state.present {
             self.presence_state = presence;
             self.slot_state = if presence.present {
