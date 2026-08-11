@@ -657,6 +657,31 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn handle_escape(&mut self, seq: u8) {
+        let data_len = u32::from_le_bytes([
+            self.rx_buffer[1],
+            self.rx_buffer[2],
+            self.rx_buffer[3],
+            self.rx_buffer[4],
+        ]) as usize;
+
+        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0xD0 {
+            ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
+            let diag = self.driver.diagnostics();
+            let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
+            diag.to_bytes(&mut diag_buf);
+            self.tx_len = write_message(
+                RDR_TO_PC_ESCAPE,
+                0,
+                seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status()),
+                0,
+                0,
+                &diag_buf,
+                &mut self.tx_buffer,
+            );
+            return;
+        }
+
         let is_gemalto = self.vendor_id == 0x08E6;
 
         if !is_gemalto {
@@ -667,13 +692,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
             return;
         }
-
-        let data_len = u32::from_le_bytes([
-            self.rx_buffer[1],
-            self.rx_buffer[2],
-            self.rx_buffer[3],
-            self.rx_buffer[4],
-        ]) as usize;
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
