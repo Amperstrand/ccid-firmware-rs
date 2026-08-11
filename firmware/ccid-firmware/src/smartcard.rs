@@ -8,7 +8,7 @@
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
     detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, transmit_apdu_t0, verify_atr_tck,
-    Atr, AtrParams, SmartcardError, SmartcardIo, DEFAULT_TA1, SC_ATR_MAX_LEN,
+    Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo, DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
 
 use crate::t1_engine::T1Transport;
@@ -20,22 +20,6 @@ use stm32f4xx_hal::gpio::{
 };
 use stm32f4xx_hal::pac::{RCC, USART2};
 use stm32f4xx_hal::rcc::Clocks;
-
-/// Power-on delay after asserting PWR (card supply stable). Increased for Seedkeeper (secondary experiment).
-const SC_POWER_ON_DELAY_MS: u32 = 50;
-/// Reset low duration; then release RST and wait before reading ATR.
-const SC_RESET_DELAY_MS: u32 = 25;
-/// Extra delay after RST high before first ATR byte (card startup).
-const SC_ATR_POST_RST_DELAY_MS: u32 = 20;
-/// Delay after CLK on before RST high (ISO 7816-3: min 40k clock cycles after CLK before RST high; ~11ms at 3.57MHz).
-const SC_CLK_TO_RST_DELAY_MS: u32 = 15;
-const SC_ATR_TIMEOUT_MS: u32 = 400;
-/// Per-byte timeout during ATR; longer than SC_BYTE_TIMEOUT_MS (ISO 7816-3 initial character delay up to ~9600 ETU).
-const SC_ATR_BYTE_TIMEOUT_MS: u32 = 1000;
-const SC_BYTE_TIMEOUT_MS: u32 = 200;
-const SC_PROCEDURE_TIMEOUT_MS: u32 = 5000;
-const SC_DEFAULT_ETU: u32 = 372;
-const SC_MAX_CLK_HZ: u32 = 5_000_000;
 
 pub struct SmartcardUart {
     usart: USART2,
@@ -51,9 +35,11 @@ pub struct SmartcardUart {
     t1_ns: u8,    // T=1 send sequence number (alternates 0/1 across APDUs)
     pclk1_hz: u32,
     card_clk_hz: u32,
+    pub(crate) config: SmartcardConfig,
 }
 
 impl SmartcardUart {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         usart: USART2,
         io_pin: PA2<Alternate<7, OpenDrain>>,
@@ -62,6 +48,7 @@ impl SmartcardUart {
         pres_pin: PC2<Input>,
         pwr_pin: PC5<Output<PushPull>>,
         clocks: &Clocks,
+        config: SmartcardConfig,
     ) -> Self {
         let pclk1 = clocks.pclk1().raw();
         let mut sc = Self {
@@ -78,6 +65,7 @@ impl SmartcardUart {
             t1_ns: 0,
             pclk1_hz: pclk1,
             card_clk_hz: 0,
+            config,
         };
         sc.enable_usart2_clock();
         sc.init_usart(clocks);
@@ -95,12 +83,12 @@ impl SmartcardUart {
 
     fn init_usart(&mut self, clocks: &Clocks) {
         let pclk1 = clocks.pclk1().raw();
-        let prescaler = ((pclk1 + 2 * SC_MAX_CLK_HZ - 1) / (2 * SC_MAX_CLK_HZ))
+        let prescaler = ((pclk1 + 2 * self.config.max_clk_hz - 1) / (2 * self.config.max_clk_hz))
             .min(31)
             .max(1) as u8;
         let card_clk = pclk1 / (2 * prescaler as u32);
         self.card_clk_hz = card_clk;
-        let baudrate = (card_clk + SC_DEFAULT_ETU / 2) / SC_DEFAULT_ETU;
+        let baudrate = (card_clk + self.config.default_etu / 2) / self.config.default_etu;
         let brr_val = pclk1 / baudrate;
 
         self.usart.brr().write(|w| unsafe {
@@ -287,8 +275,8 @@ impl SmartcardUart {
         // CLK is already running (CLKEN=1 from init, TE=1). ISO 7816-3: card must see
         // at least 40,000 clock cycles after CLK before RST is released (~11ms at 3.57 MHz).
         self.pwr_pin.set_low(); // VCC on
-        Self::delay_ms(SC_POWER_ON_DELAY_MS); // 50ms VCC stabilize
-        Self::delay_ms(SC_CLK_TO_RST_DELAY_MS); // 15ms: min 40k cycles after CLK before RST high
+        Self::delay_ms(self.config.power_on_delay_ms); // 50ms VCC stabilize
+        Self::delay_ms(self.config.clk_to_rst_delay_ms); // 15ms: min 40k cycles after CLK before RST high
         self.rst_pin.set_high(); // Release RST → card starts ATR
         let cr1 = self.usart.cr1().read().bits();
         let cr2 = self.usart.cr2().read().bits();
@@ -407,7 +395,7 @@ impl SmartcardUart {
 
         // Wait for first byte (TS) with long timeout.
         // Card may already have TS in DR if it started ATR during power_on.
-        let mut countdown = SC_ATR_TIMEOUT_MS;
+        let mut countdown = self.config.atr_timeout_ms;
         while !self.usart.sr().read().rxne().bit_is_set() {
             Self::delay_ms(1);
             countdown -= 1;
@@ -489,13 +477,9 @@ impl SmartcardUart {
         if self.protocol == 1 {
             self.transmit_raw(command, response)
         } else {
-            transmit_apdu_t0(
-                self,
-                command,
-                response,
-                SC_PROCEDURE_TIMEOUT_MS,
-                SC_BYTE_TIMEOUT_MS,
-            )
+            let proc_timeout = self.config.procedure_timeout_ms;
+            let byte_timeout = self.config.byte_timeout_ms;
+            transmit_apdu_t0(self, command, response, proc_timeout, byte_timeout)
         }
     }
 
@@ -576,7 +560,7 @@ impl SmartcardUart {
         self.usart
             .dr()
             .write(|w| unsafe { w.dr().bits(data as u16) });
-        let mut timeout_ms = SC_BYTE_TIMEOUT_MS;
+        let mut timeout_ms = self.config.byte_timeout_ms;
         while !self.usart.sr().read().tc().bit_is_set() {
             Self::delay_ms(1);
             timeout_ms -= 1;

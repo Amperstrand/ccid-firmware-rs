@@ -28,6 +28,9 @@ pub mod device_profile;
 
 pub mod mock_driver;
 
+#[cfg(not(all(target_arch = "arm", target_os = "none")))]
+pub mod smartcard_common;
+
 pub use pinpad::PinModifyParams;
 #[cfg(feature = "display")]
 pub use pinpad::{draw_pinpad, ButtonId, Keypad, TouchHandler};

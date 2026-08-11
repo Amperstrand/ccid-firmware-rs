@@ -11,6 +11,7 @@
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 pub mod f469 {
+    use crate::smartcard_common::SMARTCARD_CONFIG_DEFAULT;
     use crate::SmartcardUart;
     use crate::SmartcardWrapper;
     use stm32f4xx_hal::gpio::*;
@@ -70,6 +71,7 @@ pub mod f469 {
             pres_pin,
             pwr_pin,
             &rcc.clocks,
+            SMARTCARD_CONFIG_DEFAULT,
         );
         defmt::info!("Smartcard UART OK");
 
