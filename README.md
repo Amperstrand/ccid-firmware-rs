@@ -83,14 +83,14 @@ This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
 | Secure (PIN) | 6.1.11/12 | ✅ Full | **Exceeds osmo-ccid-firmware** |
 | SetDataRateAndClockFrequency | 6.1.14 | ✅ Full | |
 | Abort | 6.1.13 | ⚠️ Stub | Accepts, no async abort |
-| Escape | 6.1.8 | ⚠️ Stub | Returns CMD_NOT_SUPPORTED |
+| Escape | 6.1.8 | ✅ Partial | 0xD0 diagnostic query (28-byte LE counters) |
 | T0APDU | 6.1.10 | ⚠️ Stub | Returns CMD_NOT_SUPPORTED |
 | Mechanical | 6.1.12 | ⚠️ Stub | Returns CMD_NOT_SUPPORTED |
 
 ### Stub Rationale
 
 The stubbed commands are intentional:
-- **Escape**: Vendor-specific, no standard behavior defined
+- **Escape**: 0xD0 vendor extension returns diagnostic counters (28 bytes LE). Other escape codes still return CMD_NOT_SUPPORTED.
 - **T0APDU**: TPDU-level control, we use Short APDU level
 - **Mechanical**: No mechanical card eject/capture hardware
 - **Abort**: Single-slot synchronous reader, no async operations to abort

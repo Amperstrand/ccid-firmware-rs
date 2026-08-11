@@ -34,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - All Wave 1–3 features (DWT, Diagnostics, SmartcardConfig, self-healing, Escape 0xD0) running on-device ✅
 
 ### Test count
-- Workspace host tests: 262 (was ~218 baseline pre-improvement-pass)
-- ESP32 host tests: 58
+- Workspace host tests: 263 (was ~218 baseline pre-improvement-pass)
+- ESP32 host tests: 65
 - iso14443 vendored: 37
 - HIL tests: 6 (all pass on real hardware)
 

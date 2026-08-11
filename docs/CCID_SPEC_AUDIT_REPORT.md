@@ -108,7 +108,7 @@ PASS - All descriptor fields match spec requirements and reference device profil
 | 0x6E | PC_to_RDR_IccClock | 6.1.9 | `PC_TO_RDR_ICC_CLOCK` | PASS |
 | 0x72 | PC_to_RDR_Abort | 6.1.13 | `PC_TO_RDR_ABORT` | PASS (stub) |
 | 0x73 | PC_to_RDR_SetDataRateAndClockFrequency | 6.1.14 | `PC_TO_RDR_SET_DATA_RATE_AND_CLOCK_FREQ` | PASS |
-| 0x6B | PC_to_RDR_Escape | 6.1.8 | `PC_TO_RDR_ESCAPE` | STUB |
+| 0x6B | PC_to_RDR_Escape | 6.1.8 | `PC_TO_RDR_ESCAPE` | PARTIAL (0xD0 diagnostics) |
 | 0x6A | PC_to_RDR_T0APDU | 6.1.10 | `PC_TO_RDR_T0_APDU` | STUB |
 | 0x71 | PC_to_RDR_Mechanical | 6.1.15 | `PC_TO_RDR_MECHANICAL` | STUB |
 
@@ -376,7 +376,7 @@ PASS - Fully compliant.
 
 **Spec Reference**: §6.1.8
 
-Returns `CCID_ERR_CMD_NOT_SUPPORTED`. Vendor-specific command with no defined behavior for this reader. Matches osmo-ccid-firmware behavior.
+Returns diagnostic counters when payload starts with `0xD0` (28-byte LE `Diagnostics` struct via `RDR_TO_PC_ESCAPE`). All other escape codes return `CCID_ERR_CMD_NOT_SUPPORTED`. Gemalto profiles also support escape `0x6A` (firmware features query).
 
 ### 5.13 PC_to_RDR_T0APDU (0x6A)
 
@@ -481,7 +481,7 @@ PASS - Fully compliant.
 
 **Spec Reference**: §6.2.4
 
-Used only for error responses when Escape command is rejected. Structure matches spec.
+Used for both error responses (CMD_NOT_SUPPORTED) and successful diagnostic query responses (0xD0 path). Structure matches spec.
 
 ---
 
@@ -669,7 +669,7 @@ For full rationale behind each deviation, see [DESIGN_DECISIONS.md](DESIGN_DECIS
 |---|-------------|-----------|-----------------|
 | 1 | SetParameters infers protocol from dwLength instead of bProtocolNum | libccid quirk - host doesn't send bProtocolNum | — |
 | 2 | Abort is a stub (always returns success) | Single-slot synchronous reader | [DD-3](DESIGN_DECISIONS.md#dd-3-abort-command-is-a-stub-always-returns-success) |
-| 3 | Escape returns CMD_NOT_SUPPORTED | Vendor-specific, no defined behavior | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
+| 3 | Escape 0xD0 returns diagnostics; other codes CMD_NOT_SUPPORTED | Vendor-specific diagnostic extension | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
 | 4 | T0APDU returns CMD_NOT_SUPPORTED | XfrBlock provides equivalent functionality | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
 | 5 | Mechanical returns CMD_NOT_SUPPORTED | No mechanical hardware | [DD-7](DESIGN_DECISIONS.md#dd-7-escapet0apdumechanical-return-cmd_not_supported) |
 | 6 | HardwareError interrupt not implemented | No fault detection sensors | [DD-8](DESIGN_DECISIONS.md#dd-8-hardwareerror-interrupt-rdr_to_pc_hardwareerror-051-not-implemented) |
