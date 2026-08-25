@@ -127,6 +127,10 @@ jobs:
         working-directory: firmware/esp32-ccid
         run: |
           . ${HOME}/export-esp.sh
+          # sdkconfig defaults only apply via this env var (metadata paths are
+          # dropped silently by esp-idf-sys) — without it the build succeeds with
+          # IDF defaults and the gate below fails. Bench flow: flash_and_test.sh.
+          export ESP_IDF_SDKCONFIG_DEFAULTS="$PWD/sdkconfig.defaults;$PWD/sdkconfig.defaults.esp32"
           if [ "${{ matrix.no-default-features }}" = "true" ]; then
             cargo +esp build --release --no-default-features --features "${{ matrix.features }}"
           else
