@@ -206,7 +206,7 @@ fn main() {
     let mut pn532_driver =
         Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).expect("PN532 driver init failed");
 
-    let _pn532_ok = (0..5).any(|_| {
+    let pn532_ok = (0..5).any(|_| {
         if pn532_driver.init().is_ok() {
             true
         } else {
@@ -214,6 +214,24 @@ fn main() {
             false
         }
     });
+
+    // Reader-down visibility (bolty-rs docs/lessons-learned.md B5): without a
+    // PN532 the CCID loop would run silently dead — worse, a blocking IRQ wait
+    // in the transport could hang it forever now that the task WDT is off.
+    // Halt CCID, hold LED Error, and log periodically instead.
+    if !pn532_ok {
+        let mut led = esp32_ccid::led::LedStatus::new();
+        log::error!("PN532 init failed — CCID offline, LED=Error, halting card loop");
+        let mut tick: u32 = 0;
+        loop {
+            led.set_state(esp32_ccid::led::LedState::Error);
+            if tick % 30 == 0 {
+                log::warn!("reader absent ({}x5s) — CCID still offline", tick);
+            }
+            tick += 1;
+            FreeRtos::delay_ms(5000);
+        }
+    }
 
     let mut ccid_handler = CcidHandler::new(pn532_driver);
     let mut frame_parser = FrameParser::new();
