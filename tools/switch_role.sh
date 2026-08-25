@@ -57,10 +57,13 @@ case "$ROLE" in
         --features "$VARIANT" --merge /tmp/esp32-ccid-merged.bin >/dev/null)
     usb_rescan
     flash_merged /tmp/esp32-ccid-merged.bin
-    say "restarting pcscd"
-    sudo systemctl restart pcscd.socket pcscd.service; sleep 6
+    say "restarting pcscd (firmware NFC init races a fast probe — retry once)"
+    sudo systemctl restart pcscd.socket pcscd.service; sleep 10
     say "verify: PC/SC readers"
-    python3 -c 'from smartcard.System import readers; rs=[str(r) for r in readers()]; print(rs); exit(0 if rs else 1)'
+    if ! python3 -c 'from smartcard.System import readers; rs=[str(r) for r in readers()]; print(rs); exit(0 if rs else 1)'; then
+      sudo systemctl restart pcscd.service; sleep 8
+      python3 -c 'from smartcard.System import readers; rs=[str(r) for r in readers()]; print(rs); exit(0 if rs else 1)'
+    fi
     echo "ROLE=ccid active. Reader: ESP32 CCID Serial. Use host-tools/boltwipe.py."
     ;;
   bolty)
