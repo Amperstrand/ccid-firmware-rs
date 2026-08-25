@@ -72,6 +72,74 @@ jobs:
             ccid-firmware.bin.sha256
             ccid-firmware.hex.sha256
 
+  esp32-build:
+    # The esp32-ccid package had no CI coverage at all: broken builds for
+    # individual variants (and silently-skipped sdkconfig defaults) only
+    # surfaced on the bench. Builds every variant and runs the sdkconfig
+    # gate (s_check_sdkconfig) on one of them.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: m5stick
+            features: "backend-mfrc522,board-m5stick"
+            no-default-features: true
+            gate: true
+          - name: m5atom-default
+            features: ""
+            no-default-features: false
+            gate: false
+          - name: pn532
+            features: "backend-pn532"
+            no-default-features: true
+            gate: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install host build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3-pip python3-venv libssl-dev libffi-dev
+          pip install --user pyelftools
+
+      - name: Install espup + espflash
+        run: |
+          cargo install espup espflash
+
+      - name: Cache espressif tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.espressif
+            ~/.cargo/registry
+          key: espressif-${{ runner.os }}-v1
+
+      - name: Install ESP toolchain
+        run: |
+          espup install
+          . ${HOME}/export-esp.sh
+          rustup component add rustfmt --toolchain esp || true
+
+      - name: Build firmware (${{ matrix.name }})
+        working-directory: firmware/esp32-ccid
+        run: |
+          . ${HOME}/export-esp.sh
+          if [ "${{ matrix.no-default-features }}" = "true" ]; then
+            cargo +esp build --release --no-default-features --features "${{ matrix.features }}"
+          else
+            cargo +esp build --release
+          fi
+
+      - name: sdkconfig gate
+        if: matrix.gate
+        working-directory: firmware/esp32-ccid
+        run: |
+          . ${HOME}/export-esp.sh
+          ./s_check_sdkconfig
+
   stm32-lint:
     runs-on: ubuntu-latest
     env:
@@ -99,7 +167,13 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          python3 -m py_compile tests/hardware/*.py
+          python3 -m py_compile tests/hardware/*.py tools/hil/*.py host-tools/*.py \
+            tests/hardware/labgrid/conftest.py tests/hardware/labgrid/test_ccid_hil.py
+
+      - name: Check shell syntax
+        run: |
+          bash -n tools/switch_role.sh \
+            firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig
 
   stm32-test:
     runs-on: ubuntu-latest

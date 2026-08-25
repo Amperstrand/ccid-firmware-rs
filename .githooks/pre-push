@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Firmware-build gate: host lints pass while xtensa breaks is exactly the
+export PATH="$HOME/.cargo/bin:$PATH"
+# failure class this repo shipped twice in one day (8f38bfc, 9663f95).
+set -euo pipefail
+export PATH="$HOME/.cargo/bin:$PATH"
+cd "$(git rev-parse --show-toplevel)/firmware/esp32-ccid"
+export ESP_IDF_SDKCONFIG_DEFAULTS="$PWD/sdkconfig.defaults;$PWD/sdkconfig.defaults.esp32"
+cargo +esp build --release --features backend-mfrc522,board-m5stick --no-default-features
+cargo +esp build --release
+./s_check_sdkconfig

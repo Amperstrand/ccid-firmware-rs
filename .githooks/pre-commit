@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fast local gate (install once: git config core.hooksPath .githooks)
+export PATH="$HOME/.cargo/bin:$PATH"
+set -euo pipefail
+cargo fmt --all --check
+python3 -m py_compile host-tools/boltwipe.py
+bash -n tools/switch_role.sh firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig
