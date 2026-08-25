@@ -45,3 +45,16 @@ the post-switch verification fails.
 - pcscd shows no reader after `ccid`: the firmware boots ~6 s — the script
   already waits; re-run `sudo systemctl restart pcscd` if you flashed
   manually.
+
+### Power-cycle policy — a physical unplug is (almost) never needed
+
+The MFRC522 shares the stick's always-on USB power, and every firmware
+boot runs `recover_i2c_bus` (9 SCL pulses) + 50 ms settle + a bus probe
+before touching the reader. As of 2026-08-25 the rig has run for days with
+**zero** reader power cycles while both roles stayed fully functional
+(bolty `nfc=ok`, CCID card transactions verified twice each way).
+
+Unplug ONLY if a boot log prints `i2c recovery: SDA still LOW` — that is
+the single reader state software cannot clear. Preventive unplugs are a
+smell: they indicate advice carried over from a superseded theory (see
+bolty-rs docs/lessons-learned.md B13/B14).
