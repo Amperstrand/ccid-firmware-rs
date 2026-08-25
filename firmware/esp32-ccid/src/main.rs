@@ -18,11 +18,6 @@ compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32) or bo
     not(feature = "backend-mfrc522")
 ))]
 use core::convert::Infallible;
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
 use esp32_ccid::{
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
@@ -52,6 +47,13 @@ use esp_idf_hal::{
     not(feature = "backend-mfrc522")
 ))]
 use esp_idf_sys::EspError;
+#[cfg(all(
+    target_arch = "xtensa",
+    feature = "backend-pn532",
+    not(feature = "backend-mfrc522")
+))]
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+use mfrc522_pcd::recover_i2c_bus;
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
 use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
@@ -566,64 +568,3 @@ fn main() {
     all(not(feature = "backend-pn532"), not(feature = "backend-mfrc522"))
 ))]
 fn main() {}
-
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-fn recover_i2c_bus(scl_pin: i32, sda_pin: i32) {
-    use esp_idf_sys::{
-        esp_rom_delay_us, gpio_config, gpio_config_t, gpio_get_level, gpio_reset_pin,
-        gpio_set_level,
-    };
-    const GPIO_MODE_INPUT: u32 = 1;
-    const GPIO_MODE_OUTPUT: u32 = 2;
-    let mask = |pin: i32| -> u64 { 1u64 << pin };
-    let sda_cfg = gpio_config_t {
-        pin_bit_mask: mask(sda_pin),
-        mode: GPIO_MODE_INPUT,
-        pull_up_en: 1,
-        pull_down_en: 0,
-        intr_type: 0,
-    };
-    if unsafe { gpio_config(&sda_cfg) } != 0 {
-        log::warn!("i2c recovery: SDA gpio_config failed");
-        return;
-    }
-    if unsafe { gpio_get_level(sda_pin) } != 0 {
-        log::info!("i2c recovery: SDA high, bus OK");
-        unsafe { gpio_reset_pin(sda_pin) };
-        return;
-    }
-    log::warn!("i2c recovery: SDA stuck LOW, sending 9 SCL pulses");
-    let scl_cfg = gpio_config_t {
-        pin_bit_mask: mask(scl_pin),
-        mode: GPIO_MODE_OUTPUT,
-        pull_up_en: 1,
-        pull_down_en: 0,
-        intr_type: 0,
-    };
-    if unsafe { gpio_config(&scl_cfg) } != 0 {
-        log::warn!("i2c recovery: SCL gpio_config failed");
-        unsafe { gpio_reset_pin(sda_pin) };
-        return;
-    }
-    for _ in 0..9 {
-        unsafe {
-            gpio_set_level(scl_pin, 1);
-            esp_rom_delay_us(10);
-            gpio_set_level(scl_pin, 0);
-            esp_rom_delay_us(10);
-        }
-    }
-    let recovered = unsafe { gpio_get_level(sda_pin) } != 0;
-    log::info!(
-        "i2c recovery: {}",
-        if recovered {
-            "SDA released OK"
-        } else {
-            "SDA still LOW"
-        }
-    );
-    unsafe {
-        gpio_reset_pin(scl_pin);
-        gpio_reset_pin(sda_pin);
-    }
-}
