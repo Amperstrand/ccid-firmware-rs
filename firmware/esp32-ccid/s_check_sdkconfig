@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Verify that the sdkconfig defaults were actually applied to the generated build.
+#
+# Why: esp-idf-sys resolves sdkconfig defaults (from ESP_IDF_SDKCONFIG_DEFAULTS or
+# cargo metadata) against the *registry package dir*, not this repo — wrong or
+# missing paths are dropped SILENTLY and the build succeeds with IDF defaults.
+# That is how the main task ran at the 3.5 KB stack and crashed in ISO-DEP paths
+# (see bolty-rs docs/lessons-learned.md B4). This gate makes the failure loud.
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_DIR="${SCRIPT_DIR}/../../target/xtensa-esp32-espidf/release"
+SDKCONFIG=$(ls -t "${TARGET_DIR}"/build/esp-idf-sys-*/out/sdkconfig 2>/dev/null | head -1)
+[ -n "${SDKCONFIG}" ] || { echo "sdkconfig gate: no generated sdkconfig found"; exit 1; }
+fail=0
+check() { # key expected
+  actual=$(grep -E "^${1}=" "${SDKCONFIG}" || true)
+  [ "${actual}" = "${1}=${2}" ] && echo "sdkconfig gate: OK ${actual}" \
+    || { echo "sdkconfig gate: FAIL expected ${1}=${2}, got <missing> in ${SDKCONFIG}"; fail=1; }
+}
+check CONFIG_ESP_MAIN_TASK_STACK_SIZE 32768
+check CONFIG_ESP_CONSOLE_NONE y
+check CONFIG_ESPTOOLPY_FLASHSIZE_4MB y
+exit ${fail}

@@ -12,6 +12,19 @@ Current practical focus:
 
 PN532 remains supported in the ESP32 package, but MFRC522 is the primary NFC path right now.
 
+## sdkconfig defaults — read this before debugging stack overflows
+
+`esp-idf-sys` applies `sdkconfig.defaults` **only** via the `ESP_IDF_SDKCONFIG_DEFAULTS`
+environment variable. Paths from cargo metadata resolve against the registry package
+directory (not this repository) and are silently dropped — a bare `cargo build` therefore
+produces a main task with the 3.5 KB IDF-default stack, which overflows and boot-loops
+once the ISO-DEP code paths run (`vApplicationStackOverflowHook`; backtrace often shows
+`|<-CORRUPTED`).
+
+Always build through `firmware/esp32-ccid/flash_and_test.sh`, which exports the variable
+with script-relative paths and runs `s_check_sdkconfig` — a gate that fails the build
+unless the generated sdkconfig really contains the expected values (32 KB main-task stack).
+
 ## Build the right package
 
 The repository root has a default Cargo target of `thumbv7em-none-eabihf` in `.cargo/config.toml`. That is correct for STM32, but it means ESP32 commands should be run from `firmware/esp32-ccid/` (or with an explicit target override) so they do not inherit the STM32 default.

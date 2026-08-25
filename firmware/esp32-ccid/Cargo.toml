@@ -44,4 +44,3 @@ embuild = { version = "0.32", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
 esp_idf_version = "tag:v5.2.4"
-esp_idf_sdkconfig_defaults = ["esp32-ccid/sdkconfig.defaults", "esp32-ccid/sdkconfig.defaults.esp32"]

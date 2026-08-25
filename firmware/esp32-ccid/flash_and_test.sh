@@ -16,6 +16,9 @@
 #
 set -euo pipefail
 
+# Non-interactive shells (cron, CI, ssh) lack ~/.cargo/bin on PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 FIRMWARE="target/xtensa-esp32-espidf/release/esp32-ccid"
@@ -33,8 +36,14 @@ error() { echo -e "${RED}[ERROR]${NC} $*"; }
 build() {
     echo ""
     echo "=== Building firmware ==="
+    # esp-idf-sys drops sdkconfig defaults silently unless ESP_IDF_SDKCONFIG_DEFAULTS
+    # is set (metadata paths resolve against the registry package dir, not this repo —
+    # see s_check_sdkconfig). Export script-relative paths so every machine gets the
+    # 32KB main-task stack this firmware needs.
+    export ESP_IDF_SDKCONFIG_DEFAULTS="${SCRIPT_DIR}/sdkconfig.defaults;${SCRIPT_DIR}/sdkconfig.defaults.esp32"
     cargo +esp build --manifest-path "${SCRIPT_DIR}/Cargo.toml" --release --features backend-mfrc522 --no-default-features
-    info "Build complete."
+    "${SCRIPT_DIR}/s_check_sdkconfig"
+    info "Build complete (sdkconfig gate passed)."
 }
 
 flash() {
