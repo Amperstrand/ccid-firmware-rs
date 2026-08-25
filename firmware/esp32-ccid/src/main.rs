@@ -220,11 +220,11 @@ fn main() {
     // in the transport could hang it forever now that the task WDT is off.
     // Halt CCID, hold LED Error, and log periodically instead.
     if !pn532_ok {
-        let mut led = esp32_ccid::led::LedStatus::new();
-        log::error!("PN532 init failed — CCID offline, LED=Error, halting card loop");
+        // DevKitC targets have no LED matrix (the led module is mfrc522-gated);
+        // visibility is log-only here.
+        log::error!("PN532 init failed — CCID offline, halting card loop");
         let mut tick: u32 = 0;
         loop {
-            led.set_state(esp32_ccid::led::LedState::Error);
             if tick % 30 == 0 {
                 log::warn!("reader absent ({}x5s) — CCID still offline", tick);
             }
