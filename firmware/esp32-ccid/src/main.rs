@@ -142,6 +142,10 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
+    // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
+    // (console enabled) and in the `ble` feature build (BLE log bridge).
+    esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
 
@@ -303,6 +307,10 @@ fn main() {
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
+    // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
+    // (console enabled) and in the `ble` feature build (BLE log bridge).
+    esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
 
@@ -355,25 +363,40 @@ fn main() {
     )
     .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
 
+    recover_i2c_bus(33, 32); // scl=GPIO33, sda=GPIO32 (M5Stick Grove I2C)
     let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
     let i2c = i2c::I2cDriver::new(
         peripherals.i2c1,
-        peripherals.pins.gpio26,
         peripherals.pins.gpio32,
+        peripherals.pins.gpio33,
         &i2c_config,
     )
     .expect("I2C1 init failed (SDA=GPIO26, SCL=GPIO32)");
 
     let mfrc522_result =
         mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28)).init();
+    log::info!(
+        "MFRC522 init: {:?}",
+        mfrc522_result.as_ref().err().map(|e| format!("{e:?}"))
+    );
 
     let mut led = esp32_ccid::led::LedStatus::new();
 
     let mfrc522_hw = match mfrc522_result {
         Ok(hw) => hw,
-        Err(_) => {
-            led.set_state(esp32_ccid::led::LedState::Error);
+        Err(e) => {
+            // No reader frontend: CCID cannot be serviced. Stay visible instead of
+            // silently dead — LED in Error state and a periodic log line (bolty-rs
+            // docs/lessons-learned.md B5: log-and-continue hides months-long outages;
+            // here the reader is load-bearing so CCID halts but keeps signalling).
+            log::error!("MFRC522 init failed ({e:?}) — CCID offline, LED=Error, halting card loop");
+            let mut tick: u32 = 0;
             loop {
+                led.set_state(esp32_ccid::led::LedState::Error);
+                if tick % 30 == 0 {
+                    log::warn!("reader absent ({}x5s) — CCID still offline", tick);
+                }
+                tick += 1;
                 FreeRtos::delay_ms(5000);
             }
         }
@@ -528,3 +551,64 @@ fn main() {
     all(not(feature = "backend-pn532"), not(feature = "backend-mfrc522"))
 ))]
 fn main() {}
+
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+fn recover_i2c_bus(scl_pin: i32, sda_pin: i32) {
+    use esp_idf_sys::{
+        esp_rom_delay_us, gpio_config, gpio_config_t, gpio_get_level, gpio_reset_pin,
+        gpio_set_level,
+    };
+    const GPIO_MODE_INPUT: u32 = 1;
+    const GPIO_MODE_OUTPUT: u32 = 2;
+    let mask = |pin: i32| -> u64 { 1u64 << pin };
+    let sda_cfg = gpio_config_t {
+        pin_bit_mask: mask(sda_pin),
+        mode: GPIO_MODE_INPUT,
+        pull_up_en: 1,
+        pull_down_en: 0,
+        intr_type: 0,
+    };
+    if unsafe { gpio_config(&sda_cfg) } != 0 {
+        log::warn!("i2c recovery: SDA gpio_config failed");
+        return;
+    }
+    if unsafe { gpio_get_level(sda_pin) } != 0 {
+        log::info!("i2c recovery: SDA high, bus OK");
+        unsafe { gpio_reset_pin(sda_pin) };
+        return;
+    }
+    log::warn!("i2c recovery: SDA stuck LOW, sending 9 SCL pulses");
+    let scl_cfg = gpio_config_t {
+        pin_bit_mask: mask(scl_pin),
+        mode: GPIO_MODE_OUTPUT,
+        pull_up_en: 1,
+        pull_down_en: 0,
+        intr_type: 0,
+    };
+    if unsafe { gpio_config(&scl_cfg) } != 0 {
+        log::warn!("i2c recovery: SCL gpio_config failed");
+        unsafe { gpio_reset_pin(sda_pin) };
+        return;
+    }
+    for _ in 0..9 {
+        unsafe {
+            gpio_set_level(scl_pin, 1);
+            esp_rom_delay_us(10);
+            gpio_set_level(scl_pin, 0);
+            esp_rom_delay_us(10);
+        }
+    }
+    let recovered = unsafe { gpio_get_level(sda_pin) } != 0;
+    log::info!(
+        "i2c recovery: {}",
+        if recovered {
+            "SDA released OK"
+        } else {
+            "SDA still LOW"
+        }
+    );
+    unsafe {
+        gpio_reset_pin(scl_pin);
+        gpio_reset_pin(sda_pin);
+    }
+}
