@@ -167,7 +167,7 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          python3 -m py_compile tests/hardware/*.py tools/hil/*.py host-tools/*.py \
+          python3 -m py_compile tests/hardware/*.py host-tools/*.py \
             tests/hardware/labgrid/conftest.py tests/hardware/labgrid/test_ccid_hil.py
 
       - name: Check shell syntax
