@@ -105,9 +105,9 @@ jobs:
           sudo apt-get install -y cmake ninja-build python3-pip python3-venv libssl-dev libffi-dev
           pip install --user pyelftools
 
-      - name: Install espup + espflash
+      - name: Install espup + espflash + ldproxy
         run: |
-          cargo install espup espflash
+          cargo install espup espflash ldproxy
 
       - name: Cache espressif tools
         uses: actions/cache@v4
@@ -115,7 +115,8 @@ jobs:
           path: |
             ~/.espressif
             ~/.cargo/registry
-          key: espressif-${{ runner.os }}-v1
+            ~/.cargo/bin
+          key: espressif-${{ runner.os }}-v2
 
       - name: Install ESP toolchain
         run: |
