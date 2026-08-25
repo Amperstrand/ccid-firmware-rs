@@ -13,6 +13,7 @@
 #   ./flash_and_test.sh              # Build + flash + replug reminder + test
 #   ./flash_and_test.sh --no-flash   # Skip flash, just start pcscd + test
 #   ./flash_and_test.sh --test-only  # Only run pcsc_scan
+#   BOARD=m5stick ./flash_and_test.sh ...  # Select board variant (default m5atom)
 #
 set -euo pipefail
 
@@ -41,7 +42,10 @@ build() {
     # see s_check_sdkconfig). Export script-relative paths so every machine gets the
     # 32KB main-task stack this firmware needs.
     export ESP_IDF_SDKCONFIG_DEFAULTS="${SCRIPT_DIR}/sdkconfig.defaults;${SCRIPT_DIR}/sdkconfig.defaults.esp32"
-    cargo +esp build --manifest-path "${SCRIPT_DIR}/Cargo.toml" --release --features backend-mfrc522 --no-default-features
+    # Board variant: BOARD=m5atom (default) or BOARD=m5stick
+    local board="${BOARD:-m5atom}"
+    info "Building for board: ${board} (override with BOARD=...)"
+    cargo +esp build --manifest-path "${SCRIPT_DIR}/Cargo.toml" --release --features "backend-mfrc522,board-${board}" --no-default-features
     "${SCRIPT_DIR}/s_check_sdkconfig"
     info "Build complete (sdkconfig gate passed)."
 }

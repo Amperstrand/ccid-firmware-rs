@@ -1,6 +1,18 @@
 #![cfg_attr(target_arch = "xtensa", allow(unused_mut))]
 
 #[cfg(all(
+    feature = "backend-mfrc522",
+    feature = "board-m5atom",
+    feature = "board-m5stick"
+))]
+compile_error!("features board-m5atom and board-m5stick are mutually exclusive");
+#[cfg(all(
+    feature = "backend-mfrc522",
+    not(any(feature = "board-m5atom", feature = "board-m5stick"))
+))]
+compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32) or board-m5stick (Grove SDA=32/SCL=33)");
+
+#[cfg(all(
     target_arch = "xtensa",
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
@@ -363,15 +375,18 @@ fn main() {
     )
     .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
 
-    recover_i2c_bus(33, 32); // scl=GPIO33, sda=GPIO32 (M5Stick Grove I2C)
+    // Grove I2C pinout per board variant — see Cargo.toml [features].
+    #[cfg(feature = "board-m5atom")]
+    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
+        (peripherals.pins.gpio26, peripherals.pins.gpio32, 32, 26);
+    #[cfg(feature = "board-m5stick")]
+    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
+        (peripherals.pins.gpio32, peripherals.pins.gpio33, 33, 32);
+
+    recover_i2c_bus(scl_gpio_no, sda_gpio_no);
     let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
-    let i2c = i2c::I2cDriver::new(
-        peripherals.i2c1,
-        peripherals.pins.gpio32,
-        peripherals.pins.gpio33,
-        &i2c_config,
-    )
-    .expect("I2C1 init failed (SDA=GPIO26, SCL=GPIO32)");
+    let i2c = i2c::I2cDriver::new(peripherals.i2c1, i2c_sda, i2c_scl, &i2c_config)
+        .expect("I2C1 init failed");
 
     let mfrc522_result =
         mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28)).init();

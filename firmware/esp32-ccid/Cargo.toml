@@ -14,9 +14,14 @@ name = "esp32_ccid"
 path = "src/lib.rs"
 
 [features]
-default = ["backend-mfrc522"]
+default = ["backend-mfrc522", "board-m5atom"]
 backend-mfrc522 = ["dep:mfrc522", "dep:iso14443"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
+# Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
+#   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
+#   board-m5stick: SDA=GPIO32, SCL=GPIO33  (StickC / StickC-Plus Port)
+board-m5atom = []
+board-m5stick = []
 ble = []
 
 [dependencies]

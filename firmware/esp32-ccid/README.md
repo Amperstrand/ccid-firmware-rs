@@ -36,10 +36,13 @@ The ESP32 translates CCID smart card commands into NFC chip commands (SPI for PN
 Select which NFC backend to compile against:
 
 ```bash
-# MFRC522 backend (M5Stack Atom, default)
+# MFRC522 backend, M5Stack Atom Grove pinout (SDA=26/SCL=32, default)
 cargo build --release --target xtensa-esp32-espidf --features backend-mfrc522
 
-# PN532 backend (original hardware)
+# MFRC522 backend, M5Stick Grove pinout (SDA=32/SCL=33)
+cargo build --release --target xtensa-esp32-espidf --features backend-mfrc522,board-m5stick
+
+# PN532 backend (original hardware, SPI — board feature not used)
 cargo build --release --target xtensa-esp32-espidf --features backend-pn532
 ```
 
