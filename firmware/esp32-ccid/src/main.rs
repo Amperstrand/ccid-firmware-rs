@@ -404,9 +404,21 @@ fn main() {
         (peripherals.pins.gpio32, peripherals.pins.gpio33, 33, 32);
 
     recover_i2c_bus(scl_gpio_no, sda_gpio_no);
-    let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
-    let i2c = i2c::I2cDriver::new(peripherals.i2c1, i2c_sda, i2c_scl, &i2c_config)
-        .expect("I2C1 init failed");
+    // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
+    // after recovery, 100 kHz (this MFRC522 is marginal at 400 kHz — worked
+    // intermittently, then hung the first transaction), i2c0 via GPIO matrix,
+    // and a bus probe before the first MFRC522 register access.
+    FreeRtos::delay_ms(50);
+    let i2c_config = i2c::config::Config::new().baudrate(Hertz(100_000).into());
+    let mut i2c = i2c::I2cDriver::new(peripherals.i2c0, i2c_sda, i2c_scl, &i2c_config)
+        .expect("I2C0 init failed");
+
+    let probe_timeout = esp_idf_hal::delay::TickType::new_millis(100);
+    let probe_found = i2c.write(0x28, &[], probe_timeout.into()).is_ok();
+    log::info!(
+        "i2c probe @0x28: {}",
+        if probe_found { "ack" } else { "no-ack" }
+    );
 
     let mfrc522_result =
         mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28)).init();
