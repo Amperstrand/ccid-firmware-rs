@@ -18,6 +18,11 @@ compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32) or bo
     not(feature = "backend-mfrc522")
 ))]
 use core::convert::Infallible;
+#[cfg(all(
+    target_arch = "xtensa",
+    feature = "backend-pn532",
+    not(feature = "backend-mfrc522")
+))]
 use esp32_ccid::{
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
@@ -47,11 +52,6 @@ use esp_idf_hal::{
     not(feature = "backend-mfrc522")
 ))]
 use esp_idf_sys::EspError;
-#[cfg(all(
-    target_arch = "xtensa",
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use mfrc522_pcd::recover_i2c_bus;
 

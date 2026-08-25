@@ -35,9 +35,9 @@ log = "0.4"
 nb = "1.1"
 mfrc522 = { path = "../../vendor/mfrc522", optional = true }
 iso14443 = { path = "../../vendor/iso14443-rs", features = ["alloc"], optional = true }
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git" }
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "beaf99a2" }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
-pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", optional = true }
+pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 esp-idf-sys = { version = "0.37", features = ["binstart"] }

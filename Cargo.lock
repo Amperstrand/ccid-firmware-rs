@@ -1421,9 +1421,10 @@ dependencies = [
 [[package]]
 name = "mfrc522-pcd"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git#5f1215dada3d0b1c2afa23ef612e2367291502c6"
+source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=beaf99a2#beaf99a2f05652556b11844335d774243f44cd33"
 dependencies = [
  "embedded-hal 1.0.0",
+ "esp-idf-sys",
  "iso14443",
  "log",
  "mfrc522",
@@ -1623,7 +1624,7 @@ dependencies = [
 [[package]]
 name = "pn532-transport"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git#5f1215dada3d0b1c2afa23ef612e2367291502c6"
+source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=5f1215da#5f1215dada3d0b1c2afa23ef612e2367291502c6"
 dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-hal",
