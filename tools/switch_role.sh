@@ -3,6 +3,10 @@
 #   bolty : bolty-esp32 tollgate/console firmware + bolty-console daemon (serial)
 #   ccid  : esp32-ccid GemPC-Twin reader firmware + pcscd via libccidtwin
 #
+# Env vars:
+#   VARIANT     : esp32-ccid features for the ccid role (default: backend-mfrc522,board-m5stick)
+#   BOLTY_FEATURES : bolty-esp32 features for the bolty role (default: board-m5stick)
+#
 # The two roles fight over the same FT232 serial port, so switching must
 # orchestrate: daemon stop/start, pcscd reader.conf enable/disable, rebuild,
 # flash (esptool @115200 — espflash's DTR/RTS toggles wedge this bridge),
@@ -12,6 +16,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 ROLE="${1:-}"
 VARIANT="${VARIANT:-backend-mfrc522,board-m5stick}"   # esp32-ccid features for the ccid role
+BOLTY_FEATURES="${BOLTY_FEATURES:-board-m5stick}"      # bolty-esp32 features for the bolty role
 STICK_BY_ID="/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0"
 PORT="${PORT:-$([ -e "$STICK_BY_ID" ] && echo "$STICK_BY_ID" || echo /dev/ttyUSB0)}"
 READER_CONF=/etc/reader.conf.d/esp32-ccid
@@ -72,10 +77,10 @@ case "$ROLE" in
     sudo systemctl restart pcscd.socket pcscd.service 2>/dev/null || true
     say "stopping any port holders"
     sudo systemctl stop bolty-console 2>/dev/null || true
-    say "building bolty-esp32 (board-m5stick)"
+    say "building bolty-esp32 ($BOLTY_FEATURES)"
     (cd "$BOLTY_REPO/apps/bolty-esp32" && \
-      cargo +esp build --release --features board-m5stick >/dev/null && \
-      cargo +esp espflash save-image --chip esp32 --release --features board-m5stick \
+      cargo +esp build --release --features "$BOLTY_FEATURES" >/dev/null && \
+      cargo +esp espflash save-image --chip esp32 --release --features "$BOLTY_FEATURES" \
         --merge /tmp/bolty-merged.bin >/dev/null)
     usb_rescan
     flash_merged /tmp/bolty-merged.bin
