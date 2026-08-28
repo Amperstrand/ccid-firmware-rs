@@ -1,0 +1,36 @@
+[package]
+name = "fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.ccid-protocol]
+path = "../crates/ccid-protocol"
+
+[dependencies.ccid-transport-serial]
+path = "../crates/ccid-transport-serial"
+
+# The parent directory is a Cargo workspace whose members list does not (and
+# must not) include this crate; an empty workspace table keeps cargo from
+# trying to attach this crate to it.
+[workspace]
+
+[[bin]]
+name = "fuzz_atr_parse"
+path = "fuzz_targets/fuzz_atr_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_serial_frame_parser"
+path = "fuzz_targets/fuzz_serial_frame_parser.rs"
+test = false
+doc = false
+bench = false
