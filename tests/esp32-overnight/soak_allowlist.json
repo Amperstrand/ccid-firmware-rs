@@ -1,0 +1,1583 @@
+{
+  "version": 1,
+  "generated_by": "tests/esp32-overnight/track_d.py --audit",
+  "reviewed_at": "2026-08-28",
+  "policy": {
+    "included_suites": [
+      "soak_01_smoke",
+      "soak_09_stress",
+      "soak_10_cross_compare"
+    ],
+    "suite_08_boundary_subset": [
+      "apdu_100_bytes",
+      "apdu_255_bytes"
+    ],
+    "auth_ins": {
+      "0x20": "VERIFY",
+      "0x22": "MSE (secure messaging setup)",
+      "0x82": "EXTERNAL/MUTUAL AUTHENTICATE",
+      "0x84": "GET CHALLENGE",
+      "0x88": "INTERNAL AUTHENTICATE",
+      "0xAF": "NTAG424 AUTHENTICATE"
+    },
+    "fail_closed": "tests whose APDUs cannot be statically resolved are EXCLUDED",
+    "enforcement": "SoakGate.check() refuses any test without a reviewed INCLUDED verdict that a fresh source audit still agrees with",
+    "no_github_issues": "the overnight adapter never auto-files issues and never FAILs on response-content diffs (different cards in the two readers)"
+  },
+  "counts": {
+    "total": 99,
+    "included": 29,
+    "excluded": 70
+  },
+  "modules": [
+    {
+      "suite": "soak_01_smoke",
+      "file": "tests/soak/soak_01_smoke.py",
+      "module_key_risk": "none",
+      "markers": []
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "file": "tests/soak/soak_02_globalplatform.py",
+      "module_key_risk": "module-marker",
+      "markers": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_03_satochip",
+      "file": "tests/soak/soak_03_satochip.py",
+      "module_key_risk": "module-marker",
+      "markers": [
+        "soak_03_satochip.py:40 key/PIN constant PIN_TEST",
+        "soak_03_satochip.py:95 key/PIN constant VERIFY"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "file": "tests/soak/soak_04_openpgp.py",
+      "module_key_risk": "module-marker",
+      "markers": [
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "file": "tests/soak/soak_05_piv.py",
+      "module_key_risk": "module-marker",
+      "markers": [
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "file": "tests/soak/soak_06_opensc.py",
+      "module_key_risk": "module-marker",
+      "markers": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "file": "tests/soak/soak_07_gpg.py",
+      "module_key_risk": "module-marker",
+      "markers": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "file": "tests/soak/soak_08_extended_apdu.py",
+      "module_key_risk": "none",
+      "markers": []
+    },
+    {
+      "suite": "soak_09_stress",
+      "file": "tests/soak/soak_09_stress.py",
+      "module_key_risk": "none",
+      "markers": []
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "file": "tests/soak/soak_10_cross_compare.py",
+      "module_key_risk": "none",
+      "markers": []
+    },
+    {
+      "suite": "soak_11_cherry",
+      "file": "tests/soak/soak_11_cherry.py",
+      "module_key_risk": "none",
+      "markers": []
+    },
+    {
+      "suite": "soaklib",
+      "file": "tests/soak/soaklib.py",
+      "module_key_risk": "none",
+      "markers": []
+    }
+  ],
+  "entries": [
+    {
+      "suite": "soak_01_smoke",
+      "test": "connect_and_atr",
+      "func": "test_connect_atr",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_01_smoke",
+      "test": "select_mf",
+      "func": "test_select_mf",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_01_smoke.py:27 const SELECT_AID_MF APDU 00A4040000 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_01_smoke",
+      "test": "power_cycle",
+      "func": "test_power_cycle",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_01_smoke",
+      "test": "double_connect",
+      "func": "test_double_connect",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_01_smoke",
+      "test": "get_response_empty",
+      "func": "test_get_response_empty",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_01_smoke.py:74 GET_RESPONSE APDU 00C0000000 (INS=C0 GET RESPONSE)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_01_smoke",
+      "test": "envelope_empty",
+      "func": "test_envelope_empty",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_01_smoke.py:83 ENVELOPE APDU 00C2000000 (INS=C2 ENVELOPE)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_list",
+      "func": "test_gp_list",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_info",
+      "func": "test_gp_info",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_status",
+      "func": "test_gp_status",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_get_data",
+      "func": "test_gp_get_data",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_install_piv",
+      "func": "test_gp_install_piv",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_list_after_install",
+      "func": "test_gp_list",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_uninstall_piv",
+      "func": "test_gp_uninstall_piv",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_02_globalplatform",
+      "test": "gp_list_after_uninstall",
+      "func": "test_gp_list",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (6 marker(s))",
+      "evidence": [
+        "soak_02_globalplatform.py:32 key/PIN constant AUTH_KEYS",
+        "soak_02_globalplatform.py:33 key/PIN constant DEFAULT_KEYS",
+        "soak_02_globalplatform.py:2 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:29 auth tooling 'gp.jar'",
+        "soak_02_globalplatform.py:49 auth tooling 'java -jar'",
+        "soak_02_globalplatform.py:130 auth tooling 'gp.jar'"
+      ]
+    },
+    {
+      "suite": "soak_03_satochip",
+      "test": "select_satochip_aid",
+      "func": "test_select_satochip_aid",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_03_satochip.py:40 key/PIN constant PIN_TEST",
+        "soak_03_satochip.py:95 key/PIN constant VERIFY"
+      ]
+    },
+    {
+      "suite": "soak_03_satochip",
+      "test": "satochip_get_serial",
+      "func": "test_satochip_get_serial",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_03_satochip.py:40 key/PIN constant PIN_TEST",
+        "soak_03_satochip.py:95 key/PIN constant VERIFY"
+      ]
+    },
+    {
+      "suite": "soak_03_satochip",
+      "test": "satochip_verify_pin",
+      "func": "test_satochip_verify_pin",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_03_satochip.py:87 auth-library call verify_pin()",
+        "soak_03_satochip.py:40 key/PIN constant PIN_TEST",
+        "soak_03_satochip.py:95 key/PIN constant VERIFY"
+      ]
+    },
+    {
+      "suite": "soak_03_satochip",
+      "test": "satochip_bip32_pubkey",
+      "func": "test_satochip_bip32_pubkey",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_03_satochip.py:113 auth-library call verify_pin()",
+        "soak_03_satochip.py:40 key/PIN constant PIN_TEST",
+        "soak_03_satochip.py:95 key/PIN constant VERIFY"
+      ]
+    },
+    {
+      "suite": "soak_03_satochip",
+      "test": "satochip_sign_message",
+      "func": "test_satochip_sign_message",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_03_satochip.py:140 auth-library call verify_pin()",
+        "soak_03_satochip.py:40 key/PIN constant PIN_TEST",
+        "soak_03_satochip.py:95 key/PIN constant VERIFY"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "select_openpgp_aid",
+      "func": "test_select_openpgp_aid",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:38 SELECT APDU 00A4040006 (INS=A4 SELECT)",
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "select_openpgp_aid_v3",
+      "func": "test_select_openpgp_aid_v3",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:46 SELECT APDU 00A4040008 (INS=A4 SELECT)",
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "openpgp_get_application_data",
+      "func": "test_openpgp_get_application_data",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:54 GET_DATA APDU 00CA006500 (INS=CA GET DATA)",
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "openpgp_get_name",
+      "func": "test_openpgp_get_name",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:62 GET_NAME APDU 00CA006B00 (INS=CA GET DATA)",
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "openpgp_get_key_attrs",
+      "func": "test_openpgp_get_key_attrs",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:72 transmit_apdu(<dynamic APDU>) \u2014 not statically resolvable",
+        "APDU construction not fully provable \u2014 fail closed",
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "openpgp_pw_status",
+      "func": "test_openpgp_pw_status",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:81 GET_PW APDU 00CA00C400 (INS=CA GET DATA)",
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_04_openpgp",
+      "test": "gpg_card_status",
+      "func": "test_gpg_card_status",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (2 marker(s))",
+      "evidence": [
+        "soak_04_openpgp.py:89 auth tooling 'gpg --'",
+        "soak_04_openpgp.py:106 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "select_piv_aid",
+      "func": "test_select_piv_aid",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:37 SELECT APDU 00A4040008 (INS=A4 SELECT)",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "select_piv_aid_v2",
+      "func": "test_select_piv_aid_v2",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:45 SELECT APDU 00A404000C (INS=A4 SELECT)",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_get_chuid",
+      "func": "test_piv_get_chuid",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:53 GET_CHUID APDU 00CB3FFF0500001000002D0035000800002D010C00000000000000000000000000000000 (INS=CB GET DATA (odd))",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_get_ccc",
+      "func": "test_piv_get_ccc",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:61 GET_CCC APDU 00CB3FFF0500001000DB0008 (INS=CB GET DATA (odd))",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_discovery",
+      "func": "test_piv_discovery",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:69 YUBIPIV_DISCOVERY APDU 00FB00000000 (INS=FB ?)",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_verify_pin",
+      "func": "test_piv_verify_pin",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:77 VERIFY_PIN APDU 0020008008 (INS=20 VERIFY)",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_get_serial",
+      "func": "test_piv_get_serial",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:85 GET_SERIAL APDU 00CB3FFF05000C0002FC100000000000 (INS=CB GET DATA (odd))",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_pin_policy",
+      "func": "test_piv_pin_policy",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:93 PIN_POLICY APDU 00CB3FFF050000000000000200000000 (INS=CB GET DATA (odd))",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_key_history",
+      "func": "test_piv_key_history",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:101 KEY_HISTORY APDU 00CB3FFF050000100000100000020000000000000000000000 (INS=CB GET DATA (odd))",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_05_piv",
+      "test": "piv_yubikey_auth",
+      "func": "test_piv_yubikey_auth",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (5 marker(s))",
+      "evidence": [
+        "soak_05_piv.py:109 SELECT_AUTH APDU 00A4040005A0000003 (INS=A4 SELECT)",
+        "soak_05_piv.py:76 key/PIN constant VERIFY_PIN",
+        "soak_05_piv.py:92 key/PIN constant PIN_POLICY",
+        "soak_05_piv.py:100 key/PIN constant KEY_HISTORY",
+        "soak_05_piv.py:108 key/PIN constant SELECT_AUTH",
+        "soak_05_piv.py:116 auth tooling 'pkcs15-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "opensc_tool_atr",
+      "func": "test_opensc_tool_atr",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "opensc_tool_info",
+      "func": "test_opensc_tool_info",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "opensc_tool_list_readers",
+      "func": "test_opensc_tool_list_readers",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "opensc_tool_list_files",
+      "func": "test_opensc_tool_list_files",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "pkcs15_tool_list",
+      "func": "test_pkcs15_tool_list",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "pkcs15_tool_read_cert",
+      "func": "test_pkcs15_tool_read_cert",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "pkcs15_tool_list_pins",
+      "func": "test_pkcs15_tool_list_pins",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "pkcs15_tool_list_pk",
+      "func": "test_pkcs15_tool_list_pk",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "pkcs11_tool_list_slots",
+      "func": "test_pkcs11_tool_list_slots",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_06_opensc",
+      "test": "opensc_tool_send_apdu",
+      "func": "test_opensc_tool_send_apdu",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (14 marker(s))",
+      "evidence": [
+        "soak_06_opensc.py:2 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:20 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:35 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:41 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:47 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:53 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:59 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:65 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:71 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:77 auth tooling 'pkcs15-tool'",
+        "soak_06_opensc.py:83 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:89 auth tooling 'pkcs11-tool'",
+        "soak_06_opensc.py:95 auth tooling 'opensc-tool'",
+        "soak_06_opensc.py:104 auth tooling 'opensc-tool'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_status",
+      "func": "test_gpg_card_status",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_list",
+      "func": "test_gpg_card_list",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_edit_admin",
+      "func": "test_gpg_card_edit_admin",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_edit_list",
+      "func": "test_gpg_card_edit_list",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_edit_fetch",
+      "func": "test_gpg_card_edit_fetch",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_edit_name",
+      "func": "test_gpg_card_edit_name",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_card_edit_lang",
+      "func": "test_gpg_card_edit_lang",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_connect_agent",
+      "func": "test_gpg_connect_agent",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_07_gpg",
+      "test": "gpg_export_card_key",
+      "func": "test_gpg_export_card_key",
+      "verdict": "EXCLUDED",
+      "key_risk": "module-marker",
+      "reason": "suite module carries authentication markers \u2014 every test fails closed (9 marker(s))",
+      "evidence": [
+        "soak_07_gpg.py:2 auth tooling 'gpg --'",
+        "soak_07_gpg.py:44 auth tooling 'gpg --'",
+        "soak_07_gpg.py:50 auth tooling 'gpg --'",
+        "soak_07_gpg.py:95 auth tooling 'gpg --'",
+        "soak_07_gpg.py:60 auth tooling 'gpg --'",
+        "soak_07_gpg.py:73 auth tooling 'gpg --'",
+        "soak_07_gpg.py:86 auth tooling 'gpg --'",
+        "soak_07_gpg.py:111 auth tooling 'gpg --'",
+        "soak_07_gpg.py:124 auth tooling 'gpg --'"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "apdu_100_bytes",
+      "func": "test_apdu_100_bytes",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free 100/255-byte boundary case",
+      "evidence": [
+        "soak_08_extended_apdu.py:33 apdu APDU 00A4040064 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "apdu_200_bytes",
+      "func": "test_apdu_200_bytes",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:41 apdu APDU 00A40400C8 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "apdu_255_bytes",
+      "func": "test_apdu_255_bytes",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free 100/255-byte boundary case",
+      "evidence": [
+        "soak_08_extended_apdu.py:49 apdu APDU 00A40400FF (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "envelope_100_bytes",
+      "func": "test_envelope_100_bytes",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:57 apdu APDU 00C2000064 (INS=C2 ENVELOPE)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "envelope_200_bytes",
+      "func": "test_envelope_200_bytes",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:65 apdu APDU 00C20000C8 (INS=C2 ENVELOPE)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "get_response_empty",
+      "func": "test_get_response_expect_none",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:73 apdu APDU 00C0000000 (INS=C0 GET RESPONSE)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "get_data_empty",
+      "func": "test_get_data_empty",
+      "verdict": "EXCLUDED",
+      "key_risk": "unresolved",
+      "reason": "sends APDUs that cannot be statically proven key-free",
+      "evidence": [
+        "soak_08_extended_apdu.py:83 transmit_apdu(<dynamic APDU>) \u2014 not statically resolvable",
+        "APDU construction not fully provable \u2014 fail closed"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "select_with_le",
+      "func": "test_select_with_le",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:92 apdu APDU 00A40400023F0000 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "record_read",
+      "func": "test_record_read",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:100 READ_RECORD APDU 00B2000000 (INS=B2 READ RECORD)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "multiple_rapid_apdus",
+      "func": "test_multiple_rapid_apdus",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:110 apdu APDU 00A40400023F00 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_08_extended_apdu",
+      "test": "mixed_cla_bytes",
+      "func": "test_mixed_cla_bytes",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "key-free but outside tonight's 100/255-byte boundary subset",
+      "evidence": [
+        "soak_08_extended_apdu.py:121 transmit_apdu(bytes([...])) INS=A4 SELECT"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "connect_disconnect_50x",
+      "func": "test_connect_disconnect_50x",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "apdu_roundtrip_50x",
+      "func": "test_apdu_roundtrip_50x",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_09_stress.py:30 const SELECT_3F00 APDU 00A40400023F00 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "power_cycle_20x",
+      "func": "test_power_cycle_20x",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "rapid_select_30x",
+      "func": "test_rapid_select_30x",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_09_stress.py:30 const SELECT_3F00 APDU 00A40400023F00 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "mixed_operations_30x",
+      "func": "test_mixed_operations_30x",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_09_stress.py:114 apdu APDU 00A4040000 (INS=A4 SELECT)",
+        "soak_09_stress.py:114 apdu APDU 00C0000000 (INS=C0 GET RESPONSE)",
+        "soak_09_stress.py:114 apdu APDU 00CA006B00 (INS=CA GET DATA)",
+        "soak_09_stress.py:114 apdu APDU 00C2000000 (INS=C2 ENVELOPE)",
+        "soak_09_stress.py:114 apdu APDU 00A40400023F00 (INS=A4 SELECT)",
+        "soak_09_stress.py:114 apdu APDU 00CA006500 (INS=CA GET DATA)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "double_connect_stress_20x",
+      "func": "test_double_connect_stress_20x",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_09_stress",
+      "test": "reconnect_after_error",
+      "func": "test_reconnect_after_error",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_09_stress.py:30 const SELECT_3F00 APDU 00A40400023F00 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_atr",
+      "func": "test_identical_atr",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "no APDU-bearing calls (connect/getATR/disconnect only)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_select_mf",
+      "func": "test_identical_select_mf",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:39 APDU 00A40400023F00 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_select_piv",
+      "func": "test_identical_select_piv",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:47 APDU 00A4040008A00000030800001000 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_select_openpgp",
+      "func": "test_identical_select_openpgp",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:55 APDU 00A4040006D276000124010200 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_select_satochip",
+      "func": "test_identical_select_satochip",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:95 APDU 00A40400085F7361746F4368697000 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_envelope",
+      "func": "test_identical_envelope",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:63 APDU 00C2000010 (INS=C2 ENVELOPE)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_get_response",
+      "func": "test_identical_get_response",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:71 APDU 00C0000000 (INS=C0 GET RESPONSE)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_get_data_65",
+      "func": "test_identical_get_data_65",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:79 APDU 00CA006500 (INS=CA GET DATA)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_get_data_6b",
+      "func": "test_identical_get_data_6b",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:87 APDU 00CA006B00 (INS=CA GET DATA)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_pw_status",
+      "func": "test_identical_pw_status",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:119 APDU 00CA00C400 (INS=CA GET DATA)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_record_read",
+      "func": "test_identical_record_read",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:103 APDU 00B2000000 (INS=B2 READ RECORD)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_read_binary",
+      "func": "test_identical_read_binary",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:111 APDU 00B0000004 (INS=B0 READ BINARY)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_multi_select",
+      "func": "test_identical_multi_select",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:129 fromhex(apdu_hex) APDU 00A4040006D276000124010200 (INS=A4 SELECT)",
+        "soak_10_cross_compare.py:129 fromhex(apdu_hex) APDU 00A4040008A00000030800001000 (INS=A4 SELECT)",
+        "soak_10_cross_compare.py:129 fromhex(apdu_hex) APDU 00A40400023F00 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_10_cross_compare",
+      "test": "identical_rapid_apdus_20x",
+      "func": "test_identical_rapid_apdus",
+      "verdict": "INCLUDED",
+      "key_risk": "none",
+      "reason": "provably key-free (SELECT/ATR/transport ops only)",
+      "evidence": [
+        "soak_10_cross_compare.py:140 APDU 00A40400023F00 (INS=A4 SELECT)",
+        "auth-family INS checked against 20/22/82/84/88/AF"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "descriptor_matches_cherry_spec",
+      "func": "validate_descriptor_against_spec",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": []
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "pinpad_capability",
+      "func": "test_pinpad_descriptor",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": []
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "escape_rejected",
+      "func": "test_escape_rejection",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": []
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_atr",
+      "func": "test_identical_atr",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": []
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_select_mf",
+      "func": "test_identical_select_mf",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": [
+        "soak_11_cherry.py:295 APDU 00A40400023F00 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_select_piv",
+      "func": "test_identical_select_piv",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": [
+        "soak_11_cherry.py:303 APDU 00A4040008A00000030800001000 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_select_openpgp",
+      "func": "test_identical_select_openpgp",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": [
+        "soak_11_cherry.py:311 APDU 00A4040006D276000124010200 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_select_satochip",
+      "func": "test_identical_select_satochip",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": [
+        "soak_11_cherry.py:335 APDU 00A40400085F7361746F4368697000 (INS=A4 SELECT)"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_get_response",
+      "func": "test_identical_get_response",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": [
+        "soak_11_cherry.py:319 APDU 00C0000000 (INS=C0 GET RESPONSE)"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "identical_envelope",
+      "func": "test_identical_envelope",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": [
+        "soak_11_cherry.py:327 APDU 00C2000010 (INS=C2 ENVELOPE)"
+      ]
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "cherry_power_cycle",
+      "func": "test_cherry_power_cycle",
+      "verdict": "EXCLUDED",
+      "key_risk": "none",
+      "reason": "suite not in tonight's selection (01/09/10/08-subset)",
+      "evidence": []
+    },
+    {
+      "suite": "soak_11_cherry",
+      "test": "rapid_select_20x",
+      "func": "test_identical_rapid_select",
+      "verdict": "EXCLUDED",
+      "key_risk": "unresolved",
+      "reason": "sends APDUs that cannot be statically proven key-free",
+      "evidence": [
+        "soak_11_cherry.py:345 transmit_apdu(<dynamic APDU>) \u2014 not statically resolvable",
+        "APDU construction not fully provable \u2014 fail closed"
+      ]
+    }
+  ]
+}
