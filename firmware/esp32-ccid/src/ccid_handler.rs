@@ -238,6 +238,19 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
+        // PC/SC pseudo-APDUs (CLA=0xFF) are answered by the reader itself,
+        // never forwarded to the card. CLA=0x00 (ISO 7816) and other CLA
+        // values still go to the card — the ACR1252 only intercepts 0xFF.
+        // A complete 4-byte header is required; shorter fragments are not
+        // routable and keep flowing to the card (issue #49, issue #50).
+        if apdu.first() == Some(&0xFF) && apdu.len() >= 4 {
+            return match (apdu[1], apdu[2], apdu[3]) {
+                (0xCA, 0x00, 0x00) => self.answer_get_uid(header, response),
+                (0xCA, _, _) => self.write_sw(header, &[0x6A, 0x86], response),
+                _ => self.write_sw(header, &[0x63, 0x00], response),
+            };
+        }
+
         match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
             Ok(resp_len) => {
                 self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
@@ -269,6 +282,47 @@ impl<D: NfcDriver> CcidHandler<D> {
                 )
             }
         }
+    }
+
+    fn answer_get_uid(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
+        let Some(uid) = self.nfc.card_uid() else {
+            return self.write_sw(header, &[0x63, 0x00], response);
+        };
+        let uid_len = uid.len();
+        self.tx_buf[..uid_len].copy_from_slice(uid);
+        self.tx_buf[uid_len] = 0x90;
+        self.tx_buf[uid_len + 1] = 0x00;
+        self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+        write_message(
+            RDR_TO_PC_DATABLOCK,
+            header.slot,
+            header.seq,
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentActive.icc_status(),
+            ),
+            0,
+            0,
+            &self.tx_buf[..uid_len + 2],
+            response,
+        )
+    }
+
+    fn write_sw(&mut self, header: &CcidHeader, sw: &[u8; 2], response: &mut [u8]) -> usize {
+        self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+        write_message(
+            RDR_TO_PC_DATABLOCK,
+            header.slot,
+            header.seq,
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentActive.icc_status(),
+            ),
+            0,
+            0,
+            sw,
+            response,
+        )
     }
 
     fn handle_set_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
@@ -811,5 +865,132 @@ mod tests {
         handler.nfc.set_card_present(false);
         handler.check_card_change();
         assert!(!handler.diagnostics().card_present);
+    }
+
+    const CARD_UID: [u8; 7] = [0x04, 0xC4, 0x74, 0xFA, 0x96, 0x73, 0x80];
+
+    fn new_handler_with_uid(card_present: bool) -> CcidHandler<MockNfcDriver> {
+        let mut nfc = MockNfcDriver::new(card_present, &ATR, &APDU_RESPONSE);
+        nfc.set_uid(&CARD_UID);
+        CcidHandler::new(nfc)
+    }
+
+    fn power_on(handler: &mut CcidHandler<MockNfcDriver>) {
+        handler.check_card_change();
+        let cmd = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 30, &[]);
+        let mut response = [0u8; 271];
+        handler.process_command(&cmd, &mut response);
+        assert_eq!(handler.slot_state, SlotState::PresentActive);
+    }
+
+    #[test]
+    fn test_get_uid_pseudo_apdu_returns_uid_and_9000() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 31, &[0xFF, 0xCA, 0x00, 0x00, 0x00]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentActive.icc_status()
+            )
+        );
+        let mut expected = CARD_UID.to_vec();
+        expected.extend_from_slice(&[0x90, 0x00]);
+        assert_eq!(payload, expected.as_slice());
+    }
+
+    #[test]
+    fn test_get_uid_bad_p1_p2_returns_6a86() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 32, &[0xFF, 0xCA, 0x01, 0x00, 0x00]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (_, payload) = parse_response(&response[..len]);
+
+        assert_eq!(payload, [0x6A, 0x86]);
+    }
+
+    #[test]
+    fn test_ff_cla_unsupported_ins_returns_6300() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+
+        // malformed_invalid_cla from the difftest matrix: the mock would
+        // answer APDU_RESPONSE (9000) if this reached transmit_apdu.
+        let cmd = build_ccid_cmd(
+            PC_TO_RDR_XFR_BLOCK,
+            0,
+            33,
+            &[0xFF, 0xA4, 0x00, 0x0C, 0x02, 0x3F, 0x00],
+        );
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (_, payload) = parse_response(&response[..len]);
+
+        assert_eq!(payload, [0x63, 0x00]);
+    }
+
+    #[test]
+    fn test_short_ff_fragment_still_forwarded_to_card() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 34, &[0xFF]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (_, payload) = parse_response(&response[..len]);
+
+        assert_eq!(payload, APDU_RESPONSE);
+    }
+
+    #[test]
+    fn test_ff_pps_request_not_intercepted_as_pseudo_apdu() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+
+        let pps = [0xFF, 0x11, 0x00];
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 35, &pps);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (_, payload) = parse_response(&response[..len]);
+
+        assert_eq!(payload, pps);
+    }
+
+    #[test]
+    fn test_get_uid_without_cached_uid_returns_6300() {
+        let mut handler = new_handler(true);
+        power_on(&mut handler);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 36, &[0xFF, 0xCA, 0x00, 0x00, 0x00]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (_, payload) = parse_response(&response[..len]);
+
+        assert_eq!(payload, [0x63, 0x00]);
+    }
+
+    #[test]
+    fn test_get_uid_requires_active_slot() {
+        let mut handler = new_handler_with_uid(true);
+        handler.check_card_change();
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 37, &[0xFF, 0xCA, 0x00, 0x00, 0x00]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert!(payload.is_empty());
+        assert_eq!(header.specific[1], ICC_NOT_ACTIVE);
     }
 }

@@ -68,6 +68,14 @@ pub trait NfcDriver {
     /// The number of bytes written to the response buffer.
     fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error>;
 
+    /// Cached UID of the present card, read during activation (anticollision).
+    ///
+    /// Serves reader-level pseudo-APDUs (PC/SC GET UID) without card
+    /// communication. None when no UID is known.
+    fn card_uid(&self) -> Option<&[u8]> {
+        None
+    }
+
     fn reinit_count(&self) -> u32 {
         0
     }
@@ -88,6 +96,8 @@ pub struct MockNfcDriver {
     /// Whether the driver has been initialized
     initialized: bool,
     session_active: bool,
+    /// UID returned by card_uid() (empty = no UID known)
+    uid: Vec<u8>,
 }
 
 impl MockNfcDriver {
@@ -104,7 +114,12 @@ impl MockNfcDriver {
             apdu_response: apdu_response.to_vec(),
             initialized: false,
             session_active: false,
+            uid: Vec::new(),
         }
+    }
+
+    pub fn set_uid(&mut self, uid: &[u8]) {
+        self.uid = uid.to_vec();
     }
 
     #[cfg(test)]
@@ -158,6 +173,10 @@ impl NfcDriver for MockNfcDriver {
 
     fn power_off(&mut self) {
         self.session_active = false;
+    }
+
+    fn card_uid(&self) -> Option<&[u8]> {
+        (!self.uid.is_empty()).then_some(&self.uid)
     }
 
     fn transmit_apdu(

@@ -103,6 +103,9 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
     cached_ats: Option<Ats>,
     consecutive_failures: u8,
     init_tracker: InitRecoveryTracker,
+    // ISO 14443-3A UIDs are 4/7/10 bytes (single/double/triple cascade)
+    cached_uid: [u8; 10],
+    cached_uid_len: usize,
 }
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
@@ -119,6 +122,8 @@ where
             cached_ats: None,
             consecutive_failures: 0,
             init_tracker: InitRecoveryTracker::new(),
+            cached_uid: [0u8; 10],
+            cached_uid_len: 0,
         }
     }
 
@@ -130,6 +135,7 @@ where
         self.lifecycle = CardLifecycle::NoCard;
         self.session = None;
         self.cached_ats = None;
+        self.cached_uid_len = 0;
         self.consecutive_failures = 0;
     }
 
@@ -183,6 +189,7 @@ where
         self.lifecycle = CardLifecycle::NoCard;
         self.session = None;
         self.cached_ats = None;
+        self.cached_uid_len = 0;
         self.consecutive_failures = 0;
         self.reset_activation_frontend()?;
         self.init()
@@ -303,6 +310,10 @@ where
         self.init_tracker.reinit_count()
     }
 
+    fn card_uid(&self) -> Option<&[u8]> {
+        (self.cached_uid_len > 0).then(|| &self.cached_uid[..self.cached_uid_len])
+    }
+
     fn is_card_present(&mut self) -> bool {
         self.poll_card_presence().present
     }
@@ -340,6 +351,12 @@ where
         if !activation.sak.iso14443_4_compliant {
             self.clear_session();
             return Err(NfcError::CommunicationError);
+        }
+
+        let uid = activation.uid.as_slice();
+        if uid.len() <= self.cached_uid.len() {
+            self.cached_uid[..uid.len()].copy_from_slice(uid);
+            self.cached_uid_len = uid.len();
         }
 
         let (_, ats) =
