@@ -34,8 +34,8 @@ heapless = "0.8"
 log = "0.4"
 nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
-iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", branch = "ai-experiments", features = ["alloc"], optional = true }
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "0835d09" }
+iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "268db79", features = ["alloc"], optional = true }
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9" }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
 
