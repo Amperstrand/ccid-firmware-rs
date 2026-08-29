@@ -111,7 +111,10 @@ pub fn parse_atr(atr: &[u8]) -> AtrParams {
                 p.protocol = td_protocol;
             }
             y = (td >> 4) & 0x0F;
-            level += 1;
+            level = match level.checked_add(1) {
+                Some(l) => l,
+                None => break,
+            };
         } else {
             break;
         }
@@ -345,5 +348,18 @@ mod tests {
             let _ = fi_from_ta1_high(i);
             let _ = di_from_ta1_low(i);
         }
+    }
+
+    #[test]
+    fn test_parse_atr_overflow_td_chain() {
+        let mut atr = [0u8; 302];
+        atr[0] = 0x3B;
+        atr[1] = 0x88;
+        for i in 0..300 {
+            atr[2 + i] = 0x80;
+        }
+        let p = parse_atr(&atr);
+        // Should not panic; returns partial result from TD1 (protocol=0)
+        assert_eq!(p.protocol, 0);
     }
 }
