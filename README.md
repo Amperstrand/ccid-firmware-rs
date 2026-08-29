@@ -36,8 +36,8 @@ The practical architecture is a shared CCID core with interchangeable axes:
 - `firmware/esp32-ccid/` — ESP32 NFC-reader firmware
 - `host-tools/` — host-side PC/SC utilities
 - `vendor/synopsys-usb-otg/` — STM32 USB dependency
-- `vendor/mfrc522/` — patched MFRC522 dependency used by ESP32
 - `vendor/iso14443-rs/` — tracked ISO 14443 protocol crate used by ESP32 MFRC522
+- MFRC522 driver — consumed from the canonical `Amperstrand/mfrc522-rs` fork (`ai-experiments` rev `e9ced1e`, shared with bolty-rs), not vendored
 
 ## Quick start
 

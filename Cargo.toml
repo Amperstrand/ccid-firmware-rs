@@ -17,9 +17,6 @@ synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
 [patch."https://github.com/Amperstrand/iso14443-rs.git"]
 iso14443 = { path = "vendor/iso14443-rs" }
 
-[patch."https://github.com/Amperstrand/mfrc522-rs.git"]
-mfrc522 = { path = "vendor/mfrc522" }
-
 [profile.release]
 debug = 2
 opt-level = "z"

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — Shared MFRC522 fork (issue #19)
+
+- **Removed `vendor/mfrc522/` (~1,500 lines)** — the divergent local MFRC522 driver copy is gone. `esp32-ccid` now consumes the canonical `Amperstrand/mfrc522-rs` fork (`ai-experiments` rev `e9ced1e`, git dependency) — the single source shared with bolty-rs, eliminating the two-repo vendor drift.
+- The unified fork carries the union of both former copies: the 5000-iteration software timeout caps on the MFAuthent/transceive wait loops (hang protection previously only in bolty-rs), `std`-gated unit tests, and repaired eh02 mock-test expectations.
+- `mfrc522-pcd` bumped `ea6d381` → `0835d09` (bolty-rs) so its transitive `mfrc522` dependency resolves to the same git rev as the direct dependency — exactly one `mfrc522` package in the graph.
+- Removed the `[patch."https://github.com/Amperstrand/mfrc522-rs.git"]` table entry; `vendor/iso14443-rs` and `vendor/synopsys-usb-otg` remain vendored.
+- Removed the vestigial tracked `firmware/esp32-ccid/Cargo.lock` (unused by cargo — the workspace-root lock governs; it still referenced the deleted vendor path).
+
 ### Added — Sibling-repo improvement pass (issues #28–#32)
 
 - **DWT cycle counter watchdog (#28)** — new `dwt_watchdog` module in `firmware/ccid-firmware/src/dwt_watchdog.rs`. Provides accurate wall-clock timeouts on Cortex-M3+ using the DWT CYCCNT register. Replaces iteration-based polling in F469 `SmartcardUart::receive_byte_timeout()`. 14 host-side unit tests. Pattern sourced from gm65-scanner (commit 1d7fddc).

@@ -42,15 +42,14 @@ ccid-firmware-rs/
 ├── host-tools/                 # host-side tooling
 ├── vendor/                     # tracked patched dependencies (see below)
 │   ├── synopsys-usb-otg/       # patched USB OTG driver (STM32)
-│   ├── iso14443-rs/            # patched ISO 14443 crate (ESP32 MFRC522 path)
-│   └── mfrc522/                # patched MFRC522 driver crate
+│   └── iso14443-rs/            # patched ISO 14443 crate (ESP32 MFRC522 path)
 ├── reference/                  # osmo-ccid-firmware submodule + CCID reader specs
 └── tests/hardware/             # hardware integration test procedures
 ```
 
 ### `[patch]` tables (root Cargo.toml)
 
-The workspace overrides three upstream crates with locally tracked patched
+The workspace overrides two upstream crates with locally tracked patched
 copies. These patches are **required** — upstream versions do not build:
 
 ```toml
@@ -59,10 +58,12 @@ synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
 
 [patch."https://github.com/Amperstrand/iso14443-rs.git"]
 iso14443 = { path = "vendor/iso14443-rs" }
-
-[patch."https://github.com/Amperstrand/mfrc522-rs.git"]
-mfrc522 = { path = "vendor/mfrc522" }
 ```
+
+The MFRC522 driver is NOT vendored: `esp32-ccid` consumes the canonical
+`Amperstrand/mfrc522-rs` fork at `ai-experiments` rev `e9ced1e` (git dep),
+the same source bolty-rs uses — the former divergent `vendor/mfrc522` copy
+was removed (issue #19).
 
 ### Release profile (root Cargo.toml)
 

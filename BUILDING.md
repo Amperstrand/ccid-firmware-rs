@@ -33,8 +33,8 @@ The repository root has a default Cargo target of `thumbv7em-none-eabihf` in `.c
 
 - `firmware/ccid-firmware/` — STM32 firmware
 - `firmware/esp32-ccid/` — ESP32 firmware
-- `vendor/mfrc522/` — tracked MFRC522 dependency used by ESP32
 - `vendor/iso14443-rs/` — tracked ISO 14443 dependency used by the ESP32 MFRC522 path
+- MFRC522 driver — consumed from the canonical `Amperstrand/mfrc522-rs` fork (`ai-experiments` rev `e9ced1e`, shared with bolty-rs), not vendored
 
 ## ESP32 NFC firmware
 

@@ -1,6 +1,6 @@
 # Vendored Dependency Patches
 
-This repository vendors three dependencies with local modifications not available upstream.
+This repository vendors two dependencies with local modifications not available upstream.
 
 ## vendor/iso14443-rs
 
@@ -22,22 +22,6 @@ The upstream crate lacks APIs needed for MFRC522 hardware workarounds and ISO-DE
 | `try_set_timeout_ms` | Configurable timeout for ISO-DEP frame waiting. The MFRC522 hardware requires explicit timeout control that upstream doesn't expose. |
 | `set_fsc` | Frame Size Card — caps the maximum frame size to match the MFRC522's 64-byte FIFO. Without this, the ISO-DEP layer attempts frames larger than the hardware can buffer. |
 | `set_base_fwt_ms` | Base Frame Waiting Time — sets the minimum time to wait for a card response. Needed because the MFRC522's timing differs from typical PCD hardware. |
-
-## vendor/mfrc522
-
-- **Upstream**: Unknown — the Cargo.toml identifies it as `mfrc522 0.8.0` with description "Vendored MFRC522 driver — patched for esp32-ccid (timer, register access)". No original repository URL is recorded.
-- **License**: Not specified in vendored Cargo.toml
-- **Vendored in**: commit `c6c30d0`
-- **Used by**: `esp32-ccid` (via `mfrc522 = { path = "../vendor/mfrc522" }`)
-
-### Why vendored
-
-Patched for ESP32-specific timer handling and register access patterns. The ESP-IDF HAL's I2C interface behaves differently from the embedded-hal implementations the original driver targets.
-
-### Patches
-
-- Timer and register access modifications for ESP-IDF I2C compatibility
-- The vendored version uses `embedded-hal` 1.0 (the `embedded-hal-1` feature) and `heapless` 0.8
 
 ## vendor/synopsys-usb-otg
 

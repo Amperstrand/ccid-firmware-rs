@@ -33,9 +33,9 @@ embedded-hal = "1.0"
 heapless = "0.8"
 log = "0.4"
 nb = "1.1"
-mfrc522 = { path = "../../vendor/mfrc522", optional = true }
+mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
 iso14443 = { path = "../../vendor/iso14443-rs", features = ["alloc"], optional = true }
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "ea6d381" }
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "0835d09" }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
 
