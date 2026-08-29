@@ -33,6 +33,11 @@ pub mod protocol_unit;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod device_profile;
 
+// Host-only spec-path characterization tests (issue #53) — never compiled
+// into firmware builds.
+#[cfg(test)]
+mod ccid_spec_paths;
+
 pub mod mock_driver;
 
 #[cfg(not(all(target_arch = "arm", target_os = "none")))]
