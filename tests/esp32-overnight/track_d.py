@@ -1086,9 +1086,20 @@ class SoakAdapter:
         if readers_fn is None:
 
             def default_readers():
+                # pcscd restarts (role gate, raw-window restore, watchdog
+                # markers) invalidate pyscard's PROCESS-WIDE PCSC context
+                # singleton: this lane resumes polling after each restart,
+                # so renew the context and retry once (pattern: role_switch
+                # .list_readers, commit 1d227b5).
                 import smartcard.System  # lazy — offline tests never get here
 
-                return list(smartcard.System.readers())
+                try:
+                    return list(smartcard.System.readers())
+                except Exception:
+                    from smartcard.pcsc.PCSCContext import PCSCContext
+
+                    PCSCContext.renewContext()
+                    return list(smartcard.System.readers())
 
             readers_fn = default_readers
         self.readers_fn = readers_fn

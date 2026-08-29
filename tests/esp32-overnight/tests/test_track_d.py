@@ -514,3 +514,63 @@ def test_register_alias_and_build_lane_shape():
     assert spec.window == "window2"
     assert spec.needs_pcscd is True
     assert spec.target is track_d.run
+
+
+# ------------------------------------------------ stale pcsc context ----
+
+def _stub_smartcard_pcsc(monkeypatch, readers_fn, ctx):
+    import types
+
+    base = types.ModuleType("smartcard")
+    sys_mod = types.ModuleType("smartcard.System")
+    sys_mod.readers = staticmethod(readers_fn)
+    base.System = sys_mod
+    ctx_mod = types.ModuleType("smartcard.pcsc.PCSCContext")
+    ctx_mod.PCSCContext = ctx
+    pcsc_mod = types.ModuleType("smartcard.pcsc")
+    pcsc_mod.PCSCContext = ctx
+    base.pcsc = pcsc_mod
+    monkeypatch.setitem(sys.modules, "smartcard", base)
+    monkeypatch.setitem(sys.modules, "smartcard.System", sys_mod)
+    monkeypatch.setitem(sys.modules, "smartcard.pcsc", pcsc_mod)
+    monkeypatch.setitem(sys.modules, "smartcard.pcsc.PCSCContext", ctx_mod)
+
+
+def test_adapter_default_readers_renews_stale_pcsc_context(monkeypatch):
+    # the soak lane resumes polling after every maintenance pcscd restart;
+    # a stale singleton would fail the reader gate against a healthy daemon
+    calls = {"n": 0, "renewed": 0}
+
+    class Ctx:
+        @staticmethod
+        def renewContext():
+            calls["renewed"] += 1
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("ListReadersException: stale context")
+        return ["GemPCTwin serial 00 00"]
+
+    _stub_smartcard_pcsc(monkeypatch, flaky, Ctx)
+    adapter = track_d.SoakAdapter(track_d.SoakGate(reviewed=[], fresh=None))
+    assert adapter.reader_names() == ["GemPCTwin serial 00 00"]
+    assert calls["renewed"] == 1
+
+
+def test_adapter_default_readers_gives_up_after_one_renew(monkeypatch):
+    calls = {"renewed": 0}
+
+    class Ctx:
+        @staticmethod
+        def renewContext():
+            calls["renewed"] += 1
+
+    def always_dead():
+        raise RuntimeError("EstablishContextException: pcscd down")
+
+    _stub_smartcard_pcsc(monkeypatch, always_dead, Ctx)
+    adapter = track_d.SoakAdapter(track_d.SoakGate(reviewed=[], fresh=None))
+    with pytest.raises(RuntimeError, match="EstablishContextException"):
+        adapter.reader_names()
+    assert calls["renewed"] == 1
