@@ -486,3 +486,63 @@ def test_selftest_entrypoint_exits_zero(capsys):
     assert tdr.main(["--selftest"]) == 0
     out = capsys.readouterr().out
     assert "selftest PASS" in out
+
+
+# ------------------------------------------------ stale pcsc context ----
+
+
+def _stub_smartcard_pcsc(monkeypatch, readers_fn, ctx):
+    import types
+
+    base = types.ModuleType("smartcard")
+    sys_mod = types.ModuleType("smartcard.System")
+    sys_mod.readers = staticmethod(readers_fn)
+    base.System = sys_mod
+    ctx_mod = types.ModuleType("smartcard.pcsc.PCSCContext")
+    ctx_mod.PCSCContext = ctx
+    pcsc_mod = types.ModuleType("smartcard.pcsc")
+    pcsc_mod.PCSCContext = ctx
+    base.pcsc = pcsc_mod
+    monkeypatch.setitem(sys.modules, "smartcard", base)
+    monkeypatch.setitem(sys.modules, "smartcard.System", sys_mod)
+    monkeypatch.setitem(sys.modules, "smartcard.pcsc", pcsc_mod)
+    monkeypatch.setitem(sys.modules, "smartcard.pcsc.PCSCContext", ctx_mod)
+
+
+def test_pcscd_ops_readers_renews_stale_context(monkeypatch):
+    # restore() verifies readers in the SAME process that stopped pcscd:
+    # without renewal the stale singleton fabricates a restore failure
+    calls = {"n": 0, "renewed": 0}
+
+    class Ctx:
+        @staticmethod
+        def renewContext():
+            calls["renewed"] += 1
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("ListReadersException: stale context")
+        return ["GemPCTwin serial 00 00", "ACS ACR1252 00 00"]
+
+    _stub_smartcard_pcsc(monkeypatch, flaky, Ctx)
+    ops = tdr.PcscdOps()
+    assert ops._readers() == ["GemPCTwin serial 00 00", "ACS ACR1252 00 00"]
+    assert calls["renewed"] == 1
+
+
+def test_pcscd_ops_readers_empty_after_failed_renew(monkeypatch):
+    calls = {"renewed": 0}
+
+    class Ctx:
+        @staticmethod
+        def renewContext():
+            calls["renewed"] += 1
+
+    def always_dead():
+        raise RuntimeError("EstablishContextException: pcscd down")
+
+    _stub_smartcard_pcsc(monkeypatch, always_dead, Ctx)
+    ops = tdr.PcscdOps()
+    assert ops._readers() == []
+    assert calls["renewed"] == 1

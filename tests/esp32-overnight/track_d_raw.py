@@ -645,10 +645,20 @@ class PcscdOps:
             from smartcard.System import readers  # lazy, pcscd-gated
         except Exception:
             return []
+        # the orchestrator process established its PCSC context BEFORE this
+        # window stopped pcscd; after restore() the singleton is stale, which
+        # would read as "readers missing" and fabricate a restore failure.
+        # Renew + retry once (pattern: role_switch.list_readers, 1d227b5).
         try:
             return [str(r) for r in readers()]
         except Exception:
-            return []
+            try:
+                from smartcard.pcsc.PCSCContext import PCSCContext
+
+                PCSCContext.renewContext()
+                return [str(r) for r in readers()]
+            except Exception:
+                return []
 
 
 # ---------------------------------------------------- integration ----
