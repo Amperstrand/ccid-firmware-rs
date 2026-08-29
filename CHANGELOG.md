@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the `[patch."https://github.com/Amperstrand/mfrc522-rs.git"]` table entry; `vendor/iso14443-rs` and `vendor/synopsys-usb-otg` remain vendored.
 - Removed the vestigial tracked `firmware/esp32-ccid/Cargo.lock` (unused by cargo — the workspace-root lock governs; it still referenced the deleted vendor path).
 
+### Changed — Shared ISO 14443 fork (issue #6)
+
+- **Removed `vendor/iso14443-rs/`** — the local ISO 14443 crate copy is gone. `esp32-ccid` now consumes the canonical `Amperstrand/iso14443-rs` fork (`ai-experiments` branch, git dependency) — the single source shared with bolty-rs, eliminating the two-repo vendor drift.
+- The unified fork carries the APIs needed for MFRC522 hardware workarounds: `PcdSession` (session-based ISO-DEP lifecycle), `try_set_timeout_ms` (configurable timeout), `set_fsc` (frame size capping for 64-byte FIFO), and `set_base_fwt_ms` (base frame waiting time).
+- Both direct and transitive dependencies resolve to the same `ai-experiments` branch — exactly one `iso14443` package in the graph.
+- Removed the `[patch."https://github.com/Amperstrand/iso14443-rs.git"]` table entry; `vendor/synopsys-usb-otg` remains vendored.
+- Removed the CI `iso14443-host-test` job (tests now run via the canonical fork).
+
 ### Added — Sibling-repo improvement pass (issues #28–#32)
 
 - **DWT cycle counter watchdog (#28)** — new `dwt_watchdog` module in `firmware/ccid-firmware/src/dwt_watchdog.rs`. Provides accurate wall-clock timeouts on Cortex-M3+ using the DWT CYCCNT register. Replaces iteration-based polling in F469 `SmartcardUart::receive_byte_timeout()`. 14 host-side unit tests. Pattern sourced from gm65-scanner (commit 1d7fddc).
@@ -43,8 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Test count
 - Workspace host tests: 263 (was ~218 baseline pre-improvement-pass)
-- ESP32 host tests: 65
-- iso14443 vendored: 37
+- ESP32 host tests: 65 (includes iso14443 crate tests via git dependency)
 - HIL tests: 6 (all pass on real hardware)
 
 ## [0.1.1] - 2026-05-03

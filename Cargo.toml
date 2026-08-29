@@ -14,9 +14,6 @@ resolver = "2"
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
 
-[patch."https://github.com/Amperstrand/iso14443-rs.git"]
-iso14443 = { path = "vendor/iso14443-rs" }
-
 [profile.release]
 debug = 2
 opt-level = "z"

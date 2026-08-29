@@ -1,27 +1,6 @@
 # Vendored Dependency Patches
 
-This repository vendors two dependencies with local modifications not available upstream.
-
-## vendor/iso14443-rs
-
-- **Upstream**: https://github.com/Foundation-Devices/iso14443-rs
-- **Version**: 0.1.0
-- **License**: GPL-3.0-or-later
-- **Vendored in**: commit `c6c30d0`
-- **Used by**: `esp32-ccid` (via `iso14443 = { path = "../vendor/iso14443-rs" }`)
-
-### Why vendored
-
-The upstream crate lacks APIs needed for MFRC522 hardware workarounds and ISO-DEP session management. These patches add timeout control, frame size capping, and session lifecycle management required for reliable NFC card communication through the MFRC522's 64-byte FIFO.
-
-### Patches
-
-| Symbol | Purpose |
-|--------|---------|
-| `PcdSession` | Session-based ISO-DEP lifecycle struct. Manages activation, APDU exchange, and deactivation in a single object rather than loose function calls. |
-| `try_set_timeout_ms` | Configurable timeout for ISO-DEP frame waiting. The MFRC522 hardware requires explicit timeout control that upstream doesn't expose. |
-| `set_fsc` | Frame Size Card — caps the maximum frame size to match the MFRC522's 64-byte FIFO. Without this, the ISO-DEP layer attempts frames larger than the hardware can buffer. |
-| `set_base_fwt_ms` | Base Frame Waiting Time — sets the minimum time to wait for a card response. Needed because the MFRC522's timing differs from typical PCD hardware. |
+This repository vendors one dependency with local modifications not available upstream.
 
 ## vendor/synopsys-usb-otg
 
@@ -46,7 +25,6 @@ If the submodule shows commits not on the upstream branch, those are local patch
 
 ## Upgrade considerations
 
-- **iso14443-rs**: Monitor https://github.com/Foundation-Devices/iso14443-rs for releases that include `PcdSession` or equivalent session management. If upstream adopts similar APIs, re-vendor and adapt.
-- **mfrc522**: Without a known upstream, this crate must be maintained locally. Bug fixes should be applied directly to the vendored copy.
+- **iso14443-rs**: Now consumed from the canonical `Amperstrand/iso14443-rs` fork (`ai-experiments` branch, shared with bolty-rs), not vendored. The fork carries the APIs needed for MFRC522 hardware workarounds (PcdSession, timeout control, frame size capping).
 - **synopsys-usb-otg**: Check if newer crates.io versions fix the USB stability issues. If so, the submodule patch can be dropped in favor of the crates.io version.
 - **General**: Before updating any vendored dependency, run the full test suite (`cargo test --target x86_64-unknown-linux-gnu` from root and from `esp32-ccid/`) and verify on hardware.
