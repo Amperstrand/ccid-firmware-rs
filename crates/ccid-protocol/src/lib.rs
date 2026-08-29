@@ -11,6 +11,10 @@
 
 #![no_std]
 
+// CCID_SPEC: /* Identifies the length of type of subordinate descriptors of a CCID device
+// * Table 5.1-1 Smart Card Device Class descriptors */
+// struct usb_ccid_class_descriptor {
+
 pub mod atr;
 pub mod status;
 pub mod types;

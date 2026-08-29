@@ -11,8 +11,12 @@ use ccid_core::pps::is_pps_request;
 use ccid_core::response::{write_message, write_slot_status};
 use ccid_core::Diagnostics;
 
+// GEMPC: idVendor: 0x08E6 iManufacturer: Gemplus idProduct: 0x3437 iProduct: USB SmartCard Reader
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
+// GEMPC: dwFeatures: 0x00010230 ....10 Automatic ICC clock frequency change according to
+// parameters ....20 Automatic baud rate change according to frequency and Fi, Di params
+// ..02.. NAD value other than 00 accepted (T=1) 01.... TPDU level exchange
 pub struct CcidHandler<D: NfcDriver> {
     nfc: D,
     slot_state: SlotState,
@@ -119,6 +123,9 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
     }
 
+    // CCID_SPEC: /* Section 6.1.1 */ struct ccid_pc_to_rdr_icc_power_on {
+    // struct ccid_header hdr; uint8_t bPowerSelect; uint8_t abRFU[2]; }
+    // __attribute__ ((packed)); /* Response: RDR_to_PC_DataBlock */
     fn handle_power_on(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         if !self.presence_state.present {
             return write_slot_status(
@@ -171,6 +178,9 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
     }
 
+    // CCID_SPEC: /* Section 6.1.2 */ struct ccid_pc_to_rdr_icc_power_off {
+    // struct ccid_header hdr; uint8_t abRFU[3]; } __attribute__ ((packed));
+    // /* Response: RDR_to_PC_SlotStatus */
     fn handle_power_off(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         self.nfc.power_off();
 
@@ -192,6 +202,9 @@ impl<D: NfcDriver> CcidHandler<D> {
         )
     }
 
+    // CCID_SPEC: /* Section 6.1.3 */ struct ccid_pc_to_rdr_get_slot_status {
+    // struct ccid_header hdr; uint8_t abRFU[3]; } __attribute__ ((packed));
+    // /* Response: RDR_to_PC_SlotStatus */
     fn handle_get_slot_status(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
         write_slot_status(
             header.slot,
@@ -204,6 +217,7 @@ impl<D: NfcDriver> CcidHandler<D> {
         )
     }
 
+    // GEMPC: dwMaxCCIDMessageLength: 271 bytes
     fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
         self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
 
@@ -335,6 +349,9 @@ impl<D: NfcDriver> CcidHandler<D> {
         self.write_parameters(header, response)
     }
 
+    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
+    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
+    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
         if payload.first() == Some(&0xD0) {
             let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
@@ -351,6 +368,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
+        // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
         if payload.first() == Some(&0x02) {
             return write_message(
                 RDR_TO_PC_ESCAPE,
@@ -377,6 +395,10 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
+        // CCID_SERIAL: perform a command to configure GemPC Twin reader card movement
+        // * notification to synchronous mode: the card movement is notified _after_
+        // * the host command and _before_ the reader answer
+        // CCID_SERIAL: unsigned char tx_buffer[] = { 0x01, 0x01, 0x01};
         if payload.starts_with(&[0x01, 0x01, 0x01]) {
             self.sync_notifications = true;
             return write_message(

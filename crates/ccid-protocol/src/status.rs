@@ -1,5 +1,8 @@
 use crate::types::{COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, COMMAND_STATUS_TIME_EXTENSION};
 
+// CCID_SPEC: /* CCID message header on BULK-IN endpoint */ struct ccid_header_in {
+// struct ccid_header hdr; uint8_t bStatus; uint8_t bError; }
+
 /// Build a bStatus byte from command status and ICC status per CCID Rev 1.1 §4.2.2.
 ///
 /// Encoding: `(cmd_status << 6) | icc_status`

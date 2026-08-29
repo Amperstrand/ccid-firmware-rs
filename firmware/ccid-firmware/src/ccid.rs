@@ -20,6 +20,9 @@ use ccid_protocol::types::{
     REQUEST_GET_CLOCK_FREQUENCIES, REQUEST_GET_DATA_RATES, SUBCLASS_NONE,
 };
 
+// CCID_SPEC: /* Identifies the length of type of subordinate descriptors of a CCID device
+// * Table 5.1-1 Smart Card Device Class descriptors */
+// struct usb_ccid_class_descriptor {
 pub const CCID_CLASS_DESCRIPTOR_DATA: [u8; 52] = CURRENT_PROFILE.ccid_descriptor();
 pub const CLOCK_FREQUENCY_KHZ: [u8; 4] = [0x40, 0x0F, 0x00, 0x00];
 pub const DATA_RATE_BPS: [u8; 4] = [0x00, 0x2A, 0x00, 0x00];
@@ -151,6 +154,8 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         self.core.process_pin_modify_result();
     }
 
+    // CCID_SPEC: /* Section 6.3.1 */ struct ccid_rdr_to_pc_notify_slot_change {
+    // uint8_t bMessageType; uint8_t bmSlotCCState[0];
     fn send_notify_slot_change(&mut self, card_present: bool, changed: bool) {
         let msg = self.core.notify_slot_change_bytes(card_present, changed);
         let _ = self.ep_int.write(&msg);
@@ -295,6 +300,9 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
         }
 
         match request.request {
+            // CCID_SPEC: /* CCID Class-Specific Control Request (Section 5.3 / Table 5.3-1) */
+            // enum ccid_class_spec_req { CLASS_SPEC_CCID_ABORT = 0x01,
+            // CLASS_SPEC_CCID_GET_CLOCK_FREQ = 0x02, CLASS_SPEC_CCID_GET_DATA_RATES = 0x03 };
             REQUEST_ABORT => {
                 let _slot = (request.value & 0xFF) as u8;
                 let _seq = ((request.value >> 8) & 0xFF) as u8;

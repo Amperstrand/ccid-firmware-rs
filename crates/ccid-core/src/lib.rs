@@ -16,6 +16,8 @@ use ccid_protocol::types::{
 pub mod response {
     use super::*;
 
+    // CCID_SPEC: /* Section 6.2.2 RDR_to_PC_SlotStatus */
+    // struct ccid_rdr_to_pc_slot_status { struct ccid_header_in hdr; uint8_t bClockStatus; }
     pub fn write_slot_status(
         slot: u8,
         seq: u8,
@@ -37,6 +39,9 @@ pub mod response {
         )
     }
 
+    // CCID_SPEC: /* Section 6.2.1 RDR_to_PC_DataBlock */
+    // struct ccid_rdr_to_pc_data_block { struct ccid_header_in hdr;
+    // uint8_t bChainParameter; uint8_t abData[0]; }
     pub fn write_data_block(
         slot: u8,
         seq: u8,
@@ -59,6 +64,8 @@ pub mod response {
         )
     }
 
+    // CCID_SPEC: /* Section 6.2.3 RDR_to_PC_Parameters */
+    // struct ccid_rdr_to_pc_parameters { struct ccid_header_in hdr; uint8_t bProtocolNum;
     pub fn write_parameters(
         slot: u8,
         seq: u8,
@@ -115,6 +122,9 @@ pub mod response {
 pub mod pps {
     use super::*;
 
+    // CCID_SPEC: /* Section 6.1.4 */ struct ccid_pc_to_rdr_xfr_block {
+    // struct ccid_header hdr; uint8_t bBWI; uint16_t wLevelParameter; uint8_t abData[0]; }
+    // __attribute__ ((packed)); /* Response: RDR_to_PC_DataBlock */
     pub fn is_pps_request(apdu: &[u8]) -> bool {
         if !(3..=5).contains(&apdu.len()) {
             return false;
@@ -145,6 +155,8 @@ pub mod pps {
 pub mod params {
     use super::*;
 
+    // CCID_SPEC: /* Section 6.1.7 */ enum ccid_protocol_num {
+    // CCID_PROTOCOL_NUM_T0 = 0x00, CCID_PROTOCOL_NUM_T1 = 0x01,
     pub fn default_params(protocol: u8) -> &'static [u8] {
         match protocol {
             0 => &DEFAULT_T0_PARAMS[..],
@@ -153,6 +165,8 @@ pub mod params {
         }
     }
 
+    // CCID_SPEC: struct ccid_pc_to_rdr_set_parameters { struct ccid_header hdr;
+    // uint8_t bProtocolNum; uint8_t abRFU[2];
     pub fn validate_params_length(protocol: u8, length: u32) -> bool {
         match protocol {
             0 => length == 5,

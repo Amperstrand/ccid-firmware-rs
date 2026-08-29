@@ -1,0 +1,44 @@
+# greatspectations spec-quote drift config for ccid-firmware-rs
+#
+# Tool: https://github.com/rustyrussell/greatspectations
+#
+# The USB CCID Rev 1.1 specification itself is a PDF with no canonical
+# text source. The closest tracked text sources are used instead:
+#
+#   CCID_SPEC   — osmo-ccid-firmware protocol definitions (CCID Rev 1.1
+#                 message types, structures, status/error constants)
+#   CCID_SERIAL — libccid's GemPC Twin serial driver (framing, echo,
+#                 escape commands, descriptor values)
+#   GEMPC       — the authoritative GemPC Twin serial reader descriptor
+#
+# All three live in git submodules under reference/ (CI checks out with
+# submodules: true; locally run `git submodule update --init` first).
+#
+# Comment marker syntax in Rust source:
+#   // CCID_SPEC:   <verbatim quote from ccid_proto.h>
+#   // CCID_SERIAL: <verbatim quote from ccid_serial.c>
+#   // GEMPC:       <verbatim quote from GemPCTwinSerial.txt>
+#
+# Run (from repo root):
+#   python3 -m greatspectations check --config specquotes.toml \
+#       --comment-start '// ' --comment-continue '//' -k \
+#       $(git ls-files 'crates/*/src/*.rs' 'firmware/*/src/*.rs')
+#
+# Quotes are whitespace-normalized: consecutive `//` continuation lines
+# join into one quote, `...` acts as a wildcard. Keep quote blocks
+# separated from other comments by a blank line.
+
+[sources.CCID_SPEC]
+format = "markdown"
+file = "reference/osmo-ccid-firmware/ccid_common/ccid_proto.h"
+comment_marker = "CCID_SPEC"
+
+[sources.CCID_SERIAL]
+format = "markdown"
+file = "reference/CCID/src/ccid_serial.c"
+comment_marker = "CCID_SERIAL"
+
+[sources.GEMPC]
+format = "markdown"
+file = "reference/CCID/readers/GemPCTwinSerial.txt"
+comment_marker = "GEMPC"

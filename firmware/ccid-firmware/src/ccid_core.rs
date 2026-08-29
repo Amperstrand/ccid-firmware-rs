@@ -280,6 +280,8 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         }
     }
 
+    // CCID_SPEC: /* Section 6.1.1 */ enum ccid_power_select { CCID_PWRSEL_AUTO = 0x00,
+    // CCID_PWRSEL_5V0 = 0x01, CCID_PWRSEL_3V0 = 0x02, CCID_PWRSEL_1V8 = 0x03, };
     fn handle_power_on(&mut self, seq: u8) {
         let data_len = u32::from_le_bytes([
             self.rx_buffer[1],

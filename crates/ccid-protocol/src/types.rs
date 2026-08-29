@@ -1,5 +1,9 @@
 //! CCID protocol constants, message types, and data structures per CCID Rev 1.1.
 
+// CCID_SPEC: /* Section 6.1 / Table 6.1-1: Bulk OUT */ PC_to_RDR_IccPowerOn = 0x62,
+// PC_to_RDR_IccPowerOff = 0x63, PC_to_RDR_GetSlotStatus = 0x65,
+// PC_to_RDR_XfrBlock = 0x6f,
+
 // PC_to_RDR message types
 pub const PC_TO_RDR_ICC_POWER_ON: u8 = 0x62;
 pub const PC_TO_RDR_ICC_POWER_OFF: u8 = 0x63;
@@ -16,6 +20,12 @@ pub const PC_TO_RDR_MECHANICAL: u8 = 0x71;
 pub const PC_TO_RDR_ABORT: u8 = 0x72;
 pub const PC_TO_RDR_SET_DATA_RATE_AND_CLOCK_FREQ: u8 = 0x73;
 
+// CCID_SPEC: /* Section 6.2 / Table 6.2-1: Bulk IN */ RDR_to_PC_DataBlock = 0x80,
+// RDR_to_PC_SlotStatus = 0x81, RDR_to_PC_Parameters = 0x82,
+// RDR_to_PC_Escape = 0x83, RDR_to_PC_DataRateAndClockFrequency = 0x84,
+// CCID_SPEC: /* Section 6.3 / Table 6.3-1: Interrupt IN */ RDR_to_PC_NotifySlotChange = 0x50,
+// RDR_to_PC_HardwareError = 0x51,
+
 // RDR_to_PC message types
 pub const RDR_TO_PC_DATABLOCK: u8 = 0x80;
 pub const RDR_TO_PC_SLOTSTATUS: u8 = 0x81;
@@ -23,6 +33,10 @@ pub const RDR_TO_PC_PARAMETERS: u8 = 0x82;
 pub const RDR_TO_PC_ESCAPE: u8 = 0x83;
 pub const RDR_TO_PC_DATA_RATE_AND_CLOCK_FREQ: u8 = 0x84;
 pub const RDR_TO_PC_NOTIFY_SLOT_CHANGE: u8 = 0x50;
+
+// CCID_SPEC: /* CCID Class-Specific Control Request (Section 5.3 / Table 5.3-1) */
+// enum ccid_class_spec_req { CLASS_SPEC_CCID_ABORT = 0x01,
+// CLASS_SPEC_CCID_GET_CLOCK_FREQ = 0x02, CLASS_SPEC_CCID_GET_DATA_RATES = 0x03 };
 
 // USB class-specific requests
 pub const REQUEST_ABORT: u8 = 0x01;
@@ -35,18 +49,32 @@ pub const SUBCLASS_NONE: u8 = 0x00;
 pub const PROTOCOL_BULK: u8 = 0x00;
 pub const DESCRIPTOR_TYPE_CCID: u8 = 0x21;
 pub const PACKET_SIZE: usize = 64;
+
+// CCID_SPEC: /* CCID message header on BULK-OUT endpoint */ struct ccid_header {
+// uint8_t bMessageType; uint32_t dwLength; uint8_t bSlot; uint8_t bSeq; }
 pub const CCID_HEADER_SIZE: usize = 10;
 pub const MAX_CCID_MESSAGE_LENGTH: usize = 271;
+
+// CCID_SPEC: #define CCID_ICC_STATUS_PRES_ACT 0x00 ... #define CCID_ICC_STATUS_NO_ICC 0x02
 
 // ICC status codes (bmICCStatus, 2 bits)
 pub const ICC_STATUS_PRESENT_ACTIVE: u8 = 0x00;
 pub const ICC_STATUS_PRESENT_INACTIVE: u8 = 0x01;
 pub const ICC_STATUS_NO_ICC: u8 = 0x02;
 
+// CCID_SPEC: #define CCID_CMD_STATUS_OK 0x00 ... #define CCID_CMD_STATUS_FAILED 0x40 ... #define CCID_CMD_STATUS_TIME_EXT 0x80
+
 // Command status codes (bmCommandStatus, 2 bits)
 pub const COMMAND_STATUS_NO_ERROR: u8 = 0x00;
 pub const COMMAND_STATUS_FAILED: u8 = 0x01;
 pub const COMMAND_STATUS_TIME_EXTENSION: u8 = 0x02;
+
+// CCID_SPEC: /* Table 6.2-2: Slot Error value when bmCommandStatus == 1 */
+// enum ccid_error_code { CCID_ERR_CMD_ABORTED = 0xff, CCID_ERR_ICC_MUTE = 0xfe,
+// CCID_ERR_XFR_PARITY_ERROR = 0xfd, CCID_ERR_XFR_OVERRUN = 0xfc,
+// CCID_ERR_HW_ERROR = 0xfb, ... CCID_ERR_PIN_TIMEOUT = 0xf0,
+// CCID_ERR_PIN_CANCELLED = 0xef, CCID_ERR_CMD_SLOT_BUSY = 0xe0,
+// CCID_ERR_CMD_NOT_SUPPORTED = 0x00
 
 // CCID error codes (bError field)
 pub const CCID_ERR_CMD_NOT_SUPPORTED: u8 = 0x00;
@@ -66,12 +94,22 @@ pub const CCID_ERR_XFR_PARITY_ERROR: u8 = 0xFD;
 pub const CCID_ERR_ICC_MUTE: u8 = 0xFE;
 pub const CCID_ERR_CMD_ABORTED: u8 = 0xFF;
 
+// CCID_SPEC: /* Section 6.3.1 */ struct ccid_rdr_to_pc_notify_slot_change {
+// uint8_t bMessageType; uint8_t bmSlotCCState[0];
+
 // NotifySlotChange slot change byte
 pub const CARD_ABSENT: u8 = 0x02;
 pub const CARD_PRESENT: u8 = 0x03;
 
+// CCID_SPEC: struct ccid_proto_data_t0 { uint8_t bmFindexDindex; uint8_t bmTCCKST0;
+// uint8_t bGuardTimeT0; uint8_t bWaitingIntegerT0; uint8_t bClockStop; }
+
 // Default T=0 protocol parameters (5 bytes) per CCID Rev 1.1 Table 6.2-3
 pub const DEFAULT_T0_PARAMS: [u8; 5] = [0x11, 0x00, 0x00, 0x00, 0x00];
+
+// CCID_SPEC: struct ccid_proto_data_t1 { uint8_t bmFindexDindex; uint8_t bmTCCKST1;
+// uint8_t bGuardTimeT1; uint8_t bWaitingIntegersT1; uint8_t bClockStop;
+// uint8_t bIFSC; uint8_t bNadValue; }
 
 // Default T=1 protocol parameters (7 bytes) per CCID Rev 1.1 Table 6.2-3
 pub const DEFAULT_T1_PARAMS: [u8; 7] = [0x11, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00];

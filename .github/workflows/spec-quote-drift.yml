@@ -1,0 +1,55 @@
+---
+# Workflow: greatspectations spec-quote drift detection for ccid-firmware-rs.
+#
+# Verifies that `// CCID_SPEC:` / `// CCID_SERIAL:` / `// GEMPC:` quotes in
+# crates/ and firmware/ match the CCID Rev 1.1 protocol definitions and the
+# GemPC Twin serial protocol verbatim, so comments claiming spec behavior
+# cannot silently drift from the reference implementations.
+#
+# Tool: https://github.com/rustyrussell/greatspectations
+#
+# Spec sources (git submodules — checkout MUST enable submodules):
+#   CCID_SPEC   — reference/osmo-ccid-firmware/ccid_common/ccid_proto.h
+#   CCID_SERIAL — reference/CCID/src/ccid_serial.c
+#   GEMPC       — reference/CCID/readers/GemPCTwinSerial.txt
+#
+# The USB CCID Rev 1.1 spec itself is a PDF with no canonical text source;
+# the tracked submodules are the closest text sources (see docs/CCID_SPEC_AUDIT.md).
+#
+# Local usage:
+#   git submodule update --init reference/CCID reference/osmo-ccid-firmware
+#   python3 -m greatspectations check --config specquotes.toml \
+#     --comment-start '// ' --comment-continue '//' -k \
+#     $(git ls-files 'crates/*/src/*.rs' 'firmware/*/src/*.rs')
+
+name: spec-quote-drift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # weekly: catch upstream reference changes
+
+jobs:
+  spec-quote-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install greatspectations
+        run: pip install git+https://github.com/rustyrussell/greatspectations.git
+      - name: Spec-quote check
+        run: |
+          python -m greatspectations check --config specquotes.toml \
+            --comment-start '// ' --comment-continue '//' -k -v \
+            --coverage .coverage \
+            $(git ls-files 'crates/*/src/*.rs' 'firmware/*/src/*.rs')
+      - name: Spec-quote coverage report
+        run: |
+          python -m greatspectations coverage --config specquotes.toml \
+            --coverage .coverage

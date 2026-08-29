@@ -9,15 +9,24 @@ use ccid_protocol::types::{
 };
 use heapless::Vec;
 
+// CCID_SERIAL: normal command: * 1 : SYNC * 1 : CTRL * 10 +data length : CCID command * 1 : LRC
+// CCID_SERIAL: SYNC : 0x03 * CTRL : ACK (0x06) or NAK (0x15) * CCID command : see USB CCID
+// specs * LRC : xor of all the previous byes
 pub const SYNC: u8 = 0x03;
 pub const CTRL_ACK: u8 = 0x06;
 pub const CTRL_NAK: u8 = 0x15;
 
+// CCID_SERIAL: 271 = max size for short APDU * 2 bytes for header * 1 byte checksum * doubled for echo
+// CCID_SERIAL: serialDevice[reader_index].ccid.dwMaxCCIDMessageLength = 271;
+// serialDevice[reader_index].ccid.dwMaxIFSD = 254;
+// serialDevice[reader_index].ccid.dwFeatures = 0x00010230;
 const MAX_CCID_HEADER_LEN: usize = CCID_HEADER_SIZE;
 const MAX_CCID_BYTES: usize = MAX_CCID_MESSAGE_LENGTH;
 const MAX_CCID_PAYLOAD: usize = MAX_CCID_BYTES - MAX_CCID_HEADER_LEN;
 const MAX_FRAME_BYTES: usize = 2 + MAX_CCID_BYTES + 1;
 
+// CCID_SERIAL: You may get read timeout after a card movement. * This is because
+// you will get the echo of the CCID command * but not the result of the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum FrameEvent {
@@ -35,6 +44,8 @@ pub enum FrameError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParserState {
+    // CCID_SERIAL: Time request * T=1 : normal CCID command * T=0 : 1 byte
+    // (value between 0x80 and 0xFF)
     WaitSync,
     WaitCtrl,
     ReadHeader(usize),
@@ -51,6 +62,7 @@ pub struct FrameParser {
     payload_len: usize,
 }
 
+// CCID_SERIAL: LRC : xor of all the previous byes
 pub fn calculate_lrc(frame: &[u8]) -> u8 {
     frame.iter().fold(0u8, |acc, byte| acc ^ byte)
 }
@@ -73,6 +85,7 @@ pub fn build_response_frame(ccid_response: &[u8], buf: &mut [u8]) -> usize {
     total_len
 }
 
+// CCID_SERIAL: Error message: * 1 : SYNC (0x03) * 1 : CTRL (NAK: 0x15) * 1 : LRC (0x16)
 pub fn build_nak_frame(buf: &mut [u8]) -> usize {
     assert!(buf.len() >= 3, "buffer too small for nak frame");
     buf[0] = SYNC;
@@ -81,6 +94,8 @@ pub fn build_nak_frame(buf: &mut [u8]) -> usize {
     3
 }
 
+// CCID_SERIAL: Card insertion/withdrawal * 1 : RDR_to_PC_NotifySlotChange (0x50)
+// * 1 : bmSlotIccState * 0x02 if card absent * 0x03 is card present
 pub fn build_slot_change_notification(card_present: bool, buf: &mut [u8]) -> usize {
     assert!(
         buf.len() >= 2,
