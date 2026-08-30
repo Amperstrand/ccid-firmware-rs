@@ -447,11 +447,11 @@ fn test_set_parameters_rejects_invalid_t1_values_with_bad_parameter() {
 // uint8_t bClockStop; } __attribute__ ((packed));
 
 #[test]
-fn test_t0_get_parameters_packs_t1_bwi_cwi_into_waiting_integer() {
-    // TODO(#57): genuine conformance gap — for T=0 the GetParameters path
-    // packs the T=1-style (BWI<<4)|CWI value into bWaitingIntegerT0, a
-    // plain waiting integer per the quoted struct, while ResetParameters
-    // returns the default 0x00 there — the two paths disagree.
+fn test_t0_get_parameters_reports_plain_waiting_integer() {
+    // Spec-conformant behavior (issue #57 fixed): for T=0,
+    // bWaitingIntegerT0 is a plain waiting integer per the quoted struct —
+    // not a T=1-style (BWI<<4)|CWI pair — so GetParameters and
+    // ResetParameters agree on the 0x00 default.
     // Given: a fresh reader with default parameters (BWI=4, CWI=13)
     let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
 
@@ -460,13 +460,15 @@ fn test_t0_get_parameters_packs_t1_bwi_cwi_into_waiting_integer() {
         &mut h,
         &ccid_request(PC_TO_RDR_GET_PARAMETERS, 0, 1, [0; 3], &[]),
     );
-    // Then: 5-byte T=0 structure whose bWaitingIntegerT0 = (4<<4)|13 = 0x4D.
+    // Then: 5-byte T=0 structure whose bWaitingIntegerT0 is the plain
+    // waiting integer default 0x00 — no T=1 BWI/CWI packing leaks in.
     assert_eq!(gp[9], 0, "bProtocolNum");
     let params = param_data(&gp);
     assert_eq!(params.len(), 5);
-    assert_eq!(params[3], 0x4D, "T=1 BWI/CWI packing leaked into T=0 WI");
+    assert_eq!(params[3], 0x00, "bWaitingIntegerT0");
 
-    // While ResetParameters answers with the spec default 0x00.
+    // And: ResetParameters answers with the same 0x00 — the two paths
+    // agree.
     let rp = exchange(
         &mut h,
         &ccid_request(PC_TO_RDR_RESET_PARAMETERS, 0, 2, [0; 3], &[]),
@@ -474,7 +476,7 @@ fn test_t0_get_parameters_packs_t1_bwi_cwi_into_waiting_integer() {
     assert_eq!(
         param_data(&rp)[3],
         0x00,
-        "ResetParameters uses the 0x00 default"
+        "ResetParameters uses the same plain waiting integer"
     );
 }
 

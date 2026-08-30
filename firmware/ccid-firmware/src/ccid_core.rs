@@ -1143,7 +1143,9 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                     if p.has_ta1 { p.ta1 } else { 0x11 },
                     0x00,
                     p.guard_time_n,
-                    (p.bwi << 4) | (p.cwi & 0x0F),
+                    // T=0 waiting integer (plain WI, 0x00 default) — not the
+                    // T=1 (BWI<<4)|CWI packing.
+                    0x00,
                     0x00,
                     0x00,
                     0x00,
