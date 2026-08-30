@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — amp-embedded-common consumption (T13)
+
+- **`dwt_watchdog` module removed — consumed from `amp-dwt-watchdog`** (amp-embedded-common, rev-pinned `67ceee1`). The 329-line local module is deleted; `ccid-firmware-rs` re-exports the shared crate as `ccid_firmware_rs::dwt_watchdog` so import sites (`smartcard.rs`, `main.rs`) are unchanged. The 14 host tests moved to the canonical crate (verified green at the pinned rev).
+- **`Diagnostics` consumed from `amp-diagnostics`** (same repo/rev). `crates/ccid-core/src/diagnostics.rs` is now a re-export (`pub use amp_diagnostics::Diagnostics;`) — the `ccid_core::Diagnostics` path used by firmware and esp32 code is unchanged. The 11 tests plus a new byte-exact golden serialization test live in the canonical crate.
+- **`InitRecoveryTracker` consumed from `amp-recovery`** — the local struct in `firmware/esp32-ccid/src/mfrc522_driver.rs` is deleted and imported from the shared crate (no feature flags required). The 4 driver tests remain in place, unchanged.
+- **USB PHY reset stays inline** — `amp-recovery`'s `reset_usb_otg_phy()` could not be consumed: its `stm32f4`/`stm32f7` features do not compile at rev `67ceee1` (references `stm32f4xx-hal`/`stm32f7xx-hal`/`cortex-m` without declaring them as dependencies — E0433). Both inline blocks in `firmware/ccid-firmware/src/main.rs` remain authoritative, marked `TODO(amp-recovery)` until upstream fixes the feature wiring.
+- Workspace host-test counts shift accordingly: ccid-core 32 → 21, ccid-firmware 74 → 60 (tests moved to the canonical crates); esp32-ccid unchanged at 72.
+
 ### Changed — Shared MFRC522 fork (issue #19)
 
 - **Removed `vendor/mfrc522/` (~1,500 lines)** — the divergent local MFRC522 driver copy is gone. `esp32-ccid` now consumes the canonical `Amperstrand/mfrc522-rs` fork (`ai-experiments` rev `e9ced1e`, git dependency) — the single source shared with bolty-rs, eliminating the two-repo vendor drift.

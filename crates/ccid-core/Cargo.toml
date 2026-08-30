@@ -12,3 +12,4 @@ std = []
 [dependencies]
 ccid-protocol = { path = "../ccid-protocol" }
 card-interface = { path = "../card-interface" }
+amp-diagnostics = { git = "https://github.com/Amperstrand/amp-embedded-common.git", rev = "67ceee1dd1c4164ec494aaefa064afd10611363e" }

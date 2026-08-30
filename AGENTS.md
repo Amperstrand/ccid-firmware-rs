@@ -236,6 +236,15 @@ This affects both STM32F469 and STM32F746 builds.
 
 ### Fix (proven pattern, sourced from the microfips project)
 
+> **amp-recovery note (T13):** the shared `amp-recovery` crate exposes
+> `reset_usb_otg_phy()` behind `stm32f4`/`stm32f7` features, but at rev
+> `67ceee1` those features do not compile (the crate references
+> `stm32f4xx-hal`/`stm32f7xx-hal`/`cortex-m` without declaring them as
+> dependencies — E0433). The inline sequences in `main.rs` therefore stay
+> authoritative, marked `TODO(amp-recovery)`. Revisit once upstream fixes the
+> feature wiring. `InitRecoveryTracker` from the same crate IS consumed by
+> `esp32-ccid` (no feature flags needed).
+
 The fix is implemented inline in `firmware/ccid-firmware/src/main.rs`, in the
 block titled **"USB OTG FS PHY reset (fix for issue #22)"** (search for that
 comment). The sequence runs early in `#[entry] fn main()`, before
@@ -540,8 +549,8 @@ same HAL fork) and the wider Amperstrand STM32 ecosystem.
 
 | Module | Location | Purpose |
 |--------|----------|---------|
-| DWT Watchdog | `firmware/ccid-firmware/src/dwt_watchdog.rs` | Cycle-counter-based wall-clock timeouts (ARM DWT CYCCNT). Replaces iteration-based polling. 14 host tests. |
-| Diagnostics | `crates/ccid-core/src/diagnostics.rs` | Runtime counter struct (apdu_tx/rx, nak, error, reinit, card_present, uptime). 28-byte LE serialization. 11 tests. |
+| DWT Watchdog | `amp-dwt-watchdog` git dep (amp-embedded-common, rev `67ceee1`), re-exported as `ccid_firmware_rs::dwt_watchdog` | Cycle-counter-based wall-clock timeouts (ARM DWT CYCCNT). Replaces iteration-based polling. 14 host tests (in the canonical crate). Local module removed. |
+| Diagnostics | `amp-diagnostics` git dep (amp-embedded-common, rev `67ceee1`), re-exported from `ccid-core/src/diagnostics.rs` | Runtime counter struct (apdu_tx/rx, nak, error, reinit, card_present, uptime). 28-byte LE serialization. Tests incl. byte-exact golden live in the canonical crate. |
 | SmartcardConfig | `firmware/ccid-firmware/src/smartcard_common.rs` | Replaces 10 hardcoded `const SC_*` with a configurable struct. Values unchanged. |
 | Self-Healing | `firmware/ccid-firmware/src/main.rs` (SmartcardWrapper), `firmware/esp32-ccid/src/mfrc522_driver.rs` | Re-init peripheral after 3 consecutive failures. `reinit_count` tracked. |
 | Escape 0xD0 | `firmware/ccid-firmware/src/ccid_core.rs`, `firmware/esp32-ccid/src/ccid_handler.rs` | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |

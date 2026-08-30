@@ -613,6 +613,13 @@ fn main() -> ! {
     // can retain stale PHY state that prevents re-enumeration. This sequence
     // (clock disable, peripheral reset, core soft reset, PHY power-cycle) ensures
     // a clean start regardless of how we got here. Pattern from microfips project.
+    //
+    // TODO(amp-recovery): replace this inline sequence with
+    // `amp_recovery::reset_usb_otg_phy()` once the crate's stm32f4 feature
+    // compiles — at rev 67ceee1 it references stm32f4xx-hal/cortex-m without
+    // declaring them as dependencies (E0433), so the function is not
+    // consumable yet. Until upstream fixes the feature wiring, this proven
+    // inline sequence stays authoritative.
 
     #[cfg(feature = "stm32f469")]
     {
@@ -671,6 +678,9 @@ fn main() -> ! {
     // can be left in an inconsistent state where the PHY doesn't re-enumerate.
     // Cycling the RCC clock + core soft reset + PHY power cycle ensures a clean
     // start regardless of how we got here. See GitHub issue #15.
+    // TODO(amp-recovery): same as the F469 block above — consume
+    // `amp_recovery::reset_usb_otg_phy()` once the crate's stm32f7 feature
+    // compiles (missing HAL deps at rev 67ceee1).
     #[cfg(feature = "stm32f746")]
     {
         let rcc = unsafe { &*stm32f7xx_hal::pac::RCC::ptr() };
