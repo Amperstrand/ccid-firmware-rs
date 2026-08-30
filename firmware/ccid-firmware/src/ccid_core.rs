@@ -7,7 +7,7 @@ use crate::driver::SmartcardDriver;
 use crate::pinpad::{
     ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder,
 };
-use crate::protocol_unit::{parse_atr, AtrParams};
+use crate::protocol_unit::{di_from_ta1_low, fi_from_ta1_high, parse_atr, AtrParams};
 use ::ccid_core::response::{write_data_block, write_message, write_parameters, write_slot_status};
 use ccid_protocol::status::build_bstatus;
 pub use ccid_protocol::types::*;
@@ -30,6 +30,11 @@ pub struct CcidMessageHandler<D: SmartcardDriver> {
     card_present_last: bool,
     current_protocol: u8,
     atr_params: AtrParams,
+    /// Host-supplied parameter set from PC_to_RDR_SetParameters:
+    /// (bProtocolNum, raw abProtocolDataStructure). Takes precedence over
+    /// the ATR-derived values in GetParameters/SetParameters responses
+    /// until the next power-on or ResetParameters.
+    host_params: Option<(u8, [u8; 7])>,
     secure_state: SecureState,
     response_buffer: [u8; 261],
     vendor_id: u16,
@@ -52,6 +57,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             card_present_last: false,
             current_protocol: 0,
             atr_params: AtrParams::default(),
+            host_params: None,
             secure_state: SecureState::Idle,
             response_buffer: [0u8; 261],
             vendor_id,
@@ -330,6 +336,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 self.slot_state = SlotState::PresentActive;
                 self.atr_params = parse_atr(atr);
                 self.current_protocol = self.atr_params.protocol;
+                self.host_params = None;
                 let atr_len = atr.len().min(MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE);
                 self.tx_len = write_data_block(
                     0,
@@ -359,6 +366,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     fn handle_reset_parameters(&mut self, seq: u8) {
         self.atr_params = AtrParams::default();
         self.current_protocol = 0;
+        self.host_params = None;
         let params = [
             0x11, // bmFindexDindex (Fi=372, Di=1)
             0x00, // bmTCCKST0
@@ -584,7 +592,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             self.rx_buffer[4],
         ]) as usize;
 
-        let requested_protocol = match data_len {
+        let length_implied_protocol = match data_len {
             5 => 0,
             7 => 1,
             _ => {
@@ -594,8 +602,51 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             }
         };
 
+        let mut raw = [0u8; 7];
+        raw[..data_len]
+            .copy_from_slice(&self.rx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + data_len]);
+
+        // bProtocolNum (header byte 7) must agree with the structure length;
+        // bmTCCKST1: only the EDC bit is meaningful; bIFSC: 0x10..=0xFE;
+        // bNadValue: shall be 0 (NAD not supported); bmTCCKST0: only the
+        // convention bit. bError 0x08 (bad parameter) has no constant in
+        // ccid_proto.h (quote gap, asserted as a literal).
+        let requested_protocol = self.rx_buffer[7];
+        let valid = requested_protocol == length_implied_protocol
+            && if requested_protocol == 1 {
+                (raw[1] & !0x01) == 0 && (16..=254).contains(&raw[5]) && raw[6] == 0
+            } else {
+                (raw[1] & !0x80) == 0
+            };
+        if !valid {
+            ccid_error!(
+                "CCID: SetParameters bad parameter (proto={})",
+                requested_protocol
+            );
+            self.send_err_resp(PC_TO_RDR_SET_PARAMETERS, seq, 0x08);
+            return;
+        }
+
         self.driver.set_protocol(requested_protocol);
         self.current_protocol = requested_protocol;
+        self.host_params = Some((requested_protocol, raw));
+
+        // Keep AtrParams coherent with the accepted set so any consumer of
+        // the negotiated values (Fi/Di, BWI/CWI, IFSC, EDC, guard time)
+        // sees the host-requested configuration, overriding ATR defaults.
+        let p = &mut self.atr_params;
+        p.has_ta1 = true;
+        p.ta1 = raw[0];
+        p.fi = fi_from_ta1_high(raw[0] >> 4);
+        p.di = di_from_ta1_low(raw[0] & 0x0F);
+        p.guard_time_n = raw[2];
+        if requested_protocol == 1 {
+            p.bwi = raw[3] >> 4;
+            p.cwi = raw[3] & 0x0F;
+            p.edc_type = raw[1] & 1;
+            p.ifsc = raw[5];
+        }
+
         let (params, params_len) = self.build_params_array();
         self.tx_len = write_parameters(
             0,
@@ -1067,6 +1118,11 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn build_params_array(&self) -> ([u8; 7], usize) {
+        if let Some((proto, raw)) = self.host_params {
+            if proto == self.current_protocol {
+                return (raw, if proto == 1 { 7 } else { 5 });
+            }
+        }
         let p = &self.atr_params;
         if self.current_protocol == 1 {
             (

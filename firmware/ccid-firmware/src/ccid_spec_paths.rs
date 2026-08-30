@@ -329,10 +329,11 @@ fn test_t1_bwi_cwi_from_atr_surfaced_in_get_parameters() {
 // struct ccid_proto_data_t1 t1; } abProtocolData; } __attribute__ ((packed));
 
 #[test]
-fn test_set_parameters_silently_ignores_host_values() {
-    // TODO(#56): genuine conformance gap — the command is accepted
-    // (cmd=OK) but the host-supplied parameter bytes are never applied;
-    // the response echoes ATR-derived values instead.
+fn test_set_parameters_applies_and_echoes_host_t1_values() {
+    // Spec-conformant behavior (issue #56 fixed): SetParameters applies the
+    // host-supplied parameter bytes and the RDR_to_PC_Parameters response
+    // echoes them back verbatim — the mechanism by which pcscd applies
+    // negotiated Fi/Di and BWI/CWI after PPS.
     // Given: an active T=1 card with ATR BWI/CWI = 3/7
     let mut h = CcidMessageHandler::new(
         MockSmartcardDriver::new()
@@ -346,18 +347,13 @@ fn test_set_parameters_silently_ignores_host_values() {
     );
 
     // When: the host sets T=1 parameters requesting BWI/CWI=0x55, IFSC=0xFE
+    let host_params: [u8; 7] = [0x11, 0x00, 0x00, 0x55, 0x00, 0xFE, 0x00];
     let resp = exchange(
         &mut h,
-        &ccid_request(
-            PC_TO_RDR_SET_PARAMETERS,
-            0,
-            3,
-            [1, 0, 0], // bProtocolNum=1 (T=1), abRFU
-            &[0x11, 0x00, 0x00, 0x55, 0x00, 0xFE, 0x00],
-        ),
+        &ccid_request(PC_TO_RDR_SET_PARAMETERS, 0, 3, [1, 0, 0], &host_params),
     );
 
-    // Then: success is reported and the driver is told the protocol...
+    // Then: success is reported, the driver is told the protocol...
     assert_eq!(resp[0], RDR_TO_PC_PARAMETERS);
     assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
     assert!(h
@@ -366,12 +362,84 @@ fn test_set_parameters_silently_ignores_host_values() {
         .iter()
         .any(|c| matches!(c, MockCall::SetProtocol { protocol: 1 })));
 
-    // ...but the response still carries the ATR-derived BWI/CWI (0x37) and
-    // the default IFSC (32), not the values the host just set.
+    // ...and the response echoes the exact structure the host sent, not the
+    // ATR-derived defaults (BWI/CWI 0x37, IFSC 32).
     let params = param_data(&resp);
     assert_eq!(params.len(), 7);
-    assert_eq!(params[3], 0x37, "host-requested 0x55 was discarded");
-    assert_eq!(params[5], 32, "host-requested 0xFE was discarded");
+    assert_eq!(params, &host_params);
+    assert_eq!(params[3], 0x55, "host-requested BWI/CWI applied");
+    assert_eq!(params[5], 0xFE, "host-requested IFSC applied");
+
+    // And: GetParameters afterwards keeps returning the stored host set.
+    let gp = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_GET_PARAMETERS, 0, 4, [0; 3], &[]),
+    );
+    assert_eq!(param_data(&gp), &host_params);
+}
+
+#[test]
+fn test_set_parameters_rejects_invalid_t1_values_with_bad_parameter() {
+    // CCID 1.1 requires invalid SetParameters values to be answered with
+    // the bad-parameter error. bError 0x08 ("bad parameter") is asserted
+    // without a spec-quote marker: ccid_proto.h has no entry for it
+    // (quote gap, no fabricated quote).
+    // Given: an active T=1 card
+    let mut h = CcidMessageHandler::new(
+        MockSmartcardDriver::new()
+            .card_present(true)
+            .with_atr(&T1_ATR_BWI3_CWI7),
+        CHERRY_VID,
+    );
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+
+    // When: bIFSC = 0x05 (below the 0x10..=0xFE range)
+    let resp = exchange(
+        &mut h,
+        &ccid_request(
+            PC_TO_RDR_SET_PARAMETERS,
+            0,
+            3,
+            [1, 0, 0],
+            &[0x11, 0x00, 0x00, 0x55, 0x00, 0x05, 0x00],
+        ),
+    );
+    // Then: failed with the bad-parameter error, no parameter change.
+    assert_eq!(resp[0], RDR_TO_PC_PARAMETERS);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_FAILED);
+    assert_eq!(berror(&resp), 0x08);
+
+    // When: bmTCCKST1 = 0x10 (RFU bits set; only the EDC bit is meaningful)
+    let resp = exchange(
+        &mut h,
+        &ccid_request(
+            PC_TO_RDR_SET_PARAMETERS,
+            0,
+            4,
+            [1, 0, 0],
+            &[0x11, 0x10, 0x00, 0x55, 0x00, 0xFE, 0x00],
+        ),
+    );
+    // Then: rejected the same way.
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_FAILED);
+    assert_eq!(berror(&resp), 0x08);
+
+    // When: bNadValue != 0 (NAD is not supported; the field shall be 0)
+    let resp = exchange(
+        &mut h,
+        &ccid_request(
+            PC_TO_RDR_SET_PARAMETERS,
+            0,
+            5,
+            [1, 0, 0],
+            &[0x11, 0x00, 0x00, 0x55, 0x00, 0xFE, 0x01],
+        ),
+    );
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_FAILED);
+    assert_eq!(berror(&resp), 0x08);
 }
 
 // CCID_SPEC: struct ccid_proto_data_t0 { uint8_t bmFindexDindex;
