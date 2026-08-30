@@ -622,3 +622,21 @@ the host running pcscd. This enables `FEATURE_CCID_ESC_COMMAND`.
 - Hardware validation procedures — `tests/hardware/README.md`
 - stm32f4xx-hal (Amperstrand fork): https://github.com/Amperstrand/stm32f4xx-hal
 - probe-rs: https://probe.rs
+
+## Serial Performance Notes (issue #51/#51-closure, 2026-08-30)
+
+Measured decomposition of the ~16ms APDU round-trip (vs ACR1252 ~2ms), via
+byte-level serial probing on the rig (method in .omo evidence, session
+amperstrand-nfc-mcu-dedup):
+
+- Wire time @115200 8N2 (command + echo + response) ≈ 5-6ms.
+- Firmware gap (CCID handling + MFRC522 I2C @100kHz + card I/O) ≈ 10ms —
+  the dominant term and the real optimization lever.
+- **Untried zero-firmware host tweak**: FTDI `latency_timer` is 4 — setting
+  it to 1 (`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`) removes up
+  to ~4ms of USB batching latency. Try this FIRST before any firmware work.
+- Baud >115200 is host-blocked: libccidtwin hardcodes `cfsetspeed(B115200)`
+  and reader.conf has no speed knob; a local ccid fork would buy ~4.6ms at
+  the cost of permanent host-fork maintenance — rejected. #54 tracks the
+  upstream change needed (speed knob + SIMPro2-style escape negotiation;
+  firmware side is ready: `UartDriver::change_baudrate()` + escape dispatch).
