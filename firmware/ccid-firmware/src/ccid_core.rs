@@ -19,6 +19,12 @@ pub enum SecureState {
     WaitingForPinModify { seq: u8, params: PinModifyParams },
 }
 
+/// Cherry SmartTerminal ST-2xxx vendor id — the only device profile with a
+/// PIN pad (bPINSupport != 0). device_profile is ARM-only, so the handler
+/// gates PC_to_RDR_Secure on the wired vendor id, mirroring the
+/// is_gemalto Escape check.
+const PIN_PAD_VENDOR_ID: u16 = 0x046A;
+
 pub struct CcidMessageHandler<D: SmartcardDriver> {
     driver: D,
     rx_buffer: [u8; MAX_CCID_MESSAGE_LENGTH],
@@ -661,6 +667,15 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     fn handle_secure(&mut self, seq: u8) {
+        if self.vendor_id != PIN_PAD_VENDOR_ID {
+            ccid_debug!(
+                "CCID: SECURE rejected for non-PIN-pad vendor 0x{:04X}",
+                self.vendor_id
+            );
+            self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            return;
+        }
+
         if self.slot_state != SlotState::PresentActive {
             self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_SLOT_BUSY);
             return;

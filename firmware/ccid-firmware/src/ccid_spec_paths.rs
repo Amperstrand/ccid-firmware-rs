@@ -581,11 +581,12 @@ fn pin_verify_data() -> [u8; 16] {
 }
 
 #[test]
-fn test_secure_pin_verify_accepted_despite_non_pinpad_vendor() {
-    // TODO(#58): conformance gap — the Gemalto profiles advertise
-    // bPINSupport=0 (no PIN pad; only the Cherry ST-2xxx profile has one),
-    // yet the handler accepts PC_to_RDR_Secure for vendor 0x08E6 instead of
-    // answering CMD_NOT_SUPPORTED.
+fn test_secure_pin_verify_rejected_on_non_pinpad_vendor() {
+    // Spec-conformant behavior (issue #58 fixed): the Gemalto profiles
+    // advertise bPINSupport=0 (no PIN pad; only the Cherry ST-2xxx profile
+    // has one), so PC_to_RDR_Secure must be answered with
+    // CMD_NOT_SUPPORTED instead of starting a silent async PIN-entry
+    // session.
     // Given: an active card in a reader built with the Gemalto vendor id
     let mut h = CcidMessageHandler::new(
         MockSmartcardDriver::new()
@@ -604,20 +605,34 @@ fn test_secure_pin_verify_accepted_despite_non_pinpad_vendor() {
     msg.extend_from_slice(&pin_verify_data());
     let resp = exchange(&mut h, &msg);
 
-    // Then: no bulk response is queued (async PIN entry started) and the
-    // handler reports an active PIN-verify session — accepted even though
-    // this vendor's profiles have no PIN pad. Same message against the
-    // Cherry vendor id behaves identically (PIN pad profile).
+    // Then: a DataBlock response with CMD_NOT_SUPPORTED is queued
+    // synchronously and no PIN session is started.
+    // CCID_SPEC: CCID_ERR_CMD_NOT_SUPPORTED = 0x00
+    assert_eq!(resp[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(rseq(&resp), 0x55);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_FAILED);
+    assert_eq!(berror(&resp), CCID_ERR_CMD_NOT_SUPPORTED);
+    assert!(!h.is_pin_verify_active());
+
+    // And: the same message against the Cherry vendor id (the only
+    // PIN-pad profile) is still accepted — the async PIN entry starts.
+    let mut h = CcidMessageHandler::new(
+        MockSmartcardDriver::new()
+            .card_present(true)
+            .with_atr(&T0_ATR),
+        CHERRY_VID,
+    );
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+    let resp = exchange(&mut h, &msg);
     assert!(resp.is_empty(), "PIN entry is asynchronous");
     assert!(h.is_pin_verify_active());
-
-    // When the (nonexistent on this profile) entry completes, the DataBlock
-    // for the stored bSeq is emitted.
     h.complete_pin_entry(0x55, PinResult::Success, Some(&[0x90, 0x00]));
     let (len, out) = h.take_response();
     assert_eq!(len, CCID_HEADER_SIZE + 2);
     assert_eq!(out[0], RDR_TO_PC_DATABLOCK);
-    assert_eq!(rseq(out), 0x55);
     assert_eq!(cmd_status(out), COMMAND_STATUS_NO_ERROR);
     assert!(!h.is_pin_verify_active());
 }
