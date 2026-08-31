@@ -405,11 +405,13 @@ fn main() {
 
     recover_i2c_bus(scl_gpio_no, sda_gpio_no);
     // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
-    // after recovery, 100 kHz (this MFRC522 is marginal at 400 kHz — worked
-    // intermittently, then hung the first transaction), i2c0 via GPIO matrix,
-    // and a bus probe before the first MFRC522 register access.
+    // after recovery, i2c0 via GPIO matrix, and a bus probe before the first
+    // MFRC522 register access. 400 kHz (was 100 kHz): this board was marginal
+    // at 400 kHz in early bring-up (worked intermittently, then hung the
+    // first transaction) — re-attempted per #59 with a measured RTT table
+    // and a 100-transaction soak before landing.
     FreeRtos::delay_ms(50);
-    let i2c_config = i2c::config::Config::new().baudrate(Hertz(100_000).into());
+    let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
     let mut i2c = i2c::I2cDriver::new(peripherals.i2c0, i2c_sda, i2c_scl, &i2c_config)
         .expect("I2C0 init failed");
 
