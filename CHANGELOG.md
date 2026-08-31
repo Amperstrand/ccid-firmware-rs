@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Reversed — amp-embedded-common dissolved (necessity audit)
+
+- **T13 consumption reversed** — the existential necessity audit (`.omo/evidence/amp-necessity-audit.md`, 2026-08-31) found the repo served exactly one legal consumer (this one) and its crates were in-house parallel discovery, not library-sized work. All three rev-pinned git dependencies are removed and the modules restored in-repo behind the same paths — **zero call-site changes**: `dwt_watchdog` (329 lines + 14 tests) back to `firmware/ccid-firmware/src/dwt_watchdog.rs` via `pub mod dwt_watchdog;`, `Diagnostics` (28-byte frozen wire format + 12 tests) back to `crates/ccid-core/src/diagnostics.rs`, `InitRecoveryTracker` back inline in `firmware/esp32-ccid/src/mfrc522_driver.rs`.
+- **One test rescued before archival** — the byte-exact golden serialization test written in `amp-diagnostics` (pinning the frozen CCID Escape 0xD0 wire layout; never previously in this repo) is ported verbatim into the restored `diagnostics.rs` tests module.
+- **USB-PHY reset sequences stay inline, now deliberately** — the `TODO(amp-recovery)` markers are replaced by the audit verdict (kept inline; `amp-recovery`'s `usb_phy` duplicated what the HAL/vendored driver stack already does and had zero consumers).
+- **The workflow survives** — the reusable `rust-embedded.yml` CI workflow (the audit's one KEEP) was relocated to org level at `Amperstrand/.github` in Phase A; bolty-rs consumes it from there. The `Amperstrand/amp-embedded-common` repo itself is archived (read-only).
+- Workspace host-test counts: ccid-core 21 → 33, ccid-firmware 61 → 75, esp32-ccid unchanged at 72 (its 4 tracker tests never left); total 227 → 253.
+
 ### Changed — amp-embedded-common consumption (T13)
 
 - **`dwt_watchdog` module removed — consumed from `amp-dwt-watchdog`** (amp-embedded-common, rev-pinned `67ceee1`). The 329-line local module is deleted; `ccid-firmware-rs` re-exports the shared crate as `ccid_firmware_rs::dwt_watchdog` so import sites (`smartcard.rs`, `main.rs`) are unchanged. The 14 host tests moved to the canonical crate (verified green at the pinned rev).

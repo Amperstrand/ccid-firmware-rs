@@ -21,21 +21,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "amp-diagnostics"
-version = "0.1.0"
-source = "git+https://github.com/Amperstrand/amp-embedded-common.git?rev=67ceee1dd1c4164ec494aaefa064afd10611363e#67ceee1dd1c4164ec494aaefa064afd10611363e"
-
-[[package]]
-name = "amp-dwt-watchdog"
-version = "0.1.0"
-source = "git+https://github.com/Amperstrand/amp-embedded-common.git?rev=67ceee1dd1c4164ec494aaefa064afd10611363e#67ceee1dd1c4164ec494aaefa064afd10611363e"
-
-[[package]]
-name = "amp-recovery"
-version = "0.1.0"
-source = "git+https://github.com/Amperstrand/amp-embedded-common.git?rev=67ceee1dd1c4164ec494aaefa064afd10611363e#67ceee1dd1c4164ec494aaefa064afd10611363e"
-
-[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -242,7 +227,6 @@ dependencies = [
 name = "ccid-core"
 version = "0.1.0"
 dependencies = [
- "amp-diagnostics",
  "card-interface",
  "ccid-protocol",
 ]
@@ -251,7 +235,6 @@ dependencies = [
 name = "ccid-firmware-rs"
 version = "0.0.8"
 dependencies = [
- "amp-dwt-watchdog",
  "ccid-core",
  "ccid-protocol",
  "cortex-m",
@@ -892,7 +875,6 @@ dependencies = [
 name = "esp32-ccid"
 version = "0.1.0"
 dependencies = [
- "amp-recovery",
  "card-interface",
  "ccid-core",
  "ccid-protocol",

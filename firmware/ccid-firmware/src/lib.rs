@@ -26,9 +26,7 @@ mod logging;
 
 pub mod ccid_core;
 pub mod driver;
-// DWT watchdog lives in the shared amp-dwt-watchdog crate (rev-pinned),
-// re-exported under the historical `dwt_watchdog` module path.
-pub use amp_dwt_watchdog::dwt_watchdog;
+pub mod dwt_watchdog;
 pub mod pinpad;
 pub mod protocol_unit;
 

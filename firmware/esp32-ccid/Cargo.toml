@@ -25,7 +25,6 @@ board-m5stick = []
 ble = []
 
 [dependencies]
-amp-recovery = { git = "https://github.com/Amperstrand/amp-embedded-common.git", rev = "67ceee1dd1c4164ec494aaefa064afd10611363e" }
 card-interface = { path = "../../crates/card-interface" }
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }

@@ -1,6 +1,40 @@
 use crate::nfc::{NfcDriver, NfcError, PresenceState};
 
-pub use amp_recovery::{recovery::REINIT_THRESHOLD, InitRecoveryTracker};
+pub const REINIT_THRESHOLD: u8 = 3;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitRecoveryTracker {
+    consecutive_failures: u8,
+    reinit_count: u32,
+}
+
+impl InitRecoveryTracker {
+    pub const fn new() -> Self {
+        Self {
+            consecutive_failures: 0,
+            reinit_count: 0,
+        }
+    }
+
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+    }
+
+    pub fn record_failure(&mut self) -> bool {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        if self.consecutive_failures >= REINIT_THRESHOLD {
+            self.consecutive_failures = 0;
+            self.reinit_count = self.reinit_count.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn reinit_count(&self) -> u32 {
+        self.reinit_count
+    }
+}
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 const CARD_ABSENT_THRESHOLD: u8 = 3;
