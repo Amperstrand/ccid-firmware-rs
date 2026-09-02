@@ -4,6 +4,14 @@ use std::path::Path;
 use std::process::Command;
 
 fn get_git_version() -> String {
+    // GIT_VERSION=<x> override pins the version (reproducible builds); the
+    // rerun-if-env-changed + rustc-env directives below keep it from going stale (#55).
+    if let Ok(pinned) = env::var("GIT_VERSION") {
+        if !pinned.is_empty() {
+            return pinned;
+        }
+    }
+
     if let Ok(output) = Command::new("git")
         .args(["describe", "--tags", "--exact-match"])
         .output()
@@ -49,6 +57,7 @@ fn main() {
 
     let version = get_git_version();
     println!("cargo:rustc-env=GIT_VERSION={}", version);
+    println!("cargo:rerun-if-env-changed=GIT_VERSION");
     println!("cargo:rustc-link-search={}", out_dir.to_str().unwrap());
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-changed=memory-f746.x");
