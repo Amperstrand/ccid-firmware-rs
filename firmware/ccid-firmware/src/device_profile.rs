@@ -1,4 +1,8 @@
-#![cfg(all(target_arch = "arm", target_os = "none"))]
+//! USB device profiles for the reference commercial readers.
+//!
+//! Pure data — deliberately host-compilable so the inline tests (including
+//! per-profile descriptor assertions) run in the host CI job. The profiles
+//! are only *consumed* by the ARM USB transport.
 #![allow(dead_code)]
 //! Device Profile Configuration for CCID Reader Emulation
 //!
@@ -440,8 +444,7 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
 ///
 /// IMPORTANT: This is the ONLY profile with PIN pad support.
 /// Gemalto CT30 and K30 have NO PIN pad capability.
-#[cfg(feature = "profile-cherry-smartterminal-st2xxx")]
-pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
+pub const PROFILE_CHERRY_SMARTTERMINAL_ST2XXX: DeviceProfile = DeviceProfile {
     vendor_id: 0x046A,
     product_id: 0x003E,
     manufacturer: "Cherry GmbH",
@@ -480,8 +483,7 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 /// wLcdLayout = 0x0000 (NO LCD!)
 /// bClassGetResponse = 0x00
 /// bClassEnvelope = 0x00
-#[cfg(feature = "profile-gemalto-idbridge-ct30")]
-pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
+pub const PROFILE_GEMALTO_IDBRIDGE_CT30: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
     product_id: 0x3437,
     manufacturer: "Gemalto",
@@ -521,8 +523,7 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
 /// bClassEnvelope = 0x00
 ///
 /// For PIN pad support, use profile-cherry-smartterminal-st2xxx instead.
-#[cfg(feature = "profile-gemalto-idbridge-k30")]
-pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
+pub const PROFILE_GEMALTO_IDBRIDGE_K30: DeviceProfile = DeviceProfile {
     vendor_id: 0x08E6,
     product_id: 0x3438,
     manufacturer: "Gemalto",
@@ -547,6 +548,16 @@ pub const CURRENT_PROFILE: DeviceProfile = DeviceProfile {
     exchange_level: ExchangeLevel::Tpdu,
     ..BASE_PROFILE
 };
+
+/// The profile this build ships as. The named consts above are all
+/// host-testable in one build; this alias selects by feature for the
+/// transport to consume.
+#[cfg(feature = "profile-cherry-smartterminal-st2xxx")]
+pub const CURRENT_PROFILE: DeviceProfile = PROFILE_CHERRY_SMARTTERMINAL_ST2XXX;
+#[cfg(feature = "profile-gemalto-idbridge-ct30")]
+pub const CURRENT_PROFILE: DeviceProfile = PROFILE_GEMALTO_IDBRIDGE_CT30;
+#[cfg(feature = "profile-gemalto-idbridge-k30")]
+pub const CURRENT_PROFILE: DeviceProfile = PROFILE_GEMALTO_IDBRIDGE_K30;
 
 // Compile error if no profile feature is selected.
 // Use `--features profile-cherry-smartterminal-st2xxx` (default) or another profile.
@@ -579,8 +590,8 @@ mod tests {
     #[test]
     fn test_cherry_st2100_bcd_ccid() {
         let desc = CURRENT_PROFILE.ccid_descriptor();
-        // bcdCCID at offset 0-1 = 0x0110 (Rev 1.1)
-        assert_eq!(desc[0], 0x10);
+        // bcdCCID at offset 0-1 = 0x0100 (reference file: bcdCCID 1.00)
+        assert_eq!(desc[0], 0x00);
         assert_eq!(desc[1], 0x01);
     }
 
@@ -618,7 +629,8 @@ mod tests {
     fn test_cherry_st2100_max_message_length() {
         let desc = CURRENT_PROFILE.ccid_descriptor();
         let max_msg = u32::from_le_bytes([desc[42], desc[43], desc[44], desc[45]]);
-        assert_eq!(max_msg, 271);
+        // reference file: dwMaxCCIDMessageLength 270 bytes
+        assert_eq!(max_msg, 270);
     }
 
     #[test]
@@ -630,5 +642,59 @@ mod tests {
     #[test]
     fn test_pin_pad_enabled() {
         assert!(CURRENT_PROFILE.has_pin_pad());
+    }
+
+    /// All three profiles asserted in one host build (they were previously
+    /// single-select per feature and the Gemalto ones never executed
+    /// anywhere). Reference files are the authority:
+    /// reference/CCID/readers/*.txt.
+    #[test]
+    fn test_all_profiles_identity_and_capabilities() {
+        let cherry = PROFILE_CHERRY_SMARTTERMINAL_ST2XXX;
+        assert_eq!((cherry.vendor_id, cherry.product_id), (0x046A, 0x003E));
+        assert_eq!(cherry.pin_support, PIN_VERIFY_MODIFY);
+        assert!(cherry.has_pin_pad());
+        assert_eq!(cherry.lcd_layout, (0, 0));
+        assert_eq!(cherry.exchange_level, ExchangeLevel::Tpdu);
+        assert!(!cherry.is_short_apdu());
+
+        // CT30 and K30: identical capabilities, distinct PIDs.
+        for (gemalto, pid) in [
+            (PROFILE_GEMALTO_IDBRIDGE_CT30, 0x3437u16),
+            (PROFILE_GEMALTO_IDBRIDGE_K30, 0x3438u16),
+        ] {
+            assert_eq!((gemalto.vendor_id, gemalto.product_id), (0x08E6, pid));
+            // No PIN pad, no LCD — the K30 falsely claimed both once.
+            assert_eq!(gemalto.pin_support, 0x00);
+            assert!(!gemalto.has_pin_pad());
+            assert_eq!(gemalto.get_lcd_layout(), (0, 0));
+            assert_eq!(gemalto.exchange_level, ExchangeLevel::Tpdu);
+            assert!(!gemalto.is_short_apdu());
+            // dwFeatures = 0x00010230 (AUTO_CLOCK | AUTO_BAUD | NAD_OTHER | TPDU)
+            assert_eq!(
+                gemalto.features,
+                FEAT_AUTO_CLOCK | FEAT_AUTO_BAUD | FEAT_NAD_OTHER | FEAT_LEVEL_TPDU
+            );
+        }
+    }
+
+    #[test]
+    fn test_all_profiles_descriptor_capability_bytes() {
+        for profile in [
+            PROFILE_CHERRY_SMARTTERMINAL_ST2XXX,
+            PROFILE_GEMALTO_IDBRIDGE_CT30,
+            PROFILE_GEMALTO_IDBRIDGE_K30,
+        ] {
+            let desc = profile.ccid_descriptor();
+            assert_eq!(desc.len(), 52);
+            // bPINSupport at offset 50; wLcdLayout at 48/49.
+            let pin = desc[50];
+            assert_eq!(
+                pin, profile.pin_support,
+                "descriptor bPINSupport must mirror pin_support for {}",
+                profile.product
+            );
+            assert_eq!((desc[48], desc[49]), profile.get_lcd_layout());
+        }
     }
 }

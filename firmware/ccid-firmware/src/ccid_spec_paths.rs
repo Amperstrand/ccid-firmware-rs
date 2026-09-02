@@ -265,6 +265,34 @@ fn test_bseq_wraparound_255_to_0_is_accepted() {
 }
 
 #[test]
+fn test_bseq_duplicate_and_out_of_order_accepted() {
+    // Policy pin (audit recommendation, docs/CCID_SPEC_AUDIT.md:728): the
+    // firmware accepts-and-echoes any bSeq, including duplicates and
+    // decreases — sequence-number policing belongs to the host (libccid
+    // validates on its side for serial links). A retransmit or reorder on
+    // the link therefore never wedges the reader.
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+
+    // Duplicate: same bSeq twice — both accepted, both echoed.
+    for _ in 0..2 {
+        let resp = exchange(
+            &mut h,
+            &ccid_request(PC_TO_RDR_GET_SLOT_STATUS, 0, 0x2A, [0; 3], &[]),
+        );
+        assert_eq!(rseq(&resp), 0x2A);
+        assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+    }
+
+    // Out of order: 0x2A -> 0x05 (decrease) — still accepted, echoed.
+    let resp = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_GET_SLOT_STATUS, 0, 0x05, [0; 3], &[]),
+    );
+    assert_eq!(rseq(&resp), 0x05);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}
+
+#[test]
 fn test_bseq_echoed_on_bad_slot_error() {
     // Given: an idle reader
     let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);

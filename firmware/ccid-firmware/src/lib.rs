@@ -25,13 +25,11 @@
 mod logging;
 
 pub mod ccid_core;
+pub mod device_profile;
 pub mod driver;
 pub mod dwt_watchdog;
 pub mod pinpad;
 pub mod protocol_unit;
-
-#[cfg(all(target_arch = "arm", target_os = "none"))]
-pub mod device_profile;
 
 // Host-only spec-path characterization tests (issue #53) — never compiled
 // into firmware builds.
