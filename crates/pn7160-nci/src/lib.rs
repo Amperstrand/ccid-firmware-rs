@@ -59,6 +59,25 @@ pub const NCI_INTERFACE_ISO_DEP: u8 = 0x02;
 /// Status code STATUS_OK (NCI §5.1.5, Table 67).
 pub const STATUS_OK: u8 = 0x00;
 
+// --- RF OIDs only used by the reader session (NCI §6.1) -------------------
+pub const OID_RF_DEACTIVATE: u8 = 0x06;
+
+// --- Notification OIDs (octet 1 of an NTF; NCI §6.1) -----------------------
+pub const NTF_RF_DISCOVER: u8 = 0x03;
+pub const NTF_RF_INTF_ACTIVATED: u8 = 0x05;
+pub const NTF_RF_DEACTIVATE: u8 = 0x06;
+pub const OID_CORE_CONN_CREDITS: u8 = 0x06;
+
+// --- DATA packet header bits (NCI §5.4.1; NXP nci_defs.h NCI_CID/PBF) ------
+pub const CID_MASK: u8 = 0x0F;
+pub const PBF_MASK: u8 = 0x10;
+
+// --- Deactivation types (NCI §6.3.5.1, Table 98) ---------------------------
+pub const DEACTIVATE_TYPE_IDLE: u8 = 0x00;
+pub const DEACTIVATE_TYPE_SLEEP: u8 = 0x01;
+pub const DEACTIVATE_TYPE_SLEEP_AF: u8 = 0x02;
+pub const DEACTIVATE_TYPE_DISCOVERY: u8 = 0x03;
+
 /// One decoded NCI frame. GID and OID are kept separate, exactly as they
 /// sit on the wire (GID in octet0, OID as full octet1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,11 +101,11 @@ impl Frame {
         if buf.len() < HEADER_LEN {
             return None;
         }
+        if (buf[0] & PBF_MASK) != 0 {
+            return None; // PBF set (octet 0 bit 4, NXP nci_defs.h): fragmented
+        }
         let mt = buf[0] & 0xE0;
         let gid = buf[0] & 0x0F;
-        if (buf[1] & 0x08) != 0 {
-            return None; // PBF set: fragmented, unsupported
-        }
         let oid = buf[1];
         let plen = buf[2] as usize;
         if buf.len() < HEADER_LEN + plen {
@@ -167,6 +186,160 @@ pub trait Transport {
     fn transact(&mut self, cmd: &[u8]) -> Option<Frame>;
     /// Read one already-pending notification (no command sent).
     fn drain(&mut self) -> Option<Frame>;
+}
+
+/// NCI DATA packet framing — NCI §5.4.1: octet 0 = PBF(bit 4) | CONN_ID(bits
+/// 3:0), octet 1 = RFU (0), octet 2 = length. Byte-exact against the proven
+/// C driver's `nci_send_data` (nucula nci.c), which uses CONN_ID 0.
+pub mod data {
+    use super::*;
+
+    pub fn encode(conn_id: u8, payload: &[u8], out: &mut Vec<u8, MAX_FRAME>) -> bool {
+        out.clear();
+        if payload.len() > 255 {
+            return false;
+        }
+        out.extend_from_slice(&[conn_id & CID_MASK, 0, payload.len() as u8]).is_ok()
+            && out.extend_from_slice(payload).is_ok()
+    }
+
+    pub struct DataPacket {
+        pub conn_id: u8,
+        pub fragmented: bool,
+        pub payload: [u8; 255],
+        pub len: usize,
+    }
+
+    pub fn decode(buf: &[u8]) -> Option<DataPacket> {
+        if buf.len() < HEADER_LEN {
+            return None;
+        }
+        let plen = buf[2] as usize;
+        if buf.len() < HEADER_LEN + plen {
+            return None;
+        }
+        let mut payload = [0u8; 255];
+        payload[..plen].copy_from_slice(&buf[HEADER_LEN..HEADER_LEN + plen]);
+        Some(DataPacket {
+            conn_id: buf[0] & CID_MASK,
+            fragmented: (buf[0] & PBF_MASK) != 0,
+            payload,
+            len: plen,
+        })
+    }
+}
+
+/// Reader-mode session pieces: discovery notifications, tag selection,
+/// DATA exchange, deactivation. Formats per NCI §6.3; DATA and deactivate
+/// encodings are byte-exact against the nucula C driver.
+pub mod reader {
+    use super::*;
+
+    /// RF_DEACTIVATE(IDLE) — byte-exact vs nci.c `nci_restart_discovery`
+    /// stop[] = {NCI_MT_CMD | NCI_GID_RF, NCI_OID_RF_DEACTIVATE, 0x01, 0x00}.
+    pub const RF_DEACTIVATE_IDLE: [u8; 4] =
+        [MT_CMD | GID_RF, OID_RF_DEACTIVATE, 0x01, DEACTIVATE_TYPE_IDLE];
+
+    /// RF_DISCOVER_SELECT — NCI 2.0 §6.3.3.1 payload: [Discovery_ID,
+    /// Protocol, Interface, Set_Params_Control(0x00 = defaults)]. NCI 1.x
+    /// stacks use the 3-octet form; firmware binding validates on hardware.
+    pub fn rf_discover_select(discovery_id: u8, protocol: u8, interface: u8) -> [u8; 7] {
+        [MT_CMD | GID_RF, OID_RF_DISCOVER_SELECT, 0x04, discovery_id, protocol, interface, 0x00]
+    }
+
+    /// RF_DISCOVER_NTF fields the CardBackend needs — NCI 2.0 §6.3.2.3:
+    /// payload = [Discovery_ID, Protocol, Tech_and_Mode, ParamsLen, Params..,
+    /// Interface, (NCI 2.0: RF_Transmission_Technology)].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DiscoverNtf {
+        pub discovery_id: u8,
+        pub protocol: u8,
+        pub tech_and_mode: u8,
+        pub interface: u8,
+    }
+
+    impl DiscoverNtf {
+        pub fn decode(f: &Frame) -> Option<DiscoverNtf> {
+            if f.mt != MT_NTF || f.gid != GID_RF || f.oid != NTF_RF_DISCOVER || f.len < 5 {
+                return None;
+            }
+            let params_len = f.payload[3] as usize;
+            let interface_idx = 4 + params_len;
+            if interface_idx >= f.len {
+                return None;
+            }
+            Some(DiscoverNtf {
+                discovery_id: f.payload[0],
+                protocol: f.payload[1],
+                tech_and_mode: f.payload[2],
+                interface: f.payload[interface_idx],
+            })
+        }
+    }
+
+    /// First fields of RF_INTF_ACTIVATED_NTF — NCI 2.0 §6.3.4: payload =
+    /// [Discovery_ID, Interface, Protocol, Tech_and_Mode, Max_Data_Payload,
+    /// Initial_Params...]. (ATS lives inside Initial_Params for ISO-DEP.)
+    pub fn activated_summary(f: &Frame) -> Option<(u8, u8, u8)> {
+        if f.mt != MT_NTF || f.gid != GID_RF || f.oid != NTF_RF_INTF_ACTIVATED || f.len < 3 {
+            return None;
+        }
+        Some((f.payload[0], f.payload[1], f.payload[2]))
+    }
+
+    /// Drain notifications until a tag appears. CORE_CONN_CREDITS and other
+    /// NTFs are skipped (the wallet's loop ignores credits the same way).
+    pub fn wait_for_discovery<T: Transport>(t: &mut T) -> Option<DiscoverNtf> {
+        for _ in 0..8 {
+            let f = t.drain()?;
+            if let Some(n) = DiscoverNtf::decode(&f) {
+                return Some(n);
+            }
+        }
+        None
+    }
+
+    /// Select the discovered tag and consume the INTF_ACTIVATED notification.
+    pub fn select_tag<T: Transport>(t: &mut T, n: &DiscoverNtf) -> Result<(), &'static str> {
+        let cmd = rf_discover_select(n.discovery_id, n.protocol, n.interface);
+        let rsp = t.transact(&cmd).ok_or("no select response")?;
+        if !rsp.is_rsp_to(&cmd) {
+            return Err("select response mismatch");
+        }
+        if rsp.status() != Some(STATUS_OK) {
+            return Err("select status != OK");
+        }
+        t.drain().map(|_| ()).ok_or("no activation notification")
+    }
+
+    /// Exchange one APDU over the RF data connection. The reply must be a
+    /// DATA packet on the same connection (Frame::decode surfaces DATA
+    /// packets with mt == MT_DATA and gid == conn_id).
+    pub fn exchange<T: Transport>(
+        t: &mut T,
+        conn_id: u8,
+        apdu: &[u8],
+    ) -> Option<Vec<u8, 255>> {
+        let mut frame = Vec::new();
+        if !data::encode(conn_id, apdu, &mut frame) {
+            return None;
+        }
+        let rsp = t.transact(&frame)?;
+        if rsp.mt != MT_DATA || rsp.gid != conn_id || rsp.len == 0 {
+            return None;
+        }
+        Vec::from_slice(&rsp.payload[..rsp.len]).ok()
+    }
+
+    /// Deactivate to idle, then consume the DEACTIVATE notification —
+    /// byte-exact semantics of nci.c `nci_restart_discovery`.
+    pub fn deactivate_idle<T: Transport>(t: &mut T) -> Result<(), &'static str> {
+        let rsp = t.transact(&RF_DEACTIVATE_IDLE).ok_or("no deactivate response")?;
+        if !rsp.is_rsp_to(&RF_DEACTIVATE_IDLE) {
+            return Err("deactivate response mismatch");
+        }
+        t.drain().map(|_| ()).ok_or("no deactivate notification")
+    }
 }
 
 /// Bring-up steps, in C-driver order.
@@ -309,7 +482,7 @@ mod tests {
     fn decode_rejects_short_and_fragmented() {
         assert!(Frame::decode(&[0x40, 0x00]).is_none());
         assert!(Frame::decode(&[0x40, 0x00, 0x02, 0x11]).is_none()); // short payload
-        assert!(Frame::decode(&[0x40, 0x08, 0x00]).is_none()); // PBF set
+        assert!(Frame::decode(&[0x50, 0x00, 0x00]).is_none()); // PBF set: octet 0 bit 4 (NXP nci_defs.h)
     }
 
     #[test]
@@ -446,5 +619,114 @@ mod tests {
             let _ = run_ladder(&mut t);
             assert!(t.sent.len() <= 5);
         }
+    }
+
+    fn ntf_frame(oid: u8, payload: &[u8]) -> Frame {
+        let mut p = [0u8; 255];
+        p[..payload.len()].copy_from_slice(payload);
+        Frame { mt: MT_NTF, gid: GID_RF, oid, payload: p, len: payload.len() }
+    }
+
+    #[test]
+    fn data_encode_matches_c_driver_bytes() {
+        // nci.c nci_send_data: [MT_DATA(conn 0), RFU 0, len, payload]
+        let mut out = Vec::new();
+        assert!(data::encode(0, &[0xAA, 0xBB], &mut out));
+        assert_eq!(out.as_slice(), &[0x00, 0x00, 0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn data_round_trip() {
+        let mut out = Vec::new();
+        assert!(data::encode(3, &[1, 2, 3], &mut out));
+        let pkt = data::decode(&out).unwrap();
+        assert_eq!(pkt.conn_id, 3);
+        assert!(!pkt.fragmented);
+        assert_eq!(&pkt.payload[..pkt.len], &[1, 2, 3]);
+    }
+
+    #[test]
+    fn data_decode_rejects_short() {
+        assert!(data::decode(&[0x00, 0x00]).is_none());
+        assert!(data::decode(&[0x00, 0x00, 0x02, 0x01]).is_none());
+    }
+
+    #[test]
+    fn deactivate_idle_bytes_match_c_driver() {
+        assert_eq!(&reader::RF_DEACTIVATE_IDLE, &[0x21, 0x06, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn discover_select_shape() {
+        let cmd = reader::rf_discover_select(0x07, NCI_PROTOCOL_ISO_DEP, NCI_INTERFACE_ISO_DEP);
+        assert_eq!(&cmd, &[0x21, 0x04, 0x04, 0x07, 0x04, 0x02, 0x00]);
+    }
+
+    #[test]
+    fn discover_ntf_parse() {
+        let f = ntf_frame(
+            NTF_RF_DISCOVER,
+            &[0x01, NCI_PROTOCOL_ISO_DEP, 0x00, 0x00, NCI_INTERFACE_ISO_DEP],
+        );
+        let n = reader::DiscoverNtf::decode(&f).unwrap();
+        assert_eq!(n.discovery_id, 0x01);
+        assert_eq!(n.protocol, NCI_PROTOCOL_ISO_DEP);
+        assert_eq!(n.tech_and_mode, 0x00);
+        assert_eq!(n.interface, NCI_INTERFACE_ISO_DEP);
+    }
+
+    #[test]
+    fn discover_ntf_params_offset() {
+        let f = ntf_frame(
+            NTF_RF_DISCOVER,
+            &[0x02, 0x04, 0x00, 0x03, 0x44, 0x00, 0x04, NCI_INTERFACE_ISO_DEP],
+        );
+        let n = reader::DiscoverNtf::decode(&f).unwrap();
+        assert_eq!(n.discovery_id, 0x02);
+        assert_eq!(n.interface, NCI_INTERFACE_ISO_DEP);
+    }
+
+    #[test]
+    fn discover_ntf_rejects_malformed() {
+        let overrun = ntf_frame(NTF_RF_DISCOVER, &[0x01, 0x04, 0x00, 0x05, 0x01]);
+        assert!(reader::DiscoverNtf::decode(&overrun).is_none());
+        let wrong = ntf_frame(NTF_RF_INTF_ACTIVATED, &[0x01, 0x04, 0x00, 0x00, 0x02]);
+        assert!(reader::DiscoverNtf::decode(&wrong).is_none());
+    }
+
+    #[test]
+    fn activated_summary_fields() {
+        let f = ntf_frame(
+            NTF_RF_INTF_ACTIVATED,
+            &[0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP],
+        );
+        assert_eq!(reader::activated_summary(&f), Some((0x01, 0x02, 0x04)));
+    }
+
+    #[test]
+    fn reader_session_happy_path() {
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DISCOVER, 0x05,
+            0x01, NCI_PROTOCOL_ISO_DEP, 0x00, 0x00, NCI_INTERFACE_ISO_DEP]);
+        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_INTF_ACTIVATED, 0x03,
+            0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP]);
+        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DEACTIVATE, 0x01,
+            DEACTIVATE_TYPE_IDLE]);
+        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_SELECT, 0x01, STATUS_OK]);
+        t.push_reply(&[0x00, 0x00, 0x04, 0x90, 0x00, 0xAA, 0xBB]);
+        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
+
+        let n = reader::wait_for_discovery(&mut t).expect("tag should appear");
+        reader::select_tag(&mut t, &n).expect("select ok");
+        let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00]).expect("apdu reply");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00, 0xAA, 0xBB]);
+        reader::deactivate_idle(&mut t).expect("deactivate ok");
+        assert_eq!(t.sent.len(), 3);
+    }
+
+    #[test]
+    fn reader_exchange_fails_cleanly_when_link_lost() {
+        let mut t = mock::MockTransport::new();
+        assert!(reader::exchange(&mut t, 0, &[0x00]).is_none());
     }
 }
