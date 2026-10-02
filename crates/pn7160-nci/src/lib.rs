@@ -398,4 +398,53 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         assert_eq!(run_ladder(&mut t), Err("transport ran dry"));
     }
+
+    #[test]
+    fn hammer_decode_no_panic() {
+        // Mirrors fuzz_targets/fuzz_nci_frame_decode.rs: decode and
+        // is_rsp_to are total over arbitrary input.
+        let mut s: u32 = 0x9E37_79B9;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+        let mut buf = [0u8; 8];
+        for _ in 0..10_000 {
+            for b in buf.iter_mut() {
+                *b = (next() >> 24) as u8;
+            }
+            let take = (next() as usize) % (buf.len() + 1);
+            let input = &buf[..take];
+            if let Some(f) = Frame::decode(input) {
+                assert!(input.len() >= HEADER_LEN + f.len);
+                assert_eq!(f.len, input[2] as usize);
+                let _ = f.is_rsp_to(&input[..take.min(2)]);
+            }
+        }
+    }
+
+    #[test]
+    fn hammer_ladder_terminates_no_panic() {
+        // Mirrors the scripted-ladder half of fuzz_nci_frame_decode.rs: the
+        // ladder fails cleanly (Err) on garbage replies; it must never panic
+        // or exceed its five-command list.
+        let mut s: u32 = 0xDEAD_BEEF;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        };
+        for _ in 0..200 {
+            let mut t = mock::MockTransport::new();
+            for _ in 0..8 {
+                let frame = [(next() >> 24) as u8, (next() >> 24) as u8, 0x00, (next() >> 24) as u8];
+                t.push_reply(&frame);
+            }
+            let _ = run_ladder(&mut t);
+            assert!(t.sent.len() <= 5);
+        }
+    }
 }

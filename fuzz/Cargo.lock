@@ -57,6 +57,7 @@ dependencies = [
  "ccid-protocol",
  "ccid-transport-serial",
  "libfuzzer-sys",
+ "pn7160-nci",
 ]
 
 [[package]]
@@ -113,6 +114,13 @@ checksum = "a9fd2f41a1cba099f79a0b6b6c35656cf7c03351a7bae8ff0f28f25270f929d2"
 dependencies = [
  "arbitrary",
  "cc",
+]
+
+[[package]]
+name = "pn7160-nci"
+version = "0.1.0"
+dependencies = [
+ "heapless",
 ]
 
 [[package]]

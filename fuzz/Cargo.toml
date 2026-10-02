@@ -16,6 +16,9 @@ path = "../crates/ccid-protocol"
 [dependencies.ccid-transport-serial]
 path = "../crates/ccid-transport-serial"
 
+[dependencies.pn7160-nci]
+path = "../crates/pn7160-nci"
+
 # The parent directory is a Cargo workspace whose members list does not (and
 # must not) include this crate; an empty workspace table keeps cargo from
 # trying to attach this crate to it.
@@ -31,6 +34,13 @@ bench = false
 [[bin]]
 name = "fuzz_serial_frame_parser"
 path = "fuzz_targets/fuzz_serial_frame_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nci_frame_decode"
+path = "fuzz_targets/fuzz_nci_frame_decode.rs"
 test = false
 doc = false
 bench = false
