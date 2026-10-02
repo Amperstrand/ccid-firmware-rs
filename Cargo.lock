@@ -1518,6 +1518,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pn7160-nci"
+version = "0.1.0"
+dependencies = [
+ "heapless 0.8.0",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
