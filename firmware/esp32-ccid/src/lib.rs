@@ -22,6 +22,12 @@ pub mod mfrc522_driver;
 #[cfg(feature = "backend-pn7160")]
 pub mod pn7160_driver;
 
+#[cfg(all(
+    feature = "backend-pn7160",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod pn7160_i2c;
+
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
