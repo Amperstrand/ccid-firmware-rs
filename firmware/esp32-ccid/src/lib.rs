@@ -28,6 +28,12 @@ pub mod pn7160_driver;
 ))]
 pub mod pn7160_i2c;
 
+#[cfg(all(
+    feature = "pn7160-bringup",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod pn7160_bringup;
+
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 

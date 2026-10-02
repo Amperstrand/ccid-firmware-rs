@@ -1,4 +1,7 @@
-#![cfg_attr(any(target_arch = "xtensa", target_arch = "riscv32"), allow(unused_mut))]
+#![cfg_attr(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    allow(unused_mut)
+)]
 
 #[cfg(all(
     feature = "backend-mfrc522",
@@ -14,7 +17,11 @@ compile_error!("features board-m5atom and board-m5stick are mutually exclusive")
 compile_error!("feature board-nucula is mutually exclusive with board-m5atom/board-m5stick");
 #[cfg(all(
     feature = "backend-mfrc522",
-    not(any(feature = "board-m5atom", feature = "board-m5stick", feature = "board-nucula"))
+    not(any(
+        feature = "board-m5atom",
+        feature = "board-m5stick",
+        feature = "board-nucula"
+    ))
 ))]
 compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
 
@@ -61,9 +68,16 @@ use esp_idf_sys::EspError;
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use mfrc522_pcd::recover_i2c_bus;
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522",
+    feature = "ble"
+))]
 use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use esp32_ccid::{
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
@@ -73,15 +87,26 @@ use esp32_ccid::{
         FrameParser,
     },
 };
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522",
+    feature = "ble"
+))]
 use esp_idf_svc::{
     bt::{ble::gap::EspBleGap, ble::gatt::server::EspGatts, Ble, BtDriver},
     nvs::EspDefaultNvsPartition,
 };
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522",
+    feature = "ble"
+))]
 use std::sync::Arc;
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use esp_idf_hal::{
     delay::FreeRtos,
     gpio::AnyIOPin,
@@ -90,7 +115,10 @@ use esp_idf_hal::{
     uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
     units::Hertz,
 };
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use esp_idf_sys::EspError;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -135,7 +163,10 @@ impl embedded_hal::digital::InputPin for IrqPin<'_> {
     }
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), any(feature = "backend-mfrc522", feature = "backend-pn532")))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    any(feature = "backend-mfrc522", feature = "backend-pn532")
+))]
 fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     while !bytes.is_empty() {
         let written = uart.write(bytes)?;
@@ -147,7 +178,10 @@ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     Ok(())
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), any(feature = "backend-mfrc522", feature = "backend-pn532")))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    any(feature = "backend-mfrc522", feature = "backend-pn532")
+))]
 fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     if let Err(e) = write_all(uart, bytes) {
         log::error!("UART write failed: {:?}", e);
@@ -343,7 +377,10 @@ fn main() {
     }
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
@@ -628,7 +665,11 @@ fn main() {
 
 #[cfg(any(
     not(any(target_arch = "xtensa", target_arch = "riscv32")),
-    all(not(feature = "backend-pn532"), not(feature = "backend-mfrc522"), not(feature = "backend-pn7160"))
+    all(
+        not(feature = "backend-pn532"),
+        not(feature = "backend-mfrc522"),
+        not(feature = "backend-pn7160")
+    )
 ))]
 fn main() {}
 
@@ -655,7 +696,8 @@ fn main() {}
 // ---------------------------------------------------------------------------
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-pn7160"
+    feature = "backend-pn7160",
+    not(feature = "pn7160-bringup")
 ))]
 mod pad_diag {
     const IO_MUX_BASE: *mut u32 = 0x60009000 as *mut u32;
@@ -688,7 +730,11 @@ mod pad_diag {
         let mut levels = String::new();
         for pin in 0..22i32 {
             let lvl = unsafe { esp_idf_sys::gpio_get_level(pin) };
-            levels.push_str(&format!("{}{}", if lvl == 1 { "H" } else { "L" }, if pin == 21 { "" } else { "," }));
+            levels.push_str(&format!(
+                "{}{}",
+                if lvl == 1 { "H" } else { "L" },
+                if pin == 21 { "" } else { "," }
+            ));
         }
         log::warn!("pads@boot: {}", levels);
 
@@ -713,7 +759,11 @@ mod pad_diag {
                     mux(pin as usize),
                     lo,
                     hi,
-                    if hi == 1 && lo == 0 { "[PAD OK]" } else { "[PAD STUCK!!!]" }
+                    if hi == 1 && lo == 0 {
+                        "[PAD OK]"
+                    } else {
+                        "[PAD STUCK!!!]"
+                    }
                 );
             }
         }
@@ -753,8 +803,17 @@ mod pad_diag {
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-pn7160"
+    feature = "backend-pn7160",
+    not(feature = "pn7160-bringup")
 ))]
 fn main() {
     crate::pad_diag::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-bringup"
+))]
+fn main() {
+    esp32_ccid::pn7160_bringup::run()
 }

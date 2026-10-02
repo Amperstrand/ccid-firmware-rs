@@ -28,6 +28,10 @@ board-m5stick = []
 # board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
 board-nucula = []
 backend-pn7160 = ["dep:pn7160-nci"]
+pn7160-bringup = ["backend-pn7160", "board-nucula"]
+pn7160-verdict-a = []
+pn7160-verdict-b = []
+pn7160-verdict-c = []
 ble = []
 
 [dependencies]
