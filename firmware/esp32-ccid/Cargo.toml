@@ -27,7 +27,7 @@ board-m5stick = []
 # NOTE: the PN7160 backend driver is a later phase; this feature only selects the
 # board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
 board-nucula = []
-backend-pn7160 = []
+backend-pn7160 = ["dep:pn7160-nci"]
 ble = []
 
 [dependencies]
@@ -42,6 +42,7 @@ nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
 iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "268db79", features = ["alloc"], optional = true }
 mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9" }
+pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
 

@@ -19,6 +19,9 @@ pub mod serial_framing;
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;
 
+#[cfg(feature = "backend-pn7160")]
+pub mod pn7160_driver;
+
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
