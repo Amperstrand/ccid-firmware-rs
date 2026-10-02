@@ -61,12 +61,16 @@ impl<T: Transport> Pn7160Driver<T> {
             .map_err(Error::Select)?;
         let ats = reader::extract_ats(&activation)
             .ok_or(Error::Select("activation carries no ATS"))?;
-        if atr.len() < ats.len() {
+        // Construct a PC/SC-compatible ATR from the ATS (proper TS byte,
+        // no TL/CRC_A) per PC/SC Part 3 contactless ATR rules.
+        let atr_bytes = crate::transport::ats_to_atr(ats)
+            .ok_or(Error::Select("ATS too short for ATR construction"))?;
+        if atr.len() < atr_bytes.len() {
             return Err(Error::BufferTooSmall);
         }
-        atr[..ats.len()].copy_from_slice(ats);
+        atr[..atr_bytes.len()].copy_from_slice(&atr_bytes);
         self.active = true;
-        Ok(ats.len())
+        Ok(atr_bytes.len())
     }
 
     /// Deactivate the RF interface back to idle.
@@ -113,7 +117,10 @@ mod tests {
     };
 
     // A realistic ISO-DEP ATS (per ISO 14443-4: TL, T0, TA1, TB1)
-    const TEST_ATS: [u8; 4] = [0x75, 0x77, 0x81, 0x02];
+    // Proper ATS: TL=5, T0=0x75, TA1=0x77, TB1=0x81, TC1=0x02
+    const TEST_ATS: [u8; 5] = [0x05, 0x75, 0x77, 0x81, 0x02];
+    // PC/SC ATR constructed from the ATS: 0x3B replaces TL, body follows
+    const TEST_ATR: [u8; 5] = [0x3B, 0x75, 0x77, 0x81, 0x02];
 
     fn script_ladder(t: &mut MockTransport) {
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
@@ -132,9 +139,9 @@ mod tests {
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_SELECT, 0x01, STATUS_OK]);
         // INTF_ACTIVATED NTF with ATS in Initial_Params (NCI §6.3.4):
         // [id, intf, proto, tech, max_payload, params_len, ...ATS]
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_INTF_ACTIVATED, 0x0A,
+        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_INTF_ACTIVATED, 0x0B,
             0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP, 0x00, 0xFF,
-            TEST_ATS.len() as u8, TEST_ATS[0], TEST_ATS[1], TEST_ATS[2], TEST_ATS[3]]);
+            TEST_ATS.len() as u8, TEST_ATS[0], TEST_ATS[1], TEST_ATS[2], TEST_ATS[3], TEST_ATS[4]]);
     }
 
     fn script_apdu(t: &mut MockTransport, response: &[u8]) {
@@ -164,7 +171,7 @@ mod tests {
 
         let mut atr = [0u8; 32];
         let atr_len = drv.power_on(&mut atr).expect("power_on");
-        assert_eq!(&atr[..atr_len], &TEST_ATS);
+        assert_eq!(&atr[..atr_len], &TEST_ATR);
         assert!(drv.session_active());
 
         let mut rsp = [0u8; 256];

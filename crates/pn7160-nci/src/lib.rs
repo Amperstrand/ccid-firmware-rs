@@ -192,6 +192,7 @@ pub trait Transport {
 /// 3:0), octet 1 = RFU (0), octet 2 = length. Byte-exact against the proven
 /// C driver's `nci_send_data` (nucula nci.c), which uses CONN_ID 0.
 pub mod driver;
+pub mod transport;
 
 pub mod data {
     use super::*;
