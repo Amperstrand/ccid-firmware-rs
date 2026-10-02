@@ -1,0 +1,15 @@
+[package]
+name = "pn7160-nci"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "no_std NCI protocol core for the PN7160 NFC controller (reader mode bring-up + framing), with mock-transport unit tests"
+# Host-testable protocol core; the esp-idf I2C/CardBackend binding lives in
+# firmware/esp32-ccid and consumes this crate.
+
+[dependencies]
+heapless = "0.8"
+
+[features]
+default = ["std"]
+std = []
