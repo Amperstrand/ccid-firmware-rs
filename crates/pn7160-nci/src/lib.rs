@@ -191,6 +191,8 @@ pub trait Transport {
 /// NCI DATA packet framing — NCI §5.4.1: octet 0 = PBF(bit 4) | CONN_ID(bits
 /// 3:0), octet 1 = RFU (0), octet 2 = length. Byte-exact against the proven
 /// C driver's `nci_send_data` (nucula nci.c), which uses CONN_ID 0.
+pub mod driver;
+
 pub mod data {
     use super::*;
 
@@ -299,8 +301,9 @@ pub mod reader {
         None
     }
 
-    /// Select the discovered tag and consume the INTF_ACTIVATED notification.
-    pub fn select_tag<T: Transport>(t: &mut T, n: &DiscoverNtf) -> Result<(), &'static str> {
+    /// Select the discovered tag; returns the INTF_ACTIVATED notification
+    /// (its Initial_Params carry the ATS for ISO-DEP — NCI §6.3.4).
+    pub fn select_tag<T: Transport>(t: &mut T, n: &DiscoverNtf) -> Result<Frame, &'static str> {
         let cmd = rf_discover_select(n.discovery_id, n.protocol, n.interface);
         let rsp = t.transact(&cmd).ok_or("no select response")?;
         if !rsp.is_rsp_to(&cmd) {
@@ -309,7 +312,21 @@ pub mod reader {
         if rsp.status() != Some(STATUS_OK) {
             return Err("select status != OK");
         }
-        t.drain().map(|_| ()).ok_or("no activation notification")
+        t.drain().ok_or("no activation notification")
+    }
+
+    /// Extract the ATS bytes from an RF_INTF_ACTIVATED notification's
+    /// Initial_Params — NCI §6.3.4: payload = [ID, Interface, Protocol,
+    /// Tech_and_Mode, Max_Data_Payload_Len, Initial_Params_Len, Params...].
+    pub fn extract_ats(activation: &Frame) -> Option<&[u8]> {
+        if activation.len < 6 {
+            return None;
+        }
+        let params_len = activation.payload[5] as usize;
+        if activation.len < 6 + params_len || params_len == 0 {
+            return None;
+        }
+        Some(&activation.payload[6..6 + params_len])
     }
 
     /// Exchange one APDU over the RF data connection. The reply must be a
@@ -380,13 +397,6 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         return Err("malformed CORE_RESET response");
     }
     let _ = t.drain(); // CORE_RESET_NTF (NCI 2.0 always follows; tolerate absence)
-
-    // 2. Flush stale notifications before INIT (C driver allows up to 3).
-    for _ in 0..3 {
-        if t.drain().is_none() {
-            break;
-        }
-    }
 
     // 3-5. Straight command/response ladder with status checks.
     for step in [Step::CoreInit, Step::SetConfigTc1, Step::RfDiscoverMap, Step::RfDiscover] {
@@ -532,19 +542,18 @@ mod tests {
     }
 
     #[test]
-    fn ladder_flushes_stale_ntfs_before_init() {
+    fn ladder_tolerates_reset_ntf_only() {
         let mut t = mock::MockTransport::new();
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
-        t.push_notification(&[0x60, 0x07, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
         t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
-        run_ladder(&mut t).expect("stale NTFs are flushed, not judged");
+        run_ladder(&mut t).expect("ladder should pass with reset NTF");
         assert_eq!(t.sent.len(), 5);
-        assert_eq!(t.drained, 2);
+        assert_eq!(t.drained, 1);
     }
 
     #[test]
