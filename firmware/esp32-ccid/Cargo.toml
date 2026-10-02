@@ -22,6 +22,12 @@ backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 #   board-m5stick: SDA=GPIO32, SCL=GPIO33  (StickC / StickC-Plus Port)
 board-m5atom = []
 board-m5stick = []
+# ESP32-C3 nucula board: PN7160 NFC @ I2C addr 0x28, SDA=GPIO4 SCL=GPIO5 IRQ=GPIO6 VEN=GPIO7.
+# Console is the ROM USB-Serial/JTAG CDC (GPIO18/19); there is no UART bridge.
+# NOTE: the PN7160 backend driver is a later phase; this feature only selects the
+# board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
+board-nucula = []
+backend-pn7160 = []
 ble = []
 
 [dependencies]
@@ -39,7 +45,8 @@ mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
 
-[target.'cfg(target_arch = "xtensa")'.dependencies]
+# ESP-IDF is used on both Xtensa (ESP32/S2/S3) and RISC-V (ESP32-C3/C2/C6/H2).
+[target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
 esp-idf-sys = { version = "0.37", features = ["binstart"] }
 esp-idf-hal = "0.46"
 esp-idf-svc = "0.52.1"
@@ -49,3 +56,4 @@ embuild = { version = "0.32", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
 esp_idf_version = "tag:v5.2.4"
+

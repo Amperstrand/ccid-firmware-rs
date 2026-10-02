@@ -6,6 +6,13 @@ linker = "ldproxy"
 runner = "espflash flash --monitor"
 rustflags = ["--cfg", "espidf_time64", "-Zunstable-options", "-C", "panic=immediate-abort"]
 
+# ESP32-C3 (RISC-V RV32IMC); std via -Z build-std below like xtensa.
+# (panic=immediate-abort rustflag is xtensa-only; riscv uses build-std panic_abort)
+[target.riscv32imc-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64", "-Zunstable-options"]
+
 [unstable]
 build-std = ["std", "panic_abort"]
 

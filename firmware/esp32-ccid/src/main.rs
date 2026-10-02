@@ -1,4 +1,4 @@
-#![cfg_attr(target_arch = "xtensa", allow(unused_mut))]
+#![cfg_attr(any(target_arch = "xtensa", target_arch = "riscv32"), allow(unused_mut))]
 
 #[cfg(all(
     feature = "backend-mfrc522",
@@ -8,18 +8,24 @@
 compile_error!("features board-m5atom and board-m5stick are mutually exclusive");
 #[cfg(all(
     feature = "backend-mfrc522",
-    not(any(feature = "board-m5atom", feature = "board-m5stick"))
+    feature = "board-nucula",
+    any(feature = "board-m5atom", feature = "board-m5stick")
 ))]
-compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32) or board-m5stick (Grove SDA=32/SCL=33)");
+compile_error!("feature board-nucula is mutually exclusive with board-m5atom/board-m5stick");
+#[cfg(all(
+    feature = "backend-mfrc522",
+    not(any(feature = "board-m5atom", feature = "board-m5stick", feature = "board-nucula"))
+))]
+compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
 
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
 use core::convert::Infallible;
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
@@ -34,7 +40,7 @@ use esp32_ccid::{
     },
 };
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
@@ -47,7 +53,7 @@ use esp_idf_hal::{
     units::Hertz,
 };
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
@@ -55,9 +61,9 @@ use esp_idf_sys::EspError;
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 use mfrc522_pcd::recover_i2c_bus;
 
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
 use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
 use esp32_ccid::{
     ccid_handler::CcidHandler,
     ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
@@ -67,15 +73,15 @@ use esp32_ccid::{
         FrameParser,
     },
 };
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
 use esp_idf_svc::{
     bt::{ble::gap::EspBleGap, ble::gatt::server::EspGatts, Ble, BtDriver},
     nvs::EspDefaultNvsPartition,
 };
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
 use std::sync::Arc;
 
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
 use esp_idf_hal::{
     delay::FreeRtos,
     gpio::AnyIOPin,
@@ -84,29 +90,29 @@ use esp_idf_hal::{
     uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
     units::Hertz,
 };
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
 use esp_idf_sys::EspError;
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const UART_RX_TIMEOUT_MS: u64 = 500;
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CARD_POLL_INTERVAL_MS: u64 = 3000;
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const UART_BUF_SIZE: usize = 548;
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const MAX_FRAME_SIZE: usize = 274;
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const MAX_CCID_RESPONSE_SIZE: usize = 271;
 
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
 struct IrqPin<'d>(PinDriver<'d, gpio::Input>);
 
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
@@ -115,7 +121,7 @@ impl embedded_hal::digital::ErrorType for IrqPin<'_> {
 }
 
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
@@ -129,7 +135,7 @@ impl embedded_hal::digital::InputPin for IrqPin<'_> {
     }
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), any(feature = "backend-mfrc522", feature = "backend-pn532")))]
 fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     while !bytes.is_empty() {
         let written = uart.write(bytes)?;
@@ -141,7 +147,7 @@ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     Ok(())
 }
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), any(feature = "backend-mfrc522", feature = "backend-pn532")))]
 fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     if let Err(e) = write_all(uart, bytes) {
         log::error!("UART write failed: {:?}", e);
@@ -149,7 +155,7 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
 }
 
 #[cfg(all(
-    target_arch = "xtensa",
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
@@ -160,6 +166,8 @@ fn main() {
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge).
     esp_idf_svc::log::EspLogger::initialize_default();
+    log::set_max_level(log::LevelFilter::Debug);
+    log::warn!("ESP32-CCID: rust main ALIVE (instrumented)");
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
 
@@ -335,7 +343,7 @@ fn main() {
     }
 }
 
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
@@ -366,7 +374,7 @@ fn main() {
     // When BLE is disabled, suppress ALL log output — UART0 is reserved
     // exclusively for CCID serial protocol, no debug output allowed.
     #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
-    log::set_max_level(log::LevelFilter::Off);
+    log::set_max_level(log::LevelFilter::Info);
     #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     log::info!("ESP32-CCID: BLE logger installed");
     #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
@@ -385,24 +393,43 @@ fn main() {
         .rx_fifo_size(UART_BUF_SIZE)
         .tx_fifo_size(UART_BUF_SIZE);
 
+    // CCID serial protocol runs on UART0. M5 boards use the USB-UART bridge pins
+    // (TX=GPIO1, RX=GPIO3); the ESP32-C3 nucula board has no UART bridge, so use
+    // the C3 UART0 defaults (TX=GPIO21, RX=GPIO20). Console output on nucula is the
+    // ROM USB-Serial/JTAG CDC on GPIO18/19 (see sdkconfig.defaults.esp32c3).
+    #[cfg(feature = "board-nucula")]
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio21, peripherals.pins.gpio20);
+    #[cfg(not(feature = "board-nucula"))]
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio1, peripherals.pins.gpio3);
+
     let uart = UartDriver::new(
         peripherals.uart0,
-        peripherals.pins.gpio1,
-        peripherals.pins.gpio3,
+        uart_tx,
+        uart_rx,
         Option::<AnyIOPin>::None,
         Option::<AnyIOPin>::None,
         &uart_config,
     )
-    .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
+    .expect("UART0 init failed (CCID serial TX/RX)");
+    log::warn!("bring-up: UART0 ok");
+    log::warn!("bring-up: pins chosen, entering 50ms settle");
+    #[cfg(target_arch = "riscv32")]
+    log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
-    // Grove I2C pinout per board variant — see Cargo.toml [features].
+    // I2C pinout per board variant — see Cargo.toml [features].
     #[cfg(feature = "board-m5atom")]
     let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
         (peripherals.pins.gpio26, peripherals.pins.gpio32, 32, 26);
     #[cfg(feature = "board-m5stick")]
     let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
         (peripherals.pins.gpio32, peripherals.pins.gpio33, 33, 32);
+    // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
+    // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase.)
+    #[cfg(feature = "board-nucula")]
+    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
+        (peripherals.pins.gpio4, peripherals.pins.gpio5, 5, 4);
 
+    #[cfg(target_arch = "xtensa")]
     recover_i2c_bus(scl_gpio_no, sda_gpio_no);
     // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
     // after recovery, i2c0 via GPIO matrix, and a bus probe before the first
@@ -410,10 +437,14 @@ fn main() {
     // at 400 kHz in early bring-up (worked intermittently, then hung the
     // first transaction) — re-attempted per #59 with a measured RTT table
     // and a 100-transaction soak before landing.
+    log::warn!("bring-up: skipping vTaskDelay on riscv32 (crash probe)");
+    #[cfg(target_arch = "xtensa")]
     FreeRtos::delay_ms(50);
     let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
+    log::warn!("bring-up: calling I2cDriver::new");
     let mut i2c = i2c::I2cDriver::new(peripherals.i2c0, i2c_sda, i2c_scl, &i2c_config)
         .expect("I2C0 init failed");
+    log::warn!("bring-up: I2C0 ok");
 
     let probe_timeout = esp_idf_hal::delay::TickType::new_millis(100);
     let probe_found = i2c.write(0x28, &[], probe_timeout.into()).is_ok();
@@ -596,7 +627,134 @@ fn main() {
 }
 
 #[cfg(any(
-    not(target_arch = "xtensa"),
-    all(not(feature = "backend-pn532"), not(feature = "backend-mfrc522"))
+    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+    all(not(feature = "backend-pn532"), not(feature = "backend-mfrc522"), not(feature = "backend-pn7160"))
 ))]
 fn main() {}
+
+// ---------------------------------------------------------------------------
+// PAD-DIAGNOSTIC PROBE (v53) — settle the GPIO4-7 JTAG-pad question.
+//
+// Evidence chain: PN7160 unpowered under Rust despite VEN(GPIO7) latch=high;
+// phantom I2C ACKs on SDA(GPIO4)/SCL(GPIO5); GPIO6 reads floating. Per the
+// ESP32-C3 pin tables, GPIO4-7 = JTAG pads MTMS/MTDI/MTCK/MTDO whose IO_MUX
+// RESET-DEFAULT function is JTAG (Function 0); GPIO is Function 1 and IDF's
+// gpio driver must flip MCU_SEL per-pad. This probe reads ground truth:
+// raw IO_MUX registers (base 0x60009000, one 32-bit reg per pad) + real pad
+// levels (input-buffer-ON readback) before and after gpio_config.
+//
+// Decision tree:
+//   mux[4-7] @ boot show FUNC=JTAG + post-config MCU_SEL never flips to GPIO
+//     -> JTAG claim confirmed, find the claimant.
+//   GPIO7 drive-high reads back 0 ("PAD STUCK")
+//     -> pad interference confirmed regardless of mux decode.
+//   All pads OK + VEN high + IRQ(6) drops to 0 in heartbeat
+//     -> PN7160 IS alive under Rust; earlier failures were config-order.
+//   All pads OK + VEN high + IRQ stays 1/floating
+//     -> JTAG theory dead for VEN; pivot to VEN-timing/DWL-coupling.
+// ---------------------------------------------------------------------------
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-pn7160"
+))]
+mod pad_diag {
+    const IO_MUX_BASE: *mut u32 = 0x60009000 as *mut u32;
+
+    fn mux(pin: usize) -> u32 {
+        unsafe { core::ptr::read_volatile(IO_MUX_BASE.add(pin)) }
+    }
+
+    fn to_input(pin: i32) {
+        unsafe {
+            let mut cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+            cfg.pin_bit_mask = 1u64 << pin;
+            cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
+            esp_idf_sys::gpio_config(&cfg);
+        }
+    }
+
+    pub fn run() -> ! {
+        esp_idf_sys::link_patches();
+        esp_idf_svc::log::EspLogger::initialize_default();
+        log::set_max_level(log::LevelFilter::Debug);
+        log::warn!("pad-diag: rust main ALIVE (v53)");
+
+        // 1. Boot-default IO_MUX dump — before touching any pad.
+        for pin in 0..22usize {
+            log::warn!("IO_MUX[{:02}] = 0x{:08X}", pin, mux(pin));
+        }
+
+        // 2. Pad input levels at boot (meaningful where IE=1).
+        let mut levels = String::new();
+        for pin in 0..22i32 {
+            let lvl = unsafe { esp_idf_sys::gpio_get_level(pin) };
+            levels.push_str(&format!("{}{}", if lvl == 1 { "H" } else { "L" }, if pin == 21 { "" } else { "," }));
+        }
+        log::warn!("pads@boot: {}", levels);
+
+        // 3. Drive/read test on the four NFC/I2C pads (INPUT_OUTPUT: real
+        //    pad readback, not latch readback).
+        for pin in [4i32, 5, 6, 7] {
+            unsafe {
+                let mut cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+                cfg.pin_bit_mask = 1u64 << pin;
+                cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT_OUTPUT;
+                let rc = esp_idf_sys::gpio_config(&cfg);
+                esp_idf_sys::gpio_set_level(pin, 0);
+                esp_idf_hal::delay::Ets::delay_us(1000);
+                let lo = esp_idf_sys::gpio_get_level(pin);
+                esp_idf_sys::gpio_set_level(pin, 1);
+                esp_idf_hal::delay::Ets::delay_us(1000);
+                let hi = esp_idf_sys::gpio_get_level(pin);
+                log::warn!(
+                    "pad {}: cfg_rc={} mux=0x{:08X} L->{} H->{} {}",
+                    pin,
+                    rc,
+                    mux(pin as usize),
+                    lo,
+                    hi,
+                    if hi == 1 && lo == 0 { "[PAD OK]" } else { "[PAD STUCK!!!]" }
+                );
+            }
+        }
+
+        // 4. Post-config mux for the four pads: did MCU_SEL flip to GPIO?
+        for pin in 4..8usize {
+            log::warn!("IO_MUX[{}] after cfg = 0x{:08X}", pin, mux(pin));
+        }
+
+        // 5. Restore observation posture: 4/5/6 passive inputs (6 = PN7160
+        //    IRQ line, driven LOW by the chip when powered), 7 (VEN) stays
+        //    driven HIGH — if pads work, the chip powers on NOW.
+        to_input(4);
+        to_input(5);
+        to_input(6);
+        unsafe {
+            esp_idf_sys::gpio_set_level(7, 1);
+        }
+        log::warn!("pad-diag: VEN held high; watching IRQ(6) — 0 = PN7160 ALIVE");
+
+        let mut tick: u32 = 0;
+        loop {
+            esp_idf_hal::delay::Ets::delay_us(5_000_000);
+            tick += 1;
+            let irq = unsafe { esp_idf_sys::gpio_get_level(6) };
+            let ven = unsafe { esp_idf_sys::gpio_get_level(7) };
+            log::warn!(
+                "pad-diag: hb {} ven_pad={} irq_pad={} mux7=0x{:08X}",
+                tick,
+                ven,
+                irq,
+                mux(7)
+            );
+        }
+    }
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-pn7160"
+))]
+fn main() {
+    crate::pad_diag::run()
+}
