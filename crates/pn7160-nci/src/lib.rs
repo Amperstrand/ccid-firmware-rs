@@ -258,6 +258,8 @@ pub mod reader {
         pub protocol: u8,
         pub tech_and_mode: u8,
         pub interface: u8,
+        pub tech_params: [u8; 16],
+        pub tech_params_len: usize,
     }
 
     impl DiscoverNtf {
@@ -270,13 +272,31 @@ pub mod reader {
             if interface_idx >= f.len {
                 return None;
             }
+            let copy_len = params_len.min(16);
+            let mut tech_params = [0u8; 16];
+            tech_params[..copy_len].copy_from_slice(&f.payload[4..4 + copy_len]);
             Some(DiscoverNtf {
                 discovery_id: f.payload[0],
                 protocol: f.payload[1],
                 tech_and_mode: f.payload[2],
                 interface: f.payload[interface_idx],
+                tech_params,
+                tech_params_len: params_len,
             })
         }
+    }
+
+    /// NFC-A UID from DISCOVER_NTF tech params: [SENS_RES(2), NFCID1_LEN(1),
+    /// NFCID1(N), SEL_RES] — NCI §6.3.2.3 / NCI Annex E.
+    pub fn nfca_uid(ntf: &DiscoverNtf) -> Option<&[u8]> {
+        if ntf.tech_params_len < 4 {
+            return None;
+        }
+        let uid_len = ntf.tech_params[2] as usize;
+        if ntf.tech_params_len < 3 + uid_len || uid_len == 0 {
+            return None;
+        }
+        Some(&ntf.tech_params[3..3 + uid_len])
     }
 
     /// First fields of RF_INTF_ACTIVATED_NTF — NCI 2.0 §6.3.4: payload =

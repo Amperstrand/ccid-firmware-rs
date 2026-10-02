@@ -18,11 +18,13 @@ pub enum Error {
 pub struct Pn7160Driver<T: Transport> {
     transport: T,
     active: bool,
+    uid: [u8; 10],
+    uid_len: usize,
 }
 
 impl<T: Transport> Pn7160Driver<T> {
     pub fn new(transport: T) -> Self {
-        Pn7160Driver { transport, active: false }
+        Pn7160Driver { transport, active: false, uid: [0u8; 10], uid_len: 0 }
     }
 
     pub fn transport_mut(&mut self) -> &mut T {
@@ -51,6 +53,10 @@ impl<T: Transport> Pn7160Driver<T> {
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
         let ntf =
             reader::wait_for_discovery(&mut self.transport).ok_or(Error::NoCard)?;
+        if let Some(uid) = reader::nfca_uid(&ntf) {
+            self.uid_len = uid.len().min(10);
+            self.uid[..self.uid_len].copy_from_slice(&uid[..self.uid_len]);
+        }
         let activation = reader::select_tag(&mut self.transport, &ntf)
             .map_err(Error::Select)?;
         let ats = reader::extract_ats(&activation)
@@ -67,6 +73,7 @@ impl<T: Transport> Pn7160Driver<T> {
     pub fn power_off(&mut self) {
         let _ = reader::deactivate_idle(&mut self.transport);
         self.active = false;
+        self.uid_len = 0;
     }
 
     /// Exchange one APDU with the activated tag (connection 0).
@@ -85,6 +92,11 @@ impl<T: Transport> Pn7160Driver<T> {
 
     pub fn session_active(&self) -> bool {
         self.active
+    }
+
+    /// NFC-A UID from the most recent power_on discovery (empty if not ISO-14443-A).
+    pub fn uid(&self) -> &[u8] {
+        &self.uid[..self.uid_len]
     }
 }
 
