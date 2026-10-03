@@ -47,7 +47,13 @@ pub fn run() -> ! {
     log::set_max_level(log::LevelFilter::Debug);
     log::warn!("pn7160-bringup: rust main ALIVE (verdict {})", VERDICT);
 
+    for i in 1..=3u32 {
+        log::warn!("bring-up starts in {}s", 4 - i);
+        Ets::delay_us(1_000_000);
+    }
+    log::warn!("step: Peripherals::take...");
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
+    log::warn!("step: peripherals OK");
 
     let transport = {
         #[cfg(feature = "pn7160-verdict-a")]
@@ -63,7 +69,11 @@ pub fn run() -> ! {
     };
 
     let mut driver = match transport {
-        Ok(t) => Pn7160NfcDriver::new(t),
+        Ok(mut t) => {
+            log::warn!("step: i2c bus scan...");
+            t.i2c_scan();
+            Box::new(Pn7160NfcDriver::new(t))
+        }
         Err(e) => {
             log::error!("pn7160-bringup: transport bring-up FAILED: {:?}", e);
             loop {
