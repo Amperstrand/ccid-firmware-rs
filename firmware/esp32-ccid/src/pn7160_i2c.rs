@@ -76,7 +76,7 @@ impl EspPn7160Transport {
         log::warn!("step: i2c driver OK");
         let ven: PinDriver<'static, Output> = PinDriver::output(p.pins.gpio7)?;
         log::warn!("step: ven pin OK");
-        let irq: PinDriver<'static, Input> = PinDriver::input(p.pins.gpio6, Pull::Floating)?;
+        let irq: PinDriver<'static, Input> = PinDriver::input(p.pins.gpio6, Pull::Down)?;
         log::warn!("step: irq pin OK");
         Ok(Self {
             i2c,
