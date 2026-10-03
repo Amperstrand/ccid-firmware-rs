@@ -387,9 +387,37 @@ fn main() {
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge).
+    #[cfg(not(feature = "ble"))]
+    esp32_ccid::netlog::init();
+    #[cfg(feature = "ble")]
     esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
+
+    // WiFi + OTA for serial-free bring-up (bench power bricks): the
+    // modem is exclusive with the `ble` feature build, and credentials
+    // come from NUCULA_WIFI_SSID/PASS at build time — absent creds
+    // leave the board serial/CCID-only exactly as before.
+    #[cfg(not(feature = "ble"))]
+    match (
+        option_env!("NUCULA_WIFI_SSID"),
+        option_env!("NUCULA_WIFI_PASS"),
+    ) {
+        (Some(ssid), Some(pass)) => {
+            let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().expect("nvs partition");
+            match esp32_ccid::wifi::WifiManager::new(peripherals.modem, nvs) {
+                Ok(mut m) => match m.connect(ssid, pass) {
+                    Ok(ip) => {
+                        esp32_ccid::netlog::set_ip(&ip);
+                        esp32_ccid::ota::spawn();
+                    }
+                    Err(e) => log::warn!("wifi: connect failed: {}", e),
+                },
+                Err(e) => log::warn!("wifi: manager init failed: {}", e),
+            }
+        }
+        _ => log::warn!("wifi: no credentials baked in - CCID only"),
+    }
 
     #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
     let ble_server = (|| -> Result<BleDebugServer, EspError> {
