@@ -33,10 +33,21 @@ pub struct EspPn7160Transport {
     ntf_count: usize,
 }
 
+/// Decomposed board pins for the NFC block: the bring-up main splits
+/// `Peripherals` once (modem + nvs to WiFi, the rest here) because
+/// `Peripherals::take` is single-shot.
+pub struct BusPins {
+    pub i2c0: esp_idf_hal::i2c::I2C0<'static>,
+    pub sda: esp_idf_hal::gpio::Gpio4<'static>,
+    pub scl: esp_idf_hal::gpio::Gpio5<'static>,
+    pub irq: esp_idf_hal::gpio::Gpio6<'static>,
+    pub ven: esp_idf_hal::gpio::Gpio7<'static>,
+}
+
 impl EspPn7160Transport {
     /// Verdict B (baseline): I2C bus first — the native firmware's
     /// nucula.cpp:181 position — then the VEN power cycle.
-    pub fn bringup_config_order(p: Peripherals) -> Result<Self, EspError> {
+    pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
         t.ven_cycle();
         Ok(t)
@@ -45,7 +56,7 @@ impl EspPn7160Transport {
     /// Verdict A (pads stuck): clear gpio hold + sleep isolation on the
     /// four NFC pads before reconfiguration. A latched hold ignores
     /// config changes until cleared (cf. Tasmota #20030).
-    pub fn bringup_pad_hold_clear(p: Peripherals) -> Result<Self, EspError> {
+    pub fn bringup_pad_hold_clear(p: BusPins) -> Result<Self, EspError> {
         unsafe {
             esp_idf_sys::gpio_deep_sleep_hold_dis();
             for pin in [SDA_PIN, SCL_PIN, IRQ_PIN, VEN_PIN] {
@@ -57,13 +68,13 @@ impl EspPn7160Transport {
     }
 
     /// Verdict C: quiesce the core with extended VEN timing.
-    pub fn bringup_ven_timing(p: Peripherals) -> Result<Self, EspError> {
+    pub fn bringup_ven_timing(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
         t.ven_cycle_extended();
         Ok(t)
     }
 
-    fn from_peripherals(p: Peripherals) -> Result<Self, EspError> {
+    fn from_peripherals(p: BusPins) -> Result<Self, EspError> {
         // Board rules (zeugmaster/nucula-board peripherals-design.md):
         // 100 kHz max (PCF8574T limit), external 2.2k pulls to 3.0 V —
         // ESP internal pull-ups must stay OFF.
@@ -72,11 +83,11 @@ impl EspPn7160Transport {
             .sda_enable_pullup(false)
             .scl_enable_pullup(false);
         log::warn!("step: I2cDriver::new...");
-        let i2c = I2cDriver::new(p.i2c0, p.pins.gpio4, p.pins.gpio5, &config)?;
+        let i2c = I2cDriver::new(p.i2c0, p.sda, p.scl, &config)?;
         log::warn!("step: i2c driver OK");
-        let ven: PinDriver<'static, Output> = PinDriver::output(p.pins.gpio7)?;
+        let ven: PinDriver<'static, Output> = PinDriver::output(p.ven)?;
         log::warn!("step: ven pin OK");
-        let irq: PinDriver<'static, Input> = PinDriver::input(p.pins.gpio6, Pull::Down)?;
+        let irq: PinDriver<'static, Input> = PinDriver::input(p.irq, Pull::Down)?;
         log::warn!("step: irq pin OK");
         Ok(Self {
             i2c,

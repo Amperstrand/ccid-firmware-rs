@@ -34,6 +34,24 @@ pub mod pn7160_i2c;
 ))]
 pub mod pn7160_bringup;
 
+#[cfg(all(
+    feature = "pn7160-bringup",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod netlog;
+
+#[cfg(all(
+    feature = "pn7160-bringup",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod ota;
+
+#[cfg(all(
+    feature = "pn7160-bringup",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod wifi;
+
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
