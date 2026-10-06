@@ -43,11 +43,6 @@ impl Log for NetLogger {
 
 /// Install the logger (console-only until `set_ip` opens the socket).
 pub fn init() {
-    let sock = UdpSocket::bind("0.0.0.0:0").ok();
-    let _ = sock.as_ref().map(|s| s.set_broadcast(true));
-    if let Some(s) = sock {
-        let _ = SOCK.set(s);
-    }
     if log::set_boxed_logger(Box::new(NetLogger)).is_ok() {
         log::set_max_level(LevelFilter::Warn);
     }
@@ -55,6 +50,15 @@ pub fn init() {
 
 /// Record the station IP; it prefixes every subsequent log line so the
 // host can learn the board's address from the log stream itself.
+///
+/// The UDP socket is only bound HERE, once the station has a lease:
+/// binding before `esp_netif`/lwIP bring-up asserts inside lwIP
+/// (`tcpip_send_msg_wait_sem: Invalid mbox`) and reboots the board.
 pub fn set_ip(ip: &str) {
     let _ = BOARD_IP.set(ip.to_string());
+    let sock = UdpSocket::bind("0.0.0.0:0").ok();
+    let _ = sock.as_ref().map(|s| s.set_broadcast(true));
+    if let Some(s) = sock {
+        let _ = SOCK.set(s);
+    }
 }
