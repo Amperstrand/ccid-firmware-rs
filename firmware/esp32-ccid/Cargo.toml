@@ -32,6 +32,7 @@ pn7160-bringup = ["backend-pn7160", "board-nucula"]
 pn7160-verdict-a = []
 pn7160-verdict-b = []
 pn7160-verdict-c = []
+pn7160-ccid = ["backend-pn7160", "board-nucula"]
 ble = []
 
 [dependencies]

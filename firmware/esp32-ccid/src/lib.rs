@@ -35,6 +35,12 @@ pub mod pn7160_i2c;
 pub mod pn7160_bringup;
 
 #[cfg(all(
+    feature = "pn7160-ccid",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod pn7160_ccid;
+
+#[cfg(all(
     any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]

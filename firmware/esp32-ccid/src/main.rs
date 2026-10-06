@@ -832,7 +832,8 @@ mod pad_diag {
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn7160",
-    not(feature = "pn7160-bringup")
+    not(feature = "pn7160-bringup"),
+    not(feature = "pn7160-ccid")
 ))]
 fn main() {
     crate::pad_diag::run()
@@ -844,4 +845,12 @@ fn main() {
 ))]
 fn main() {
     esp32_ccid::pn7160_bringup::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-ccid"
+))]
+fn main() {
+    esp32_ccid::pn7160_ccid::run()
 }
