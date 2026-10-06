@@ -16,7 +16,60 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      stm32: ${{ steps.filter.outputs.stm32 }}
+      esp32: ${{ steps.filter.outputs.esp32 }}
+      lint: ${{ steps.filter.outputs.lint }}
+    steps:
+      - uses: actions/checkout@v5
+      # Path sets follow what each job group actually consumes (esp32-ccid and
+      # host-tools are root-workspace members, so cross-effects exist):
+      # - stm32: ccid-firmware, shared crates, host-tools (its tests run via
+      #   `cargo test --workspace`), vendored synopsys-usb-otg patch, root
+      #   manifest/lock
+      # - esp32: esp32-ccid + its crates/ path deps, root manifest/lock
+      # - lint: paths only stm32-lint validates — Rust sources of any
+      #   workspace member (`cargo fmt --check` is workspace-wide), plus the
+      #   shell/python helpers it syntax-checks
+      # Jobs stay defined when filtered out (skipped == success for branch
+      # protection); only their execution is skipped.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            stm32:
+              - 'firmware/ccid-firmware/**'
+              - 'crates/**'
+              - 'host-tools/**'
+              - 'vendor/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            esp32:
+              - 'firmware/esp32-ccid/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            lint:
+              - 'firmware/ccid-firmware/**/*.rs'
+              - 'firmware/esp32-ccid/**/*.rs'
+              - 'crates/**/*.rs'
+              - 'host-tools/**/*.rs'
+              - 'firmware/esp32-ccid/*.sh'
+              - 'firmware/esp32-ccid/s_check_sdkconfig'
+              - 'tools/**'
+              - 'tests/**'
+              - 'host-tools/*.py'
+
   stm32-build:
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -79,6 +132,8 @@ jobs:
             ccid-firmware.hex.sha256
 
   esp32-build:
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true'
     # The esp32-ccid package had no CI coverage at all: broken builds for
     # individual variants (and silently-skipped sdkconfig defaults) only
     # surfaced on the bench. Builds every variant and runs the sdkconfig
@@ -171,6 +226,8 @@ jobs:
           ./s_check_sdkconfig
 
   stm32-lint:
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true' || needs.changes.outputs.lint == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
@@ -206,6 +263,8 @@ jobs:
             firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig
 
   stm32-test:
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true'
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
@@ -230,6 +289,8 @@ jobs:
         run: cargo test --workspace --target x86_64-unknown-linux-gnu
 
   esp32-host-test:
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
