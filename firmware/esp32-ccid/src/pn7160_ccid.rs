@@ -64,7 +64,10 @@ pub fn run() -> ! {
     match driver.init() {
         Ok(()) => log::warn!("pn7160-ccid: PN7160 initialized"),
         Err(e) => {
-            log::warn!("pn7160-ccid: PN7160 init failed ({:?}) — card-absent mode", e)
+            log::warn!(
+                "pn7160-ccid: PN7160 init failed ({:?}) — card-absent mode",
+                e
+            )
         }
     }
 
@@ -110,11 +113,11 @@ pub fn run() -> ! {
                 match frame_parser.feed(byte) {
                     Some(FrameEvent::Command { ccid_bytes }) => {
                         // Echo (GemPC Twin protocol)
-                        let _ = usb.write(&frame_buf[..frame_len], TickType::new_millis(100).ticks());
+                        let _ =
+                            usb.write(&frame_buf[..frame_len], TickType::new_millis(100).ticks());
 
                         // Time-gated card poll on GetSlotStatus
-                        let is_slot_status =
-                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
+                        let is_slot_status = ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
                         if is_slot_status {
                             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                             if now.wrapping_sub(last_poll_tick) >= poll_interval {
@@ -124,8 +127,7 @@ pub fn run() -> ! {
                         }
 
                         let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
-                        let resp_len =
-                            ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
+                        let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
 
                         // Frame the response: SYNC + ACK + data + LRC
                         let mut frame_out = [0u8; MAX_FRAME_SIZE];

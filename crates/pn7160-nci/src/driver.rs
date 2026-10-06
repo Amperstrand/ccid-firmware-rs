@@ -24,7 +24,12 @@ pub struct Pn7160Driver<T: Transport> {
 
 impl<T: Transport> Pn7160Driver<T> {
     pub fn new(transport: T) -> Self {
-        Pn7160Driver { transport, active: false, uid: [0u8; 10], uid_len: 0 }
+        Pn7160Driver {
+            transport,
+            active: false,
+            uid: [0u8; 10],
+            uid_len: 0,
+        }
     }
 
     pub fn transport_mut(&mut self) -> &mut T {
@@ -51,16 +56,14 @@ impl<T: Transport> Pn7160Driver<T> {
     /// Discover, select, and activate a tag; copies the ATS (from the
     /// activation notification's Initial_Params — NCI §6.3.4) into `atr`.
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
-        let ntf =
-            reader::wait_for_discovery(&mut self.transport).ok_or(Error::NoCard)?;
+        let ntf = reader::wait_for_discovery(&mut self.transport).ok_or(Error::NoCard)?;
         if let Some(uid) = reader::nfca_uid(&ntf) {
             self.uid_len = uid.len().min(10);
             self.uid[..self.uid_len].copy_from_slice(&uid[..self.uid_len]);
         }
-        let activation = reader::select_tag(&mut self.transport, &ntf)
-            .map_err(Error::Select)?;
-        let ats = reader::extract_ats(&activation)
-            .ok_or(Error::Select("activation carries no ATS"))?;
+        let activation = reader::select_tag(&mut self.transport, &ntf).map_err(Error::Select)?;
+        let ats =
+            reader::extract_ats(&activation).ok_or(Error::Select("activation carries no ATS"))?;
         // Construct a PC/SC-compatible ATR from the ATS (proper TS byte,
         // no TL/CRC_A) per PC/SC Part 3 contactless ATR rules.
         let atr_bytes = crate::transport::ats_to_atr(ats)
@@ -85,8 +88,7 @@ impl<T: Transport> Pn7160Driver<T> {
         if !self.active {
             return Err(Error::NoCard);
         }
-        let rsp = reader::exchange(&mut self.transport, 0, command)
-            .ok_or(Error::ExchangeFailed)?;
+        let rsp = reader::exchange(&mut self.transport, 0, command).ok_or(Error::ExchangeFailed)?;
         if response.len() < rsp.len() {
             return Err(Error::BufferTooSmall);
         }
@@ -109,11 +111,10 @@ mod tests {
     use super::*;
     use crate::mock::MockTransport;
     use crate::{
-        DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_NTF, MT_RSP,
-        NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE,
-        NTF_RF_DISCOVER, NTF_RF_INTF_ACTIVATED, OID_CORE_INIT,
-        OID_CORE_RESET, OID_CORE_SET_CONFIG, OID_RF_DEACTIVATE,
-        OID_RF_DISCOVER, OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
+        DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_NTF, MT_RSP, NCI_INTERFACE_ISO_DEP,
+        NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER, NTF_RF_INTF_ACTIVATED,
+        OID_CORE_INIT, OID_CORE_RESET, OID_CORE_SET_CONFIG, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
+        OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
     };
 
     // A realistic ISO-DEP ATS (per ISO 14443-4: TL, T0, TA1, TB1)
@@ -133,15 +134,36 @@ mod tests {
 
     fn script_discover_select_activate(t: &mut MockTransport) {
         // DISCOVER_NTF: [disc_id, proto, tech, params_len=0, interface]
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DISCOVER, 0x05,
-            0x01, NCI_PROTOCOL_ISO_DEP, 0x00, 0x00, NCI_INTERFACE_ISO_DEP]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DISCOVER,
+            0x05,
+            0x01,
+            NCI_PROTOCOL_ISO_DEP,
+            0x00,
+            0x00,
+            NCI_INTERFACE_ISO_DEP,
+        ]);
         // SELECT RSP
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_SELECT, 0x01, STATUS_OK]);
         // INTF_ACTIVATED NTF with ATS in Initial_Params (NCI §6.3.4):
         // [id, intf, proto, tech, max_payload, params_len, ...ATS]
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_INTF_ACTIVATED, 0x0B,
-            0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP, 0x00, 0xFF,
-            TEST_ATS.len() as u8, TEST_ATS[0], TEST_ATS[1], TEST_ATS[2], TEST_ATS[3], TEST_ATS[4]]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_INTF_ACTIVATED,
+            0x0B,
+            0x01,
+            NCI_INTERFACE_ISO_DEP,
+            NCI_PROTOCOL_ISO_DEP,
+            0x00,
+            0xFF,
+            TEST_ATS.len() as u8,
+            TEST_ATS[0],
+            TEST_ATS[1],
+            TEST_ATS[2],
+            TEST_ATS[3],
+            TEST_ATS[4],
+        ]);
     }
 
     fn script_apdu(t: &mut MockTransport, response: &[u8]) {
@@ -153,8 +175,12 @@ mod tests {
 
     fn script_deactivate(t: &mut MockTransport) {
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DEACTIVATE, 0x01,
-            DEACTIVATE_TYPE_IDLE]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x01,
+            DEACTIVATE_TYPE_IDLE,
+        ]);
     }
 
     #[test]
@@ -175,7 +201,9 @@ mod tests {
         assert!(drv.session_active());
 
         let mut rsp = [0u8; 256];
-        let rsp_len = drv.transmit_apdu(&[0x00, 0xA4, 0x04, 0x00], &mut rsp).expect("apdu");
+        let rsp_len = drv
+            .transmit_apdu(&[0x00, 0xA4, 0x04, 0x00], &mut rsp)
+            .expect("apdu");
         assert_eq!(&rsp[..rsp_len], &[0x90, 0x00]);
 
         drv.power_off();
@@ -229,7 +257,10 @@ mod tests {
         drv.power_on(&mut atr).expect("power_on");
 
         let mut tiny_rsp = [0u8; 2]; // response is 4 bytes
-        assert_eq!(drv.transmit_apdu(&[0x00], &mut tiny_rsp), Err(Error::BufferTooSmall));
+        assert_eq!(
+            drv.transmit_apdu(&[0x00], &mut tiny_rsp),
+            Err(Error::BufferTooSmall)
+        );
     }
 
     #[test]
@@ -243,6 +274,9 @@ mod tests {
         drv.power_on(&mut atr).expect("power_on");
 
         let mut rsp = [0u8; 256];
-        assert_eq!(drv.transmit_apdu(&[0x00], &mut rsp), Err(Error::ExchangeFailed));
+        assert_eq!(
+            drv.transmit_apdu(&[0x00], &mut rsp),
+            Err(Error::ExchangeFailed)
+        );
     }
 }

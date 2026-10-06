@@ -113,22 +113,29 @@ impl Frame {
         }
         let mut payload = [0u8; 255];
         payload[..plen].copy_from_slice(&buf[HEADER_LEN..HEADER_LEN + plen]);
-        Some(Frame { mt, gid, oid, payload, len: plen })
+        Some(Frame {
+            mt,
+            gid,
+            oid,
+            payload,
+            len: plen,
+        })
     }
 
     /// Is this frame the RESPONSE to the given command bytes?
     /// Matches on MT=RSP, GID and OID equality.
     pub fn is_rsp_to(&self, cmd: &[u8]) -> bool {
-        cmd.len() >= 2
-            && self.mt == MT_RSP
-            && self.gid == (cmd[0] & 0x0F)
-            && self.oid == cmd[1]
+        cmd.len() >= 2 && self.mt == MT_RSP && self.gid == (cmd[0] & 0x0F) && self.oid == cmd[1]
     }
 
     /// Payload status octet (first payload byte) for RSPs, if present.
     /// CORE_INIT_RSP / SET_CONFIG_RSP / RF_*_RSP all lead with status.
     pub fn status(&self) -> Option<u8> {
-        if self.len >= 1 { Some(self.payload[0]) } else { None }
+        if self.len >= 1 {
+            Some(self.payload[0])
+        } else {
+            None
+        }
     }
 }
 
@@ -146,8 +153,7 @@ pub mod tx {
     /// CORE_SET_CONFIG setting TC1 = 0x00 (plain ISO-DEP: no DID, no NAD).
     /// Payload [num_params=1, id=0x52(TC1), len=1, value=0] — NCI §5.1.3 and
     /// Annex F (TC1 definition); nci.c:240.
-    pub const SET_CONFIG_TC1: [u8; 7] =
-        [MT_CMD, OID_CORE_SET_CONFIG, 0x04, 0x01, 0x52, 0x01, 0x00];
+    pub const SET_CONFIG_TC1: [u8; 7] = [MT_CMD, OID_CORE_SET_CONFIG, 0x04, 0x01, 0x52, 0x01, 0x00];
 
     /// RF_DISCOVER_MAP with one mapping: ISO-DEP protocol to ISO-DEP
     /// interface, poll mode. Payload [num=1, protocol, interface, mode=1]
@@ -202,7 +208,8 @@ pub mod data {
         if payload.len() > 255 {
             return false;
         }
-        out.extend_from_slice(&[conn_id & CID_MASK, 0, payload.len() as u8]).is_ok()
+        out.extend_from_slice(&[conn_id & CID_MASK, 0, payload.len() as u8])
+            .is_ok()
             && out.extend_from_slice(payload).is_ok()
     }
 
@@ -240,14 +247,26 @@ pub mod reader {
 
     /// RF_DEACTIVATE(IDLE) — byte-exact vs nci.c `nci_restart_discovery`
     /// stop[] = {NCI_MT_CMD | NCI_GID_RF, NCI_OID_RF_DEACTIVATE, 0x01, 0x00}.
-    pub const RF_DEACTIVATE_IDLE: [u8; 4] =
-        [MT_CMD | GID_RF, OID_RF_DEACTIVATE, 0x01, DEACTIVATE_TYPE_IDLE];
+    pub const RF_DEACTIVATE_IDLE: [u8; 4] = [
+        MT_CMD | GID_RF,
+        OID_RF_DEACTIVATE,
+        0x01,
+        DEACTIVATE_TYPE_IDLE,
+    ];
 
     /// RF_DISCOVER_SELECT — NCI 2.0 §6.3.3.1 payload: [Discovery_ID,
     /// Protocol, Interface, Set_Params_Control(0x00 = defaults)]. NCI 1.x
     /// stacks use the 3-octet form; firmware binding validates on hardware.
     pub fn rf_discover_select(discovery_id: u8, protocol: u8, interface: u8) -> [u8; 7] {
-        [MT_CMD | GID_RF, OID_RF_DISCOVER_SELECT, 0x04, discovery_id, protocol, interface, 0x00]
+        [
+            MT_CMD | GID_RF,
+            OID_RF_DISCOVER_SELECT,
+            0x04,
+            discovery_id,
+            protocol,
+            interface,
+            0x00,
+        ]
     }
 
     /// RF_DISCOVER_NTF fields the CardBackend needs — NCI 2.0 §6.3.2.3:
@@ -353,11 +372,7 @@ pub mod reader {
     /// Exchange one APDU over the RF data connection. The reply must be a
     /// DATA packet on the same connection (Frame::decode surfaces DATA
     /// packets with mt == MT_DATA and gid == conn_id).
-    pub fn exchange<T: Transport>(
-        t: &mut T,
-        conn_id: u8,
-        apdu: &[u8],
-    ) -> Option<Vec<u8, 255>> {
+    pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 255>> {
         let mut frame = Vec::new();
         if !data::encode(conn_id, apdu, &mut frame) {
             return None;
@@ -372,7 +387,9 @@ pub mod reader {
     /// Deactivate to idle, then consume the DEACTIVATE notification —
     /// byte-exact semantics of nci.c `nci_restart_discovery`.
     pub fn deactivate_idle<T: Transport>(t: &mut T) -> Result<(), &'static str> {
-        let rsp = t.transact(&RF_DEACTIVATE_IDLE).ok_or("no deactivate response")?;
+        let rsp = t
+            .transact(&RF_DEACTIVATE_IDLE)
+            .ok_or("no deactivate response")?;
         if !rsp.is_rsp_to(&RF_DEACTIVATE_IDLE) {
             return Err("deactivate response mismatch");
         }
@@ -413,14 +430,21 @@ impl Step {
 ///  5. RF_DISCOVER_MAP(ISO-DEP) and RF_DISCOVER(passive A) — status OK.
 pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     // 1. CORE_RESET + notification drain.
-    let rsp = t.transact(&tx::CORE_RESET).ok_or("no CORE_RESET response")?;
+    let rsp = t
+        .transact(&tx::CORE_RESET)
+        .ok_or("no CORE_RESET response")?;
     if !rsp.is_rsp_to(&tx::CORE_RESET) {
         return Err("malformed CORE_RESET response");
     }
     let _ = t.drain(); // CORE_RESET_NTF (NCI 2.0 always follows; tolerate absence)
 
     // 3-5. Straight command/response ladder with status checks.
-    for step in [Step::CoreInit, Step::SetConfigTc1, Step::RfDiscoverMap, Step::RfDiscover] {
+    for step in [
+        Step::CoreInit,
+        Step::SetConfigTc1,
+        Step::RfDiscoverMap,
+        Step::RfDiscover,
+    ] {
         let rsp = t.transact(step.tx_bytes()).ok_or("transport ran dry")?;
         if !rsp.is_rsp_to(step.tx_bytes()) {
             return Err("response does not match command");
@@ -476,7 +500,10 @@ pub mod mock {
             self.replies.pop_front().and_then(|raw| Frame::decode(&raw))
         }
         fn drain(&mut self) -> Option<Frame> {
-            let f = self.notifications.pop_front().and_then(|raw| Frame::decode(&raw));
+            let f = self
+                .notifications
+                .pop_front()
+                .and_then(|raw| Frame::decode(&raw));
             if f.is_some() {
                 self.drained += 1;
             }
@@ -520,7 +547,10 @@ mod tests {
     fn tx_frames_match_c_driver_bytes() {
         assert_eq!(&tx::CORE_RESET, &[0x20, 0x00, 0x01, 0x01]);
         assert_eq!(&tx::CORE_INIT, &[0x20, 0x01, 0x02, 0x00, 0x00]);
-        assert_eq!(&tx::SET_CONFIG_TC1, &[0x20, 0x02, 0x04, 0x01, 0x52, 0x01, 0x00]);
+        assert_eq!(
+            &tx::SET_CONFIG_TC1,
+            &[0x20, 0x02, 0x04, 0x01, 0x52, 0x01, 0x00]
+        );
     }
 
     #[test]
@@ -643,7 +673,12 @@ mod tests {
         for _ in 0..200 {
             let mut t = mock::MockTransport::new();
             for _ in 0..8 {
-                let frame = [(next() >> 24) as u8, (next() >> 24) as u8, 0x00, (next() >> 24) as u8];
+                let frame = [
+                    (next() >> 24) as u8,
+                    (next() >> 24) as u8,
+                    0x00,
+                    (next() >> 24) as u8,
+                ];
                 t.push_reply(&frame);
             }
             let _ = run_ladder(&mut t);
@@ -654,7 +689,13 @@ mod tests {
     fn ntf_frame(oid: u8, payload: &[u8]) -> Frame {
         let mut p = [0u8; 255];
         p[..payload.len()].copy_from_slice(payload);
-        Frame { mt: MT_NTF, gid: GID_RF, oid, payload: p, len: payload.len() }
+        Frame {
+            mt: MT_NTF,
+            gid: GID_RF,
+            oid,
+            payload: p,
+            len: payload.len(),
+        }
     }
 
     #[test]
@@ -696,7 +737,13 @@ mod tests {
     fn discover_ntf_parse() {
         let f = ntf_frame(
             NTF_RF_DISCOVER,
-            &[0x01, NCI_PROTOCOL_ISO_DEP, 0x00, 0x00, NCI_INTERFACE_ISO_DEP],
+            &[
+                0x01,
+                NCI_PROTOCOL_ISO_DEP,
+                0x00,
+                0x00,
+                NCI_INTERFACE_ISO_DEP,
+            ],
         );
         let n = reader::DiscoverNtf::decode(&f).unwrap();
         assert_eq!(n.discovery_id, 0x01);
@@ -709,7 +756,16 @@ mod tests {
     fn discover_ntf_params_offset() {
         let f = ntf_frame(
             NTF_RF_DISCOVER,
-            &[0x02, 0x04, 0x00, 0x03, 0x44, 0x00, 0x04, NCI_INTERFACE_ISO_DEP],
+            &[
+                0x02,
+                0x04,
+                0x00,
+                0x03,
+                0x44,
+                0x00,
+                0x04,
+                NCI_INTERFACE_ISO_DEP,
+            ],
         );
         let n = reader::DiscoverNtf::decode(&f).unwrap();
         assert_eq!(n.discovery_id, 0x02);
@@ -736,12 +792,30 @@ mod tests {
     #[test]
     fn reader_session_happy_path() {
         let mut t = mock::MockTransport::new();
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DISCOVER, 0x05,
-            0x01, NCI_PROTOCOL_ISO_DEP, 0x00, 0x00, NCI_INTERFACE_ISO_DEP]);
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_INTF_ACTIVATED, 0x03,
-            0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP]);
-        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DEACTIVATE, 0x01,
-            DEACTIVATE_TYPE_IDLE]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DISCOVER,
+            0x05,
+            0x01,
+            NCI_PROTOCOL_ISO_DEP,
+            0x00,
+            0x00,
+            NCI_INTERFACE_ISO_DEP,
+        ]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_INTF_ACTIVATED,
+            0x03,
+            0x01,
+            NCI_INTERFACE_ISO_DEP,
+            NCI_PROTOCOL_ISO_DEP,
+        ]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x01,
+            DEACTIVATE_TYPE_IDLE,
+        ]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_SELECT, 0x01, STATUS_OK]);
         t.push_reply(&[0x00, 0x00, 0x04, 0x90, 0x00, 0xAA, 0xBB]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);

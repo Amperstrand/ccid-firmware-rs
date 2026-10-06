@@ -198,11 +198,7 @@ impl Transport for EspPn7160Transport {
                 if f.mt == MT_RSP {
                     return Some(f);
                 }
-                log::warn!(
-                    "transact: stashing NTF gid={:#x} oid={:#x}",
-                    f.gid,
-                    f.oid
-                );
+                log::warn!("transact: stashing NTF gid={:#x} oid={:#x}", f.gid, f.oid);
                 self.push_ntf(f);
                 continue;
             }

@@ -78,7 +78,11 @@ fn handle(stream: &mut impl Read) -> Result<(), &'static str> {
             .read_exact(&mut buf[..want])
             .map_err(|_| "image read failed")?;
         let rc = unsafe {
-            esp_ota_write(handle, buf[..want].as_ptr() as *const core::ffi::c_void, want)
+            esp_ota_write(
+                handle,
+                buf[..want].as_ptr() as *const core::ffi::c_void,
+                want,
+            )
         };
         if rc != 0 {
             return Err("esp_ota_write failed");
@@ -94,7 +98,10 @@ fn handle(stream: &mut impl Read) -> Result<(), &'static str> {
     if rc != 0 {
         return Err("set_boot_partition failed");
     }
-    log::warn!("ota: {} bytes written, boot partition switched, rebooting", size);
+    log::warn!(
+        "ota: {} bytes written, boot partition switched, rebooting",
+        size
+    );
     std::thread::sleep(std::time::Duration::from_millis(500));
     unsafe { esp_restart() }
 }
