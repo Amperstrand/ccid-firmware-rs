@@ -260,7 +260,8 @@ jobs:
       - name: Check shell syntax
         run: |
           bash -n tools/switch_role.sh \
-            firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig
+            firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig \
+            firmware/esp32-ccid/build.sh
 
   stm32-test:
     needs: changes
