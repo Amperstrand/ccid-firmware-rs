@@ -1,0 +1,246 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║ PN7160 NFC Driver — SPEC CITATION QUICK REFERENCE                         ║
+║ For Rust ESP32-C3 ISO-DEP Reader (Kernel-Code Comment Style)              ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+PHYSICAL LAYER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VEN Pin Toggle (Power Ctrl):          PN7160 Datasheet §11.1.2
+Hard Power-Down ↔ Standby:            PN7160 Datasheet §11.1.2.1–2
+IRQ Pin Interrupt Handler:            UM11495 §4.6
+I2C High-Speed (400 kbps):            UM11495 §4.2–4.3
+SPI Bus (up to 7 Mbps):               UM11495 §4.4–4.5
+
+NCI CORE PROTOCOL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Message Header Format:                NCI 2.0 §3.4.1   [MT(3b)|PBF(1b)|GID(4b)]
+Message Types (MT):                   NCI 2.0 §3.1     Cmd=0x1, Rsp=0x2, Ntf=0x3
+Packet Boundary Flag (PBF):           NCI 2.0 §3.4.1   0x0=last, 0x1=continue
+Connection ID (CID) in Data Msg:      NCI 2.0 §3.4.3   Byte 0 bits 3:0
+Max Payload Size:                     linux_libnfc-nci 254 bytes (0xFE)
+
+INITIALIZATION & RESET
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CORE_RESET_CMD/RSP/NTF:               NCI 2.0 §4.1.1–3 FW version in NTF
+CORE_INIT_CMD/RSP:                    NCI 2.0 §4.2.1–2 Enable RF discovery
+CORE_SET_CONFIG_CMD:                  NCI 2.0 §4.3.1   Set discovery duration
+PN7160 NCI 2.0 vs 1.0 Features:       UM11495 §3.4     Feature matrix table
+
+RF DISCOVERY & PROTOCOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Discovery Types (Polling/Listening):  linux_libnfc-nci nci_defs.h
+  POLL_A (0x00), POLL_B (0x01), POLL_F (0x02), LISTEN_A (0x80), etc.
+RF Technologies:                      linux_libnfc-nci nci_defs.h
+  TECH_A (0x00), TECH_B (0x01), TECH_F (0x02), TECH_15693 (0x03)
+RF Protocols:                         linux_libnfc-nci nci_defs.h
+  ★ ISO_DEP (0x04) ← ISO 14443-4 Type 4 Tag
+  NFC_DEP (0x05), T1T (0x01), T2T (0x02), T3T (0x03)
+RF_DISCOVER_CMD/RSP/NTF:              NCI 2.0 §6.3.2   Start polling loop
+RF_DISCOVER_SELECT_CMD/RSP:           NCI 2.0 §6.3.3   Select target & protocol
+
+ISO-DEP ACTIVATION (Type 4 Tag)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RF_INTF_ACTIVATED_NTF:                NCI 2.0 §6.3.4   Tag activation params
+Interface Type ISO_DEP (0x02):        linux_libnfc-nci nci_defs.h L162
+RATS Request:                         ISO 14443-4:2018 §5.1–5.2
+ATS Response Structure:               ISO 14443-4:2018 §5.2–5.3.7
+  TL (length), T0 (format byte), TA/TB/TC (interface bytes), historical
+ATS T0 Byte:                          ISO 14443-4:2018 §5.2.3
+  Bits 7–5: TA/TB/TC presence flags | Bits 3–0: FSCI (frame size)
+FSCI Coding (Frame Size Card Int):    ISO 14443-4:2018 Table 1
+  0x0=16, 0x1=24, 0x2=32, 0x4=64, 0x6=256, 0xC=4096 bytes
+ATS TB(1) Byte:                       ISO 14443-4:2018 §5.3.5
+  Bits 7–4: FWI (Frame Waiting time Integer)
+  Bits 3–0: SFGI (Start-up Frame Guard time Integer)
+FWI Calculation:                      ISO 14443-4:2018 §7.3
+  FWT = 256 × 16^FWI × (1/fc) ≈ 13.56 MHz clock
+ATS TC(1) Byte:                       ISO 14443-4:2018 §5.3.6
+  Bit 1: CID support | Bit 0: NAD support
+ISO-DEP Max Info on PN7160:           linux_libnfc-nci nci_defs.h L60
+  253 bytes = 256 max - prologue(1) - epilogue/CRC(2)
+
+ISO-DEP BLOCK EXCHANGE (Data Link Layer)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+★ I-Block (Information):              ISO 14443-4:2018 §7.2.1
+  PCB: 0b00xxxxxx (not 0b00xxx101) | Carries application data
+  Structure: [PCB | CID? | NAD? | INF | CRC-A(2)]
+  PCB Bit 5: Chaining flag (0=last, 1=more data follows)
+  PCB Bit 0: Block Number (alternates 0↔1)
+R-Block (Receive Ready):              ISO 14443-4:2018 §7.2.2
+  PCB: 0b10xxxxxx (not 0b1001xxxx) | No information field
+  R(ACK): Positive acknowledgement | R(NAK): Retry request
+★ S-Block (Supervisory):              ISO 14443-4:2018 §7.2.3
+  PCB: 0b11xxxxxx (not 0b1110xxxx, not 0b1101xxxx)
+  WTX: Waiting Time eXtension (S-block with WTXM multiplier byte)
+  DESELECT: Terminate session
+PCB Prologue (Mandatory + Optional):  ISO 14443-4:2018 §7.1.2
+  PCB (always) + CID (if TA bit in ATS T0) + NAD (if TC bit in ATS T0)
+CID Field (4 bits):                   ISO 14443-4:2018 §7.1.2.2
+  Values 0–14 (15 is RFU) | Identifies target in multi-activation
+NAD Field (optional):                 ISO 14443-4:2018 §7.1.2.3
+  Node Address per ISO 7816-3 | Only in I-blocks
+Block Numbering:                      ISO 14443-4:2018 §7.2.4
+  Toggles 0→1→0→1 for sequential I-block/R-block pairs
+Epilogue (CRC-A):                     ISO 14443-4:2018 §7.1.4
+  Last 2 bytes: CRC polynomial 0x1021 (Type A) or CRC-B (Type B)
+
+TIMEOUTS & FLOW CONTROL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Frame Waiting Time (FWT):             ISO 14443-4:2018 §7.3
+  Max time PICC waits for next PCD I-block before timeout
+Start-up Frame Guard Time (SFGT):     ISO 14443-4:2018 §5.3.5, §7.3
+  Guard time after activation before first block exchange
+Waiting Time eXtension (WTX):         ISO 14443-4:2018 §7.4
+  S-block sent by PICC to extend FWT (1–59 multiplier)
+PICC Presence Check:                  ISO 14443-4:2018 §7.2.6
+  Empty I-block or S(DESELECT) to verify card still responding
+PN7160 NAK Presence Check:            UM11495 §5.2 Item 13
+  "Reader 14443-4 Presence Check" supported (NCI 2.0)
+
+DATA EXCHANGE & APDU TRANSPORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RF_DATA_EXCH Command (NCI):           NCI 2.0 (implicit via NCI Data Msg)
+  NCI Data Msg: MT=0x0 (Data) | CID (lower 4b of byte 0) | Payload
+  PN7160 internally handles ISO-DEP I-block/R-block sequencing
+APDU Structure (ISO 7816-4):          ISO 7816-4:2013 (not in NCI, but used here)
+  [CLA | INS | P1 | P2 | Lc | Data | Le]
+  Transported as INF in ISO-DEP I-blocks with chaining if needed
+ISO-DEP Chaining:                     ISO 14443-4:2018 §7.2.3
+  Long APDU split across multiple I-blocks (chaining bit set)
+  Each segment acknowledged by R(ACK) before next segment sent
+
+DEACTIVATION & RE-ACTIVATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RF_DEACTIVATE_CMD/RSP/NTF:            NCI 2.0 §6.3.5   Idle/Sleep/Discovery modes
+Tag Re-activation:                    NCI 2.0 §6.3.5   Skip full discovery
+ISO-DEP Reactivation:                 UM11495 §7.3.2   PN7160 supports rapid reactivation
+
+CRC & ERROR DETECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRC-A (Type A):                       ISO 14443-3:2018 §6.2.4
+  Polynomial: 0x1021 | Used for anticollision & ISO-DEP frames
+CRC-B (Type B):                       ISO 14443-3:2018 §7.2
+  Different polynomial | For Type B protocol frames
+
+LISTEN MODE & CARD EMULATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Listen Mode Routing:                  NCI 2.0 §6.4.1–2 Configure PICC routing
+ISO-DEP Card Emulation (T4T):         UM11495 §8.1.2   DH-NFCEE mode 106 kbps
+PICC Frame Response (CE Mode):        ISO 14443-4:2018 §7.1–7.2
+  Receive PCD I-blocks → Respond with I-blocks or R-blocks
+Default CE Frame Waiting Time:        ISO 14443-4:2018 §7.3
+  Configurable via internal FWI setting during CE mode init
+
+OPEN-SOURCE REFERENCES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+linux_libnfc-nci (C):                 github.com/NXPNFCLinux/linux_libnfc-nci
+  → src/libnfc-nci/hal/include/nci_defs.h (all NCI constants & defines)
+  → nfc_ncif.c (ISO-DEP activation & ATS parsing)
+iso14443 (Rust):                      docs.rs/iso14443
+  → activation(), Pcd::connect() for RATS/ATS/I-block exchange
+hce-laboratory (C++):                 github.com/josevcm/hce-laboratory
+  → Full ISO-DEP card emulation + 165 compliance tests
+Strooom/PN7160 (C++):                 github.com/Strooom/PN7160
+  → Arduino driver lib, NCI command builder
+
+KEY CONSTANTS (linux_libnfc-nci nci_defs.h)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NCI_MTS_CMD (0x20)          | NCI_MTS_RSP (0x40)       | NCI_MTS_NTF (0x60)
+NCI_PBF_NO_OR_LAST (0x00)   | NCI_PBF_ST_CONT (0x10)
+NCI_PROTOCOL_ISO_DEP (0x04) | NCI_INTERFACE_ISO_DEP (0x02)
+NCI_DISCOVERY_TYPE_POLL_A (0x00) | NCI_RF_TECHNOLOGY_A (0x00)
+NCI_MAX_ATS_LEN (60)        | NCI_ISO_DEP_MAX_INFO (253)
+NCI_CID_MASK (0x0F)
+
+DOCUMENT VERSIONS (Current: October 2026)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+UM11495 (User Manual):        Rev 1.8, June 2026 — nxp.com/docs/.../UM11495.pdf
+PN7160 Datasheet:             Rev 4.2, July 2026 — nxp.com/docs/.../PN7160_PN7161.pdf
+AN13287 (Linux Porting):      Rev 1.1, Sep 2021  — nxp.com/doc/AN13287
+AN13288 (MCUXpresso):         Jun 2026           — nxp.com/doc/AN13288
+NCI Specification 2.0:        2017-03-30         — nfc-forum.org (members only)
+ISO/IEC 14443-3:              2018               — Standard requires purchase
+ISO/IEC 14443-4:              2018               — Standard requires purchase
+ISO/IEC 7816-3/4:             2013/2013          — Standard requires purchase
+
+EXAMPLE RUST CODE CITATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// Boot & VEN toggle
+fn power_up(&mut self) {
+    // PN7160 Datasheet §11.1.2: VEN < 0.4V = Hard Power-Down
+    self.ven.set_low();
+    sleep(10ms);
+    // PN7160 Datasheet §11.1.2.2: VEN > 2.4V → Standby → Active
+    self.ven.set_high();
+    // UM11495 §6.1 / NCI 2.0 §4.1.1: Send CORE_RESET_CMD
+    self.send(&[0x20, 0x00, 0x01, 0x00]);
+}
+
+// Parse ATS (ISO-DEP activation)
+fn parse_ats(&self, ats: &[u8]) {
+    // ISO 14443-4:2018 §5.2–5.3.7: ATS structure
+    let tl = ats[0];                    // Length (including TL)
+    let t0 = ats[1];                    // Format byte
+    let fsci = t0 & 0x0F;               // ISO 14443-4:2018 §5.2.3: Bits 3:0
+    let tb = ats[2];                    // TB(1) if t0 bit 5 set
+    let fwi = (tb >> 4) & 0x0F;         // ISO 14443-4:2018 §5.3.5: Bits 7:4
+}
+
+// Send I-block
+fn send_i_block(&mut self, payload: &[u8]) {
+    // ISO 14443-4:2018 §7.2.1: I-block format
+    let mut pcb = 0x00;                 // Start with I-block marker
+    pcb |= (self.block_num & 0x01);     // Bit 0: block number toggle
+    pcb |= if payload.len() > 253 { 0x20 } else { 0x00 }; // Bit 5: chaining
+    
+    let mut block = vec![pcb, self.cid];  // CID from ATS TC
+    block.extend_from_slice(payload);
+    
+    // Append CRC-A: ISO 14443-3:2018 §6.2.4
+    let crc = calculate_crc_a(&block);
+    block.extend_from_slice(&crc);
+    
+    self.send(&block);
+}
+
+// Handle WTX (Waiting Time eXtension)
+fn handle_wtx(&mut self, wtx_frame: &[u8]) {
+    // ISO 14443-4:2018 §7.4: WTX = S-block with WTXM multiplier
+    let wtxm = wtx_frame[2];             // INF field (1–59 multiplier)
+    let fwt_extended = self.fwt * wtxm as u32;  // Extend timeout
+    
+    // Send S-block ACK (no INF field)
+    let pcb = 0xF2;                      // S-block, DESELECT=0, no INF
+    self.send(&[pcb, self.cid, 0x02]);  // CRC will be added
+}
+
+// Receive and parse ISO-DEP block
+fn recv_block(&mut self) -> Result<Vec<u8>> {
+    let frame = self.recv()?;
+    
+    // ISO 14443-4:2018 §7.2: Parse PCB
+    let pcb = frame[0];
+    let block_type = (pcb >> 6) & 0x03;  // Bits 7:6
+    
+    match block_type {
+        0b00 => {  // I-block
+            // ISO 14443-4:2018 §7.2.1: Extract payload
+            let chaining = (pcb >> 5) & 0x01;
+            let block_num = pcb & 0x01;
+            let payload = &frame[2..frame.len()-2];  // Skip PCB, CID, CRC
+            Ok(payload.to_vec())
+        },
+        0b10 => {  // R-block (ACK/NAK)
+            // ISO 14443-4:2018 §7.2.2: Ack/Nak bit
+            let is_ack = (pcb >> 4) & 0x01 == 0;
+            Err(if is_ack { "R(ACK)" } else { "R(NAK)" })
+        },
+        0b11 => {  // S-block
+            // ISO 14443-4:2018 §7.2.3: WTX vs DESELECT
+            Err("S-block (control)")
+        },
+        _ => Err("Invalid block")
+    }
+}
+

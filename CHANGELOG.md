@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Docs** — `AGENTS.md` gains the nucula build flow section: the env var is `ESP_IDF_SDKCONFIG` (plain `SDKCONFIG` is silently ignored and the build silently falls back to stale cached defaults — including stale absolute paths from other working copies), the cmake-cache + `partitions.csv` copy ritual after sdkconfig changes, `elf2image` before `write-flash`, and the coredump read/decode commands.
 - **fmt** — workspace `cargo fmt` (Rust 1.92, the CI pin) applied; the `stm32-lint` format gate was red on `c3-port` since the pn7160-nci extraction commits.
 
+### Added — nucula CCID campaign archive (docs)
+
+- **`docs/nucula-campaign/`** — archived working documents from the October 2026 nucula bring-up campaign (the work that landed the ESP32-C3/PN7160 support on `main`): the campaign runbook with its append-only status log (hardware setup, build rules, phase plan, full debugging history), the PN7160/NCI/ISO-14443 spec citation map behind the `pn7160-nci` annotations, and its quick-reference companion. Preserved for future bring-ups; historical record, not maintained docs. The NXP `linux_libnfc-nci` reference clone is deliberately not vendored.
+
 ### Reversed — amp-embedded-common dissolved (necessity audit)
 
 - **T13 consumption reversed** — the existential necessity audit (`.omo/evidence/amp-necessity-audit.md`, 2026-08-31) found the repo served exactly one legal consumer (this one) and its crates were in-house parallel discovery, not library-sized work. All three rev-pinned git dependencies are removed and the modules restored in-repo behind the same paths — **zero call-site changes**: `dwt_watchdog` (329 lines + 14 tests) back to `firmware/ccid-firmware/src/dwt_watchdog.rs` via `pub mod dwt_watchdog;`, `Diagnostics` (28-byte frozen wire format + 12 tests) back to `crates/ccid-core/src/diagnostics.rs`, `InitRecoveryTracker` back inline in `firmware/esp32-ccid/src/mfrc522_driver.rs`.
