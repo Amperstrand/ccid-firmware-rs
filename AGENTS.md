@@ -337,6 +337,83 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
+## ESP32-C3 nucula Build Flow (issues #63/#64, ai-legion)
+
+The nucula (ESP32-C3 + PN7160) firmware builds with the nightly toolchain
+(`-Z build-std` in `firmware/esp32-ccid/.cargo/config.toml`; no rustup target
+needed). Build from `firmware/esp32-ccid/`:
+
+```bash
+source ~/.cargo/env && source ~/export-esp.sh
+export RUSTUP_TOOLCHAIN=nightly
+export ESP_IDF_SDKCONFIG="$PWD/sdkconfig.full"     # NOT plain SDKCONFIG!
+cargo build --target riscv32imc-esp-espidf --no-default-features \
+  --features pn7160-bringup,pn7160-verdict-b
+```
+
+### ⚠️ The env var is `ESP_IDF_SDKCONFIG`, not `SDKCONFIG`
+
+esp-idf-sys/embuild reads **`ESP_IDF_SDKCONFIG`**. A plain `SDKCONFIG` export
+is silently ignored and the build falls back to whatever sdkconfig defaults
+state is cached in the shared target dir — including STALE absolute paths
+from previous working copies (this machine's global
+`~/.cargo/config.toml` sets `target-dir = /root/.cargo-target`, shared by
+every checkout). Verify the active path after building:
+
+```bash
+python3 -c "import json,glob; print(json.load(open(glob.glob('/root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/esp-idf-build.json')[0]))['sdkconfig'])"
+```
+
+After changing `sdkconfig.full`, delete the cmake cache or the change is
+ignored, and re-copy the partition table (sdkconfig points at a relative
+`partitions.csv` inside the embuild out dir):
+
+```bash
+OUT=$(ls -d /root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out | head -1)
+rm -f "$OUT/build/CMakeCache.txt"
+cp partitions-ota.csv "$OUT/partitions.csv"
+```
+
+CMake rewrites `sdkconfig.full` in place (kconfig normalization — new symbols
+appear, deprecated ones migrate). That is expected.
+
+### Flash (esptool, elf2image required)
+
+esptool does not auto-convert Rust ELF output — `write-flash 0x40000 <elf>`
+fails with "will not fit in flash". Convert first:
+
+```bash
+esptool --chip esp32c3 elf2image --output app.bin \
+  /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid
+PORT=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
+esptool --chip esp32c3 -p $PORT --baud 460800 write-flash \
+  0x8000 /root/.cargo-target/riscv32imc-esp-espidf/debug/build/partition-table.bin \
+  0x40000 app.bin
+```
+
+Flash the partition table (`0x8000`) whenever `partitions-ota.csv` changed —
+flashing only the app leaves the old table on the board and the coredump
+component reports no partition.
+
+### Coredump decode (issue #64)
+
+The coredump partition (`coredump, data, coredump, 0x3F0000, 0x10000` in
+`partitions-ota.csv`, `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in
+`sdkconfig.full`) is verified end-to-end: panic → flash write → host decode.
+Read + decode with the embuild IDF copy and gdb-multiarch:
+
+```bash
+esptool --chip esp32c3 -p $PORT read-flash 0x3F0000 0x10000 coredump.bin
+VENV=/root/.cargo-target/.embuild/espressif/python_env/idf5.2_py3.12_env/bin/python
+$VENV /root/.cargo-target/.embuild/espressif/esp-idf/v5.2.3/components/espcoredump/espcoredump.py \
+  --chip esp32c3 info_corefile --core coredump.bin --core-format raw \
+  --gdb /usr/bin/gdb-multiarch \
+  /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid
+```
+
+GDB over the built-in USB-JTAG (same port): `openocd -f board/esp32c3-builtin.cfg`
++ `riscv32-esp-elf-gdb` — not yet installed on ai-legion (only gdb-multiarch).
+
 ## Known Gotchas
 
 ### 1. Submodule init is required
