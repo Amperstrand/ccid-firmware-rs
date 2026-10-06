@@ -6,11 +6,70 @@ on:
   pull_request:
     branches: [main]
 
+# A superseded run (new push to the same branch/PR) is cancelled instead of
+# burning a full obsolete matrix run behind the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      stm32: ${{ steps.filter.outputs.stm32 }}
+      esp32: ${{ steps.filter.outputs.esp32 }}
+      lint: ${{ steps.filter.outputs.lint }}
+    steps:
+      - uses: actions/checkout@v5
+      # Path sets follow what each job group actually consumes (esp32-ccid and
+      # host-tools are root-workspace members, so cross-effects exist):
+      # - stm32: ccid-firmware, shared crates, host-tools (its tests run via
+      #   `cargo test --workspace`), vendored synopsys-usb-otg patch, root
+      #   manifest/lock
+      # - esp32: esp32-ccid + its crates/ path deps, root manifest/lock
+      # - lint: paths only stm32-lint validates — Rust sources of any
+      #   workspace member (`cargo fmt --check` is workspace-wide), plus the
+      #   shell/python helpers it syntax-checks
+      # Jobs stay defined when filtered out (skipped == success for branch
+      # protection); only their execution is skipped.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            stm32:
+              - 'firmware/ccid-firmware/**'
+              - 'crates/**'
+              - 'host-tools/**'
+              - 'vendor/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            esp32:
+              - 'firmware/esp32-ccid/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            lint:
+              - 'firmware/ccid-firmware/**/*.rs'
+              - 'firmware/esp32-ccid/**/*.rs'
+              - 'crates/**/*.rs'
+              - 'host-tools/**/*.rs'
+              - 'firmware/esp32-ccid/*.sh'
+              - 'firmware/esp32-ccid/s_check_sdkconfig'
+              - 'tools/**'
+              - 'tests/**'
+              - 'host-tools/*.py'
+
   stm32-build:
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -73,6 +132,8 @@ jobs:
             ccid-firmware.hex.sha256
 
   esp32-build:
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true'
     # The esp32-ccid package had no CI coverage at all: broken builds for
     # individual variants (and silently-skipped sdkconfig defaults) only
     # surfaced on the bench. Builds every variant and runs the sdkconfig
@@ -109,14 +170,33 @@ jobs:
         run: |
           cargo install espup espflash ldproxy
 
-      - name: Cache espressif tools
+      # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
+      # C framework + Rust std (-Z build-std) there — the dominant ~80% of
+      # build time that previously recompiled on every run.
+      #
+      # Path note: esp32-ccid is a member of the ROOT cargo workspace, so its
+      # artifacts land in the repo-root target/ (same dir s_check_sdkconfig
+      # reads), NOT firmware/esp32-ccid/target.
+      #
+      # Budget note: GitHub evicts at 10 GB per repo (LRU). Each matrix entry
+      # stores a full target dir + ~/.espressif copy (~1-1.5 GB compressed
+      # each), so this table can hold ~4-5 GB on its own. Keep key inputs
+      # minimal; stale entries age out via LRU.
+      - name: Cache espressif tools + esp32 target dir
         uses: actions/cache@v4
         with:
           path: |
             ~/.espressif
             ~/.cargo/registry
             ~/.cargo/bin
-          key: espressif-${{ runner.os }}-v2
+            target
+          # Per-variant key on the esp32 manifest + workspace lock; fallback
+          # chain: any prior hash of the same variant, then the pre-target
+          # v2 tools-only cache (keeps the ~/.espressif benefit on misses).
+          key: espressif-${{ runner.os }}-v2-${{ matrix.name }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            espressif-${{ runner.os }}-v2-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v2
 
       - name: Install ESP toolchain
         run: |
@@ -146,6 +226,8 @@ jobs:
           ./s_check_sdkconfig
 
   stm32-lint:
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true' || needs.changes.outputs.lint == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-D warnings"
@@ -178,9 +260,12 @@ jobs:
       - name: Check shell syntax
         run: |
           bash -n tools/switch_role.sh \
-            firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig
+            firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig \
+            firmware/esp32-ccid/build.sh
 
   stm32-test:
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true'
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
@@ -205,6 +290,8 @@ jobs:
         run: cargo test --workspace --target x86_64-unknown-linux-gnu
 
   esp32-host-test:
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
