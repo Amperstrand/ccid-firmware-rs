@@ -54,6 +54,8 @@ pub fn init() {
 /// The UDP socket is only bound HERE, once the station has a lease:
 /// binding before `esp_netif`/lwIP bring-up asserts inside lwIP
 /// (`tcpip_send_msg_wait_sem: Invalid mbox`) and reboots the board.
+/// Repeat calls keep the first socket (SOCK is a OnceLock and the
+/// 0.0.0.0 bind survives IP changes); newer sockets are dropped.
 pub fn set_ip(ip: &str) {
     let _ = BOARD_IP.set(ip.to_string());
     let sock = UdpSocket::bind("0.0.0.0:0").ok();

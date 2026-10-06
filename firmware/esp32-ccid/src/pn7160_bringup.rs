@@ -1,9 +1,12 @@
 //! Post-verdict bring-up test: construct the PN7160 transport via the
-//! verdict-selected variant, run the NCI init ladder, then heartbeat
-//! card presence with ATR reads. Selected by `pn7160-bringup` (implies
-//! backend-pn7160 + board-nucula); the variant is one of the
-//! `pn7160-verdict-a/b/c` features. Without the feature, the
-//! backend-pn7160 main runs the pad-diag probe instead.
+//! verdict-selected variant, then run a health-check loop (issue #63)
+//! that probes I2C 0x28 every 5 s. While the chip NAKs, the result is
+//! logged — confirming whether it ever comes back after a power cycle.
+//! First ACK triggers the NCI init ladder; success enters the card
+//! heartbeat (ATR reads), failure VEN-re-cycles and keeps probing.
+//! Selected by `pn7160-bringup` (implies backend-pn7160 + board-nucula);
+//! the variant is one of the `pn7160-verdict-a/b/c` features. Without
+//! the feature, the backend-pn7160 main runs the pad-diag probe instead.
 
 use esp_idf_hal::delay::Ets;
 use esp_idf_hal::peripherals::Peripherals;
@@ -38,6 +41,21 @@ fn nfc_err(e: &NfcError) -> &'static str {
         NfcError::ExchangeFailed => "ExchangeFailed",
         NfcError::BufferTooSmall => "BufferTooSmall",
     }
+}
+
+const PROBE_INTERVAL_US: u32 = 5_000_000;
+const HEARTBEAT_PROBE_EVERY: u32 = 60;
+
+// Same verdict priority as VERDICT: C alone = extended timing; A or B =
+// the nci.c baseline cycle. Explicit cfg arms: a future verdict-d must
+// wire itself in here, not silently inherit the extended cycle.
+#[cfg(feature = "pn7160-verdict-c")]
+fn ven_retrigger(t: &mut EspPn7160Transport) {
+    t.ven_cycle_extended();
+}
+#[cfg(any(feature = "pn7160-verdict-a", feature = "pn7160-verdict-b"))]
+fn ven_retrigger(t: &mut EspPn7160Transport) {
+    t.ven_cycle();
 }
 
 pub fn run() -> ! {
@@ -99,38 +117,128 @@ pub fn run() -> ! {
         t
     };
 
-    let mut driver = match transport {
+    let transport = match transport {
         Ok(mut t) => {
             log::warn!("step: i2c bus scan...");
             t.i2c_scan();
-            Box::new(Pn7160NfcDriver::new(t))
+            t
         }
         Err(e) => {
             log::error!("pn7160-bringup: transport bring-up FAILED: {:?}", e);
+            // BusPins were consumed by the failed constructor — no driver
+            // can be rebuilt, so probing is impossible. Stay loud instead
+            // of silently dead (bolty-rs lessons-learned B5 pattern).
+            let mut dead: u32 = 0;
             loop {
-                Ets::delay_us(1_000_000);
+                dead += 1;
+                if dead % 30 == 1 {
+                    log::error!(
+                        "pn7160-bringup: transport dead ({}x5s) — power-cycle the board to retry",
+                        dead
+                    );
+                }
+                Ets::delay_us(5_000_000);
             }
         }
     };
 
-    match driver.init() {
-        Ok(()) => log::warn!("pn7160-bringup: NCI INIT LADDER OK — PN7160 ALIVE"),
-        Err(e) => log::error!("pn7160-bringup: init ladder FAILED: {}", nfc_err(&e)),
-    }
+    log::warn!(
+        "health: probing PN7160 @0x28 every {}s until it ACKs (issue #63)",
+        PROBE_INTERVAL_US / 1_000_000
+    );
 
+    // transport and driver are mutually exclusive owners of the I2C link:
+    // driver exists only between a successful init ladder and the next
+    // failed health probe.
+    let mut transport_slot = Some(transport);
+    let mut driver: Option<Box<Pn7160NfcDriver<EspPn7160Transport>>> = None;
     let mut atr = [0u8; 64];
-    let mut tick: u32 = 0;
+    let mut hb: u32 = 0;
+
     loop {
-        Ets::delay_us(1_000_000);
-        tick += 1;
-        if driver.is_card_present() {
-            match driver.power_on(&mut atr) {
-                Ok(n) => log::warn!("pn7160-bringup: CARD ATR[{}]: {:02x?}", n, &atr[..n]),
-                Err(e) => log::warn!("pn7160-bringup: power_on FAILED: {}", nfc_err(&e)),
+        if driver.is_none() {
+            Ets::delay_us(PROBE_INTERVAL_US);
+            hb += 1;
+            let t = transport_slot
+                .as_mut()
+                .expect("transport must exist while driver does not");
+            match t.probe() {
+                Err(e) => log::warn!("health[{}]: PN7160 @0x28 no-ack: {:?}", hb, e),
+                Ok(()) => {
+                    log::warn!(
+                        "health[{}]: PN7160 ACK @0x28 — chip is BACK, running init ladder",
+                        hb
+                    );
+                    let t = transport_slot
+                        .take()
+                        .expect("transport must exist while driver does not");
+                    let mut d = Box::new(Pn7160NfcDriver::new(t));
+                    match d.init() {
+                        Ok(()) => {
+                            log::warn!("pn7160-bringup: NCI INIT LADDER OK — PN7160 ALIVE");
+                            // Reset the heartbeat so the first mid-session
+                            // health probe fires exactly
+                            // HEARTBEAT_PROBE_EVERY seconds after session
+                            // start (hb ticks at different rates across
+                            // probe/heartbeat modes).
+                            hb = 0;
+                            driver = Some(d);
+                        }
+                        Err(e) => {
+                            log::error!(
+                                "pn7160-bringup: init ladder FAILED: {} — VEN re-cycle, keep probing",
+                                nfc_err(&e)
+                            );
+                            let mut t = d.into_transport();
+                            ven_retrigger(&mut t);
+                            transport_slot = Some(t);
+                        }
+                    }
+                }
             }
-            driver.power_off();
-        } else {
-            log::warn!("pn7160-bringup: hb {} no card", tick);
+            continue;
+        }
+
+        Ets::delay_us(1_000_000);
+        hb += 1;
+
+        if hb % HEARTBEAT_PROBE_EVERY == 0 {
+            let died = match driver.as_deref_mut() {
+                Some(d) => match d.transport_mut().probe() {
+                    Ok(()) => {
+                        log::warn!("health[{}]: PN7160 still ACKing", hb);
+                        false
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "health[{}]: PN7160 stopped ACKing mid-session: {:?} — back to probe loop",
+                            hb,
+                            e
+                        );
+                        true
+                    }
+                },
+                None => false,
+            };
+            if died {
+                let d = driver.take().expect("driver in heartbeat");
+                let mut t = d.into_transport();
+                ven_retrigger(&mut t);
+                transport_slot = Some(t);
+                continue;
+            }
+        }
+
+        if let Some(d) = driver.as_deref_mut() {
+            if d.is_card_present() {
+                match d.power_on(&mut atr) {
+                    Ok(n) => log::warn!("pn7160-bringup: CARD ATR[{}]: {:02x?}", n, &atr[..n]),
+                    Err(e) => log::warn!("pn7160-bringup: power_on FAILED: {}", nfc_err(&e)),
+                }
+                d.power_off();
+            } else {
+                log::warn!("pn7160-bringup: hb {} no card", hb);
+            }
         }
     }
 }
