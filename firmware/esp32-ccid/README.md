@@ -137,6 +137,66 @@ Or via cargo:
 cargo espflash flash --monitor target/xtensa-esp32-espidf/release/esp32-ccid
 ```
 
+## ESP-IDF Rust toolchain and bring-up builds (verified on ai-legion, 2026-10)
+
+The esp-idf targets (`riscv32imc-esp-espidf`, `xtensa-esp32-espidf`) have **no
+precompiled std** — esp-idf-sys builds std from source via `-Zbuild-std`, so
+`rustup target add` is not applicable. Per-target toolchains:
+
+- **ESP32-C3 / Nucula (RISC-V):** `RUSTUP_TOOLCHAIN=nightly` with `rustup component add rust-src`
+- **ESP32 / M5Stick (Xtensa):** `RUSTUP_TOOLCHAIN=esp` (installed by `espup install --targets esp32,esp32c3`, which also writes `~/export-esp.sh`)
+
+```bash
+source ~/export-esp.sh   # LIBCLANG_PATH (esp-clang) + Xtensa GCC
+cd firmware/esp32-ccid
+
+# C3 / Nucula PN7160 bring-up
+RUSTUP_TOOLCHAIN=nightly \
+ESP_IDF_SDKCONFIG=$PWD/sdkconfig.full \
+NUCULA_WIFI_SSID="<ssid>" NUCULA_WIFI_PASS="<pass>" \
+cargo build --target riscv32imc-esp-espidf \
+  --no-default-features --features pn7160-bringup,pn7160-verdict-b
+
+# M5Stick / MFRC522 CCID
+RUSTUP_TOOLCHAIN=esp \
+ESP_IDF_SDKCONFIG=$PWD/sdkconfig-xtensa.full \
+NUCULA_WIFI_SSID="<ssid>" NUCULA_WIFI_PASS="<pass>" \
+cargo build --release --target xtensa-esp32-espidf \
+  --no-default-features --features backend-mfrc522,board-m5stick
+```
+
+Gotchas verified the hard way:
+
+- **`ESP_IDF_SDKCONFIG`, not `SDKCONFIG`** — esp-idf-sys 0.37 only reads the
+  `ESP_IDF_*`-prefixed variables. With the bare name the build silently falls
+  back to ESP-IDF defaults (no 32 KB main-task stack, task WDT on).
+- **Partition CSV resolution** — `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"`
+  is resolved by the ESP-IDF CMake against the cargo target-dir root, not the
+  crate: `cp partitions-ota.csv ~/.cargo-target/partitions.csv` (and re-copy
+  into `<target>/…/esp-idf-sys-*/out/partitions.csv` after wiping a build dir).
+- **esptool needs a converted image** — the extension-less cargo ELF is written
+  raw ("will not fit in flash"); run `esptool --chip esp32c3 elf2image` first.
+- **WiFi credentials are baked by `option_env!`** — tracked as compilation
+  inputs via `build.rs` `rerun-if-env-changed` (`00b36a0`); a plain rebuild
+  picks up changed credentials. (On older checkouts without that fix, touch
+  the main that reads them before a credential change.)
+
+Flash (esptool; C3 console is the same USB-Serial/JTAG CDC port):
+
+```bash
+# C3 / Nucula — ota_0 slot of the OTA table, 4 MB flash
+esptool --chip esp32c3 elf2image -o /tmp/c3.bin <target-dir>/riscv32imc-esp-espidf/debug/esp32-ccid
+esptool --chip esp32c3 -p /dev/serial/by-id/<espressif-jtag-port> --baud 460800 write-flash 0x40000 /tmp/c3.bin
+
+# M5Stick — factory slot of the on-device table (nvs@0x9000, factory@0x30000/3904K)
+esptool --chip esp32 elf2image -o /tmp/m5.bin <target-dir>/xtensa-esp32-espidf/release/esp32-ccid
+esptool --chip esp32 -p /dev/serial/by-id/<m5stick-port> --baud 115200 write-flash 0x30000 /tmp/m5.bin
+```
+
+On a failed station connect the firmware now scans and logs every visible AP
+(SSID/channel/RSSI/auth) — distinguishes "target SSID out of range from this
+board" from association/auth failures without host-side tooling.
+
 ## Host setup
 
 ### 1. Install pcscd and drivers
