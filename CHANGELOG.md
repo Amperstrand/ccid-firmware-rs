@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — nucula CCID serving core extracted + host tests
+
+- **`ccid_serial_server` module** — the `pn7160-ccid` USB-CDC main loop's serving logic (frame echo, response framing via `ccid-transport-serial`, interval-gated card polling) extracted into a host-testable module with 8 unit tests: round-trip echo + framed response, LRC validity, corrupt-frame recovery, garbage tolerance, poll gating on GetSlotStatus and read-idle, first-poll-after-interval semantics, and ATR delivery through IccPowerOn. Wire behavior preserved: parse errors remain silently dropped (the divergence from the NAK-ing UART main is documented in-module); the echo now carries only the parsed frame bytes (leading garbage skipped); the unreachable manual overflow-NAK path (the frame parser rejects oversized payloads at header time) is removed together with its dead `record_nak` call.
+- **`CcidHandler::driver_mut()`** — mutable driver accessor for health probing/recovery and test instrumentation.
+- **`MockNfcDriver`** — presence-poll counter; `poll_card_presence` now routes through `is_card_present()` so presence polls are observable in tests.
+- ESP32 host tests: 72 → 80.
+
 ### Changed — CI build pipeline speed + DRY (issue #69)
 
 - **esp32-build target-dir caching** — the esp32-build matrix (~8 min/job) restored `~/.espressif` but never the cargo target dir, where esp-idf-sys compiles the whole ESP-IDF C framework + Rust std (`-Z build-std`) — the dominant ~80% of build time recompiled on every run, on 3 separate runners. The espressif cache block now also caches the repo-root `target/` (esp32-ccid is a root-workspace member, so artifacts land there — the same dir `s_check_sdkconfig` reads — not `firmware/esp32-ccid/target`), keyed per matrix variant on the esp32 manifest + workspace lock, with a restore-key chain back to the v2 tools-only cache. Warm-path expectation: ~8 → ~2–3 min per job. Budget note in-workflow: 3 variants ≈ 4–6 GB compressed of GitHub's 10 GB/repo LRU cache.

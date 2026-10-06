@@ -262,6 +262,12 @@ The included `setup.sh` automates the host setup:
 | `ccid_types.rs` | CCID message structs, RDR_to_PC slot status, data rates |
 | `pn532_driver.rs` | PN532 SPI driver: SAM configuration, InListPassiveTarget, InDataExchange (PN532 backend) |
 | `mfrc522_driver.rs` | MFRC522 NFC driver: ISO 14443-4 APDU via iso14443 crate (MFRC522 backend) |
+| `pn7160_driver.rs` | PN7160 NCI driver over `pn7160-nci` (nucula backend) |
+| `pn7160_i2c.rs` | PN7160 I2C + VEN/IRQ transport, verdict-selectable bring-up constructors (target-only) |
+| `pn7160_bringup.rs` | PN7160 bring-up mains: NCI init ladder + card heartbeat (target-only) |
+| `pn7160_ccid.rs` | nucula CCID main: serves CCID over the USB-Serial/JTAG CDC port (target-only) |
+| `ccid_serial_server.rs` | Host-testable GemPC serial CCID serving core: echo, framed response, interval-gated card polling (shared by the USB-CDC main) |
+| `wifi.rs`/`ota.rs`/`netlog.rs` | WiFi station, OTA update, UDP logging for serial-free bring-up (target-only) |
 | `mfrc522_transceiver.rs` | PcdTransceiver bridge between mfrc522 crate and iso14443 (MFRC522 backend) |
 | `led.rs` | M5Stack Atom LED status display (WS2812 RMT driver, 5×5 grid patterns) |
 | `nfc.rs` | NFC card management: card detection, ATR generation, APDU relay |
@@ -296,7 +302,7 @@ Host-side unit tests (no hardware required):
 cargo test --target x86_64-unknown-linux-gnu
 ```
 
-75 tests covering serial framing, CCID message parsing, NFC logic, LED pattern logic, and MFRC522 transceiver bridging.
+80 tests covering serial framing, CCID message parsing, NFC logic, LED pattern logic, MFRC522 transceiver bridging, and the GemPC serial CCID serving core (echo/response framing, poll gating).
 
 ## Known limitations
 
