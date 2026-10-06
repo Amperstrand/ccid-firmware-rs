@@ -80,7 +80,10 @@ pub fn run() -> ! {
                         crate::netlog::set_ip(&ip);
                         crate::ota::spawn();
                     }
-                    Err(e) => log::warn!("wifi: connect failed: {}", e),
+                    Err(e) => {
+                        log::warn!("wifi: connect failed: {}", e);
+                        m.log_visible_aps();
+                    }
                 },
                 Err(e) => log::warn!("wifi: manager init failed: {}", e),
             }

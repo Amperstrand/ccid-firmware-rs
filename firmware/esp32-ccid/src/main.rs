@@ -411,7 +411,10 @@ fn main() {
                         esp32_ccid::netlog::set_ip(&ip);
                         esp32_ccid::ota::spawn();
                     }
-                    Err(e) => log::warn!("wifi: connect failed: {}", e),
+                    Err(e) => {
+                        log::warn!("wifi: connect failed: {}", e);
+                        m.log_visible_aps();
+                    }
                 },
                 Err(e) => log::warn!("wifi: manager init failed: {}", e),
             }

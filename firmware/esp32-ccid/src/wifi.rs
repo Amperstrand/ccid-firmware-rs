@@ -102,4 +102,26 @@ impl WifiManager {
         }
         Err(WifiError::NoLease)
     }
+
+    /// Scan and log every AP visible from the board. Called after a failed
+    /// connect so the bench log answers "is the target SSID even visible
+    /// here?" (range/band/SSID-typo) without a serial link or a host-side
+    /// scan from a different antenna.
+    pub fn log_visible_aps(&mut self) {
+        match self.wifi.scan_n::<16>() {
+            Ok((aps, total)) => {
+                log::warn!("wifi: scan: {} AP(s) visible", total);
+                for ap in aps.iter() {
+                    log::warn!(
+                        "wifi:   ssid=\"{}\" ch={} rssi={} dBm auth={:?}",
+                        ap.ssid,
+                        ap.channel,
+                        ap.signal_strength,
+                        ap.auth_method
+                    );
+                }
+            }
+            Err(e) => log::warn!("wifi: scan failed: {}", e),
+        }
+    }
 }
