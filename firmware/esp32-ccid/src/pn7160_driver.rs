@@ -7,8 +7,8 @@
 //! binding (I2C transport + VEN) as the only verdict-dependent piece.
 
 use crate::nfc::{NfcDriver, PresenceState};
-use pn7160_nci::Transport;
 use pn7160_nci::driver::{Error as CoreError, Pn7160Driver};
+use pn7160_nci::Transport;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NfcError {
@@ -70,12 +70,10 @@ impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
         self.inner.power_off()
     }
 
-    fn transmit_apdu(
-        &mut self,
-        command: &[u8],
-        response: &mut [u8],
-    ) -> Result<usize, NfcError> {
-        self.inner.transmit_apdu(command, response).map_err(NfcError::from)
+    fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, NfcError> {
+        self.inner
+            .transmit_apdu(command, response)
+            .map_err(NfcError::from)
     }
 
     fn session_active(&self) -> bool {

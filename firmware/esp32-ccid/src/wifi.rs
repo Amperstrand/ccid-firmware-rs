@@ -114,7 +114,10 @@ impl WifiManager {
                 for ap in aps.iter() {
                     log::warn!(
                         "wifi:   ssid=\"{}\" ch={} rssi={} dBm auth={:?}",
-                        ap.ssid, ap.channel, ap.signal_strength, ap.auth_method
+                        ap.ssid,
+                        ap.channel,
+                        ap.signal_strength,
+                        ap.auth_method
                     );
                 }
             }

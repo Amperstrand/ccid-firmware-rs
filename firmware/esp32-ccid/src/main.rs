@@ -405,19 +405,19 @@ fn main() {
     ) {
         (Some(ssid), Some(pass)) => {
             let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().expect("nvs partition");
-                match esp32_ccid::wifi::WifiManager::new(peripherals.modem, nvs) {
-                    Ok(mut m) => match m.connect(ssid, pass) {
-                        Ok(ip) => {
-                            esp32_ccid::netlog::set_ip(&ip);
-                            esp32_ccid::ota::spawn();
-                        }
-                        Err(e) => {
-                            log::warn!("wifi: connect failed: {}", e);
-                            m.log_visible_aps();
-                        }
-                    },
-                    Err(e) => log::warn!("wifi: manager init failed: {}", e),
-                }
+            match esp32_ccid::wifi::WifiManager::new(peripherals.modem, nvs) {
+                Ok(mut m) => match m.connect(ssid, pass) {
+                    Ok(ip) => {
+                        esp32_ccid::netlog::set_ip(&ip);
+                        esp32_ccid::ota::spawn();
+                    }
+                    Err(e) => {
+                        log::warn!("wifi: connect failed: {}", e);
+                        m.log_visible_aps();
+                    }
+                },
+                Err(e) => log::warn!("wifi: manager init failed: {}", e),
+            }
         }
         _ => log::warn!("wifi: no credentials baked in - CCID only"),
     }

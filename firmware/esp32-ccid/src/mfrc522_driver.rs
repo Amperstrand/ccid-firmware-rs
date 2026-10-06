@@ -36,7 +36,10 @@ impl InitRecoveryTracker {
     }
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 const CARD_ABSENT_THRESHOLD: u8 = 3;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -77,16 +80,28 @@ impl NfcDriver for Mfrc522NfcDriver {
     }
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use embedded_hal::i2c::I2c;
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use esp_idf_hal::delay::FreeRtos;
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CardLifecycle {
     NoCard,
@@ -94,7 +109,10 @@ enum CardLifecycle {
     ActiveSession,
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 pub struct Mfrc522NfcDriver<I2C: I2c> {
     transceiver: mfrc522_pcd::Mfrc522Transceiver<I2C>,
     is_initialized: bool,
@@ -108,7 +126,10 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
     cached_uid_len: usize,
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 impl<I2C> Mfrc522NfcDriver<I2C>
 where
     I2C: I2c,
@@ -246,7 +267,13 @@ where
     }
 }
 
-#[cfg(any(test, all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522")))]
+#[cfg(any(
+    test,
+    all(
+        any(target_arch = "xtensa", target_arch = "riscv32"),
+        feature = "backend-mfrc522"
+    )
+))]
 fn build_pcsc_atr_from_historical(
     historical: &[u8],
     atr_buf: &mut [u8],
@@ -272,12 +299,18 @@ fn build_pcsc_atr_from_historical(
     Ok(atr_len)
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 fn build_pcsc_atr(ats: &Ats, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
     build_pcsc_atr_from_historical(ats.historical_bytes.as_slice(), atr_buf)
 }
 
-#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 impl<I2C> NfcDriver for Mfrc522NfcDriver<I2C>
 where
     I2C: I2c,
