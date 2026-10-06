@@ -411,8 +411,36 @@ $VENV /root/.cargo-target/.embuild/espressif/esp-idf/v5.2.3/components/espcoredu
   /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid
 ```
 
-GDB over the built-in USB-JTAG (same port): `openocd -f board/esp32c3-builtin.cfg`
-+ `riscv32-esp-elf-gdb` — not yet installed on ai-legion (only gdb-multiarch).
+GDB over the built-in USB-JTAG (same port) — **verified end-to-end on
+ai-legion (issue #64)**: hardware breakpoint on `i2c_master_cmd_begin`
+hit within one 5 s health-probe cycle with a fully symbolized backtrace
+(IDF C → esp-idf-hal → `EspPn7160Transport::probe` → bring-up main) and
+live argument values, target resumed cleanly.
+
+Toolchain on ai-legion:
+- openocd: Debian's `openocd` 0.12 package LACKS `target/esp32c3.cfg` and
+  `interface/esp_usb_jtag.cfg` — use Espressif's build:
+  `https://github.com/espressif/openocd-esp32/releases` (tarball extracted
+  to `/opt/espressif/openocd-esp32`).
+- gdb: `gdb-multiarch` works as the client (no riscv32-esp-elf-gdb needed —
+  it also decodes coredumps, see above).
+
+```bash
+/opt/espressif/openocd-esp32/bin/openocd -f board/esp32c3-builtin.cfg &  # gdb server :3333, telnet :4444
+# Halt via the telnet command port BEFORE attaching gdb — attaching to a
+# running target yields bogus registers (pc/sp zeros):
+python3 -c "import socket,time; s=socket.create_connection(('localhost',4444)); s.sendall(b'halt\n'); time.sleep(1)"
+gdb-multiarch -q -batch \
+  -ex "file /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid" \
+  -ex "target remote :3333" \
+  -ex "break i2c_master_cmd_begin" -ex "continue" -ex "bt" -ex "detach"
+python3 -c "import socket,time; s=socket.create_connection(('localhost',4444)); s.sendall(b'resume\n')"  # leave it running
+```
+
+Note: small firmware fns (`probe()`) are inlined at this opt level — break on
+a non-inlined callee (`i2c_master_cmd_begin`, `I2cDriver::write`) instead.
+After openocd exits the USB-JTAG CDC re-enumerates; the next serial open can
+block for a few seconds.
 
 ## Known Gotchas
 
