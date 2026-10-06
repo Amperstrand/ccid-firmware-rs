@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# A superseded run (new push to the same branch/PR) is cancelled instead of
+# burning a full obsolete matrix run behind the newest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -109,14 +115,33 @@ jobs:
         run: |
           cargo install espup espflash ldproxy
 
-      - name: Cache espressif tools
+      # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
+      # C framework + Rust std (-Z build-std) there — the dominant ~80% of
+      # build time that previously recompiled on every run.
+      #
+      # Path note: esp32-ccid is a member of the ROOT cargo workspace, so its
+      # artifacts land in the repo-root target/ (same dir s_check_sdkconfig
+      # reads), NOT firmware/esp32-ccid/target.
+      #
+      # Budget note: GitHub evicts at 10 GB per repo (LRU). Each matrix entry
+      # stores a full target dir + ~/.espressif copy (~1-1.5 GB compressed
+      # each), so this table can hold ~4-5 GB on its own. Keep key inputs
+      # minimal; stale entries age out via LRU.
+      - name: Cache espressif tools + esp32 target dir
         uses: actions/cache@v4
         with:
           path: |
             ~/.espressif
             ~/.cargo/registry
             ~/.cargo/bin
-          key: espressif-${{ runner.os }}-v2
+            target
+          # Per-variant key on the esp32 manifest + workspace lock; fallback
+          # chain: any prior hash of the same variant, then the pre-target
+          # v2 tools-only cache (keeps the ~/.espressif benefit on misses).
+          key: espressif-${{ runner.os }}-v2-${{ matrix.name }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock') }}
+          restore-keys: |
+            espressif-${{ runner.os }}-v2-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v2
 
       - name: Install ESP toolchain
         run: |
