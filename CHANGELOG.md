@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Verified — GDB over built-in USB-JTAG (issue #64, second half)
+
+- **Live GDB debugging proven on ai-legion** — Espressif's `openocd-esp32` (Debian's openocd 0.12 lacks `esp32c3.cfg`/`esp_usb_jtag.cfg`) + `gdb-multiarch` as client. A hardware breakpoint on `i2c_master_cmd_begin` hit within one 5 s health-probe cycle with a fully symbolized backtrace (`i2c_master_cmd_begin` → `I2cDriver::write (addr=0x28)` → `EspPn7160Transport::probe` → `pn7160_bringup::run` → `main`) and live argument values; the target resumed cleanly and the health loop continued undisturbed. With this, both halves of issue #64 are done: coredump-to-flash (merged in #68) and real-time GDB. Verified procedure recorded in `AGENTS.md` ("Coredump decode" section tail).
+
 ### Added — nucula crash forensics + PN7160 health monitoring (issues #64, #63)
 
 - **Coredump-to-flash (issue #64)** — new `coredump` data partition at `0x3F0000..0x400000` (last 64 KB of the 4 MB flash, past both OTA slots) in `firmware/esp32-ccid/partitions-ota.csv`, plus `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` and `CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y` in `sdkconfig.full`. Verified end-to-end on the nucula board: deliberate panic → flash write → `esptool read-flash 0x3F0000` → `espcoredump.py info_corefile` decode via gdb-multiarch, yielding the panic reason and symbolized frames (`panic_abort` → `esp_system_abort` → `std::sys::pal::unix::abort_internal`). Decode procedure documented in `AGENTS.md` ("Coredump decode"). Note: the partition table (`0x8000`) must be reflashed alongside the app whenever `partitions-ota.csv` changes.
