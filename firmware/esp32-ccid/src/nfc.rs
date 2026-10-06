@@ -98,6 +98,8 @@ pub struct MockNfcDriver {
     session_active: bool,
     /// UID returned by card_uid() (empty = no UID known)
     uid: Vec<u8>,
+    /// Test instrumentation: number of is_card_present() calls.
+    poll_count: u32,
 }
 
 impl MockNfcDriver {
@@ -115,7 +117,13 @@ impl MockNfcDriver {
             initialized: false,
             session_active: false,
             uid: Vec::new(),
+            poll_count: 0,
         }
+    }
+
+    /// Test instrumentation: number of presence polls performed.
+    pub fn poll_count(&self) -> u32 {
+        self.poll_count
     }
 
     pub fn set_uid(&mut self, uid: &[u8]) {
@@ -140,16 +148,16 @@ impl NfcDriver for MockNfcDriver {
     }
 
     fn is_card_present(&mut self) -> bool {
+        self.poll_count += 1;
         self.card_present
     }
 
     fn poll_card_presence(&mut self) -> PresenceState {
-        if !self.card_present {
+        let present = self.is_card_present();
+        if !present {
             self.session_active = false;
         }
-        PresenceState {
-            present: self.card_present,
-        }
+        PresenceState { present }
     }
 
     fn session_active(&self) -> bool {

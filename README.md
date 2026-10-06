@@ -12,6 +12,7 @@ Current supported hardware combinations:
 | STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | Primary | Wired CCID over USB |
 | ESP32 (M5Stack Atom Matrix) | MFRC522 over I2C | Primary | NFC CCID over GemPC Twin serial protocol |
 | ESP32 dev boards | PN532 over SPI | Secondary | Kept supported, but current focus is MFRC522 |
+| ESP32-C3 (nucula board) | PN7160 over I2C | Experimental | CCID protocol layer verified over USB-CDC (13/13 on-target tests, `pn7160-ccid`); card-level NFC blocked on PN7160 hardware inspection (issue #63) |
 
 Near-term direction:
 
