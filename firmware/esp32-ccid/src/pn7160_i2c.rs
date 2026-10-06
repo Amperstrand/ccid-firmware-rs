@@ -7,7 +7,6 @@
 use esp_idf_hal::delay::Ets;
 use esp_idf_hal::gpio::{Input, Output, PinDriver, Pull};
 use esp_idf_hal::i2c::{I2cConfig, I2cDriver};
-use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::units::Hertz;
 use esp_idf_sys::EspError;
 
@@ -120,8 +119,9 @@ impl EspPn7160Transport {
         f
     }
 
-    /// VEN power cycle, byte-exact vs nci.c:77-86.
-    fn ven_cycle(&mut self) {
+    /// VEN power cycle, byte-exact vs nci.c:77-86. Public: the bring-up
+    /// health loop re-applies it before every init-ladder retry.
+    pub fn ven_cycle(&mut self) {
         log::warn!("step: ven_cycle begin");
         let _ = self.ven.set_high();
         Ets::delay_us(10_000);
@@ -132,7 +132,7 @@ impl EspPn7160Transport {
         log::warn!("step: ven_cycle done");
     }
 
-    fn ven_cycle_extended(&mut self) {
+    pub fn ven_cycle_extended(&mut self) {
         let _ = self.ven.set_high();
         Ets::delay_us(10_000);
         let _ = self.ven.set_low();
@@ -163,6 +163,14 @@ impl EspPn7160Transport {
             log::warn!("rf body[{}]: {:02x?}", plen, &pkt[3..3 + plen.min(16)]);
         }
         Frame::decode(&pkt[..3 + plen])
+    }
+
+    /// Single-address health check (issue #63): zero-length write to the
+    /// PN7160. Ok(()) = chip ACKs (powered and off the DWL boot), Err =
+    /// NAK/timeout (chip mute — the current hardware symptom). This is the
+    /// one-address form of `i2c_scan`, cheap enough for a periodic loop.
+    pub fn probe(&mut self) -> Result<(), EspError> {
+        self.i2c.write(PN7160_I2C_ADDR, &[], I2C_TIMEOUT_TICKS)
     }
 
     /// Probe 0x01..=0x7F with zero-length writes; log every ACK and
