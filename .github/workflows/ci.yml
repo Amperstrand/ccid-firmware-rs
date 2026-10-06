@@ -10,7 +10,12 @@ on:
 # burning a full obsolete matrix run behind the newest commit.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel only superseded PR runs (force-push trains). Main-push runs must
+  # ALWAYS complete: their esp32 jobs save the main-scoped target-dir caches
+  # every later PR restores from — cancelling one mid-flight (observed: #72's
+  # docs-only push killed #73's merge run at 1m43s, before any cache save)
+  # silently keeps the whole matrix cache-cold.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
