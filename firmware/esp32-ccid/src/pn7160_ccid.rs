@@ -13,6 +13,7 @@ use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
 use crate::ccid_serial_server::{CcidSerialServer, ServeAction};
+use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
 use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
 
