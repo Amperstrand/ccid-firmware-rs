@@ -47,8 +47,9 @@ const PROBE_INTERVAL_US: u32 = 5_000_000;
 const HEARTBEAT_PROBE_EVERY: u32 = 60;
 
 // Same verdict priority as VERDICT: C alone = extended timing; A or B =
-// the nci.c baseline cycle.
-#[cfg(not(any(feature = "pn7160-verdict-a", feature = "pn7160-verdict-b")))]
+// the nci.c baseline cycle. Explicit cfg arms: a future verdict-d must
+// wire itself in here, not silently inherit the extended cycle.
+#[cfg(feature = "pn7160-verdict-c")]
 fn ven_retrigger(t: &mut EspPn7160Transport) {
     t.ven_cycle_extended();
 }
@@ -172,6 +173,12 @@ pub fn run() -> ! {
                     match d.init() {
                         Ok(()) => {
                             log::warn!("pn7160-bringup: NCI INIT LADDER OK — PN7160 ALIVE");
+                            // Reset the heartbeat so the first mid-session
+                            // health probe fires exactly
+                            // HEARTBEAT_PROBE_EVERY seconds after session
+                            // start (hb ticks at different rates across
+                            // probe/heartbeat modes).
+                            hb = 0;
                             driver = Some(d);
                         }
                         Err(e) => {

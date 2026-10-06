@@ -45,6 +45,10 @@ impl<T: Transport> Pn7160NfcDriver<T> {
     }
 
     /// I2C health probe without giving up the driver (issue #63).
+    ///
+    /// The link is borrowed raw: only stateless operations (zero-length
+    /// probe writes) are safe while a session is active — a raw NCI
+    /// transact here would desync the driver's state machine.
     pub fn transport_mut(&mut self) -> &mut T {
         self.inner.transport_mut()
     }
