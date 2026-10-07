@@ -214,8 +214,10 @@ jobs:
       # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
       # C framework + Rust std (-Z build-std) there — the dominant ~80% of
       # build time that previously recompiled on every run. embuild's IDF
-      # clone + self-provisioned tools also live under target/.embuild
-      # (sim-verified), so this one path covers them.
+      # clone + self-provisioned tools ride along BUT in one of TWO places
+      # depending on the flow (Codex review on #76): the nightly/C3 path puts
+      # them under target/.embuild, the espup/Xtensa path under the repo-root
+      # .embuild — both paths are cached.
       #
       # Path note: esp32-ccid is a member of the ROOT cargo workspace, so its
       # artifacts land in the repo-root target/ (same dir s_check_sdkconfig
@@ -233,6 +235,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/bin
             target
+            .embuild
           # Per-variant key on the esp32 manifest + workspace lock; fallback
           # chain: any prior hash of the same variant, then the pre-target
           # tools-only cache (keeps the ~/.espressif benefit on misses).
