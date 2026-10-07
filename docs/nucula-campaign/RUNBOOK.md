@@ -33,9 +33,13 @@ required. Do not give up until fully working.
 
 ## Build rules (hard-won)
 
-1. ALWAYS build esp32-ccid via firmware/esp32-ccid/flash_and_test.sh or export
-   ESP_IDF_SDKCONFIG_DEFAULTS yourself - bare cargo build = 3.5KB stack = boot-loop
-   (BUILDING.md warning, s_check_sdkconfig gate, 32KB main stack required).
+1. ALWAYS build esp32-ccid via `firmware/esp32-ccid/build.sh <c3|m5stick|m5atom>`
+   — it exports the right sdkconfig per board (the C3/nucula flow needs
+   `ESP_IDF_SDKCONFIG=sdkconfig.full` + the `ESP_IDF_GLOB_PARTCSV_*` pair on
+   the nightly `riscv32imc-esp-espidf` target). A bare cargo build without
+   those env vars = 3.5KB stack = boot-loop (BUILDING.md warning,
+   s_check_sdkconfig gate, 32KB main stack required). The older
+   `flash_and_test.sh` path is the Xtensa/M5Stack CI-defaults flow only.
 2. Builds on ai-legion (or repo GitHub CI). Flash+test locally.
 3. C3 target: riscv32imc-esp-espidf. Nucula console MUST be USB-Serial/JTAG
    (CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG) - no UART bridge on the board.

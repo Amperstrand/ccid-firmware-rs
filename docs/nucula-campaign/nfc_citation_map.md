@@ -64,11 +64,11 @@
 
 | Element | Spec Document | Section | Details |
 |---------|---------------|---------|---------|
-| CORE_RESET_CMD | NCI 2.0 Spec | §4.1.1 | Reset controller, retrieve capabilities |
-| CORE_RESET_RSP | NCI 2.0 Spec | §4.1.2 | Response confirms reset success |
-| CORE_RESET_NTF | NCI 2.0 Spec | §4.1.3 | Async notification with FW info, model ID |
-| CORE_INIT_CMD | NCI 2.0 Spec | §4.2.1 | Initialize NFCC, enable RF discovery |
-| CORE_INIT_RSP | NCI 2.0 Spec | §4.2.2 | Provides supported interfaces, protocols, techs |
+| CORE_RESET_CMD | NCI 2.0 Spec | §5.1.1 | Reset controller, retrieve capabilities |
+| CORE_RESET_RSP | NCI 2.0 Spec | §5.1.1 | Response confirms reset success |
+| CORE_RESET_NTF | NCI 2.0 Spec | §5.1.1 | Async notification with FW info, model ID |
+| CORE_INIT_CMD | NCI 2.0 Spec | §5.1.2 | Initialize NFCC, enable RF discovery |
+| CORE_INIT_RSP | NCI 2.0 Spec | §5.1.2 | Provides supported interfaces, protocols, techs |
 | CORE_INIT_RSP Offset for Interface Count | linux_libnfc-nci | nci_defs.h L81 | `#define NCI_CORE_INIT_RSP_OFFSET_NUM_INTF 0x05` |
 | NCI 2.0 Differences from 1.0 | UM11495 | §3.4 | Feature matrix: PN7160 support details |
 
@@ -76,9 +76,9 @@
 
 | Element | Spec Document | Section | Details |
 |---------|---------------|---------|---------|
-| CORE_SET_CONFIG_CMD | NCI 2.0 Spec | §4.3.1 | Set NFCC parameters (1–N config items) |
-| CORE_GET_CONFIG_CMD | NCI 2.0 Spec | §4.3.2 | Retrieve current NFCC parameters |
-| CORE_SET_CONFIG_RSP | NCI 2.0 Spec | §4.3.1 | Confirms set operation / error status |
+| CORE_SET_CONFIG_CMD | NCI 2.0 Spec | §5.1.3 | Set NFCC parameters (1–N config items) |
+| CORE_GET_CONFIG_CMD | NCI 2.0 Spec | §5.1.4 | Retrieve current NFCC parameters |
+| CORE_SET_CONFIG_RSP | NCI 2.0 Spec | §5.1.3 | Confirms set operation / error status |
 | Total Discovery Duration Param | UM11495 | §6.2 Example | CORE_SET_CONFIG: 0x00 (TOTAL_DURATION) |
 | PN7160 Proprietary Extensions | UM11495 | §5 | NXP-NCI extensions beyond NCI 2.0 std |
 
@@ -151,7 +151,7 @@
 | RATS Handling | ISO 14443-4:2018 | §5.1–5.2 | Request for Answer to Select (Type A) |
 | **ATS Structure** | ISO 14443-4:2018 | §5.2–5.3.7 | Length (TL) + T0 (format) + TA/TB/TC + historical |
 | ATS T0 Byte Format | ISO 14443-4:2018 | §5.2.3 | Bits 7–5: TA/TB/TC presence, bits 3–0: FSCI |
-| FSCI Coding (Frame Size Card Integer) | ISO 14443-4:2018 | Table 1 | 0x0=16, 0x1=24, 0x2=32, ..., 0xC=4096 bytes |
+| FSCI Coding (Frame Size Card Integer) | ISO 14443-4:2018 | Table 1 | 0x0–0x8 = 16, 24, 32, 40, 48, 64, 96, 128, 256 bytes; 0x9–0xF RFU |
 | ATS TA(1) Byte | ISO 14443-4:2018 | §5.3.4 | Bit rate capabilities (DR/DS), FO flag |
 | ATS TB(1) Byte | ISO 14443-4:2018 | §5.3.5 | FWI (Frame Waiting time Integer), SFGI, CID support |
 | ATS TC(1) Byte | ISO 14443-4:2018 | §5.3.6 | CID + NAD support flags |
@@ -187,7 +187,7 @@
 
 | Element | Spec Document | Section | Details |
 |---------|---------------|---------|---------|
-| FWI (Frame Waiting time Integer) | ISO 14443-4:2018 | §5.3.5 / §7.3 | TB(1) bits 7–4: FWT = 256 × 16^FWI × (1/fc) |
+| FWI (Frame Waiting time Integer) | ISO 14443-4:2018 | §5.3.5 / §7.3 | TB(1) bits 7–4: FWT = (256 × 16/fc) × 2^FWI |
 | FWT (Frame Waiting Time) | ISO 14443-4:2018 | §7.3 | Max time PICC waits for next PCD block |
 | SFGI (Start-up Frame Guard time Integer) | ISO 14443-4:2018 | §5.3.5 | TB(1) bits 3–0: SFGT for activation |
 | WTX (Waiting Time eXtension) | ISO 14443-4:2018 | §7.4 | S-block to extend PICC response time |

@@ -161,6 +161,22 @@ fi
 # - xtensa: sdkconfig-xtensa.full expects a RENAMED partitions.csv, and the
 #   GLOB copy cannot rename — so the old renamed copies are restored
 #   (target-dir root + existing esp-idf-sys out dirs).
+# Full-sdkconfig change detection (Codex review on #73): cmake caches the
+# configure; a stale CMakeCache.txt silently builds with the PREVIOUS
+# sdkconfig. A stamp records the last-applied sdkconfig — when it differs,
+# the caches are dropped before cargo runs so the new config is real.
+STAMP="${TARGET_DIR}/${BOARD}.sdkconfig.stamp"
+if [ "${DRY_RUN}" -eq 0 ] && [ -f "${STAMP}" ]; then
+    if ! cmp -s "${SDKCONFIG}" "${STAMP}"; then
+        info "sdkconfig changed — dropping stale CMake caches"
+        for cache in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out/build/CMakeCache.txt; do
+            [ -f "${cache}" ] || continue
+            rm -f "${cache}"
+        done
+    fi
+fi
+[ "${DRY_RUN}" -eq 0 ] && cp "${SDKCONFIG}" "${STAMP}"
+
 if [ "${CHIP}" = "esp32c3" ]; then
     export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
     export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
@@ -183,10 +199,13 @@ run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
 run esptool --chip "${CHIP}" elf2image -o "${IMAGE}" "${ELF}"
 
 if [ -n "${FLASH_PORT}" ]; then
-    # c3 note: if partitions-ota.csv changed, the partition table itself must
-    # be reflashed too (write-flash 0x8000 <target>/partition-table.bin).
+    # The OTA partition table rides along with the app (Codex reviews on
+    # #67/#73): a board still carrying a factory/single-app table would
+    # otherwise lack the ota slots (and the c3 coredump partition) that this
+    # build assumes. Idempotent — safe to reflash every time.
+    PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
     run esptool --chip "${CHIP}" -p "${FLASH_PORT}" --baud "${FLASH_BAUD}" \
-        write-flash "${FLASH_OFFSET}" "${IMAGE}"
+        write-flash 0x8000 "${PART_TABLE}" "${FLASH_OFFSET}" "${IMAGE}"
     if [ "${CHIP}" = "esp32" ]; then
         warn "FTDI DTR/RTS wedge: physically replug the M5Stack board before expecting"
         warn "serial communication to work again (see flash_and_test.sh header)."

@@ -108,9 +108,12 @@ impl WifiManager {
     /// here?" (range/band/SSID-typo) without a serial link or a host-side
     /// scan from a different antenna.
     pub fn log_visible_aps(&mut self) {
-        match self.wifi.scan_n::<16>() {
-            Ok((aps, total)) => {
-                log::warn!("wifi: scan: {} AP(s) visible", total);
+        // Allocating scan(): scan_n::<N>() truncates at N while `total`
+        // reports the full count — in crowded RF the target SSID would be
+        // silently omitted from the very log meant to prove its visibility.
+        match self.wifi.scan() {
+            Ok(aps) => {
+                log::warn!("wifi: scan: {} AP(s) visible", aps.len());
                 for ap in aps.iter() {
                     log::warn!(
                         "wifi:   ssid=\"{}\" ch={} rssi={} dBm auth={:?}",
