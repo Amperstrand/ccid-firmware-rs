@@ -24,6 +24,48 @@ compile_error!("feature board-nucula is mutually exclusive with board-m5atom/boa
     ))
 ))]
 compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
+// Exactly one NFC backend. The historical trap: `cargo build --features
+// backend-pn532` leaves default backend-mfrc522 active and silently built
+// the MFRC522 firmware — the pn532 path was cfg'd away, not selected.
+#[cfg(all(
+    feature = "backend-mfrc522",
+    any(feature = "backend-pn532", feature = "backend-pn7160")
+))]
+compile_error!(
+    "NFC backends are mutually exclusive — add --no-default-features when \
+     selecting backend-pn532 or backend-pn7160 (defaults enable backend-mfrc522)"
+);
+#[cfg(all(feature = "backend-pn532", feature = "backend-pn7160"))]
+compile_error!("NFC backends are mutually exclusive (backend-pn532 vs backend-pn7160)");
+#[cfg(not(any(
+    feature = "backend-mfrc522",
+    feature = "backend-pn532",
+    feature = "backend-pn7160"
+)))]
+compile_error!(
+    "select an NFC backend: backend-mfrc522 (default), backend-pn532, or backend-pn7160"
+);
+#[cfg(all(
+    feature = "backend-pn7160",
+    not(feature = "board-nucula"),
+    // the manifest wires backend-pn7160 = [..., board-nucula]; this guard
+    // fires only if that dependency is ever removed
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+compile_error!("backend-pn7160 requires board-nucula (PN7160 pads SDA=4/SCL=5/IRQ=6/VEN=7)");
+// Verdict features select ONE bring-up electrical hypothesis (pn7160_bringup
+// resolves priority today, but an accidental a+b build must fail loudly).
+#[cfg(all(
+    feature = "pn7160-verdict-a",
+    any(feature = "pn7160-verdict-b", feature = "pn7160-verdict-c")
+))]
+compile_error!("pn7160-verdict features are mutually exclusive — select exactly one");
+#[cfg(all(feature = "pn7160-verdict-b", feature = "pn7160-verdict-c"))]
+compile_error!("pn7160-verdict features are mutually exclusive — select exactly one");
+// bench-net (WiFi+OTA+netlog) claims the modem and the log sink; ble claims
+// both for itself. Combined they would silently drop one facility.
+#[cfg(all(feature = "ble", feature = "bench-net"))]
+compile_error!("ble and bench-net are mutually exclusive (modem + log sink ownership)");
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -393,8 +435,11 @@ fn main() {
     esp_idf_hal::sys::link_patches();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
-    // (console enabled) and in the `ble` feature build (BLE log bridge).
-    #[cfg(not(feature = "ble"))]
+    // (console enabled), in the `ble` feature build (BLE log bridge), and in the
+    // `bench-net` build (UDP netlog).
+    #[cfg(not(feature = "bench-net"))]
+    esp_idf_svc::log::EspLogger::initialize_default();
+    #[cfg(all(feature = "bench-net", not(feature = "ble")))]
     esp32_ccid::netlog::init();
     #[cfg(feature = "ble")]
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -405,7 +450,10 @@ fn main() {
     // modem is exclusive with the `ble` feature build, and credentials
     // come from NUCULA_WIFI_SSID/PASS at build time — absent creds
     // leave the board serial/CCID-only exactly as before.
-    #[cfg(not(feature = "ble"))]
+    // bench-net gates the whole facility: the OTA server is
+    // UNAUTHENTICATED (bench LAN only) and must never ship in a
+    // production artifact.
+    #[cfg(all(feature = "bench-net", not(feature = "ble")))]
     match (
         option_env!("NUCULA_WIFI_SSID"),
         option_env!("NUCULA_WIFI_PASS"),

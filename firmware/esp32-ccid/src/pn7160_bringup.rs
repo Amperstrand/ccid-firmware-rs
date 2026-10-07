@@ -61,13 +61,19 @@ fn ven_retrigger(t: &mut EspPn7160Transport) {
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    #[cfg(feature = "bench-net")]
     crate::netlog::init();
+    #[cfg(not(feature = "bench-net"))]
+    esp_idf_svc::log::EspLogger::initialize_default();
     log::warn!("pn7160-bringup: rust main ALIVE (verdict {})", VERDICT);
+    #[cfg(not(feature = "bench-net"))]
+    log::warn!("pn7160-bringup: bench-net disabled — wifi/ota/netlog excluded");
 
     log::warn!("step: Peripherals::take...");
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
     log::warn!("step: peripherals OK");
 
+    #[cfg(feature = "bench-net")]
     match (
         option_env!("NUCULA_WIFI_SSID"),
         option_env!("NUCULA_WIFI_PASS"),

@@ -37,16 +37,18 @@ Select which NFC backend to compile against:
 
 ```bash
 # MFRC522 backend, M5Stack Atom Grove pinout (SDA=26/SCL=32, default)
-cargo build --release --target xtensa-esp32-espidf --features backend-mfrc522
+cargo build --release --target xtensa-esp32-espidf
 
 # MFRC522 backend, M5Stick Grove pinout (SDA=32/SCL=33)
-cargo build --release --target xtensa-esp32-espidf --features backend-mfrc522,board-m5stick
+cargo build --release --target xtensa-esp32-espidf --no-default-features --features backend-mfrc522,board-m5stick
 
 # PN532 backend (original hardware, SPI — board feature not used)
-cargo build --release --target xtensa-esp32-espidf --features backend-pn532
+cargo build --release --target xtensa-esp32-espidf --no-default-features --features backend-pn532
 ```
 
-If neither flag is specified, `backend-mfrc522` is the default.
+Backends are mutually exclusive and enforced by `compile_error!`: selecting a
+non-default backend without `--no-default-features` fails the build (defaults
+enable `backend-mfrc522` — it would otherwise silently win).
 
 ## Hardware requirements
 
@@ -118,7 +120,7 @@ rustup target add xtensa-esp32-espidf
 cargo build --release --target xtensa-esp32-espidf
 
 # Build (PN532 backend)
-cargo build --release --target xtensa-esp32-espidf --features backend-pn532
+cargo build --release --target xtensa-esp32-espidf --no-default-features --features backend-pn532
 ```
 
 The firmware binary will be at `target/xtensa-esp32-espidf/release/esp32-ccid`.

@@ -27,13 +27,20 @@ board-m5stick = []
 # NOTE: the PN7160 backend driver is a later phase; this feature only selects the
 # board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
 board-nucula = []
-backend-pn7160 = ["dep:pn7160-nci"]
+backend-pn7160 = ["dep:pn7160-nci", "board-nucula"]
 pn7160-bringup = ["backend-pn7160", "board-nucula"]
 pn7160-verdict-a = []
 pn7160-verdict-b = []
 pn7160-verdict-c = []
 pn7160-ccid = ["backend-pn7160", "board-nucula"]
 ble = []
+# Bench/debug network facilities: WiFi station + unauthenticated TCP OTA +
+# UDP broadcast logging (wifi.rs / ota.rs / netlog.rs). These exist for
+# serial-free bench bring-up ONLY — an attacker on the bench LAN can push
+# arbitrary firmware through the OTA server. Never enable in production
+# artifacts. Bench builds opt in explicitly (build.sh bench boards bake it
+# together with NUCULA_WIFI_* credentials).
+bench-net = []
 
 [dependencies]
 card-interface = { path = "../../crates/card-interface" }

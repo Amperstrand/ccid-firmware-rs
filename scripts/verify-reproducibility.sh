@@ -6,7 +6,7 @@
 #   ./scripts/verify-reproducibility.sh <profile>
 #
 # Example:
-#   ./scripts/verify-reproducibility.sh profile-cherry-st2100
+#   ./scripts/verify-reproducibility.sh profile-cherry-smartterminal-st2xxx
 #
 # Exit codes:
 #   0 - Hashes match (reproducible)
@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-PROFILE="${1:-profile-cherry-st2100}"
+PROFILE="${1:-profile-cherry-smartterminal-st2xxx}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 WORK_DIR="${PROJECT_ROOT}/.reproducibility-test"

@@ -42,19 +42,19 @@ pub mod pn7160_bringup;
 pub mod pn7160_ccid;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
+    feature = "bench-net",
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod netlog;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
+    feature = "bench-net",
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod ota;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
+    feature = "bench-net",
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod wifi;

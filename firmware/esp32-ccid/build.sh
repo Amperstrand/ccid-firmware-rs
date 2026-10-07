@@ -7,6 +7,8 @@
 # For the CI-parity defaults flow (sdkconfig.defaults*) plus pcscd testing use
 # flash_and_test.sh. s_check_sdkconfig is deliberately NOT run here: the
 # .full configs carry different values than that gate expects.
+# Bench variants enable the `bench-net` feature (WiFi/OTA/netlog —
+# unauthenticated bench tooling, absent from production/default builds).
 #
 # Usage:
 #   ./build.sh <c3|m5stick|m5atom> [--flash <port>] [--dry-run]
@@ -93,7 +95,7 @@ case "${BOARD}" in
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
         RELEASE_ARGS=()
-        FEATURE_ARGS=(--no-default-features --features pn7160-bringup,pn7160-verdict-b)
+        FEATURE_ARGS=(--no-default-features --features pn7160-bringup,pn7160-verdict-b,bench-net)
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
@@ -104,7 +106,7 @@ case "${BOARD}" in
         TRIPLE="xtensa-esp32-espidf"
         PROFILE="release"
         RELEASE_ARGS=(--release)
-        FEATURE_ARGS=(--no-default-features --features backend-mfrc522,board-m5stick)
+        FEATURE_ARGS=(--no-default-features --features backend-mfrc522,board-m5stick,bench-net)
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
@@ -115,7 +117,7 @@ case "${BOARD}" in
         TRIPLE="xtensa-esp32-espidf"
         PROFILE="release"
         RELEASE_ARGS=(--release)
-        FEATURE_ARGS=()
+        FEATURE_ARGS=(--features bench-net)
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
