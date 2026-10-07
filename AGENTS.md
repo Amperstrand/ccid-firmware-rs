@@ -337,6 +337,139 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
+## ESP32-C3 Nucula Board — USB Port Lifecycle (CRITICAL)
+
+The nucula's USB-Serial/JTAG is a **composite device** (CDC serial + JTAG on one USB port). Three failure modes that WILL happen if you're not careful:
+
+### ⚠️ Failure mode 1: Port contention
+
+When firmware with console output is running, the CDC endpoint is actively streaming. If any process (bench logger, test fixture, `tail -f`, another terminal) holds `/dev/ttyACM*`, **esptool cannot open the port** — it hangs or gets "device reports readiness to read but returned no data".
+
+**Prevention**:
+```bash
+# ALWAYS kill port holders before flashing
+fuser -k /dev/ttyACM* 2>/dev/null
+pkill -9 -f nucula_logger.py
+sleep 2  # let the OS actually release the port
+```
+
+### ⚠️ Failure mode 2: Partition table mismatch
+
+Flashing only the app (at 0x40000) while the board has the wallet firmware's partition table (factory app at 0x30000) means the bootloader loads the WRONG binary or nothing at all. Symptoms: silent board, old firmware running, "M1" probes appearing from a binary you flashed 30 minutes ago.
+
+**Prevention**: ALWAYS flash bootloader + partition table + app together:
+```bash
+esptool write-flash 0x0 <bootloader> 0x8000 <partition-table> 0x40000 <app>
+```
+
+### ⚠️ Failure mode 3: USB peripheral state corruption
+
+After a full chip erase or certain flash sequences, the C3's USB peripheral stops responding to software reset (DTR/RTS toggle). **Only a hard power cycle (USB replug) recovers.** No software fix.
+
+**Prevention**: Avoid `erase-flash` unless truly needed. If you must, expect to replug afterward.
+
+### ⚠️ Boot message loss during USB-CDC re-enumeration
+
+After flashing, the USB device disconnects and reconnects. The first 1-2 seconds of boot output (including boot banners, VEN cycle logs, early probe results) are lost. This is NOT a firmware bug.
+
+**Prevention**: Use `ConsoleCapture` (tests/hardware/nucula/console.py) which polls the by-id path at 50ms intervals. Add boot markers to distinguish firmware versions.
+
+### Board state decision tree
+
+```
+Board silent after flash?
+├── Check port exists: ls /dev/serial/by-id/usb-Espressif*
+│   └── No port → USB replug needed (failure mode 3)
+├── Check what's running: is old firmware's console output visible?
+│   └── Old firmware → partition table mismatch (failure mode 2)
+├── Try esptool flash-id
+│   └── Hangs → port contention (failure mode 1)
+└── Try RTS reset
+    └── Still silent → USB replug needed
+```
+
+### Recovery: the nuclear option
+
+```bash
+# Kill everything
+fuser -k /dev/ttyACM* 2>/dev/null
+pkill -9 -f "esptool|nucula_logger|python.*serial"
+
+# Wait for USB to settle
+sleep 5
+
+# Full flash from known-good wallet firmware
+cd /tmp/opencode/nucula-fw/build-551
+esptool --chip esp32c3 -p /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00 \
+  --baud 460800 --after hard-reset write-flash \
+  0x0 bootloader/bootloader.bin \
+  0x8000 partition_table/partition-table.bin \
+  0x30000 nucula.bin
+
+# Verify: console shows "nucula>" prompt
+# If still silent → try JTAG reset (below), then USB replug as last resort
+```
+
+### JTAG reset — the software-only recovery (no replug needed)
+
+The USB-JTAG peripheral has a JTAG path **separate from the CDC serial path**. Even when the CDC is stuck, JTAG often still works. This is the first recovery to try before reaching for the USB cable:
+
+```bash
+# One-liner: connect via JTAG, issue system reset, resume, disconnect
+/opt/espressif/openocd-esp32/bin/openocd \
+  -f board/esp32c3-builtin.cfg \
+  -c "init; reset run; shutdown"
+```
+
+If the board responds to JTAG (you see "JTAG tap: esp32c3.tap0 tap/device found"), the reset was issued. Wait 2–3 seconds for the board to reboot, then try esptool or console again.
+
+**Recovery escalation ladder** (try in order):
+```
+Board stuck / unresponsive?
+├── 1. Kill port holders: fuser -k /dev/ttyACM*; pkill -9 -f nucula_logger
+├── 2. RTS/DTR reset: python3 -c "import serial,time; s=serial.Serial(PORT,115200); s.setRTS(True); time.sleep(0.2); s.setRTS(False); s.close()"
+├── 3. esptool reset: esptool --chip esp32c3 -p PORT --after hard-reset flash-id
+├── 4. JTAG reset: openocd -f board/esp32c3-builtin.cfg -c "init; reset run; shutdown"
+└── 5. USB replug (nuclear — last resort)
+```
+
+Steps 1–3 fix port contention (failure mode 1).
+Step 4 fixes USB peripheral corruption (failure mode 3) WITHOUT replug.
+Step 5 fixes everything but requires physical access.
+
+### Labgrid test framework (tests/hardware/nucula/)
+
+Automated flash + test cycle — eliminates manual flash-and-pray:
+
+```bash
+# Run all nucula HIL tests
+pytest tests/hardware/nucula/test_nucula.py -v --hil
+
+# Just check board is responsive
+pytest tests/hardware/nucula/test_nucula.py -v --hil -k test_board_responsive
+
+# Flash wallet firmware and verify NCI init
+pytest tests/hardware/nucula/test_nucula.py -v --hil -k test_wallet
+```
+
+Components:
+- `board.py` — board metadata (pins, flash offsets, I2C devices) + esptool with port cleanup and retry logic
+- `console.py` — USB-CDC capture with fast re-enumeration handling + boot markers
+- `conftest.py` — pytest fixtures
+- `test_nucula.py` — test pyramid: responsive → wallet boots → I2C scan → our firmware ACKs → NCI init → sustained
+
+### esptool v5.3.1 gotcha: global options before subcommand
+
+`--after` is a **global** option and must come BEFORE `write-flash`:
+```bash
+# CORRECT: esptool ... --after hard-reset write-flash ...
+# WRONG:   esptool ... write-flash --after hard-reset ...  ← "No such option"
+```
+
+This bit us because the board's `run_esptool()` method originally placed
+`--after` after the subcommand. If you get "No such option '--after'",
+check the option ordering.
+
 ## ESP32-C3 nucula Build Flow (issues #63/#64, ai-legion)
 
 The nucula (ESP32-C3 + PN7160) firmware builds with the nightly toolchain
