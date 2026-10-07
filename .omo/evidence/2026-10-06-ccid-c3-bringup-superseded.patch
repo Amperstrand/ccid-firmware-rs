@@ -1,0 +1,409 @@
+diff --git i/firmware/esp32-ccid/.cargo/config.toml w/firmware/esp32-ccid/.cargo/config.toml
+index c5f6cfa..d52dbc1 100644
+--- i/firmware/esp32-ccid/.cargo/config.toml
++++ w/firmware/esp32-ccid/.cargo/config.toml
+@@ -6,6 +6,16 @@ linker = "ldproxy"
+ runner = "espflash flash --monitor"
+ rustflags = ["--cfg", "espidf_time64", "-Zunstable-options", "-C", "panic=immediate-abort"]
+ 
++# ESP32-C3 (RISC-V RV32IMC). riscv32imc-esp-espidf is Tier-3 with the toolchain in
++# use, so std is provided via -Z build-std below (same as the xtensa target).
++# Build with: cargo build --target riscv32imc-esp-espidf
++# (panic=immediate-abort is Xtensa-only in this repo; RISC-V uses the default
++# panic_abort selected by build-std.)
++[target.riscv32imc-esp-espidf]
++linker = "ldproxy"
++runner = "espflash flash --monitor"
++rustflags = ["--cfg", "espidf_time64", "-Zunstable-options"]
++
+ [unstable]
+ build-std = ["std", "panic_abort"]
+ 
+diff --git i/firmware/esp32-ccid/Cargo.toml w/firmware/esp32-ccid/Cargo.toml
+index 90a0a77..6c2a384 100644
+--- i/firmware/esp32-ccid/Cargo.toml
++++ w/firmware/esp32-ccid/Cargo.toml
+@@ -22,6 +22,11 @@ backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
+ #   board-m5stick: SDA=GPIO32, SCL=GPIO33  (StickC / StickC-Plus Port)
+ board-m5atom = []
+ board-m5stick = []
++# ESP32-C3 nucula board: PN7160 NFC @ I2C addr 0x28, SDA=GPIO4 SCL=GPIO5 IRQ=GPIO6 VEN=GPIO7.
++# Console is the ROM USB-Serial/JTAG CDC (GPIO18/19); there is no UART bridge.
++# NOTE: the PN7160 backend driver is a later phase; this feature only selects the
++# board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
++board-nucula = []
+ ble = []
+ 
+ [dependencies]
+@@ -39,7 +44,8 @@ mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808
+ pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
+ pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
+ 
+-[target.'cfg(target_arch = "xtensa")'.dependencies]
++# ESP-IDF is used on both Xtensa (ESP32/S2/S3) and RISC-V (ESP32-C3/C2/C6/H2).
++[target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
+ esp-idf-sys = { version = "0.37", features = ["binstart"] }
+ esp-idf-hal = "0.46"
+ esp-idf-svc = "0.52.1"
+diff --git i/firmware/esp32-ccid/src/main.rs w/firmware/esp32-ccid/src/main.rs
+index f4276b6..c3406c6 100644
+--- i/firmware/esp32-ccid/src/main.rs
++++ w/firmware/esp32-ccid/src/main.rs
+@@ -1,4 +1,4 @@
+-#![cfg_attr(target_arch = "xtensa", allow(unused_mut))]
++#![cfg_attr(any(target_arch = "xtensa", target_arch = "riscv32"), allow(unused_mut))]
+ 
+ #[cfg(all(
+     feature = "backend-mfrc522",
+@@ -8,18 +8,24 @@
+ compile_error!("features board-m5atom and board-m5stick are mutually exclusive");
+ #[cfg(all(
+     feature = "backend-mfrc522",
+-    not(any(feature = "board-m5atom", feature = "board-m5stick"))
++    feature = "board-nucula",
++    any(feature = "board-m5atom", feature = "board-m5stick")
+ ))]
+-compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32) or board-m5stick (Grove SDA=32/SCL=33)");
++compile_error!("feature board-nucula is mutually exclusive with board-m5atom/board-m5stick");
++#[cfg(all(
++    feature = "backend-mfrc522",
++    not(any(feature = "board-m5atom", feature = "board-m5stick", feature = "board-nucula"))
++))]
++compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
+ 
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+ use core::convert::Infallible;
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+@@ -34,7 +40,7 @@ use esp32_ccid::{
+     },
+ };
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+@@ -47,7 +53,7 @@ use esp_idf_hal::{
+     units::Hertz,
+ };
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+@@ -55,9 +61,9 @@ use esp_idf_sys::EspError;
+ #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+ use mfrc522_pcd::recover_i2c_bus;
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
+ use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ use esp32_ccid::{
+     ccid_handler::CcidHandler,
+     ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
+@@ -67,15 +73,15 @@ use esp32_ccid::{
+         FrameParser,
+     },
+ };
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
+ use esp_idf_svc::{
+     bt::{ble::gap::EspBleGap, ble::gatt::server::EspGatts, Ble, BtDriver},
+     nvs::EspDefaultNvsPartition,
+ };
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522", feature = "ble"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522", feature = "ble"))]
+ use std::sync::Arc;
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ use esp_idf_hal::{
+     delay::FreeRtos,
+     gpio::AnyIOPin,
+@@ -84,29 +90,29 @@ use esp_idf_hal::{
+     uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
+     units::Hertz,
+ };
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ use esp_idf_sys::EspError;
+ 
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ const UART_RX_TIMEOUT_MS: u64 = 500;
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ const CARD_POLL_INTERVAL_MS: u64 = 3000;
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ const UART_BUF_SIZE: usize = 548;
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ const MAX_FRAME_SIZE: usize = 274;
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ const MAX_CCID_RESPONSE_SIZE: usize = 271;
+ 
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+ struct IrqPin<'d>(PinDriver<'d, gpio::Input>);
+ 
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+@@ -115,7 +121,7 @@ impl embedded_hal::digital::ErrorType for IrqPin<'_> {
+ }
+ 
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+@@ -129,7 +135,7 @@ impl embedded_hal::digital::InputPin for IrqPin<'_> {
+     }
+ }
+ 
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
+     while !bytes.is_empty() {
+         let written = uart.write(bytes)?;
+@@ -141,7 +147,7 @@ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
+     Ok(())
+ }
+ 
+-#[cfg(target_arch = "xtensa")]
++#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
+     if let Err(e) = write_all(uart, bytes) {
+         log::error!("UART write failed: {:?}", e);
+@@ -149,7 +155,7 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
+ }
+ 
+ #[cfg(all(
+-    target_arch = "xtensa",
++    any(target_arch = "xtensa", target_arch = "riscv32"),
+     feature = "backend-pn532",
+     not(feature = "backend-mfrc522")
+ ))]
+@@ -160,6 +166,8 @@ fn main() {
+     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
+     // (console enabled) and in the `ble` feature build (BLE log bridge).
+     esp_idf_svc::log::EspLogger::initialize_default();
++    log::set_max_level(log::LevelFilter::Debug);
++    log::warn!("ESP32-CCID: rust main ALIVE (instrumented)");
+ 
+     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
+ 
+@@ -335,7 +343,7 @@ fn main() {
+     }
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ fn main() {
+     esp_idf_sys::link_patches();
+     esp_idf_hal::sys::link_patches();
+@@ -366,7 +374,7 @@ fn main() {
+     // When BLE is disabled, suppress ALL log output — UART0 is reserved
+     // exclusively for CCID serial protocol, no debug output allowed.
+     #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
+-    log::set_max_level(log::LevelFilter::Off);
++    log::set_max_level(log::LevelFilter::Info);
+     #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+     log::info!("ESP32-CCID: BLE logger installed");
+     #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+@@ -385,24 +393,40 @@ fn main() {
+         .rx_fifo_size(UART_BUF_SIZE)
+         .tx_fifo_size(UART_BUF_SIZE);
+ 
++    // CCID serial protocol runs on UART0. M5 boards use the USB-UART bridge pins
++    // (TX=GPIO1, RX=GPIO3); the ESP32-C3 nucula board has no UART bridge, so use
++    // the C3 UART0 defaults (TX=GPIO21, RX=GPIO20). Console output on nucula is the
++    // ROM USB-Serial/JTAG CDC on GPIO18/19 (see sdkconfig.defaults.esp32c3).
++    #[cfg(feature = "board-nucula")]
++    let (uart_tx, uart_rx) = (peripherals.pins.gpio21, peripherals.pins.gpio20);
++    #[cfg(not(feature = "board-nucula"))]
++    let (uart_tx, uart_rx) = (peripherals.pins.gpio1, peripherals.pins.gpio3);
++
+     let uart = UartDriver::new(
+         peripherals.uart0,
+-        peripherals.pins.gpio1,
+-        peripherals.pins.gpio3,
++        uart_tx,
++        uart_rx,
+         Option::<AnyIOPin>::None,
+         Option::<AnyIOPin>::None,
+         &uart_config,
+     )
+-    .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
++    .expect("UART0 init failed (CCID serial TX/RX)");
++    log::warn!("bring-up: UART0 ok");
+ 
+-    // Grove I2C pinout per board variant — see Cargo.toml [features].
++    // I2C pinout per board variant — see Cargo.toml [features].
+     #[cfg(feature = "board-m5atom")]
+     let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
+         (peripherals.pins.gpio26, peripherals.pins.gpio32, 32, 26);
+     #[cfg(feature = "board-m5stick")]
+     let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
+         (peripherals.pins.gpio32, peripherals.pins.gpio33, 33, 32);
++    // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
++    // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase.)
++    #[cfg(feature = "board-nucula")]
++    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
++        (peripherals.pins.gpio4, peripherals.pins.gpio5, 5, 4);
+ 
++    #[cfg(target_arch = "xtensa")]
+     recover_i2c_bus(scl_gpio_no, sda_gpio_no);
+     // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
+     // after recovery, i2c0 via GPIO matrix, and a bus probe before the first
+@@ -414,6 +438,7 @@ fn main() {
+     let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
+     let mut i2c = i2c::I2cDriver::new(peripherals.i2c0, i2c_sda, i2c_scl, &i2c_config)
+         .expect("I2C0 init failed");
++    log::warn!("bring-up: I2C0 ok");
+ 
+     let probe_timeout = esp_idf_hal::delay::TickType::new_millis(100);
+     let probe_found = i2c.write(0x28, &[], probe_timeout.into()).is_ok();
+@@ -596,7 +621,7 @@ fn main() {
+ }
+ 
+ #[cfg(any(
+-    not(target_arch = "xtensa"),
++    not(any(target_arch = "xtensa", target_arch = "riscv32")),
+     all(not(feature = "backend-pn532"), not(feature = "backend-mfrc522"))
+ ))]
+ fn main() {}
+diff --git i/firmware/esp32-ccid/src/mfrc522_driver.rs w/firmware/esp32-ccid/src/mfrc522_driver.rs
+index 272a6eb..3b7bd4c 100644
+--- i/firmware/esp32-ccid/src/mfrc522_driver.rs
++++ w/firmware/esp32-ccid/src/mfrc522_driver.rs
+@@ -36,13 +36,13 @@ impl InitRecoveryTracker {
+     }
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ const CARD_ABSENT_THRESHOLD: u8 = 3;
+ 
+-#[cfg(not(target_arch = "xtensa"))]
++#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+ pub struct Mfrc522NfcDriver;
+ 
+-#[cfg(not(target_arch = "xtensa"))]
++#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+ impl NfcDriver for Mfrc522NfcDriver {
+     type Error = NfcError;
+ 
+@@ -77,16 +77,16 @@ impl NfcDriver for Mfrc522NfcDriver {
+     }
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ use embedded_hal::i2c::I2c;
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ use esp_idf_hal::delay::FreeRtos;
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum CardLifecycle {
+     NoCard,
+@@ -94,7 +94,7 @@ enum CardLifecycle {
+     ActiveSession,
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ pub struct Mfrc522NfcDriver<I2C: I2c> {
+     transceiver: mfrc522_pcd::Mfrc522Transceiver<I2C>,
+     is_initialized: bool,
+@@ -108,7 +108,7 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
+     cached_uid_len: usize,
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ impl<I2C> Mfrc522NfcDriver<I2C>
+ where
+     I2C: I2c,
+@@ -246,7 +246,7 @@ where
+     }
+ }
+ 
+-#[cfg(any(test, all(target_arch = "xtensa", feature = "backend-mfrc522")))]
++#[cfg(any(test, all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522")))]
+ fn build_pcsc_atr_from_historical(
+     historical: &[u8],
+     atr_buf: &mut [u8],
+@@ -272,12 +272,12 @@ fn build_pcsc_atr_from_historical(
+     Ok(atr_len)
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ fn build_pcsc_atr(ats: &Ats, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
+     build_pcsc_atr_from_historical(ats.historical_bytes.as_slice(), atr_buf)
+ }
+ 
+-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
++#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "backend-mfrc522"))]
+ impl<I2C> NfcDriver for Mfrc522NfcDriver<I2C>
+ where
+     I2C: I2c,
+@@ -525,7 +525,7 @@ mod tests {
+     use super::*;
+ 
+     #[test]
+-    #[cfg(not(target_arch = "xtensa"))]
++    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+     fn test_stub_is_card_present_returns_false() {
+         let mut driver = Mfrc522NfcDriver;
+         assert!(!driver.is_card_present());
+@@ -536,7 +536,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "xtensa"))]
++    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+     fn test_stub_power_on_returns_no_card() {
+         let mut driver = Mfrc522NfcDriver;
+         let mut buf = [0u8; 64];
+@@ -545,7 +545,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "xtensa"))]
++    #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+     fn test_stub_transmit_apdu_returns_not_initialized() {
+         let mut driver = Mfrc522NfcDriver;
+         let cmd = [0x00, 0xA4, 0x04, 0x00];
