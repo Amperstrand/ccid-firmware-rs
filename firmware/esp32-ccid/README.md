@@ -151,8 +151,12 @@ source ~/export-esp.sh   # LIBCLANG_PATH (esp-clang) + Xtensa GCC
 cd firmware/esp32-ccid
 
 # C3 / Nucula PN7160 bring-up
+# ESP_IDF_GLOB_* injects partitions-ota.csv into the embuild project dir
+# before cmake configure (or just use build.sh, which sets all of this)
 RUSTUP_TOOLCHAIN=nightly \
 ESP_IDF_SDKCONFIG=$PWD/sdkconfig.full \
+ESP_IDF_GLOB_PARTCSV_BASE=$PWD \
+ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv" \
 NUCULA_WIFI_SSID="<ssid>" NUCULA_WIFI_PASS="<pass>" \
 cargo build --target riscv32imc-esp-espidf \
   --no-default-features --features pn7160-bringup,pn7160-verdict-b
@@ -170,10 +174,13 @@ Gotchas verified the hard way:
 - **`ESP_IDF_SDKCONFIG`, not `SDKCONFIG`** — esp-idf-sys 0.37 only reads the
   `ESP_IDF_*`-prefixed variables. With the bare name the build silently falls
   back to ESP-IDF defaults (no 32 KB main-task stack, task WDT on).
-- **Partition CSV resolution** — `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"`
-  is resolved by the ESP-IDF CMake against the cargo target-dir root, not the
-  crate: `cp partitions-ota.csv ~/.cargo-target/partitions.csv` (and re-copy
-  into `<target>/…/esp-idf-sys-*/out/partitions.csv` after wiping a build dir).
+- **Partition CSV resolution (C3)** — `sdkconfig.full` references
+  `partitions-ota.csv` by its real name and the `ESP_IDF_GLOB_PARTCSV_*`
+  variables above inject it into the embuild project dir before cmake
+  configure. The Xtensa flow is different: `sdkconfig-xtensa.full` expects a
+  renamed `partitions.csv` — `build.sh` copies it (target-dir root + existing
+  esp-idf-sys out dirs) for the m5stick/m5atom boards; for a bare build run
+  `cp partitions-ota.csv <target-dir>/partitions.csv`.
 - **esptool needs a converted image** — the extension-less cargo ELF is written
   raw ("will not fit in flash"); run `esptool --chip esp32c3 elf2image` first.
 - **WiFi credentials are baked by `option_env!`** — tracked as compilation

@@ -154,14 +154,27 @@ if [ "${DRY_RUN}" -eq 0 ]; then
     . "${HOME}/export-esp.sh"
 fi
 
-# Partition CSV injection: ESP-IDF cmake resolves
-# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME against the esp-idf project dir
-# (the embuild out dir, hash-named). The esp-idf-sys build script copies
-# ESP_IDF_GLOB_* matches into that dir BEFORE cmake configure
-# (BUILD-OPTIONS.md), so exporting these replaces the old manual
-# post-configure copies — and works on fresh checkouts.
-export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
-export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
+# Partition CSV injection. Two flows, two mechanisms (Codex review on #76):
+# - c3: sdkconfig.full references partitions-ota.csv by its REAL name; the
+#   esp-idf-sys build script copies ESP_IDF_GLOB_* matches into the project
+#   dir BEFORE cmake configure (BUILD-OPTIONS.md) — fresh-checkout safe.
+# - xtensa: sdkconfig-xtensa.full expects a RENAMED partitions.csv, and the
+#   GLOB copy cannot rename — so the old renamed copies are restored
+#   (target-dir root + existing esp-idf-sys out dirs).
+if [ "${CHIP}" = "esp32c3" ]; then
+    export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
+    export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
+else
+    echo "+ cp ${SCRIPT_DIR}/partitions-ota.csv ${TARGET_DIR}/partitions.csv (+ esp-idf-sys out dirs)"
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        mkdir -p "${TARGET_DIR}"
+        cp "${SCRIPT_DIR}/partitions-ota.csv" "${TARGET_DIR}/partitions.csv"
+        for out_dir in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out; do
+            [ -d "${out_dir}" ] || continue
+            cp "${SCRIPT_DIR}/partitions-ota.csv" "${out_dir}/partitions.csv"
+        done
+    fi
+fi
 
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
     cargo build --target "${TRIPLE}" "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
