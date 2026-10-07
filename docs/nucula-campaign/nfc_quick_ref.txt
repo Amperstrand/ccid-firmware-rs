@@ -48,12 +48,12 @@ ATS Response Structure:               ISO 14443-4:2018 §5.2–5.3.7
 ATS T0 Byte:                          ISO 14443-4:2018 §5.2.3
   Bits 7–5: TA/TB/TC presence flags | Bits 3–0: FSCI (frame size)
 FSCI Coding (Frame Size Card Int):    ISO 14443-4:2018 Table 1
-  0x0=16, 0x1=24, 0x2=32, 0x4=64, 0x6=256, 0xC=4096 bytes
+  0x0-0x8 = 16, 24, 32, 40, 48, 64, 96, 128, 256 bytes; 0x9-0xF RFU
 ATS TB(1) Byte:                       ISO 14443-4:2018 §5.3.5
   Bits 7–4: FWI (Frame Waiting time Integer)
   Bits 3–0: SFGI (Start-up Frame Guard time Integer)
 FWI Calculation:                      ISO 14443-4:2018 §7.3
-  FWT = 256 × 16^FWI × (1/fc) ≈ 13.56 MHz clock
+  FWT = (256 × 16 / fc) × 2^FWI   (fc = 13.56 MHz; FWI=7 → ~38.7 ms)
 ATS TC(1) Byte:                       ISO 14443-4:2018 §5.3.6
   Bit 1: CID support | Bit 0: NAD support
 ISO-DEP Max Info on PN7160:           linux_libnfc-nci nci_defs.h L60

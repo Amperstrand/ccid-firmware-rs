@@ -9,12 +9,13 @@ on:
 # A superseded run (new push to the same branch/PR) is cancelled instead of
 # burning a full obsolete matrix run behind the newest commit.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel only superseded PR runs (force-push trains). Main-push runs must
-  # ALWAYS complete: their esp32 jobs save the main-scoped target-dir caches
-  # every later PR restores from — cancelling one mid-flight (observed: #72's
-  # docs-only push killed #73's merge run at 1m43s, before any cache save)
-  # silently keeps the whole matrix cache-cold.
+  # PRs: group per ref — a superseded push cancels the in-flight run.
+  # Main: group per SHA — GitHub's queue keeps only ONE pending run per
+  # group and REPLACES it when the next arrives, so a shared main group
+  # lets a later docs-only push replace (and discard) a queued code push
+  # whose cache-save this workflow exists to protect (Codex review on #74).
+  # Per-SHA groups are never cancelled or replaced; every main push runs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -54,12 +55,14 @@ jobs:
               - 'vendor/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.cargo/**'
               - '.github/workflows/ci.yml'
             esp32:
               - 'firmware/esp32-ccid/**'
               - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.cargo/**'
               - '.github/workflows/ci.yml'
             lint:
               - 'firmware/ccid-firmware/**/*.rs'

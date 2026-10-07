@@ -436,7 +436,20 @@ Toolchain on ai-legion:
   it also decodes coredumps, see above).
 
 ```bash
-/opt/espressif/openocd-esp32/bin/openocd -f board/esp32c3-builtin.cfg &  # gdb server :3333, telnet :4444
+/opt/espressif/openocd-esp32/bin/openocd -f board/esp32c3-builtin.cfg > /tmp/openocd.log 2>&1 &
+# Wait for the gdb server — openocd is still loading config / initializing
+# USB-JTAG when the shell prompt returns; an immediate telnet connect gets
+# ConnectionRefused and gdb then attaches without the required halt:
+python3 - <<'PYEOF'
+import socket, time, sys
+for _ in range(50):
+    try:
+        socket.create_connection(("localhost", 3333), timeout=1).close()
+        sys.exit(0)
+    except OSError:
+        time.sleep(0.2)
+sys.exit("openocd gdb server never came up; see /tmp/openocd.log")
+PYEOF
 # Halt via the telnet command port BEFORE attaching gdb — attaching to a
 # running target yields bogus registers (pc/sp zeros):
 python3 -c "import socket,time; s=socket.create_connection(('localhost',4444)); s.sendall(b'halt\n'); time.sleep(1)"
@@ -445,6 +458,9 @@ gdb-multiarch -q -batch \
   -ex "target remote :3333" \
   -ex "break i2c_master_cmd_begin" -ex "continue" -ex "bt" -ex "detach"
 python3 -c "import socket,time; s=socket.create_connection(('localhost',4444)); s.sendall(b'resume\n')"  # leave it running
+# Shut openocd down — detach/resume do NOT terminate it; a lingering server
+# holds the USB-JTAG adapter and ports 3333/4444, blocking the next session:
+python3 -c "import socket,time; s=socket.create_connection(('localhost',4444)); s.sendall(b'shutdown\n'); time.sleep(1)"
 ```
 
 Note: small firmware fns (`probe()`) are inlined at this opt level — break on
