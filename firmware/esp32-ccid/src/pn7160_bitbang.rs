@@ -20,7 +20,9 @@ fn gpio_output_od(pin: i32) {
     unsafe {
         let mut cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
         cfg.pin_bit_mask = 1u64 << pin;
-        cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT_OD;
+        // Input+output OD: gpio_get_level must read the actual line (ACK
+        // sampling), not the output register.
+        cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT_OUTPUT_OD;
         esp_idf_sys::gpio_config(&cfg);
     }
 }

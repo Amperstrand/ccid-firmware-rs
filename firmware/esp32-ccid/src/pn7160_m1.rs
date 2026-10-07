@@ -30,6 +30,34 @@ pub fn run() -> ! {
         }
     }
 
+        // Wallet-firmware bus priming: the wallet ALWAYS does display probe
+    // + keypad transaction BEFORE the PN7160 VEN cycle. The SCL activity
+    // from these transactions appears to release the PN7160's I2C slave
+    // from power-on reset. Without it, the PN7160 needs ~45 probe attempts
+    // (~3.75 minutes) before ACKing. With it: immediate ACK.
+    unsafe {
+        // OLED probe (will NAK — disconnected — but clocks the bus)
+        let oled = esp_idf_sys::i2c_master_probe(bus, 0x3C, 50);
+        log::warn!("M1: OLED @0x3C probe rc={} (expected NAK)", oled);
+
+        // Keyboard probe + device add + actual DATA transaction (SCL clocking)
+        let kb = esp_idf_sys::i2c_master_probe(bus, 0x20, 50);
+        log::warn!("M1: keyboard @0x20 probe rc={}", kb);
+        if kb == 0 {
+            let mut kdev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
+            let mut kcfg: esp_idf_sys::i2c_device_config_t = core::mem::zeroed();
+            kcfg.dev_addr_length = esp_idf_sys::i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7;
+            kcfg.device_address = 0x20;
+            kcfg.scl_speed_hz = 100_000;
+            if esp_idf_sys::i2c_master_bus_add_device(bus, &kcfg, &mut kdev) == 0 {
+                let idle: [u8; 1] = [0xFF];
+                let rc = esp_idf_sys::i2c_master_transmit(kdev, idle.as_ptr(), 1, 100);
+                log::warn!("M1: keyboard transmit rc={} (bus primed)", rc);
+                esp_idf_sys::i2c_master_bus_rm_device(kdev);
+            }
+        }
+    }
+
     // M2 test: VEN via PinDriver (HAL) instead of raw gpio — A/B whether
     // the HAL's pin configuration differs from raw gpio_config.
     {

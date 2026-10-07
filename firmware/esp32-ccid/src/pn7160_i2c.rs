@@ -122,11 +122,20 @@ impl EspPn7160Transport {
                 bus, &dev_cfg, &mut dev,
             ))?;
 
+            // Bus priming: the wallet firmware ALWAYS does display probe (0x3C)
+            // + keypad transaction (0x20 + transmit) BEFORE the PN7160 VEN
+            // cycle. The SCL activity from these transactions releases the
+            // PN7160's I2C slave from power-on reset. Without it, the
+            // PN7160 takes ~45 probe attempts (~3.75 min) to start ACKing
+            // — or doesn't ACK at all on a cold boot.
+            let oled = esp_idf_sys::i2c_master_probe(bus, 0x3C, 50);
+            log::warn!("priming: OLED @0x3C rc={} (expected NAK, clocks bus)", oled);
+
             // Keypad bring-up replica (wallet fw keypad_init ordering): a
             // probe + device-add + one real transmit to the PCF8574 at 0x20
             // BEFORE any PN7160 transaction — the wallet fw always runs
-            // this first and its bus is clean; A/B whether a real
-            // transaction settles the driver/bus state.
+            // this sequence first and its bus is clean; A/B whether this
+            // first real transaction settles the driver/bus state.
             if esp_idf_sys::i2c_master_probe(bus, 0x20, 50) == 0 {
                 let mut kdev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
                 let mut kcfg: esp_idf_sys::i2c_device_config_t = core::mem::zeroed();
