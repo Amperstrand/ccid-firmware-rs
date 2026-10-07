@@ -154,18 +154,14 @@ if [ "${DRY_RUN}" -eq 0 ]; then
     . "${HOME}/export-esp.sh"
 fi
 
-# Partition CSV resolution: ESP-IDF CMake resolves the custom partition table
-# against the cargo target-dir root (and caches it inside the esp-idf-sys out
-# dir), not against this crate — missing file = cmake configure failure.
-echo "+ mkdir -p ${TARGET_DIR} && cp ${SCRIPT_DIR}/partitions-ota.csv ${TARGET_DIR}/partitions.csv"
-if [ "${DRY_RUN}" -eq 0 ]; then
-    mkdir -p "${TARGET_DIR}"
-    cp "${SCRIPT_DIR}/partitions-ota.csv" "${TARGET_DIR}/partitions.csv"
-    for out_dir in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys-*/out; do
-        [ -d "${out_dir}" ] || continue
-        cp "${SCRIPT_DIR}/partitions-ota.csv" "${out_dir}/partitions.csv"
-    done
-fi
+# Partition CSV injection: ESP-IDF cmake resolves
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME against the esp-idf project dir
+# (the embuild out dir, hash-named). The esp-idf-sys build script copies
+# ESP_IDF_GLOB_* matches into that dir BEFORE cmake configure
+# (BUILD-OPTIONS.md), so exporting these replaces the old manual
+# post-configure copies — and works on fresh checkouts.
+export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
+export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
 
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
     cargo build --target "${TRIPLE}" "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"

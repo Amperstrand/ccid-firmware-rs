@@ -361,17 +361,27 @@ from previous working copies (this machine's global
 every checkout). Verify the active path after building:
 
 ```bash
-python3 -c "import json,glob; print(json.load(open(glob.glob('/root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/esp-idf-build.json')[0]))['sdkconfig'])"
+python3 -c "import json,glob; print(json.load(open(glob.glob('/root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys*/out/esp-idf-build.json')[0]))['sdkconfig'])"
 ```
 
 After changing `sdkconfig.full`, delete the cmake cache or the change is
-ignored, and re-copy the partition table (sdkconfig points at a relative
-`partitions.csv` inside the embuild out dir):
+ignored:
 
 ```bash
-OUT=$(ls -d /root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out | head -1)
+OUT=$(ls -d /root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys*/out | head -1)
 rm -f "$OUT/build/CMakeCache.txt"
-cp partitions-ota.csv "$OUT/partitions.csv"
+```
+
+The partition CSV (`partitions-ota.csv`, referenced by
+`CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` in `sdkconfig.full`) no longer needs
+manual copying: the esp-idf-sys build script injects `ESP_IDF_GLOB_*` matches
+into the embuild out dir **before cmake configure** (esp-idf-sys
+BUILD-OPTIONS.md). `build.sh` exports the pair; bare `cargo build` needs them
+in the environment:
+
+```bash
+export ESP_IDF_GLOB_PARTCSV_BASE="$PWD"
+export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
 ```
 
 CMake rewrites `sdkconfig.full` in place (kconfig normalization — new symbols
