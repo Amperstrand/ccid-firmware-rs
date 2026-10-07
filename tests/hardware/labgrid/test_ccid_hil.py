@@ -8,18 +8,12 @@ Run:
 Tests assume the ComSign eID T=1 card is in the slot (ATR: 3B D5 18 FF ...).
 """
 
+import re
+import struct
+
 import pytest
 
 from conftest import EXPECTED_ATR, remote_apdu
-
-try:
-    from smartcard.pcsc.PCSCPart10 import (
-        getFeatureRequest, hasFeature, FEATURE_CCID_ESC_COMMAND, SCARD_CTL_CODE
-    )
-    from smartcard.scard import SCARD_SHARE_DIRECT, SCARD_LEAVE_CARD
-    _HAS_PSCARD = True
-except ImportError:
-    _HAS_PSCARD = False
 
 pytestmark = pytest.mark.hil
 
@@ -59,30 +53,41 @@ def test_reader_advertises_pinpad(cherry_reader, pcscd_running):
     lines = result.stdout.split("\n")
     reader_line = next((l for l in lines if "Cherry" in l or "ST-2xxx" in l), "")
     assert reader_line, "Reader line not found in pcsc_scan output"
+    # Codex review #41: matching the reader NAME proves nothing about the
+    # descriptor — assert the CCID class descriptor actually advertises
+    # PIN support (bPINSupport != 0; bit0 verify, bit1 modify).
+    lsusb = cherry_reader.run("lsusb -v -d 046a:003e 2>/dev/null")
+    m = re.search(r"bPINSupport\s+0x([0-9a-fA-F]+)", lsusb.stdout)
+    assert m, (
+        "bPINSupport not found in lsusb -v output — is the CCID class "
+        f"descriptor parsed?\n{lsusb.stdout[-400:]}"
+    )
+    pin_support = int(m.group(1), 16)
+    assert pin_support != 0, (
+        "Cherry ST-2xxx profile must advertise PIN support (bPINSupport != 0)"
+    )
 
-@pytest.mark.skipif(not _HAS_PSCARD, reason="pyscard not installed")
+
 def test_escape_diagnostic_returns_counters(cherry_reader, pcscd_running):
-    """Send CCID Escape [0xD0] and verify 28-byte diagnostic response."""
-    import struct
-    from smartcard.System import readers
+    """Escape [0xD0] via the REMOTE PC/SC stack.
 
-    r = readers()[0]
-    conn = r.createConnection()
-    conn.connect(mode=SCARD_SHARE_DIRECT, disposition=SCARD_LEAVE_CARD)
-
-    try:
-        features = getFeatureRequest(conn)
-        esc_ioctl = hasFeature(features, FEATURE_CCID_ESC_COMMAND)
-        if esc_ioctl is None:
-            esc_ioctl = SCARD_CTL_CODE(1)
-        resp = conn.control(esc_ioctl, [0xD0])
-        assert len(resp) == 28, f"Expected 28 bytes, got {len(resp)}"
-        diag = bytes(resp)
-        fields = ['apdu_tx', 'apdu_rx', 'nak', 'error', 'reinit', 'card_present', 'uptime']
-        for i, name in enumerate(fields):
-            val = struct.unpack_from('<I', diag, i * 4)[0]
-            print(f"  {name}: {val}")
-        card_present = struct.unpack_from('<I', diag, 20)[0]
-        assert card_present in (0, 1), f"card_present should be 0 or 1, got {card_present}"
-    finally:
-        conn.disconnect()
+    Codex review #47: the old version used the build host's local
+    readers()[0] — it exercised whatever reader happened to be on the
+    test machine (or nothing) instead of the HIL reader under test.
+    """
+    result = cherry_reader.run("python3 /tmp/hil_escape.py", timeout=10)
+    assert result.returncode == 0, (
+        f"remote escape helper failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    output = result.stdout.strip().split("\n")[-1]
+    assert re.fullmatch(r"[0-9a-fA-F]+", output), (
+        f"escape helper returned non-hex output: {output!r}"
+    )
+    diag = bytes.fromhex(output)
+    assert len(diag) == 28, f"Expected 28 bytes, got {len(diag)}"
+    fields = ['apdu_tx', 'apdu_rx', 'nak', 'error', 'reinit', 'card_present', 'uptime']
+    for i, name in enumerate(fields):
+        val = struct.unpack_from('<I', diag, i * 4)[0]
+        print(f"  {name}: {val}")
+    card_present = struct.unpack_from('<I', diag, 20)[0]
+    assert card_present in (0, 1), f"card_present should be 0 or 1, got {card_present}"

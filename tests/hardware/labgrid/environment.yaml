@@ -12,11 +12,16 @@
 
 targets:
   main:
-    resources: {}
+    # Codex review #41: bind the network path through a NetworkService
+    # resource instead of SSHDriver-local host/user — labgrid can then
+    # manage/export the network device like any other resource, and
+    # driver config stays free of connection details.
+    resources:
+      NetworkService:
+        address: '192.168.13.208'
+        username: 'root'
     drivers:
       SSHDriver:
-        host: '192.168.13.208'
-        user: 'root'
         keyfile: '~/.ssh/id_ed25519'
 
 places:
