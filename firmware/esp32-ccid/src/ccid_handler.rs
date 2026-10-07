@@ -29,7 +29,7 @@ pub struct CcidHandler<D: NfcDriver> {
 
 impl<D: NfcDriver> CcidHandler<D> {
     pub fn new(nfc: D) -> Self {
-        Self {
+        let mut handler = Self {
             nfc,
             slot_state: SlotState::Absent,
             presence_state: PresenceState { present: false },
@@ -37,7 +37,20 @@ impl<D: NfcDriver> CcidHandler<D> {
             sync_notifications: false,
             current_protocol: 1,
             diagnostics: Diagnostics::new(),
-        }
+        };
+        // Sync recovery history at construction (Codex reviews on #46/#42):
+        // startup retries may already have reinitialized the driver before
+        // the handler existed; without this the first 0xD0 query reports 0.
+        handler.diagnostics.reinit_count = handler.nfc.reinit_count();
+        handler
+    }
+
+    /// Refresh time-varying diagnostic fields. Called from the firmware's
+    /// poll loop; the handler stays host-testable by taking the tick count
+    /// as a parameter instead of reading the ESP-IDF timer itself.
+    pub fn refresh_diagnostics(&mut self, uptime_ticks: u32) {
+        self.diagnostics.uptime_ticks = uptime_ticks;
+        self.diagnostics.reinit_count = self.nfc.reinit_count();
     }
 
     pub fn diagnostics(&self) -> &Diagnostics {
@@ -63,6 +76,10 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let payload_len = header.length as usize;
         if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
+            // Truncated transport frame — a protocol error worth counting
+            // (Codex reviews on #40/#38); this early return bypasses the
+            // post-dispatch status accounting below.
+            self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
             return write_slot_status(
                 header.slot,
                 header.seq,
@@ -223,8 +240,6 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     // GEMPC: dwMaxCCIDMessageLength: 271 bytes
     fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
-        self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
-
         if self.slot_state != SlotState::PresentActive {
             return write_message(
                 RDR_TO_PC_DATABLOCK,
@@ -240,7 +255,9 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         if is_pps_request(apdu) {
             log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
-            self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+            // PPS is handled locally (echoed), not forwarded to the card —
+            // per the Diagnostics field docs (APDUs to/from the card) it is
+            // deliberately NOT counted in apdu_tx/rx.
             return write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
@@ -269,6 +286,10 @@ impl<D: NfcDriver> CcidHandler<D> {
             };
         }
 
+        // Counted at the moment of actual card transfer (Codex reviews on
+        // #46/#43/#38): rejected/inactive requests and locally echoed PPS
+        // frames are not APDUs sent to the card.
+        self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
         match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
             Ok(resp_len) => {
                 self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);

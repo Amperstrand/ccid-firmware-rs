@@ -28,7 +28,10 @@ pub struct Diagnostics {
     pub apdu_tx_count: u32,
     /// Number of APDUs received from the card.
     pub apdu_rx_count: u32,
-    /// Number of NAKs received from the card (T=1 protocol).
+    /// Number of serial framing NAKs the firmware sent to the HOST
+    /// (GemPC-Twin oversize/malformed frame rejections). NOT card T=1
+    /// NAKs — the wire slot is frozen; only this documentation names
+    /// the true source (Codex review on #46).
     pub nak_count: u32,
     /// Number of protocol/transport errors encountered.
     pub error_count: u32,

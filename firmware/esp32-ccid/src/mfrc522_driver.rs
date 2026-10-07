@@ -198,7 +198,11 @@ where
                         "MFRC522 init failed {} consecutive times, performing full re-init",
                         REINIT_THRESHOLD
                     );
-                    let _ = self.full_reinit();
+                    // Propagate the recovery result (Codex review on #40):
+                    // a successful full_reinit() leaves the driver initialized
+                    // — reporting the ORIGINAL error would send callers down
+                    // a failure path for a recovered device.
+                    return self.full_reinit();
                 }
                 Err(e)
             }
