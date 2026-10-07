@@ -330,6 +330,7 @@ fn main() {
                             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                             if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
                                 last_card_poll_tick = now;
+                                ccid_handler.refresh_diagnostics(now);
                                 if let Some(present) = ccid_handler.check_card_change() {
                                     let mut notif = [0u8; 2];
                                     let notif_len =
@@ -370,6 +371,7 @@ fn main() {
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
                     last_card_poll_tick = now;
+                    ccid_handler.refresh_diagnostics(now);
                     ccid_handler.check_card_change();
                 }
             }
@@ -554,7 +556,10 @@ fn main() {
     let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
 
     let init_ok = (0..5).any(|_| {
-        if mfrc522_driver.init().is_ok() {
+        // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
+        // P1): plain init() never reaches the failure tracker, so repeated
+        // startup failures could not trigger the self-healing full re-init.
+        if mfrc522_driver.init_with_recovery().is_ok() {
             true
         } else {
             FreeRtos::delay_ms(1000);
@@ -614,6 +619,7 @@ fn main() {
                             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                             if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
                                 last_card_poll_tick = now;
+                                ccid_handler.refresh_diagnostics(now);
                                 if let Some(present) = ccid_handler.check_card_change() {
                                     if present {
                                         led.blink_state(
@@ -678,6 +684,7 @@ fn main() {
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
                     last_card_poll_tick = now;
+                    ccid_handler.refresh_diagnostics(now);
                     if let Some(present) = ccid_handler.check_card_change() {
                         if present {
                             led.blink_state(esp32_ccid::led::LedState::CardPresent, 3, 120, 80);
