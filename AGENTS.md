@@ -396,17 +396,32 @@ Note: the FWID line can print during the USB re-enumeration window and be
 lost — the ladder's retry handles that; periodic markers (`health[1..2]`,
 low counters) are an additional fresh-boot signal.
 
-### ⚠️ Failure mode 5: overwriting unknown firmware without a backup (m5stick incident, 2026-10-08)
+### ⚠️ Failure mode 5: bootloader offsets differ by chip family + overwriting unknown firmware without a backup (m5stick incident, 2026-10-08)
 
-The bench M5Stack (Hades2001 USB-serial, classic ESP32) ran unknown
-third-party firmware (wifi-retry loop). Flashing our partition table +
-app over it produced a permanent ROM boot-loop: `flash read err, 1000
-ets_main.c 371`. Five recovery attempts failed (full-set flash incl.
-bootloader, DIO header patch, 20MHz patch, full chip erase + reflash);
-eFuse summary shows flash encryption OFF, so the exact mechanism is
-unexplained — the ROM's boot-time SPI read fails where the download-mode
-stub reads fine. The device stays download-mode-alive (esptool works)
-and is recoverable with the original image.
+The bench M5Stack (Hades2001 USB-serial, classic ESP32) boot-looped with
+`flash read err, 1000 / ets_main.c 371` after a manual full-set flash.
+ROOT CAUSE (found next morning, device fully recovered): the bootloader
+was written to **0x0** — the ESP32-**C3** offset. Classic ESP32 boots its
+second-stage bootloader from **0x1000**. Five "recovery attempts" failed
+because they all repeated the same wrong offset while patching header
+bytes (DIO/20MHz) — when N recovery attempts fail, re-derive the basics
+instead of tuning guesses.
+
+**Bootloader flash offsets (memorize or check before every manual flash):**
+
+| Chip | Bootloader offset | Partition table | Typical app |
+|---|---|---|---|
+| ESP32 (classic, xtensa) | **0x1000** | 0x8000 | per table (default factory: 0x30000) |
+| ESP32-C3 / S3 / C2 | **0x0** | 0x8000 | per table (our OTA table: 0x40000) |
+
+The app must land where the partition table you ACTUALLY flashed points
+(read it from the boot log — `boot: 2 factory factory app 00 00 00030000`
+means factory@0x30000). build.sh --flash handles this; manual esptool
+invocations are where the offset bugs creep in.
+
+Recovery outcome: bootloader@0x1000 + default PT@0x8000 + app@0x30000 →
+esp32-ccid MFRC522 firmware boots, pcscd enumerates it as
+`GemPCTwin serial` on /dev/ttyUSB2, CCID GetSlotStatus answers correctly.
 
 **Prevention**: before overwriting unknown firmware on ANY bench device:
 
