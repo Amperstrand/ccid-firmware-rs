@@ -26,11 +26,14 @@ RULE: after full_erase, the board needs a USB replug.
 """
 
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+OPENOCD = "/opt/espressif/openocd-esp32/bin/openocd"
 
 
 @dataclass
@@ -80,7 +83,12 @@ class NuculaBoard:
     def __post_init__(self):
         self.firmware_dir = self.workspace_root / "firmware" / "esp32-ccid"
         target = Path("/root/.cargo-target/riscv32imc-esp-espidf")
-        candidates = list(target.glob("debug/build/esp-idf-sys-*/out"))
+        # Multiple esp-idf-sys hash dirs can exist (feature/config drift);
+        # only ones with a complete IDF build have the partition table.
+        candidates = [
+            p for p in target.glob("debug/build/esp-idf-sys/*/out")
+            if (p / "build" / "partition_table" / "partition-table.bin").exists()
+        ]
         if candidates:
             self.esp_idf_sys_out = max(candidates, key=lambda p: p.stat().st_mtime)
 
@@ -200,6 +208,188 @@ class NuculaBoard:
         """Erase entire flash. DANGEROUS — board needs USB replug after."""
         result = self.run_esptool("erase-flash", timeout=120)
         return result.returncode == 0
+
+    # ------------------------------------------------------------------
+    # Reset + verified boot (root-cause fix for the stale-firmware bug)
+    # ------------------------------------------------------------------
+    #
+    # 2026-10-07 bench incident: esptool flashed a new image ("Hash of
+    # data verified. Hard resetting via RTS pin...") but the board NEVER
+    # reset — the health counter continued 52→124 across the flash and
+    # the "new firmware" test silently exercised the OLD binary. The C3
+    # USB-JTAG peripheral drops reset requests intermittently (observed
+    # for both esptool's CDC control request and raw setRTS toggles on
+    # an open port). openocd's JTAG reset has been 100% reliable.
+    #
+    # Protocol: flash with --after no-reset, JTAG-reset ourselves, then
+    # PROVE which firmware booted before any test runs.
+
+    def reset_jtag(self, timeout: int = 30) -> bool:
+        """Reset the chip via the USB-JTAG tap (path is independent of CDC).
+
+        Do NOT pipe openocd output through a shell pipe in the same
+        command that waits on it — that hangs the invoking shell.
+        """
+        try:
+            r = subprocess.run(
+                [OPENOCD, "-f", "board/esp32c3-builtin.cfg",
+                 "-c", "init; reset run; shutdown"],
+                capture_output=True, timeout=timeout,
+            )
+            return r.returncode == 0 and b"tap/device found" in (r.stdout + r.stderr)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+
+    def flash_image(self, regions: dict, after: str = "hard-reset") -> None:
+        """write-flash. `after` is a global esptool option (must precede
+        the subcommand — esptool v5.3.1 rejects it after write-flash).
+
+        The post-flash reset is verified by flash_and_boot(); 'no-reset'
+        alone is NOT safe — it leaves the USB download-latch set and the
+        chip boots back into download mode even after a JTAG core reset.
+        """
+        args = ["--after", after, "write-flash"]
+        for off in sorted(regions):
+            args += [hex(off), str(regions[off])]
+        result = self.run_esptool(*args)
+        if "Hash of data verified" not in (result.stdout or ""):
+            raise RuntimeError(
+                f"flash failed rc={result.returncode} "
+                f"stderr_tail={(result.stderr or '')[-300:]}"
+            )
+
+    def _our_partition_table(self) -> Path:
+        pt = self.esp_idf_sys_out / "build" / "partition_table" / "partition-table.bin"
+        if not pt.exists():
+            raise FileNotFoundError(f"Partition table not found: {pt}")
+        return pt
+
+    def flash_and_boot(self, binary: Optional[Path] = None, *,
+                       full: bool = False, wallet: bool = False,
+                       expect: Optional[list[str]] = None,
+                       boot_timeout: float = 30.0) -> str:
+        """Flash → JTAG reset → PROVE the expected firmware booted.
+
+        Returns the captured boot console text. Raises RuntimeError with
+        console evidence if the board keeps running stale firmware.
+
+        `expect` defaults per image type (FWID line for ours, prompt for
+        the wallet). Stale-firmware detection: a health/probe counter of
+        10+ seen without any expected marker means the old boot survived.
+        """
+        if wallet:
+            bl = self.wallet_fw_dir / "bootloader" / "bootloader.bin"
+            pt = self.wallet_fw_dir / "partition_table" / "partition-table.bin"
+            app = self.wallet_fw_dir / "nucula.bin"
+            for f in [bl, pt, app]:
+                if not f.exists():
+                    raise FileNotFoundError(f"Wallet firmware not found: {f}")
+            self.flash_image({0x0: bl, 0x8000: pt, 0x30000: app})
+            if expect is None:
+                expect = ["nucula>"]
+        else:
+            assert binary is not None, "binary required unless wallet=True"
+            if not binary.exists():
+                raise FileNotFoundError(f"App binary not found: {binary}")
+            pt = self._our_partition_table()
+            if full:
+                bl_dir = self.esp_idf_sys_out / "build" / "bootloader"
+                bl = next(bl_dir.glob("bootloader.bin"), None)
+                self.flash_image({0x0: bl, 0x8000: pt, 0x40000: binary})
+            else:
+                self.flash_image({0x8000: pt, 0x40000: binary})
+            if expect is None:
+                expect = ["FWID"]
+
+        try:
+            from .console import ConsoleCapture, BootMarker
+        except ImportError:
+            from console import ConsoleCapture, BootMarker  # type: ignore
+
+        def _verify(timeout: float) -> tuple[bool, str]:
+            cap = ConsoleCapture(self.port, self.baud_console)
+            text = cap.capture_for(timeout, markers=expect)
+            cap.close()
+            if all(m in text for m in expect):
+                fw = BootMarker.identify_firmware(text)
+                print(f"[flash_and_boot] booted: {fw}")
+                return True, text
+            if "waiting for download" in text or "DOWNLOAD" in text:
+                print("[flash_and_boot] chip stuck in download mode")
+            m = re.search(r"health\[(\d+)\]", text)
+            if m and int(m.group(1)) >= 10:
+                print(f"[flash_and_boot] STALE FIRMWARE "
+                      f"(health[{m.group(1)}], expected marker missing)")
+            return False, text
+
+        last_text = ""
+        # Reset ladder, most-reliable-first. esptool's hard-reset both
+        # clears the download latch and resets (usually works); the JTAG
+        # core reset fixes the silently-dropped-reset case (old firmware
+        # still running); a flash-id round-trip recovers a chip latched
+        # in download mode.
+        ok, last_text = _verify(boot_timeout)
+        if not ok:
+            self.reset_jtag()
+            ok, last_text = _verify(boot_timeout)
+        if not ok:
+            self.run_esptool("--after", "hard-reset", "flash-id", timeout=30)
+            ok, last_text = _verify(boot_timeout)
+        if not ok:
+            raise RuntimeError(
+                f"board did not boot expected firmware after reset ladder. "
+                f"expect={expect} console_tail={last_text[-400:]!r}"
+            )
+        return last_text
+
+    # ------------------------------------------------------------------
+    # Pre/post-test checklists
+    # ------------------------------------------------------------------
+
+    def pretest_check(self) -> list[tuple[str, bool]]:
+        """Fast sanity checklist BEFORE flashing/running tests.
+
+        Every item must pass; failures here are cheap to diagnose.
+        """
+        results = [
+            ("port exists", self._port_exists()),
+            ("no external port holders", self._port_holders() == []),
+            ("esptool responsive", self.get_flash_id() is not None),
+        ]
+        return results
+
+    def _port_holders(self) -> list[str]:
+        try:
+            r = subprocess.run(
+                ["fuser", os.path.realpath(self.port_path)],
+                capture_output=True, text=True, timeout=5,
+            )
+            return [p for p in (r.stdout or "").split() if p.isdigit()]
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return []
+
+    def ensure_responsive(self) -> bool:
+        """Recovery ladder (no replug needed): port holders → JTAG reset."""
+        for round_ in range(3):
+            self._free_port()
+            if self._port_exists() and self.get_flash_id() is not None:
+                return True
+            self.reset_jtag()
+            time.sleep(3)
+        return False
+
+    def restore_known_good(self) -> bool:
+        """Last-resort: flash the wallet firmware (the bench oracle).
+
+        Use when our firmware leaves the board in an unknown state and
+        the next test needs a trusted baseline.
+        """
+        try:
+            self.flash_and_boot(wallet=True, boot_timeout=40.0)
+            return True
+        except RuntimeError as e:
+            print(f"[restore_known_good] FAILED: {e}")
+            return False
 
     def reset_board(self) -> bool:
         """Soft-reset the board via RTS pulse (doesn't always work)."""

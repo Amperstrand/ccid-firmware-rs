@@ -86,7 +86,12 @@ class ConsoleCapture:
 class BootMarker:
     """Known boot markers for identifying which firmware is running."""
 
-    # Our firmware markers
+    # Compile-time identity — every Rust firmware logs this FIRST.
+    # Format: FWID <name> rev=<git-short> build=<unix-ts>
+    FWID = "FWID"
+    FWID_RE = re.compile(r"FWID (\S+) rev=(\S+) build=(\d+)")
+
+    # Our firmware markers (legacy, pre-FWID builds)
     RUST_BRINGUP = "pn7160-bringup: rust main ALIVE"
     RUST_M1 = "M1: minimal bus + probe"
     RUST_M1v2 = "M1v2: bus + VEN + probe"
@@ -106,8 +111,19 @@ class BootMarker:
     BUS_PRIMED = "bus primed"
 
     @classmethod
+    def parse_fwid(cls, console_text: str) -> Optional[dict]:
+        """Extract the FWID line (name/rev/build-ts) if present."""
+        m = cls.FWID_RE.search(console_text)
+        if m:
+            return {"name": m.group(1), "rev": m.group(2), "build": m.group(3)}
+        return None
+
+    @classmethod
     def identify_firmware(cls, console_text: str) -> str:
         """Identify which firmware produced this console output."""
+        fwid = cls.parse_fwid(console_text)
+        if fwid:
+            return f"{fwid['name']}@{fwid['rev']}"
         if cls.RUST_BRINGUP in console_text:
             return "rust-bringup"
         elif cls.RUST_M1v2 in console_text or cls.RUST_M1 in console_text:

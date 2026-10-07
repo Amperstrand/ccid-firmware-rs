@@ -11,6 +11,10 @@ Usage:
 
     # Just check the board is responsive:
     pytest tests/hardware/nucula/test_nucula.py -v --hil -k test_board_responsive
+
+All flashes go through board.flash_and_boot(): no-reset flash + JTAG
+reset + FWID/marker verification — a flash that leaves stale firmware
+running FAILS HERE instead of silently testing the wrong binary.
 """
 
 import pytest
@@ -43,6 +47,20 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_marker)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def pretest(board):
+    """Pre-test checklist: fail fast (and cheap) if the board isn't sane."""
+    failures = [name for name, ok in board.pretest_check() if not ok]
+    assert not failures, (
+        f"pre-test checklist failed: {failures}. "
+        "Fix the bench state before running HIL tests."
+    )
+    yield
+    # Post-test: board must still answer esptool; attempt recovery if not.
+    if not board.ensure_responsive():
+        board.restore_known_good()
+
+
 @pytest.fixture(scope="session")
 def board():
     """The nucula board instance."""
@@ -59,35 +77,22 @@ def console(board):
 
 @pytest.fixture(scope="session")
 def flashed_wallet(board):
-    """Flash the wallet firmware (known-good) and verify boot."""
-    # Close any console connections first
-    result = board.flash_wallet()
-    if not result:
-        # Debug: show what went wrong
-        debug_result = board.run_esptool(
-            "write-flash", "--after", "hard-reset",
-            "0x0", "/tmp/opencode/nucula-fw/build-551/bootloader/bootloader.bin",
-            "0x8000", "/tmp/opencode/nucula-fw/build-551/partition_table/partition-table.bin",
-            "0x30000", "/tmp/opencode/nucula-fw/build-551/nucula.bin",
-        )
-        pytest.fail(
-            f"Wallet flash failed. "
-            f"rc={debug_result.returncode} "
-            f"stdout_tail={debug_result.stdout[-300:] if debug_result.stdout else 'none'} "
-            f"stderr_tail={debug_result.stderr[-300:] if debug_result.stderr else 'none'}"
-        )
-    capture = ConsoleCapture(board.port, board.baud_console)
-    text = capture.capture_for(25, markers=[BootMarker.WALLET_PROMPT])
-    firmware = BootMarker.identify_firmware(text)
-    assert firmware == "wallet", f"Expected wallet firmware, got: {firmware}. Console: {text[-300:]}"
-    capture.close()
+    """Flash the wallet firmware (known-good) and VERIFY it booted.
+
+    flash_and_boot JTAG-resets and requires the wallet prompt — a
+    dropped RTS reset surfaces as a fixture failure, not stale tests.
+    """
+    board.flash_and_boot(wallet=True, boot_timeout=40.0)
     yield board
 
 
 @pytest.fixture(scope="session")
 def flashed_firmware(board):
-    """Flash our Rust bringup firmware and verify boot."""
+    """Flash our Rust bringup firmware and VERIFY via FWID marker."""
     binary = board.build_firmware()
     assert binary is not None, "Firmware build failed"
-    assert board.flash_app(binary), "Firmware flash failed"
+    text = board.flash_and_boot(binary)
+    fwid = BootMarker.parse_fwid(text)
+    assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
+    print(f"[flashed_firmware] {fwid}")
     yield board

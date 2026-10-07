@@ -368,6 +368,34 @@ After a full chip erase or certain flash sequences, the C3's USB peripheral stop
 
 **Prevention**: Avoid `erase-flash` unless truly needed. If you must, expect to replug afterward.
 
+### ⚠️ Failure mode 4: silently-dropped reset → stale firmware (CRITICAL for test integrity)
+
+esptool's post-flash "hard reset" (RTS control request to the USB-JTAG) is
+**intermittently dropped**: the flash log says "Hash of data verified. Hard
+resetting via RTS pin..." but the chip never resets and the OLD firmware keeps
+running. Bench proof (2026-10-07): health counter continued 52→124 across a
+"successful" flash; the "new firmware" test silently exercised stale code.
+Raw `setRTS()` toggles on an open port fail the same way.
+
+**Prevention** — never trust the flash log alone; PROVE what booted:
+
+1. **FWID markers**: every Rust firmware logs `FWID <name> rev=<git> build=<ts>`
+   as its first console line (build.rs stamps `FW_GIT_REV`/`FW_BUILD_TS`).
+2. **`board.flash_and_boot()`** (tests/hardware/nucula/board.py) runs the full
+   protocol: flash → verify expected marker (FWID / wallet prompt) → if the
+   reset was dropped: JTAG reset (`openocd init; reset run; shutdown`) →
+   verify → if the chip latched in download mode (`boot:0x5`): esptool
+   `flash-id --after hard-reset` round-trip → verify → raise with console
+   evidence.
+3. **Pre/post-test checklist**: `pretest_check()` (port exists, no port
+   holders, esptool responsive) gates every HIL session; the session teardown
+   runs `ensure_responsive()` and falls back to `restore_known_good()` (wallet
+   flash) if the board is wedged.
+
+Note: the FWID line can print during the USB re-enumeration window and be
+lost — the ladder's retry handles that; periodic markers (`health[1..2]`,
+low counters) are an additional fresh-boot signal.
+
 ### ⚠️ Boot message loss during USB-CDC re-enumeration
 
 After flashing, the USB device disconnects and reconnects. The first 1-2 seconds of boot output (including boot banners, VEN cycle logs, early probe results) are lost. This is NOT a firmware bug.
