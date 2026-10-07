@@ -185,8 +185,6 @@ if [ "${DRY_RUN}" -eq 0 ]; then
             rm -f "${cache}"
         done
     fi
-    mkdir -p "${TARGET_DIR}"
-    cp "${SDKCONFIG}" "${STAMP}"
 fi
 
 if [ "${CHIP}" = "esp32c3" ]; then
@@ -206,6 +204,14 @@ fi
 
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
     cargo build --target "${TRIPLE}" "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
+
+# Record the config only after a successful build. If cargo fails, leave the
+# stamp unchanged so the next attempt still invalidates caches whose
+# provenance is not known to match this sdkconfig.
+if [ "${DRY_RUN}" -eq 0 ]; then
+    mkdir -p "${TARGET_DIR}"
+    cp "${SDKCONFIG}" "${STAMP}"
+fi
 
 # esptool cannot flash a raw cargo ELF ("will not fit in flash") — convert first.
 run esptool --chip "${CHIP}" elf2image -o "${IMAGE}" "${ELF}"
