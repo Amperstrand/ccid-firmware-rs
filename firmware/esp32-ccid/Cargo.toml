@@ -61,5 +61,11 @@ esp-idf-svc = "0.52.1"
 embuild = { version = "0.32", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
-esp_idf_version = "tag:v5.2.4"
+# Aligned DOWN to v5.2.3 (from tag:v5.2.4): every artifact actually built and
+# hardware-verified ran 5.2.3 (board boot log, sdkconfig.full kconfig
+# normalization, AGENTS.md decode paths, the embuild cache) — the manifest
+# said 5.2.4 but no build ever used it. Aligning makes fresh clones and the
+# CI embuild cache consistent with the verified state instead of silently
+# diverging. One-time CI cache invalidation on merge.
+esp_idf_version = "tag:v5.2.3"
 
