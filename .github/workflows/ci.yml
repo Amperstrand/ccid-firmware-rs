@@ -152,14 +152,45 @@ jobs:
             features: "backend-mfrc522,board-m5stick"
             no-default-features: true
             gate: true
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
+            sdkconfig_full: false
           - name: m5atom-default
             features: ""
             no-default-features: false
             gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
+            sdkconfig_full: false
           - name: pn532
             features: "backend-pn532"
             no-default-features: true
             gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
+            sdkconfig_full: false
+          # C3/nucula (issue #70): riscv32imc-esp-espidf via nightly + build-std,
+          # on the BENCH sdkconfig.full flow (coredump partition, USB-JTAG
+          # console — CI validates the config the bench actually ships) rather
+          # than a defaults approximation. The partition CSV reaches the
+          # esp-idf project dir via ESP_IDF_GLOB_* (esp-idf-sys BUILD-OPTIONS:
+          # copied by the build script before cmake configure — fresh-runner
+          # safe, no manual out-dir copies). Debug profile = bench parity.
+          - name: c3-nucula-bringup
+            features: "pn7160-bringup,pn7160-verdict-b"
+            no-default-features: true
+            gate: false
+            toolchain: nightly
+            profile: ""
+            target: riscv32imc-esp-espidf
+            sdkconfig: "sdkconfig.full"
+            sdkconfig_full: true
     steps:
       - uses: actions/checkout@v5
         with:
@@ -171,13 +202,20 @@ jobs:
           sudo apt-get install -y cmake ninja-build python3-pip python3-venv libssl-dev libffi-dev
           pip install --user pyelftools
 
-      - name: Install espup + espflash + ldproxy
+      - name: Install ldproxy
         run: |
-          cargo install espup espflash ldproxy
+          cargo install ldproxy
+
+      - name: Install espup + espflash (xtensa only)
+        if: matrix.toolchain == 'esp'
+        run: |
+          cargo install espup espflash
 
       # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
       # C framework + Rust std (-Z build-std) there — the dominant ~80% of
-      # build time that previously recompiled on every run.
+      # build time that previously recompiled on every run. embuild's IDF
+      # clone + self-provisioned tools also live under target/.embuild
+      # (sim-verified), so this one path covers them.
       #
       # Path note: esp32-ccid is a member of the ROOT cargo workspace, so its
       # artifacts land in the repo-root target/ (same dir s_check_sdkconfig
@@ -203,24 +241,39 @@ jobs:
             espressif-${{ runner.os }}-v2-${{ matrix.name }}-
             espressif-${{ runner.os }}-v2
 
-      - name: Install ESP toolchain
+      - name: Install ESP toolchain (xtensa)
+        if: matrix.toolchain == 'esp'
         run: |
           espup install
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
 
+      - name: Install nightly toolchain (riscv/C3)
+        if: matrix.toolchain == 'nightly'
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src
+
       - name: Build firmware (${{ matrix.name }})
         working-directory: firmware/esp32-ccid
         run: |
-          . ${HOME}/export-esp.sh
+          # xtensa toolchain env (espup) — harmless no-op for the C3/nightly
+          # variant, which self-provisions everything under .embuild.
+          [ "${{ matrix.toolchain }}" = "esp" ] && . ${HOME}/export-esp.sh
           # sdkconfig defaults only apply via this env var (metadata paths are
           # dropped silently by esp-idf-sys) — without it the build succeeds with
-          # IDF defaults and the gate below fails. Bench flow: flash_and_test.sh.
-          export ESP_IDF_SDKCONFIG_DEFAULTS="$PWD/sdkconfig.defaults;$PWD/sdkconfig.defaults.esp32"
-          if [ "${{ matrix.no-default-features }}" = "true" ]; then
-            cargo +esp build --release --no-default-features --features "${{ matrix.features }}"
+          # IDF defaults and the gate below fails. Bench flow: flash_and_test.sh
+          # (xtensa) / build.sh (c3, sdkconfig.full + custom partitions).
+          if [ "${{ matrix.sdkconfig_full }}" = "true" ]; then
+            export ESP_IDF_SDKCONFIG="$PWD/${{ matrix.sdkconfig }}"
+            export ESP_IDF_GLOB_PARTCSV_BASE="$PWD"
+            export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
           else
-            cargo +esp build --release
+            export ESP_IDF_SDKCONFIG_DEFAULTS="$PWD/${{ matrix.sdkconfig }}"
+          fi
+          if [ "${{ matrix.no-default-features }}" = "true" ]; then
+            cargo +${{ matrix.toolchain }} build ${{ matrix.profile }} --target ${{ matrix.target }} --no-default-features --features "${{ matrix.features }}"
+          else
+            cargo +${{ matrix.toolchain }} build ${{ matrix.profile }} --target ${{ matrix.target }}
           fi
 
       - name: sdkconfig gate
@@ -322,3 +375,9 @@ jobs:
 
       - name: Run ESP32 host-side tests
         run: cargo test --target x86_64-unknown-linux-gnu
+
+      # The pn7160 backend (bring-up driver + NCI adapter, incl. the health
+      # -check accessors) compiles only under its feature — without this
+      # invocation its 53 tests never run in CI.
+      - name: Run ESP32 host-side tests (backend-pn7160)
+        run: cargo test --target x86_64-unknown-linux-gnu --no-default-features --features backend-pn7160
