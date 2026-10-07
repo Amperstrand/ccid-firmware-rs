@@ -21,21 +21,6 @@ CCID_HEADER_SIZE = 10
 PC_TO_RDR_ESCAPE = 0x6B
 RDR_TO_PC_ESCAPE = 0x83
 
-DTAG_IO_READBACK = 0x01
-DTAG_ATR = 0x02
-DTAG_TX_SINGLE = 0x03
-DTAG_TX_BYTE_ERR = 0x04
-DTAG_DWT_STAMP = 0x05
-DTAG_END = 0xFF
-
-TAG_NAMES = {
-    DTAG_IO_READBACK: "IO_READBACK",
-    DTAG_ATR: "ATR",
-    DTAG_TX_SINGLE: "TX_SINGLE",
-    DTAG_TX_BYTE_ERR: "TX_BYTE_ERR",
-    DTAG_DWT_STAMP: "DWT_STAMP",
-    DTAG_END: "END",
-}
 
 
 def find_ccid_device(bus=None, addr=None):
@@ -51,14 +36,19 @@ def find_ccid_device(bus=None, addr=None):
 
 
 def send_escape(dev):
-    req = bytearray(CCID_HEADER_SIZE)
+    # Escape 0xD0: one payload byte (the escape code) after the 10-byte
+    # CCID header — dwLength must be 1, not 0 (empty escape payloads are
+    # rejected before the 0xD0 branch, so the old request could never
+    # reach the diagnostic handler).
+    req = bytearray(CCID_HEADER_SIZE + 1)
     req[0] = PC_TO_RDR_ESCAPE
-    # dwLength = 0
+    struct.pack_into("<I", req, 1, 1)  # dwLength = 1
     req[5] = 0  # slot
     req[6] = 1  # seq
     req[7] = 0
     req[8] = 0
     req[9] = 0
+    req[CCID_HEADER_SIZE] = 0xD0
 
     cfg = dev.get_active_configuration()
     ep_out = None
@@ -96,22 +86,6 @@ def send_escape(dev):
         print(f"CCID error: status=0x{status:02X} error=0x{error:02X}")
 
     return data
-
-
-def decode_tlv(data):
-    offset = 0
-    entries = []
-    while offset + 2 <= len(data):
-        tag = data[offset]
-        length = data[offset + 1]
-        if offset + 2 + length > len(data):
-            print(f"  TRUNCATED: tag=0x{tag:02X} len={length} but only {len(data) - offset - 2} bytes remain")
-            break
-        payload = data[offset + 2:offset + 2 + length]
-        entries.append((tag, payload))
-        offset += 2 + length
-
-    return entries
 
 
 def format_hex(data):
@@ -158,37 +132,39 @@ def interpret_tag(tag, payload):
 
 
 def main():
-    bus = None
-    addr = None
-    if len(sys.argv) >= 3:
-        bus = int(sys.argv[1])
-        addr = int(sys.argv[2])
+    parser = argparse.ArgumentParser(
+        description="Read the 0xD0 diagnostic counters from a CCID reader")
+    parser.add_argument("--vid", type=lambda x: int(x, 16), default=0x046A,
+                        help="USB vendor ID (default 046A Cherry)")
+    parser.add_argument("--pid", type=lambda x: int(x, 16), default=None,
+                        help="USB product ID (optional)")
+    parser.add_argument("--bus", type=int, default=None)
+    parser.add_argument("--address", type=int, default=None)
+    args = parser.parse_args()
 
-    dev = find_ccid_device(bus, addr)
-    if not dev:
-        print("No CCID device found")
+    dev = find_ccid_device(args.bus, args.address)
+    if dev is None:
+        print("ERROR: device not found")
         sys.exit(1)
 
-    print(f"Device: {dev.bus}/{dev.address} {dev.idVendor:04X}:{dev.idProduct:04X}")
+    data = send_escape(dev)
 
-    try:
-        data = send_escape(dev)
-    finally:
-        usb.util.dispose_resources(dev)
+    # 28-byte little-endian Diagnostics struct (crates/ccid-core
+    # diagnostics.rs SERIALIZED_SIZE = 28)
+    if len(data) < 28:
+        print(f"ERROR: expected 28-byte diagnostics struct, got {len(data)}")
+        print(f"raw: {format_hex(data)}")
+        sys.exit(1)
 
-    if not data:
-        print("Empty diagnostic buffer (no power-on yet?)")
-        return
-
-    print(f"\nDiagnostic buffer: {len(data)} bytes")
-    print(f"Raw: {format_hex(data)}\n")
-
-    entries = decode_tlv(data)
-    for tag, payload in entries:
-        print(f"  {interpret_tag(tag, payload)}")
-
-    if not entries:
-        print("  (no TLV entries found)")
+    tx, rx, nak, err, reinit, present, uptime = struct.unpack_from("<7I", data)
+    print("Diagnostics (Escape 0xD0):")
+    print(f"  apdu_tx_count : {tx}")
+    print(f"  apdu_rx_count : {rx}")
+    print(f"  nak_count     : {nak} (host serial framing NAKs)")
+    print(f"  error_count   : {err}")
+    print(f"  reinit_count  : {reinit}")
+    print(f"  card_present  : {bool(present)}")
+    print(f"  uptime_ticks  : {uptime}")
 
 
 if __name__ == "__main__":

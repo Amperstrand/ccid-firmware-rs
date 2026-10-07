@@ -275,7 +275,8 @@ fn handle_set_parameters(&mut self, seq: u8, params: AtrParams) {
 | **PIN Operations** | Secure (Verify) | Secure (Modify) | ✅ **Exceeds osmo** |
 | **Control Requests** | Abort | GetClockFrequencies | GetDataRates | ✅ Fully Compliant |
 | **Interrupt Messages** | NotifySlotChange | ✅ Fully Compliant |
-| **Stubbed (Intentional)** | Escape | T0APDU | Mechanical | ⚠️ Returns CMD_NOT_SUPPORTED |
+| **Partial** | Escape (0xD0 diagnostics, 0x6A features) | ✅ Implemented |
+| **Stubbed (Intentional)** | T0APDU | Mechanical | ⚠️ Returns CMD_NOT_SUPPORTED |
 | **Not Applicable** | HardwareError | ❌ No hardware sensors |
 
 **Overall Compliance: 98%+**
