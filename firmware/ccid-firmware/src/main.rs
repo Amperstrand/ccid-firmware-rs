@@ -200,11 +200,16 @@ impl CcidSmartcardDriver for SmartcardWrapper {
     type Error = SmartcardError;
 
     fn power_on(&mut self) -> core::result::Result<&[u8], Self::Error> {
+        // A fresh card session must not inherit the previous session's
+        // failure streak (Codex review #36: one early failure in a new
+        // session would otherwise trigger a hidden cold reset).
+        self.consecutive_failures = 0;
         let atr = self.uart.power_on()?;
         Ok(&atr.raw[..atr.len])
     }
 
     fn power_off(&mut self) {
+        self.consecutive_failures = 0;
         self.uart.power_off()
     }
 
