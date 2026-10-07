@@ -110,6 +110,15 @@ mod arm {
     #[inline]
     pub unsafe fn init() {
         core::ptr::write_volatile(DEMCR, core::ptr::read_volatile(DEMCR) | DEMCR_TRCENA);
+        // Cortex-M7 (F746) locks DWT behind the Lock Access Register after
+        // reset; CTRL/CYCCNT writes are ignored until the key is written.
+        // (Codex review #35 — same unlock smartcard_bitbang.rs performs.)
+        #[cfg(feature = "stm32f746")]
+        {
+            const DWT_LAR: *mut u32 = 0xE000_1FB0usize as *mut u32;
+            const DWT_LAR_KEY: u32 = 0xC5AC_CE55;
+            core::ptr::write_volatile(DWT_LAR, DWT_LAR_KEY);
+        }
         core::ptr::write_volatile(DWT.add(DWT_CYCCNT_W), 0);
         core::ptr::write_volatile(
             DWT.add(DWT_CTRL_W),
@@ -185,10 +194,23 @@ pub fn reset_host_cyccnt_for_test() {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
+    use std::sync::Mutex;
+
+    // HOST_CYCCNT is process-global: concurrent tests would interleave
+    // advances and resets. Serialize every clock-touching test (Codex
+    // review #35 — nondeterministic failures under parallel execution).
+    static CLOCK_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_test_clock() {
+        let _guard = CLOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_host_cyccnt_for_test();
+    }
+
+    fn advance_test_clock(delta: u32) {
+        let _guard = CLOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        super::host::HOST_CYCCNT.fetch_add(delta, core::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]
@@ -251,13 +273,13 @@ mod tests {
         wd.start();
         assert!(!wd.expired());
 
-        advance_host_cyccnt_for_test(999);
+        advance_test_clock(999);
         assert!(!wd.expired());
 
-        advance_host_cyccnt_for_test(1);
+        advance_test_clock(1);
         assert!(wd.expired());
 
-        advance_host_cyccnt_for_test(1000);
+        advance_test_clock(1000);
         assert!(wd.expired());
     }
 
@@ -268,10 +290,10 @@ mod tests {
         wd.start();
         assert_eq!(wd.elapsed_cycles(), 0);
 
-        advance_host_cyccnt_for_test(500);
+        advance_test_clock(500);
         assert_eq!(wd.elapsed_cycles(), 500);
 
-        advance_host_cyccnt_for_test(250);
+        advance_test_clock(250);
         assert_eq!(wd.elapsed_cycles(), 750);
     }
 
@@ -283,10 +305,10 @@ mod tests {
 
         assert_eq!(wd.remaining_cycles(), 1000);
 
-        advance_host_cyccnt_for_test(400);
+        advance_test_clock(400);
         assert_eq!(wd.remaining_cycles(), 600);
 
-        advance_host_cyccnt_for_test(10_000);
+        advance_test_clock(10_000);
         assert_eq!(wd.remaining_cycles(), 0);
     }
 
@@ -295,15 +317,15 @@ mod tests {
         reset_test_clock();
         let mut wd = DwtWatchdog::new(1000);
         wd.start();
-        advance_host_cyccnt_for_test(900);
+        advance_test_clock(900);
         assert!(!wd.expired());
 
         wd.start();
         assert!(!wd.expired());
-        advance_host_cyccnt_for_test(900);
+        advance_test_clock(900);
         assert!(!wd.expired());
 
-        advance_host_cyccnt_for_test(100);
+        advance_test_clock(100);
         assert!(wd.expired());
     }
 
