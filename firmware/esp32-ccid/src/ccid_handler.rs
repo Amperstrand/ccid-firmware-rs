@@ -331,7 +331,8 @@ impl<D: NfcDriver> CcidHandler<D> {
         self.tx_buf[..uid_len].copy_from_slice(uid);
         self.tx_buf[uid_len] = 0x90;
         self.tx_buf[uid_len + 1] = 0x00;
-        self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+        // Local reader-generated answer — no card I/O, so no rx counting
+        // (Codex review on #81: to/from-card semantics).
         write_message(
             RDR_TO_PC_DATABLOCK,
             header.slot,
@@ -348,7 +349,7 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn write_sw(&mut self, header: &CcidHeader, sw: &[u8; 2], response: &mut [u8]) -> usize {
-        self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+        // Local reader-generated status word — no card I/O, no rx counting.
         write_message(
             RDR_TO_PC_DATABLOCK,
             header.slot,

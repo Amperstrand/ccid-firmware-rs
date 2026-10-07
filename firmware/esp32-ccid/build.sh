@@ -38,7 +38,7 @@ Boards:
   c3       ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
            sdkconfig.full, ota_0 slot @ 0x40000, baud 460800)
   m5stick  ESP32 M5StickC, MFRC522 CCID (esp toolchain, release,
-           sdkconfig-xtensa.full, factory slot @ 0x30000, baud 115200)
+           sdkconfig-xtensa.full, ota_0 slot @ 0x40000, baud 115200)
   m5atom   ESP32 M5Stack Atom, MFRC522 CCID (as m5stick, default features)
 
 Options:
@@ -106,7 +106,7 @@ case "${BOARD}" in
         RELEASE_ARGS=(--release)
         FEATURE_ARGS=(--no-default-features --features backend-mfrc522,board-m5stick)
         CHIP="esp32"
-        FLASH_OFFSET="0x30000"
+        FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
         ;;
     m5atom)
@@ -117,7 +117,7 @@ case "${BOARD}" in
         RELEASE_ARGS=(--release)
         FEATURE_ARGS=()
         CHIP="esp32"
-        FLASH_OFFSET="0x30000"
+        FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
         ;;
     *)
@@ -161,21 +161,33 @@ fi
 # - xtensa: sdkconfig-xtensa.full expects a RENAMED partitions.csv, and the
 #   GLOB copy cannot rename — so the old renamed copies are restored
 #   (target-dir root + existing esp-idf-sys out dirs).
-# Full-sdkconfig change detection (Codex review on #73): cmake caches the
-# configure; a stale CMakeCache.txt silently builds with the PREVIOUS
-# sdkconfig. A stamp records the last-applied sdkconfig — when it differs,
-# the caches are dropped before cargo runs so the new config is real.
+# Full-sdkconfig change detection (Codex reviews on #73/#79): cmake caches
+# the configure; a stale CMakeCache.txt silently builds with the PREVIOUS
+# sdkconfig. A stamp records the last-applied sdkconfig — when it differs
+# (or when caches exist but no stamp does — first run against a shared
+# target dir predating this scheme), the caches are dropped before cargo
+# runs so the new config is real.
 STAMP="${TARGET_DIR}/${BOARD}.sdkconfig.stamp"
-if [ "${DRY_RUN}" -eq 0 ] && [ -f "${STAMP}" ]; then
-    if ! cmp -s "${SDKCONFIG}" "${STAMP}"; then
-        info "sdkconfig changed — dropping stale CMake caches"
+if [ "${DRY_RUN}" -eq 0 ]; then
+    STALE=0
+    if [ ! -f "${STAMP}" ]; then
+        # No stamp + existing esp-idf-sys caches = unknown provenance.
+        for cache in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out/build/CMakeCache.txt; do
+            [ -f "${cache}" ] && STALE=1
+        done
+    elif ! cmp -s "${SDKCONFIG}" "${STAMP}"; then
+        STALE=1
+    fi
+    if [ "${STALE}" -eq 1 ]; then
+        info "sdkconfig stale/unstamped — dropping existing CMake caches"
         for cache in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out/build/CMakeCache.txt; do
             [ -f "${cache}" ] || continue
             rm -f "${cache}"
         done
     fi
+    mkdir -p "${TARGET_DIR}"
+    cp "${SDKCONFIG}" "${STAMP}"
 fi
-[ "${DRY_RUN}" -eq 0 ] && cp "${SDKCONFIG}" "${STAMP}"
 
 if [ "${CHIP}" = "esp32c3" ]; then
     export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
