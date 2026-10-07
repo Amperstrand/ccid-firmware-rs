@@ -170,17 +170,17 @@ pub mod tx {
     ];
 
     /// RF_DISCOVER with one poll entry: passive NFC-A at 106 kb/s.
-    /// Payload [num_entries=1, tech_and_mode, frequency, duration=0] —
-    /// NCI §6.2.1 Table 80 (A0 = passive NFC-A poll) and Table 81 (00 =
-    /// 106 kb/s); duration 0 = until another RF command.
-    pub const RF_DISCOVER_PASSIVE_A: [u8; 7] = [
+    /// Payload [num_entries=1, tech_and_mode, frequency] — the PN7160
+    /// takes 2-byte entries with NO duration octet (the wallet's proven
+    /// command is plen=3; sending plen=4 with a duration byte is
+    /// rejected with status 0x05, bench 2026-10-08).
+    pub const RF_DISCOVER_PASSIVE_A: [u8; 6] = [
         MT_CMD | GID_RF,
         OID_RF_DISCOVER,
-        0x04,
+        0x03,
         0x01,
         RF_TECH_PASSIVE_NFCA,
-        0x00,
-        0x00,
+        0x01,
     ];
 }
 
@@ -449,7 +449,17 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         if !rsp.is_rsp_to(step.tx_bytes()) {
             return Err("response does not match command");
         }
-        if rsp.status() != Some(STATUS_OK) {
+        // SET_CONFIG_RSP payload is [num_params, status, ...] (NCI §5.1.3):
+        // the status octet sits at index 1. Reading payload[0] compared the
+        // PARAMETER COUNT against STATUS_OK — the real PN7160 answers
+        // SET_CONFIG with num_params=1 → the ladder aborted every time
+        // after a fully successful CORE_INIT.
+        let status = if matches!(step, Step::SetConfigTc1) {
+            if rsp.len >= 2 { Some(rsp.payload[1]) } else { None }
+        } else {
+            rsp.status()
+        };
+        if status != Some(STATUS_OK) {
             return Err("step status != OK");
         }
     }
@@ -561,7 +571,7 @@ mod tests {
         assert_eq!(tx::RF_DISCOVER_PASSIVE_A[1], OID_RF_DISCOVER);
         // NCI §6.2.1: entry = tech_and_mode A0 (passive A poll), freq 00 (106k)
         assert_eq!(tx::RF_DISCOVER_PASSIVE_A[4], RF_TECH_PASSIVE_NFCA);
-        assert_eq!(tx::RF_DISCOVER_PASSIVE_A[5], 0x00);
+        assert_eq!(tx::RF_DISCOVER_PASSIVE_A[5], 0x01);
     }
 
     #[test]
@@ -583,7 +593,7 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
@@ -598,7 +608,7 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 

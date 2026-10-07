@@ -9,7 +9,7 @@
 //! A = pad-hold clear, B = config order (baseline), C = extended VEN
 //! timing.
 
-use esp_idf_hal::delay::{Ets, FreeRtos};
+use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::gpio::{Input, Output, PinDriver, Pull};
 use esp_idf_sys::EspError;
 use pn7160_nci::transport::{IRQ_PIN, PN7160_I2C_ADDR, SCL_PIN, SDA_PIN, VEN_PIN};
@@ -21,7 +21,6 @@ use crate::pn7160_driver::Pn7160NfcDriver;
 pub type EspPn7160NfcDriver = Pn7160NfcDriver<EspPn7160Transport>;
 
 const XFER_TIMEOUT_MS: i32 = 500;
-const IRQ_POLL_US: u32 = 250;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
 const NTF_SLOTS: usize = 4;
 
@@ -236,6 +235,7 @@ impl EspPn7160Transport {
             esp_idf_sys::i2c_master_receive(self.dev, hdr.as_mut_ptr(), 3, XFER_TIMEOUT_MS)
         };
         if rc != 0 {
+            log::error!("read_frame: header rc={} (chip mute mid-ladder?)", rc);
             return None;
         }
         let plen = hdr[2] as usize;
@@ -251,8 +251,19 @@ impl EspPn7160Transport {
                 )
             };
             if rc != 0 {
+                log::error!("read_frame: payload rc={} plen={}", rc, plen);
                 return None;
             }
+        }
+        {
+            let show = (3 + plen).min(9);
+            log::warn!(
+                "read_frame: hdr={:#04x} {:#04x} plen={} bytes={:?}",
+                hdr[0],
+                hdr[1],
+                plen,
+                &pkt[..show]
+            );
         }
         Frame::decode(&pkt[..3 + plen])
     }
@@ -314,8 +325,11 @@ impl Transport for EspPn7160Transport {
                 log::error!("transact: RSP timeout");
                 return None;
             }
-            Ets::delay_us(IRQ_POLL_US);
-            waited += IRQ_POLL_US;
+            // FreeRtos (not Ets) — the ROM busy-wait starves the USB
+            // console task for the whole ladder: console output dies
+            // while the app + chip keep working (AGENTS.md hazard).
+            FreeRtos::delay_ms(1);
+            waited += 1000;
         }
     }
 
