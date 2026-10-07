@@ -396,6 +396,27 @@ Note: the FWID line can print during the USB re-enumeration window and be
 lost — the ladder's retry handles that; periodic markers (`health[1..2]`,
 low counters) are an additional fresh-boot signal.
 
+### ⚠️ Failure mode 5: overwriting unknown firmware without a backup (m5stick incident, 2026-10-08)
+
+The bench M5Stack (Hades2001 USB-serial, classic ESP32) ran unknown
+third-party firmware (wifi-retry loop). Flashing our partition table +
+app over it produced a permanent ROM boot-loop: `flash read err, 1000
+ets_main.c 371`. Five recovery attempts failed (full-set flash incl.
+bootloader, DIO header patch, 20MHz patch, full chip erase + reflash);
+eFuse summary shows flash encryption OFF, so the exact mechanism is
+unexplained — the ROM's boot-time SPI read fails where the download-mode
+stub reads fine. The device stays download-mode-alive (esptool works)
+and is recoverable with the original image.
+
+**Prevention**: before overwriting unknown firmware on ANY bench device:
+
+```bash
+esptool --chip esp32 -p PORT read-flash 0x0 0x400000 device-backup.bin
+```
+
+One minute of backup versus a soft-bricked board nobody can restore
+unattended. This belongs in the HIL pretest checklist for shared rigs.
+
 ### ⚠️ Boot message loss during USB-CDC re-enumeration
 
 After flashing, the USB device disconnects and reconnects. The first 1-2 seconds of boot output (including boot banners, VEN cycle logs, early probe results) are lost. This is NOT a firmware bug.
