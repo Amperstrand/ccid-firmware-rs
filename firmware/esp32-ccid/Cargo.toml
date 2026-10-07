@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["backend-mfrc522", "board-m5atom"]
-backend-mfrc522 = ["dep:mfrc522", "dep:iso14443"]
+backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "esp-idf-hal/legacy-i2c"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 # Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
 #   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
@@ -33,6 +33,10 @@ pn7160-verdict-a = []
 pn7160-verdict-b = []
 pn7160-verdict-c = []
 pn7160-ccid = ["backend-pn7160", "board-nucula"]
+# Wire-level instrument + NCI-over-GPIO fallback (issues #63/#80).
+pn7160-bitbang = ["backend-pn7160", "board-nucula"]
+# M1 milestone: minimal bus+probe, nothing else (issues #63/#80).
+pn7160-m1 = ["backend-pn7160", "board-nucula"]
 ble = []
 
 [dependencies]
@@ -61,5 +65,5 @@ esp-idf-svc = "0.52.1"
 embuild = { version = "0.32", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
-esp_idf_version = "tag:v5.2.4"
+esp_idf_version = "tag:v5.5.1"
 

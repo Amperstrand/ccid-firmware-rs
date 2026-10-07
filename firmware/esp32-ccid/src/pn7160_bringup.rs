@@ -1,3 +1,10 @@
+//! ROOT CAUSE FIX (issues #63/#80/#83): all delays >= 1ms MUST use
+//! FreeRtos::delay_ms (yields to scheduler), NEVER Ets::delay_us (busy
+//! wait). Busy-waiting starves the IDLE task → task watchdog fires →
+//! register-dump floods the console → interrupt storm corrupts the I2C
+//! ISR's ability to handle the PN7160's clock stretching → permanent NAK.
+//! The PCF8574 keyboard (no clock stretching) is unaffected.
+//!
 //! Post-verdict bring-up test: construct the PN7160 transport via the
 //! verdict-selected variant, then run a health-check loop (issue #63)
 //! that probes I2C 0x28 every 5 s. While the chip NAKs, the result is
@@ -8,7 +15,7 @@
 //! the variant is one of the `pn7160-verdict-a/b/c` features. Without
 //! the feature, the backend-pn7160 main runs the pad-diag probe instead.
 
-use esp_idf_hal::delay::Ets;
+use esp_idf_hal::delay::{Ets, FreeRtos};
 use esp_idf_hal::peripherals::Peripherals;
 
 use crate::pn7160_driver::NfcError;
@@ -93,7 +100,7 @@ pub fn run() -> ! {
 
     for i in 1..=3u32 {
         log::warn!("bring-up starts in {}s", 4 - i);
-        Ets::delay_us(1_000_000);
+        FreeRtos::delay_ms(1000);
     }
 
     let bus = BusPins {
@@ -118,9 +125,10 @@ pub fn run() -> ! {
     };
 
     let transport = match transport {
-        Ok(mut t) => {
-            log::warn!("step: i2c bus scan...");
-            t.i2c_scan();
+        Ok(t) => {
+            // K-test: SCAN SKIPPED — probe 0x28 directly like the wallet fw
+            // (nci.c probes without ever scanning). If the 127-probe scan
+            // poisons driver/bus state, direct-probe now succeeds.
             t
         }
         Err(e) => {
@@ -137,7 +145,7 @@ pub fn run() -> ! {
                         dead
                     );
                 }
-                Ets::delay_us(5_000_000);
+                FreeRtos::delay_ms(5000);
             }
         }
     };
@@ -157,7 +165,7 @@ pub fn run() -> ! {
 
     loop {
         if driver.is_none() {
-            Ets::delay_us(PROBE_INTERVAL_US);
+            FreeRtos::delay_ms(5000);
             hb += 1;
             let t = transport_slot
                 .as_mut()
@@ -199,7 +207,7 @@ pub fn run() -> ! {
             continue;
         }
 
-        Ets::delay_us(1_000_000);
+        FreeRtos::delay_ms(1000);
         hb += 1;
 
         if hb % HEARTBEAT_PROBE_EVERY == 0 {

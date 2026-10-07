@@ -745,7 +745,9 @@ fn main() {}
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn7160",
-    not(feature = "pn7160-bringup")
+    not(feature = "pn7160-bringup"),
+    not(feature = "pn7160-bitbang"),
+    not(feature = "pn7160-m1")
 ))]
 mod pad_diag {
     const IO_MUX_BASE: *mut u32 = 0x60009000 as *mut u32;
@@ -853,7 +855,9 @@ mod pad_diag {
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn7160",
     not(feature = "pn7160-bringup"),
-    not(feature = "pn7160-ccid")
+    not(feature = "pn7160-ccid"),
+    not(feature = "pn7160-bitbang"),
+    not(feature = "pn7160-m1")
 ))]
 fn main() {
     crate::pad_diag::run()
@@ -873,4 +877,26 @@ fn main() {
 ))]
 fn main() {
     esp32_ccid::pn7160_ccid::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-bitbang",
+    not(any(feature = "pn7160-bringup", feature = "pn7160-ccid"))
+))]
+fn main() {
+    esp32_ccid::pn7160_bitbang::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-m1",
+    not(any(
+        feature = "pn7160-bringup",
+        feature = "pn7160-ccid",
+        feature = "pn7160-bitbang"
+    ))
+))]
+fn main() {
+    esp32_ccid::pn7160_m1::run()
 }
