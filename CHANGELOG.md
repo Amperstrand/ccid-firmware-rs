@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — nucula CCID serving core extracted + host tests
+
+- **`ccid_serial_server` module** — the `pn7160-ccid` USB-CDC main loop's serving logic (frame echo, response framing via `ccid-transport-serial`, interval-gated card polling) extracted into a host-testable module with 8 unit tests: round-trip echo + framed response, LRC validity, corrupt-frame recovery, garbage tolerance, poll gating on GetSlotStatus and read-idle, first-poll-after-interval semantics, and ATR delivery through IccPowerOn. Wire behavior preserved: parse errors remain silently dropped (the divergence from the NAK-ing UART main is documented in-module); the echo now carries only the parsed frame bytes (leading garbage skipped); the unreachable manual overflow-NAK path (the frame parser rejects oversized payloads at header time) is removed together with its dead `record_nak` call.
+- **`CcidHandler::driver_mut()`** — mutable driver accessor for health probing/recovery and test instrumentation.
+- **`MockNfcDriver`** — presence-poll counter; `poll_card_presence` now routes through `is_card_present()` so presence polls are observable in tests.
+- ESP32 host tests: 72 → 80.
+
 ### Added — C3/nucula CI coverage + fresh-runner partition injection (issue #70)
 
 - **`c3-nucula-bringup` matrix entry in `esp32-build`** — the riscv32imc-esp-espidf target now builds in CI on the **bench `sdkconfig.full` flow** (coredump partition, USB-JTAG console), not a defaults approximation, so CI validates the config the bench actually ships. Toolchain per esp-idf-sys's own CI convention: nightly + `rust-src`, `ldproxy`, zero apt-only deps (embuild self-provisions cmake/ninja/python/esp-clang under `target/.embuild`, which the existing target-dir cache already covers). Matrix entries are now parameterized (`toolchain`/`profile`/`target`/`sdkconfig`), with espup/espflash conditional on the xtensa variants. Debug profile = bench parity.

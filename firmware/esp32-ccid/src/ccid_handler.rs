@@ -44,6 +44,10 @@ impl<D: NfcDriver> CcidHandler<D> {
         &self.diagnostics
     }
 
+    pub fn driver_mut(&mut self) -> &mut D {
+        &mut self.nfc
+    }
+
     pub fn diagnostics_mut(&mut self) -> &mut Diagnostics {
         &mut self.diagnostics
     }
