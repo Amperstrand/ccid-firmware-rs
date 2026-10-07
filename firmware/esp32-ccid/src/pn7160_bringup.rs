@@ -68,7 +68,6 @@ fn ven_retrigger(t: &mut EspPn7160Transport) {
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
-    crate::netlog::init();
     log::warn!("FWID pn7160-bringup rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
     log::warn!("pn7160-bringup: rust main ALIVE (verdict {})", VERDICT);
 
@@ -97,11 +96,6 @@ pub fn run() -> ! {
             }
         }
         _ => log::warn!("wifi: no NUCULA_WIFI_SSID/PASS baked in - serial only"),
-    }
-
-    for i in 1..=3u32 {
-        log::warn!("bring-up starts in {}s", 4 - i);
-        FreeRtos::delay_ms(1000);
     }
 
     let bus = BusPins {
@@ -152,8 +146,9 @@ pub fn run() -> ! {
     };
 
     log::warn!(
-        "health: probing PN7160 @0x28 every {}s until it ACKs (issue #63)",
-        PROBE_INTERVAL_US / 1_000_000
+        "health: probing PN7160 @0x28 every {}s until it ACKs (issue #63) [FWID re-issue rev={}]",
+        PROBE_INTERVAL_US / 1_000_000,
+        env!("FW_GIT_REV")
     );
 
     // transport and driver are mutually exclusive owners of the I2C link:
@@ -168,40 +163,90 @@ pub fn run() -> ! {
         if driver.is_none() {
             FreeRtos::delay_ms(5000);
             hb += 1;
-            let t = transport_slot
-                .as_mut()
-                .expect("transport must exist while driver does not");
+            let mut recovered = false;
+            {
+                let t = transport_slot
+                    .as_mut()
+                    .expect("transport must exist while driver does not");
             match t.probe() {
-                Err(e) => log::warn!("health[{}]: PN7160 @0x28 no-ack: {:?}", hb, e),
+                Err(e) => {
+                    log::warn!(
+                        "health[{}]: PN7160 @0x28 no-ack: {:?} (isr_rc={}/{})*",
+                        hb,
+                        e,
+                        crate::pn7160_i2c::ISR_SERVICE_RC.load(core::sync::atomic::Ordering::Relaxed),
+                        crate::pn7160_i2c::ISR_ADD_RC.load(core::sync::atomic::Ordering::Relaxed)
+                    );
+                    // ROOT CAUSE (#63/#80, bench-proven 2026-10-08 via C
+                    // controls v1-v10): the PN7160's I2C slave only ACKs
+                    // within a window after VEN rise. Probing 5s later is
+                    // forever mute; the wallet ACKs because nci_init
+                    // probes 50ms after the VEN cycle. Fix: re-cycle VEN
+                    // and probe IMMEDIATELY after it.
+                    log::warn!("health[{}]: VEN re-cycle + immediate probe", hb);
+                    t.ven_cycle();
+                    match t.probe() {
+                        Ok(()) => {
+                            log::warn!(
+                                "health[{}]: PN7160 ACK @0x28 after VEN re-cycle — running init ladder",
+                                hb
+                            );
+                            recovered = true;
+                        }
+                        Err(e2) => {
+                            log::warn!("health[{}]: still no-ack after re-cycle: {:?}", hb, e2);
+                        }
+                    }
+                    // nucula-board wiring-audit: ADR0/ADR1 are strapped via
+                    // 100k pull-downs against the PN7160's internal 55-120k
+                    // pull-ups — strap level 0.46-0.65 x VDD is INDETERMINATE
+                    // (guaranteed LOW needs <= 0.35). The shipped R2 BOM kept
+                    // 100k (prescribed fix was 0R/10k). If the chip samples
+                    // the straps high at VEN rise it lands on 0x29-0x2B.
+                    if hb % 6 == 1 {
+                        for alt in [0x29u8, 0x2A, 0x2B] {
+                            if let Ok(()) = t.probe_addr(alt) {
+                                log::warn!(
+                                    "health[{}]: *** PN7160 responds at 0x{:02X} — strap margin CONFIRMED (fix: R23/R24 -> 0R)",
+                                    hb, alt
+                                );
+                            }
+                        }
+                    }
+                }
                 Ok(()) => {
                     log::warn!(
                         "health[{}]: PN7160 ACK @0x28 — chip is BACK, running init ladder",
                         hb
                     );
-                    let t = transport_slot
-                        .take()
-                        .expect("transport must exist while driver does not");
-                    let mut d = Box::new(Pn7160NfcDriver::new(t));
-                    match d.init() {
-                        Ok(()) => {
-                            log::warn!("pn7160-bringup: NCI INIT LADDER OK — PN7160 ALIVE");
-                            // Reset the heartbeat so the first mid-session
-                            // health probe fires exactly
-                            // HEARTBEAT_PROBE_EVERY seconds after session
-                            // start (hb ticks at different rates across
-                            // probe/heartbeat modes).
-                            hb = 0;
-                            driver = Some(d);
-                        }
-                        Err(e) => {
-                            log::error!(
-                                "pn7160-bringup: init ladder FAILED: {} — VEN re-cycle, keep probing",
-                                nfc_err(&e)
-                            );
-                            let mut t = d.into_transport();
-                            ven_retrigger(&mut t);
-                            transport_slot = Some(t);
-                        }
+                    recovered = true;
+                }
+            }
+            }
+            if recovered {
+                let t = transport_slot
+                    .take()
+                    .expect("transport must exist while driver does not");
+                let mut d = Box::new(Pn7160NfcDriver::new(t));
+                match d.init() {
+                    Ok(()) => {
+                        log::warn!("pn7160-bringup: NCI INIT LADDER OK — PN7160 ALIVE");
+                        // Reset the heartbeat so the first mid-session
+                        // health probe fires exactly
+                        // HEARTBEAT_PROBE_EVERY seconds after session
+                        // start (hb ticks at different rates across
+                        // probe/heartbeat modes).
+                        hb = 0;
+                        driver = Some(d);
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "pn7160-bringup: init ladder FAILED: {} — VEN re-cycle, keep probing",
+                            nfc_err(&e)
+                        );
+                        let mut t = d.into_transport();
+                        ven_retrigger(&mut t);
+                        transport_slot = Some(t);
                     }
                 }
             }

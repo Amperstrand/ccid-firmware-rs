@@ -46,6 +46,7 @@ pub mod pn7160_m1;
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod pn7160_bringup;
+pub mod pn7160_v10raw;
 
 #[cfg(all(
     feature = "pn7160-ccid",

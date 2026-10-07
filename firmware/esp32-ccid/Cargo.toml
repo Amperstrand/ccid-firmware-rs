@@ -31,12 +31,15 @@ backend-pn7160 = ["dep:pn7160-nci"]
 pn7160-bringup = ["backend-pn7160", "board-nucula"]
 pn7160-verdict-a = []
 pn7160-verdict-b = []
+# Experiment: never cycle VEN — assumes the chip is alive at handover
+pn7160-ven-never = []
 pn7160-verdict-c = []
 pn7160-ccid = ["backend-pn7160", "board-nucula"]
 # Wire-level instrument + NCI-over-GPIO fallback (issues #63/#80).
 pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 # M1 milestone: minimal bus+probe, nothing else (issues #63/#80).
 pn7160-m1 = ["backend-pn7160", "board-nucula"]
+pn7160-v10raw = ["backend-pn7160", "board-nucula"]
 ble = []
 
 [dependencies]

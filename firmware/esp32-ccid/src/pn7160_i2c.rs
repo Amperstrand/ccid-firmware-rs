@@ -25,11 +25,20 @@ const IRQ_POLL_US: u32 = 250;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
 const NTF_SLOTS: usize = 4;
 
+pub(crate) static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-999);
+pub(crate) static ISR_ADD_RC: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-999);
+
+unsafe extern "C" fn dummy_irq_isr(_arg: *mut core::ffi::c_void) {
+    // nci.c replica: the ISR must quench the level interrupt itself (the
+    // PN7160 holds IRQ high until read); a no-op handler = interrupt storm
+    // that starves the console/USB the moment the chip comes alive.
+    unsafe { esp_idf_sys::gpio_intr_disable(IRQ_PIN) };
+}
+
 pub struct EspPn7160Transport {
     bus: esp_idf_sys::i2c_master_bus_handle_t,
     dev: esp_idf_sys::i2c_master_dev_handle_t,
-    ven: PinDriver<'static, Output>,
-    irq: PinDriver<'static, Input>,
+
     ntf: [Option<Frame>; NTF_SLOTS],
     ntf_head: usize,
     ntf_count: usize,
@@ -49,9 +58,27 @@ pub struct BusPins {
 impl EspPn7160Transport {
     /// Verdict B (baseline): I2C bus first — the native firmware's
     /// nucula.cpp:181 position — then the VEN power cycle.
+    #[cfg(not(feature = "pn7160-ven-never"))]
     pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
         t.ven_cycle();
+        // The PN7160 only ACKs within a window after VEN rise (bench-proven
+        // 2026-10-08): probe IMMEDIATELY, like the wallet's nci_init. The
+        // device add is bus-silent either way.
+        let probe_result = t.probe();
+        log::warn!(
+            "init: probe @0x28 right after VEN cycle: {:?} (window rule)",
+            probe_result
+        );
+        t.add_pn_device()?;
+        Ok(t)
+    }
+
+    /// ven-never experiment: assume the chip is ALIVE (wallet handover or
+    /// warm board) — VEN raised in µs at construction, NO power cycle.
+    #[cfg(feature = "pn7160-ven-never")]
+    pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(p)?;
         t.add_pn_device()?;
         Ok(t)
     }
@@ -102,28 +129,6 @@ impl EspPn7160Transport {
         // Board rules (zeugmaster/nucula-board peripherals-design.md):
         // 100 kHz max (PCF8574T limit), external 2.2k pulls to 3.0 V —
         // ESP internal pull-ups must stay OFF.
-        //
-        // Board bring-up the wallet firmware performs before NFC init and
-        // we must mirror (root cause of the #63/#80 "mute PN7160"): the
-        // unpopulated SSD1309 OLED's boost gate (GPIO3) and reset (GPIO10)
-        // have to be driven LOW/HIGH. Left floating, the partially-powered
-        // OLED leaks through its ESD diodes onto SDA/SCL — phantom stride-3
-        // ACKs across the bus scan and the PN7160's real ACK at 0x28 sunk
-        // below the driver's detection threshold.
-        unsafe {
-            esp_idf_sys::gpio_set_level(3, 0); // OLED boost OFF
-            esp_idf_sys::gpio_set_direction(
-                3,
-                esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
-            );
-            esp_idf_sys::gpio_set_level(10, 1); // SSD1309 reset asserted
-            esp_idf_sys::gpio_set_direction(
-                10,
-                esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT,
-            );
-        }
-        let irq: PinDriver<'static, Input> = PinDriver::input(p.irq, Pull::Down)?;
-        let ven: PinDriver<'static, Output> = PinDriver::output(p.ven)?;
         let _ = p.i2c0; // new driver owns the controller via port number
         let mut bus: esp_idf_sys::i2c_master_bus_handle_t = core::ptr::null_mut();
         let mut dev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
@@ -136,37 +141,45 @@ impl EspPn7160Transport {
             bus_cfg.glitch_ignore_cnt = 7;
             // flags stay zeroed: internal pull-ups OFF (external 2.2k)
             EspError::convert(esp_idf_sys::i2c_new_master_bus(&bus_cfg, &mut bus))?;
+        // v10raw-verified sequence (Rust ACK on bench 2026-10-08): raw
+        // gpio_config for IRQ + VEN, ISR machinery installed, single clean
+        // VEN cycle, probe IMMEDIATELY after. No PinDriver on these pins —
+        // the hal wrapper was present in every failing build.
+        unsafe {
+            let mut irq_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+            irq_cfg.pin_bit_mask = 1u64 << IRQ_PIN;
+            irq_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
+            irq_cfg.pull_down_en = esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_ENABLE;
+            irq_cfg.intr_type = esp_idf_sys::gpio_int_type_t_GPIO_INTR_HIGH_LEVEL;
+            esp_idf_sys::gpio_config(&irq_cfg);
+            ISR_SERVICE_RC.store(
+                esp_idf_sys::gpio_install_isr_service(0),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            ISR_ADD_RC.store(
+                esp_idf_sys::gpio_isr_handler_add(
+                    IRQ_PIN,
+                    Some(dummy_irq_isr),
+                    core::ptr::null_mut(),
+                ),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            esp_idf_sys::gpio_intr_disable(IRQ_PIN);
 
-            // Wallet-replica bus priming (nci.c + keypad.c ordering): the
-            // ONLY pre-VEN I2C traffic the wallet generates is one keypad
-            // probe + device-add + transmit to the PCF8574 at 0x20. The
-            // wallet's display_init is a stub (GPIO quiesce only, returns
-            // before any 0x3C probe) — probing the unpowered OLED's ESD
-            // leak path disturbs the bus, so we must NOT send 0x3C.
-            // The PN7160 device is also added only AFTER the VEN cycle
-            // (nci.c adds it post-probe); we mirror that ordering.
-            if esp_idf_sys::i2c_master_probe(bus, 0x20, 50) == 0 {
-                let mut kdev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
-                let mut kcfg: esp_idf_sys::i2c_device_config_t = core::mem::zeroed();
-                kcfg.dev_addr_length = esp_idf_sys::i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7;
-                kcfg.device_address = 0x20;
-                kcfg.scl_speed_hz = 100_000;
-                if esp_idf_sys::i2c_master_bus_add_device(bus, &kcfg, &mut kdev) == 0 {
-                    let idle: [u8; 1] = [0xFF];
-                    let rc = esp_idf_sys::i2c_master_transmit(kdev, idle.as_ptr(), 1, 100);
-                    log::warn!("keypad-replica: transmit rc={}", rc);
-                    esp_idf_sys::i2c_master_bus_rm_device(kdev);
-                }
-            } else {
-                log::warn!("keypad-replica: no PCF8574 @0x20");
-            }
+            let mut ven_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+            ven_cfg.pin_bit_mask = 1u64 << VEN_PIN;
+            ven_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT;
+            esp_idf_sys::gpio_config(&ven_cfg);
+        }
+        let _ = p.irq; // raw gpio_config owns IRQ now
+        let _ = p.ven; // raw gpio_config owns VEN now
+
+
         }
         log::warn!("step: i2c bus + device OK (driver_ng)");
         Ok(Self {
             bus,
             dev,
-            ven,
-            irq,
             ntf: [None; NTF_SLOTS],
             ntf_head: 0,
             ntf_count: 0,
@@ -198,21 +211,21 @@ impl EspPn7160Transport {
     /// health loop re-applies it before every init-ladder retry.
     pub fn ven_cycle(&mut self) {
         log::warn!("step: ven_cycle begin");
-        let _ = self.ven.set_high();
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
         FreeRtos::delay_ms(10);
-        let _ = self.ven.set_low();
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 0) };
         FreeRtos::delay_ms(50);
-        let _ = self.ven.set_high();
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
         FreeRtos::delay_ms(50);
         log::warn!("step: ven_cycle done");
     }
 
     pub fn ven_cycle_extended(&mut self) {
-        let _ = self.ven.set_high();
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
         FreeRtos::delay_ms(10);
-        let _ = self.ven.set_low();
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 0) };
         FreeRtos::delay_ms(100);
-        let _ = self.ven.set_high();
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
         FreeRtos::delay_ms(100);
     }
 
@@ -248,8 +261,15 @@ impl EspPn7160Transport {
     /// new driver's dedicated API. Ok(()) = chip ACKs (powered and off the
     /// DWL boot), Err = NAK/timeout (chip mute).
     pub fn probe(&mut self) -> Result<(), EspError> {
+        self.probe_addr(PN7160_I2C_ADDR)
+    }
+
+    /// Probe an arbitrary address (address-strap margin diagnostic:
+    /// nucula-board R23/R24 = 100k vs internal pull-ups → the chip may
+    /// land on 0x29-0x2B instead of 0x28 at VEN rise).
+    pub fn probe_addr(&mut self, addr: u8) -> Result<(), EspError> {
         EspError::convert(unsafe {
-            esp_idf_sys::i2c_master_probe(self.bus, PN7160_I2C_ADDR as u16, 50)
+            esp_idf_sys::i2c_master_probe(self.bus, addr as u16, 50)
         })
     }
 
@@ -281,7 +301,7 @@ impl Transport for EspPn7160Transport {
         }
         let mut waited = 0u32;
         loop {
-            if self.irq.is_high() {
+            if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
                 let f = self.read_frame()?;
                 if f.mt == MT_RSP {
                     return Some(f);
@@ -303,7 +323,7 @@ impl Transport for EspPn7160Transport {
         if let Some(f) = self.pop_ntf() {
             return Some(f);
         }
-        if self.irq.is_high() {
+        if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
             self.read_frame()
         } else {
             None
