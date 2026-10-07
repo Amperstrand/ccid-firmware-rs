@@ -78,16 +78,7 @@ use core::convert::Infallible;
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
-use esp32_ccid::{
-    ccid_handler::CcidHandler,
-    ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
-    nfc::NfcDriver,
-    pn532_driver::Pn532NfcDriver,
-    serial_framing::{
-        build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
-        FrameParser,
-    },
-};
+use esp32_ccid::pn532_driver::Pn532NfcDriver;
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
@@ -116,19 +107,6 @@ use mfrc522_pcd::recover_i2c_bus;
     feature = "ble"
 ))]
 use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
-#[cfg(all(
-    any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-mfrc522"
-))]
-use esp32_ccid::{
-    ccid_handler::CcidHandler,
-    ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
-    nfc::NfcDriver,
-    serial_framing::{
-        build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
-        FrameParser,
-    },
-};
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522",
@@ -164,15 +142,9 @@ use esp_idf_hal::{
 use esp_idf_sys::EspError;
 
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const UART_RX_TIMEOUT_MS: u64 = 500;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CARD_POLL_INTERVAL_MS: u64 = 3000;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const UART_BUF_SIZE: usize = 548;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const MAX_FRAME_SIZE: usize = 274;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const MAX_CCID_RESPONSE_SIZE: usize = 271;
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -290,139 +262,49 @@ fn main() {
     let mut pn532_driver =
         Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).expect("PN532 driver init failed");
 
-    let pn532_ok = (0..5).any(|_| {
+    // Frontend fault isolation: a missing/wedged PN532 must NOT take the
+    // CCID service down (the historical halt loop reproduced the
+    // commercial-reader wedge failure mode). Boot init is attempted a few
+    // times for the fast path; failure degrades to card-absent serving
+    // with per-poll re-init retries.
+    let mut boot_ok = false;
+    for _ in 0..5 {
         if pn532_driver.init().is_ok() {
-            true
-        } else {
-            FreeRtos::delay_ms(1000);
-            false
+            boot_ok = true;
+            break;
         }
-    });
-
-    // Reader-down visibility (bolty-rs docs/lessons-learned.md B5): without a
-    // PN532 the CCID loop would run silently dead — worse, a blocking IRQ wait
-    // in the transport could hang it forever now that the task WDT is off.
-    // Halt CCID, hold LED Error, and log periodically instead.
-    if !pn532_ok {
-        // DevKitC targets have no LED matrix (the led module is mfrc522-gated);
-        // visibility is log-only here.
-        log::error!("PN532 init failed — CCID offline, halting card loop");
-        let mut tick: u32 = 0;
-        loop {
-            if tick % 30 == 0 {
-                log::warn!("reader absent ({}x5s) — CCID still offline", tick);
-            }
-            tick += 1;
-            FreeRtos::delay_ms(5000);
-        }
+        FreeRtos::delay_ms(1000);
     }
+    if boot_ok {
+        log::warn!("PN532 init OK — serving CCID");
+    } else {
+        log::error!("PN532 init failed — CCID degraded mode (card absent, retrying init per poll)");
+    }
+    let frontend = if boot_ok {
+        esp32_ccid::frontend::RetryFrontend::healthy(pn532_driver)
+    } else {
+        esp32_ccid::frontend::RetryFrontend::degraded(pn532_driver)
+    };
 
-    let mut ccid_handler = CcidHandler::new(pn532_driver);
-    let mut frame_parser = FrameParser::new();
-    let mut frame_buf = [0u8; MAX_FRAME_SIZE];
-    let mut frame_len = 0usize;
-    let mut byte_buf = [0u8; 1];
-    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
+    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(esp32_ccid::ccid_uart_serve::UART_RX_TIMEOUT_MS).ticks();
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
-    let mut last_card_poll_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
+    let mut server = esp32_ccid::ccid_serial_server::CcidSerialServer::new(
+        esp32_ccid::ccid_handler::CcidHandler::new(frontend),
+        poll_interval_ticks,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+        esp32_ccid::ccid_uart_serve::UART_POLICY,
+    );
 
     // Purge any stale UART data from ESP-IDF boot log and PN532 init.
     // pcscd expects a clean protocol start (SYNC byte first).
-    FreeRtos::delay_ms(500);
-    uart.wait_tx_done(esp_idf_hal::delay::TickType::new_millis(100).into())
-        .ok();
-    let mut drain = [0u8; 256];
-    loop {
-        match uart.read(&mut drain, 1) {
-            Ok(n) if n > 0 => continue,
-            _ => break,
-        }
-    }
+    esp32_ccid::ccid_uart_serve::drain_uart(&uart);
 
     loop {
-        match uart.read(&mut byte_buf, timeout_ticks) {
-            Ok(1) => {
-                let byte = byte_buf[0];
-
-                if frame_len < frame_buf.len() {
-                    frame_buf[frame_len] = byte;
-                    frame_len += 1;
-                } else {
-                    let mut nak = [0u8; 3];
-                    let nak_len = build_nak_frame(&mut nak);
-                    write_all_logged(&uart, &nak[..nak_len]);
-                    ccid_handler.record_nak();
-                    frame_len = 0;
-                    frame_parser.reset();
-                    continue;
-                }
-
-                match frame_parser.feed(byte) {
-                    Some(FrameEvent::Command { ccid_bytes }) => {
-                        // GemPC Twin protocol: echo → [NotifySlotChange] → response
-                        write_all_logged(&uart, &frame_buf[..frame_len]);
-
-                        // Time-gated card poll on GetSlotStatus only.
-                        // InListPassiveTarget (PN532 UM §7.3.5) takes ~1s over SPI.
-                        // libccidtwin readTimeout is 3s so this is safe.
-                        let is_get_slot_status =
-                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
-                        if is_get_slot_status {
-                            let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                            if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                                last_card_poll_tick = now;
-                                ccid_handler.refresh_diagnostics(now);
-                                if let Some(present) = ccid_handler.check_card_change() {
-                                    let mut notif = [0u8; 2];
-                                    let notif_len =
-                                        build_slot_change_notification(present, &mut notif);
-                                    write_all_logged(&uart, &notif[..notif_len]);
-                                }
-                            }
-                        }
-
-                        // Fresh uptime for any 0xD0 in flight (Codex review
-                        // on #81): card-poll-gated refresh alone goes stale
-                        // under continuous non-GetSlotStatus traffic.
-                        ccid_handler
-                            .refresh_diagnostics(unsafe { esp_idf_sys::xTaskGetTickCount() });
-                        let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
-                        let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
-
-                        let mut frame_out = [0u8; MAX_FRAME_SIZE];
-                        let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
-                        write_all_logged(&uart, &frame_out[..out_len]);
-
-                        frame_len = 0;
-                        frame_parser.reset();
-                    }
-                    Some(FrameEvent::Error(_)) => {
-                        let mut nak = [0u8; 3];
-                        let nak_len = build_nak_frame(&mut nak);
-                        write_all_logged(&uart, &nak[..nak_len]);
-                        ccid_handler.record_nak();
-                        frame_len = 0;
-                        frame_parser.reset();
-                    }
-                    _ => {}
-                }
-            }
-            _ => {
-                frame_len = 0;
-                frame_parser.reset();
-
-                // Background card state tracking when UART is idle.
-                // Only update internal state — do NOT send unsolicited
-                // NotifySlotChange (pcscd's ReadSerial doesn't expect it).
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                    last_card_poll_tick = now;
-                    ccid_handler.refresh_diagnostics(now);
-                    ccid_handler.check_card_change();
-                }
-            }
-        }
+        // PN532 policy: idle polls refresh internal state only — no
+        // unsolicited NotifySlotChange (pcscd's ReadSerial doesn't
+        // expect it on this transport).
+        esp32_ccid::ccid_uart_serve::serve_once(&uart, &mut server, timeout_ticks);
     }
 }
 
@@ -582,179 +464,149 @@ fn main() {
         "MFRC522 init: {:?}",
         mfrc522_result.as_ref().err().map(|e| format!("{e:?}"))
     );
-
     let mut led = esp32_ccid::led::LedStatus::new();
 
     let mfrc522_hw = match mfrc522_result {
         Ok(hw) => hw,
         Err(e) => {
-            // No reader frontend: CCID cannot be serviced. Stay visible instead of
-            // silently dead — LED in Error state and a periodic log line (bolty-rs
-            // docs/lessons-learned.md B5: log-and-continue hides months-long outages;
-            // here the reader is load-bearing so CCID halts but keeps signalling).
-            log::error!("MFRC522 init failed ({e:?}) — CCID offline, LED=Error, halting card loop");
-            let mut tick: u32 = 0;
-            loop {
-                led.set_state(esp32_ccid::led::LedState::Error);
-                if tick % 30 == 0 {
-                    log::warn!("reader absent ({}x5s) — CCID still offline", tick);
-                }
-                tick += 1;
-                FreeRtos::delay_ms(5000);
-            }
+            // Frontend fault isolation: I2C-level construction failure means
+            // no MFRC522 object exists at all. The CCID service stays up via
+            // the UnavailableNfcDriver stand-in — GetSlotStatus answers
+            // card-absent, diagnostics answer, power-on/APDU fail cleanly.
+            // (Historical behavior halted the whole reader here.)
+            log::error!("MFRC522 init failed ({e:?}) — CCID degraded mode (unavailable frontend)");
+            None
         }
     };
 
-    let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(mfrc522_hw);
-    let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
+    if let Some(hw) = mfrc522_hw {
+        let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(hw);
+        let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
 
-    let init_ok = (0..5).any(|_| {
-        // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
-        // P1): plain init() never reaches the failure tracker, so repeated
-        // startup failures could not trigger the self-healing full re-init.
-        if mfrc522_driver.init_with_recovery().is_ok() {
-            true
+        let init_ok = (0..5).any(|_| {
+            // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
+            // P1): plain init() never reaches the failure tracker, so repeated
+            // startup failures could not trigger the self-healing full re-init.
+            if mfrc522_driver.init_with_recovery().is_ok() {
+                true
+            } else {
+                FreeRtos::delay_ms(1000);
+                false
+            }
+        });
+
+        if init_ok {
+            led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
         } else {
-            FreeRtos::delay_ms(1000);
-            false
+            log::error!("MFRC522 init failed — CCID degraded mode (card absent, retrying per poll)");
+            led.set_state(esp32_ccid::led::LedState::Error);
         }
-    });
 
-    if init_ok {
-        led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
+        let frontend = if init_ok {
+            esp32_ccid::frontend::RetryFrontend::healthy(mfrc522_driver)
+        } else {
+            esp32_ccid::frontend::RetryFrontend::degraded(mfrc522_driver)
+        };
+        let ble_arg = {
+            #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+            {
+                ble_server
+            }
+            #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
+            {
+                ()
+            }
+        };
+        mfrc522_serve_loop(uart, frontend, led, ble_arg);
     } else {
-        led.set_state(esp32_ccid::led::LedState::Error);
+        let ble_arg = {
+            #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+            {
+                ble_server
+            }
+            #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
+            {
+                ()
+            }
+        };
+        mfrc522_serve_loop(
+            uart,
+            esp32_ccid::nfc::UnavailableNfcDriver,
+            led,
+            ble_arg,
+        );
     }
+}
 
-    let mut ccid_handler = CcidHandler::new(mfrc522_driver);
-    let mut frame_parser = FrameParser::new();
-    let mut frame_buf = [0u8; MAX_FRAME_SIZE];
-    let mut frame_len = 0usize;
-    let mut byte_buf = [0u8; 1];
-    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
+/// Shared MFRC522 serving loop: the wire protocol lives in
+/// `CcidSerialServer`/`serve_once`; this wrapper adds the M5Stack LED
+/// reactions and (optionally) the BLE log drain — the hardware concerns
+/// that stay outside the state machine.
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+fn mfrc522_serve_loop<D: esp32_ccid::nfc::NfcDriver>(
+    uart: esp_idf_hal::uart::UartDriver<'static>,
+    frontend: D,
+    mut led: esp32_ccid::led::LedStatus,
+    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+    ble_server: Option<BleDebugServer>,
+    #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
+    _ble_server: (),
+) {
+    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(esp32_ccid::ccid_uart_serve::UART_RX_TIMEOUT_MS).ticks();
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
-    let mut last_card_poll_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
+    let mut server = esp32_ccid::ccid_serial_server::CcidSerialServer::new(
+        esp32_ccid::ccid_handler::CcidHandler::new(frontend),
+        poll_interval_ticks,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+        esp32_ccid::ccid_uart_serve::UART_POLICY,
+    );
 
-    FreeRtos::delay_ms(500);
-    uart.wait_tx_done(esp_idf_hal::delay::TickType::new_millis(100).into())
-        .ok();
-    let mut drain = [0u8; 256];
-    loop {
-        match uart.read(&mut drain, 1) {
-            Ok(n) if n > 0 => continue,
-            _ => break,
-        }
-    }
+    esp32_ccid::ccid_uart_serve::drain_uart(&uart);
 
     loop {
-        match uart.read(&mut byte_buf, timeout_ticks) {
-            Ok(1) => {
-                let byte = byte_buf[0];
-                if frame_len < frame_buf.len() {
-                    frame_buf[frame_len] = byte;
-                    frame_len += 1;
+        let degraded = !server.handler_mut().driver_mut().is_available();
+        let card_present = server.handler_mut().diagnostics().card_present;
+        let base = if degraded {
+            esp32_ccid::led::LedState::Error
+        } else if card_present {
+            esp32_ccid::led::LedState::CardPresent
+        } else {
+            esp32_ccid::led::LedState::Ready
+        };
+        led.set_state(base);
+
+        let event =
+            esp32_ccid::ccid_uart_serve::serve_once(&uart, &mut server, timeout_ticks);
+        use esp32_ccid::ccid_uart_serve::ServeEvent;
+        match event {
+            ServeEvent::Responded | ServeEvent::Nak => {
+                led.set_state(esp32_ccid::led::LedState::TxRx);
+            }
+            // MFRC522 policy: card flips discovered by the idle poll ARE
+            // announced — NotifySlotChange while the host is quiet.
+            ServeEvent::IdlePolled {
+                card_change: Some(present),
+            } => {
+                if present {
+                    led.blink_state(esp32_ccid::led::LedState::CardPresent, 3, 120, 80);
                 } else {
-                    let mut nak = [0u8; 3];
-                    let nak_len = build_nak_frame(&mut nak);
-                    write_all_logged(&uart, &nak[..nak_len]);
-                    ccid_handler.record_nak();
-                    frame_len = 0;
-                    frame_parser.reset();
-                    continue;
+                    led.blink_state(esp32_ccid::led::LedState::Ready, 3, 120, 80);
                 }
-                match frame_parser.feed(byte) {
-                    Some(FrameEvent::Command { ccid_bytes }) => {
-                        write_all_logged(&uart, &frame_buf[..frame_len]);
-                        let is_get_slot_status =
-                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
-                        if is_get_slot_status {
-                            let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                            if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                                last_card_poll_tick = now;
-                                ccid_handler.refresh_diagnostics(now);
-                                if let Some(present) = ccid_handler.check_card_change() {
-                                    if present {
-                                        led.blink_state(
-                                            esp32_ccid::led::LedState::CardPresent,
-                                            3,
-                                            120,
-                                            80,
-                                        );
-                                    } else {
-                                        led.blink_state(
-                                            esp32_ccid::led::LedState::Ready,
-                                            3,
-                                            120,
-                                            80,
-                                        );
-                                    }
-                                    let mut notif = [0u8; 2];
-                                    let notif_len =
-                                        build_slot_change_notification(present, &mut notif);
-                                    write_all_logged(&uart, &notif[..notif_len]);
-                                }
-                            }
-                        }
-                        let prev_led = led.state();
-                        led.set_state(esp32_ccid::led::LedState::TxRx);
-                        // Fresh uptime for any 0xD0 in flight (Codex review
-                        // on #81): card-poll-gated refresh alone goes stale
-                        // under continuous non-GetSlotStatus traffic.
-                        ccid_handler
-                            .refresh_diagnostics(unsafe { esp_idf_sys::xTaskGetTickCount() });
-                        let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
-                        let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
-                        led.set_state(prev_led);
-                        let mut frame_out = [0u8; MAX_FRAME_SIZE];
-                        let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
-                        write_all_logged(&uart, &frame_out[..out_len]);
-                        frame_len = 0;
-                        frame_parser.reset();
-
-                        // Drain BLE logs after every command (not just on timeout)
-                        #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-                        if let Some(server) = ble_server.as_ref() {
-                            BleLogger::global().drain(server);
-                        }
-                    }
-                    Some(FrameEvent::Error(_)) => {
-                        led.set_state(esp32_ccid::led::LedState::Error);
-                        let mut nak = [0u8; 3];
-                        let nak_len = build_nak_frame(&mut nak);
-                        write_all_logged(&uart, &nak[..nak_len]);
-                        ccid_handler.record_nak();
-                        frame_len = 0;
-                        frame_parser.reset();
-                    }
-                    _ => {}
-                }
+                let mut notif = [0u8; 2];
+                let notif_len =
+                    esp32_ccid::serial_framing::build_slot_change_notification(present, &mut notif);
+                write_all_logged(&uart, &notif[..notif_len]);
             }
-            _ => {
-                frame_len = 0;
-                frame_parser.reset();
+            _ => {}
+        }
 
-                #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-                if let Some(server) = ble_server.as_ref() {
-                    BleLogger::global().drain(server);
-                }
-
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                    last_card_poll_tick = now;
-                    ccid_handler.refresh_diagnostics(now);
-                    if let Some(present) = ccid_handler.check_card_change() {
-                        if present {
-                            led.blink_state(esp32_ccid::led::LedState::CardPresent, 3, 120, 80);
-                        } else {
-                            led.blink_state(esp32_ccid::led::LedState::Ready, 3, 120, 80);
-                        }
-                        let mut notif = [0u8; 2];
-                        let notif_len = build_slot_change_notification(present, &mut notif);
-                        write_all_logged(&uart, &notif[..notif_len]);
-                    }
-                }
-            }
+        #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+        if let Some(server) = ble_server.as_ref() {
+            BleLogger::global().drain(server);
         }
     }
 }

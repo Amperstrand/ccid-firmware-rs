@@ -13,9 +13,19 @@
 pub mod ccid_handler;
 pub mod ccid_serial_server;
 pub mod ccid_types;
+pub mod frontend;
 pub mod nfc;
 pub mod pn532_driver;
 pub mod serial_framing;
+
+#[cfg(all(
+    any(
+        feature = "backend-mfrc522",
+        feature = "backend-pn532"
+    ),
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod ccid_uart_serve;
 
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;

@@ -12,7 +12,7 @@ use esp_idf_hal::usb_serial::{config::Config as UsbConfig, UsbSerialDriver};
 use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
-use crate::ccid_serial_server::{CcidSerialServer, ServeAction};
+use crate::ccid_serial_server::{CcidSerialServer, MalformedFramePolicy, ServeAction};
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
 use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
@@ -68,9 +68,15 @@ pub fn run() -> ! {
     }
 
     let poll_interval = TickType::new_millis(CARD_POLL_INTERVAL_MS as u64).ticks() as u32;
-    let mut server = CcidSerialServer::new(CcidHandler::new(driver), poll_interval, unsafe {
-        esp_idf_sys::xTaskGetTickCount()
-    });
+    let mut server = CcidSerialServer::new(
+        CcidHandler::new(driver),
+        poll_interval,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+        // USB-CDC policy: malformed frames are dropped silently and the
+        // parser resynchronizes on the next SYNC (verified 13/13 on-target;
+        // do not change without re-validating against the host tests).
+        MalformedFramePolicy::Drop,
+    );
     let mut byte_buf = [0u8; 1];
     let timeout_ticks = TickType::new_millis(UART_RX_TIMEOUT_MS as u64).ticks();
 
@@ -92,14 +98,16 @@ pub fn run() -> ! {
                 if server.feed_byte(byte_buf[0], now) == ServeAction::Respond {
                     let write_timeout = TickType::new_millis(100).ticks();
                     // GemPC Twin: echo the received frame, then the response
+                    // (no in-band notification on this transport — the
+                    // 13/13-verified CDC loop never emits NotifySlotChange)
                     let _ = usb.write(server.echo(), write_timeout);
                     let _ = usb.write(server.response(), write_timeout);
                 }
             }
             _ => {
-                // Read idle — background card poll
+                // Read idle — background card poll (state refresh only)
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                server.poll_if_due(now);
+                let _ = server.poll_if_due(now);
             }
         }
     }

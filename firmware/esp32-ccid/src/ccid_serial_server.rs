@@ -10,10 +10,10 @@
 //!
 //! - complete commands are answered with the received frame echoed first
 //!   (GemPC Twin protocol), then the framed CCID response — two writes
-//! - parse errors (bad LRC/CTRL, oversized payload) are silently dropped
-//!   and the parser resynchronizes on the next SYNC byte; unlike the UART
-//!   main (`main.rs`), which NAKs malformed frames — do not "fix" this
-//!   without re-validating against libccidtwin on hardware
+//! - parse errors (bad LRC/CTRL, oversized payload) are handled per
+//!   [`MalformedFramePolicy`]: the UART mains NAK (verified against
+//!   libccidtwin), the USB-CDC main drops silently and resynchronizes on
+//!   the next SYNC byte
 //! - card presence is re-polled at most once per `poll_interval_ticks`,
 //!   gated on GetSlotStatus commands and on read idle
 
@@ -27,19 +27,49 @@ pub const MAX_CCID_RESPONSE_SIZE: usize = 271;
 /// SYNC + CTRL + CCID message + LRC.
 const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 
+/// Behavior on malformed frames (bad LRC/CTRL, announced oversize).
+/// The two shipped transports intentionally differ — an explicit policy,
+/// not an accident:
+/// - UART (libccidtwin host): NAK so the host retries promptly
+/// - USB-CDC (nucula): silent drop; the parser resynchronizes on the
+///   next SYNC byte (verified 13/13 on-target)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MalformedFramePolicy {
+    Nak,
+    Drop,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServeAction {
     /// A complete command was served: write [`Self::echo()`] first, then
     /// [`Self::response()`] (two writes, matching the verified on-device
-    /// order).
+    /// order). A slot-change discovered by the GetSlotStatus-gated poll,
+    /// if any, must be written between them — see
+    /// [`CcidSerialServer::take_inband_notification`].
     Respond,
+    /// A malformed frame arrived under [`MalformedFramePolicy::Nak`]:
+    /// write a NAK frame (3 bytes, `build_nak_frame`).
+    Nak,
     /// No output: partial frame, or a dropped parse error.
     None,
+}
+
+/// Result of an idle-path poll ([`CcidSerialServer::poll_if_due`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollOutcome {
+    NotPolled,
+    /// A poll ran. `card_change` is `Some(present)` when card presence
+    /// flipped since the last poll — the MFRC522 UART main turns that
+    /// into an unsolicited NotifySlotChange; the PN532 and CDC mains
+    /// deliberately do not (pcscd ReadSerial resync).
+    Polled { card_change: Option<bool> },
 }
 
 pub struct CcidSerialServer<D: NfcDriver> {
     handler: CcidHandler<D>,
     parser: FrameParser,
+    policy: MalformedFramePolicy,
+    inband_notif: Option<bool>,
     echo_buf: [u8; MAX_FRAME_SIZE],
     echo_len: usize,
     ccid_resp_buf: [u8; MAX_CCID_RESPONSE_SIZE],
@@ -53,10 +83,17 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// `now_ticks` seeds the poll gate the same way the on-device loop
     /// captures the boot tick, so the first poll fires only after one full
     /// interval.
-    pub fn new(handler: CcidHandler<D>, poll_interval_ticks: u32, now_ticks: u32) -> Self {
+    pub fn new(
+        handler: CcidHandler<D>,
+        poll_interval_ticks: u32,
+        now_ticks: u32,
+        policy: MalformedFramePolicy,
+    ) -> Self {
         Self {
             handler,
             parser: FrameParser::new(),
+            policy,
+            inband_notif: None,
             echo_buf: [0; MAX_FRAME_SIZE],
             echo_len: 0,
             ccid_resp_buf: [0; MAX_CCID_RESPONSE_SIZE],
@@ -72,9 +109,16 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     pub fn feed_byte(&mut self, byte: u8, now_ticks: u32) -> ServeAction {
         let ccid_bytes = match self.parser.feed(byte) {
             Some(FrameEvent::Command { ccid_bytes }) => ccid_bytes,
-            // Parse errors: drop silently; the parser has reset itself and
-            // resynchronizes on the next SYNC byte.
-            Some(FrameEvent::Error(_)) | None => return ServeAction::None,
+            Some(FrameEvent::Error(_)) => {
+                return match self.policy {
+                    MalformedFramePolicy::Nak => {
+                        self.handler.record_nak();
+                        ServeAction::Nak
+                    }
+                    MalformedFramePolicy::Drop => ServeAction::None,
+                };
+            }
+            None => return ServeAction::None,
         };
 
         // Echo the received frame (GemPC Twin protocol). The parser's
@@ -84,8 +128,11 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         self.echo_buf[..self.echo_len].copy_from_slice(frame);
 
         // Time-gated card poll on GetSlotStatus (mirrors the on-device loop).
+        // A slot change discovered here is surfaced between echo and response.
         if ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS) && self.poll_due(now_ticks) {
-            self.handler.check_card_change();
+            if let Some(present) = self.handler.check_card_change() {
+                self.inband_notif = Some(present);
+            }
         }
 
         // Fresh uptime for any 0xD0 in flight (Codex review on #81):
@@ -99,15 +146,15 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         ServeAction::Respond
     }
 
-    /// Read-idle path: poll card presence if the interval elapsed.
-    /// Returns `true` when a poll ran.
-    pub fn poll_if_due(&mut self, now_ticks: u32) -> bool {
-        if self.poll_due(now_ticks) {
-            self.handler.check_card_change();
-            true
-        } else {
-            false
+    /// Read-idle path: refresh diagnostics and poll card presence if the
+    /// interval elapsed.
+    pub fn poll_if_due(&mut self, now_ticks: u32) -> PollOutcome {
+        if !self.poll_due(now_ticks) {
+            return PollOutcome::NotPolled;
         }
+        self.handler.refresh_diagnostics(now_ticks);
+        let card_change = self.handler.check_card_change();
+        PollOutcome::Polled { card_change }
     }
 
     fn poll_due(&mut self, now_ticks: u32) -> bool {
@@ -117,6 +164,22 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         } else {
             false
         }
+    }
+
+    /// Slot change discovered by the GetSlotStatus-gated poll of the last
+    /// [`ServeAction::Respond`], if any. Consume and write it as a
+    /// NotifySlotChange frame BETWEEN the echo and the response (the
+    /// verified UART-main wire order). Mains that never emit in-band
+    /// notifications (USB-CDC) simply never call this.
+    pub fn take_inband_notification(&mut self) -> Option<bool> {
+        self.inband_notif.take()
+    }
+
+    /// Discard any partial frame the parser is mid-way through (parity
+    /// with the historical mains, which reset their frame buffer on
+    /// every read timeout before the shared loop existed).
+    pub fn abort_partial_frame(&mut self) {
+        self.parser.reset();
     }
 
     /// Wire bytes to write first after [`ServeAction::Respond`]: the
@@ -156,9 +219,16 @@ mod tests {
     }
 
     fn server_with(card_present: bool) -> CcidSerialServer<MockNfcDriver> {
+        server_with_policy(card_present, MalformedFramePolicy::Drop)
+    }
+
+    fn server_with_policy(
+        card_present: bool,
+        policy: MalformedFramePolicy,
+    ) -> CcidSerialServer<MockNfcDriver> {
         let mut driver = mock_driver(card_present);
         driver.init().unwrap();
-        CcidSerialServer::new(CcidHandler::new(driver), POLL_INTERVAL, 0)
+        CcidSerialServer::new(CcidHandler::new(driver), POLL_INTERVAL, 0, policy)
     }
 
     /// Build a host→reader command frame: SYNC + ACK + 10-byte CCID header
@@ -233,13 +303,57 @@ mod tests {
         let mut bad = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
         bad[12] ^= 0xFF;
 
-        // Corrupt frame: silently dropped, no output at all.
+        // Corrupt frame under Drop policy: silently dropped, no output.
         assert_eq!(feed_frame(&mut server, &bad, 0), ServeAction::None);
 
         // The very next valid frame is served normally.
         let good = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
         assert_eq!(feed_frame(&mut server, &good, 0), ServeAction::Respond);
         assert_eq!(server.echo(), &good);
+    }
+
+    #[test]
+    fn invalid_lrc_naks_under_nak_policy_then_recovers() {
+        // UART-main parity: libccidtwin hosts expect the NAK so they can
+        // retry promptly instead of timing out.
+        let mut server = server_with_policy(false, MalformedFramePolicy::Nak);
+        let mut bad = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        bad[12] ^= 0xFF;
+
+        let naks_before = server.handler_mut().diagnostics().nak_count;
+        assert_eq!(feed_frame(&mut server, &bad, 0), ServeAction::Nak);
+        assert_eq!(
+            server.handler_mut().diagnostics().nak_count,
+            naks_before + 1,
+            "NAK policy must count the malformed frame"
+        );
+
+        let good = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        assert_eq!(feed_frame(&mut server, &good, 0), ServeAction::Respond);
+        assert_eq!(server.echo(), &good);
+    }
+
+    #[test]
+    fn oversized_announced_payload_naks_under_nak_policy() {
+        // dwLength announces 0x0000FFFF (> max payload): the parser errors
+        // at header completion; the UART policy must surface it as NAK
+        // (regression test for the old pre-parser frame_len cap the UART
+        // mains carried).
+        let mut server = server_with_policy(false, MalformedFramePolicy::Nak);
+        let mut frame = [0u8; 13];
+        frame[0] = SYNC;
+        frame[1] = ccid_transport_serial::CTRL_ACK;
+        frame[2] = PC_TO_RDR_GET_SLOT_STATUS;
+        frame[3] = 0xFF;
+        frame[4] = 0xFF;
+        frame[5] = 0x00;
+        frame[6] = 0x00;
+        frame[12] = calculate_lrc(&frame[..12]);
+
+        assert_eq!(feed_frame(&mut server, &frame, 0), ServeAction::Nak);
+        // ...and the server recovers on the next valid frame.
+        let good = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &good, 0), ServeAction::Respond);
     }
 
     #[test]
@@ -286,10 +400,16 @@ mod tests {
     fn idle_poll_fires_once_per_interval() {
         let mut server = server_with(true);
 
-        assert!(!server.poll_if_due(POLL_INTERVAL - 1));
-        assert!(server.poll_if_due(POLL_INTERVAL));
-        assert!(!server.poll_if_due(POLL_INTERVAL + 1));
-        assert!(server.poll_if_due(2 * POLL_INTERVAL));
+        assert_eq!(
+            server.poll_if_due(POLL_INTERVAL - 1),
+            PollOutcome::NotPolled
+        );
+        assert_eq!(server.poll_if_due(POLL_INTERVAL), PollOutcome::Polled { card_change: None });
+        assert_eq!(
+            server.poll_if_due(POLL_INTERVAL + 1),
+            PollOutcome::NotPolled
+        );
+        assert_eq!(server.poll_if_due(2 * POLL_INTERVAL), PollOutcome::Polled { card_change: None });
     }
 
     #[test]
@@ -323,6 +443,7 @@ mod tests {
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
             1_000, // constructed "late" in uptime
+            MalformedFramePolicy::Drop,
         );
 
         // A command shortly after construction does not poll.
@@ -333,6 +454,44 @@ mod tests {
         // One interval later it does.
         feed_frame(&mut server, &frame, 1_500);
         assert_eq!(server.handler_mut().driver_mut().poll_count(), 1);
+    }
+
+    #[test]
+    fn inband_notification_surfaced_after_get_slot_status_poll() {
+        // UART-main parity: a card change discovered by the poll gated on
+        // GetSlotStatus must be consumable BETWEEN echo and response.
+        let mut server = server_with(false);
+        server.handler_mut().driver_mut().set_card_present(true);
+
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &frame, POLL_INTERVAL + 1), ServeAction::Respond);
+        assert_eq!(
+            server.take_inband_notification(),
+            Some(true),
+            "insertion discovered by the gated poll must surface in-band"
+        );
+        assert_eq!(
+            server.take_inband_notification(),
+            None,
+            "notification is consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn idle_poll_reports_card_change_for_unsolicited_notif() {
+        // MFRC522 UART-main parity: the idle poll exposes card flips so the
+        // main can emit NotifySlotChange while the host is quiet.
+        let mut server = server_with(false);
+
+        assert_eq!(
+            server.poll_if_due(POLL_INTERVAL),
+            PollOutcome::Polled { card_change: None }
+        );
+        server.handler_mut().driver_mut().set_card_present(true);
+        assert_eq!(
+            server.poll_if_due(2 * POLL_INTERVAL),
+            PollOutcome::Polled { card_change: Some(true) }
+        );
     }
 
     #[test]

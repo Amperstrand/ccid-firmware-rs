@@ -79,6 +79,13 @@ pub trait NfcDriver {
     fn reinit_count(&self) -> u32 {
         0
     }
+
+    /// Whether the frontend is currently usable. False for the
+    /// `UnavailableNfcDriver` stand-in and for a degraded `RetryFrontend`;
+    /// true for every real healthy driver (default).
+    fn is_available(&self) -> bool {
+        true
+    }
 }
 
 /// Mock NFC driver for testing
@@ -340,5 +347,59 @@ mod tests {
 
         driver.power_off();
         assert!(!driver.session_active());
+    }
+}
+
+/// Frontend stand-in for builds where the NFC controller could not be
+/// constructed at all (bus/peripheral init failure): every operation
+/// degrades cleanly — card permanently absent, power-on and APDU
+/// exchange fail with [`NfcError::NotInitialized`] — so the host-facing
+/// CCID service stays alive and diagnosable (audit wave 4: frontend
+/// fault isolation; the historical behavior halted the whole reader).
+pub struct UnavailableNfcDriver;
+
+impl NfcDriver for UnavailableNfcDriver {
+    type Error = NfcError;
+
+    fn init(&mut self) -> Result<(), NfcError> {
+        Err(NfcError::NotInitialized)
+    }
+
+    fn is_card_present(&mut self) -> bool {
+        false
+    }
+
+    fn power_on(&mut self, _atr_buf: &mut [u8]) -> Result<usize, NfcError> {
+        Err(NfcError::NotInitialized)
+    }
+
+    fn power_off(&mut self) {}
+
+    fn transmit_apdu(&mut self, _command: &[u8], _response: &mut [u8]) -> Result<usize, NfcError> {
+        Err(NfcError::NotInitialized)
+    }
+
+    fn is_available(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod unavailable_tests {
+    use super::*;
+
+    #[test]
+    fn unavail_driver_reports_absent_and_fails_cleanly() {
+        let mut d = UnavailableNfcDriver;
+        assert!(d.init().is_err());
+        assert!(!d.is_card_present());
+        let mut atr = [0u8; 33];
+        assert_eq!(d.power_on(&mut atr), Err(NfcError::NotInitialized));
+        let mut resp = [0u8; 64];
+        assert_eq!(
+            d.transmit_apdu(&[0x00, 0xA4], &mut resp),
+            Err(NfcError::NotInitialized)
+        );
+        d.power_off();
     }
 }
