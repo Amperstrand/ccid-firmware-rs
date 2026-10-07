@@ -236,21 +236,24 @@ jobs:
           path: |
             ~/.espressif
             ~/.cargo/registry
-            ~/.cargo/bin
             target
             .embuild
-          # Per-variant key on the esp32 manifest + workspace lock; fallback
+          # Do not cache ~/.cargo/bin: cargo-installed tools are provisioned
+          # explicitly above and a cached binary can silently outlive its
+          # requested version. Per-variant key on the manifests, toolchain,
+          # SDK configuration, and partition table; fallback
           # chain: any prior hash of the same variant, then the pre-target
           # tools-only cache (keeps the ~/.espressif benefit on misses).
-          # KEY-VERSION RULE: bump v3→v4 when the ESP-IDF pin changes — a
+          # KEY-VERSION RULE: bump v4→v5 when the ESP-IDF pin changes — a
           # restored target dir built against a different IDF dies at cmake
           # configure with a source-directory mismatch (observed when a
           # v5.2.3 experiment cache poisoned v5.2.4 runs; failed jobs still
           # save their cache, which is how the poison spreads).
-          key: espressif-${{ runner.os }}-v3-${{ matrix.name }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock') }}
+          key: espressif-${{ runner.os }}-v5-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
           restore-keys: |
-            espressif-${{ runner.os }}-v3-${{ matrix.name }}-
-            espressif-${{ runner.os }}-v3
+            espressif-${{ runner.os }}-v5-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
+            espressif-${{ runner.os }}-v5-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v5-
 
       - name: Install ESP toolchain (xtensa)
         if: matrix.toolchain == 'esp'

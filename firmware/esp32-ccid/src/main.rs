@@ -340,6 +340,11 @@ fn main() {
                             }
                         }
 
+                        // Fresh uptime for any 0xD0 in flight (Codex review
+                        // on #81): card-poll-gated refresh alone goes stale
+                        // under continuous non-GetSlotStatus traffic.
+                        ccid_handler
+                            .refresh_diagnostics(unsafe { esp_idf_sys::xTaskGetTickCount() });
                         let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
                         let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
 
@@ -645,6 +650,11 @@ fn main() {
                         }
                         let prev_led = led.state();
                         led.set_state(esp32_ccid::led::LedState::TxRx);
+                        // Fresh uptime for any 0xD0 in flight (Codex review
+                        // on #81): card-poll-gated refresh alone goes stale
+                        // under continuous non-GetSlotStatus traffic.
+                        ccid_handler
+                            .refresh_diagnostics(unsafe { esp_idf_sys::xTaskGetTickCount() });
                         let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
                         let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
                         led.set_state(prev_led);

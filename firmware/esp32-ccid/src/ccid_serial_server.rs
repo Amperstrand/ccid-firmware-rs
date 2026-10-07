@@ -88,6 +88,10 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             self.handler.check_card_change();
         }
 
+        // Fresh uptime for any 0xD0 in flight (Codex review on #81):
+        // poll-gated refresh alone goes stale under continuous traffic.
+        self.handler.refresh_diagnostics(now_ticks);
+
         let resp_len = self
             .handler
             .process_command(&ccid_bytes, &mut self.ccid_resp_buf);
@@ -329,5 +333,37 @@ mod tests {
         // One interval later it does.
         feed_frame(&mut server, &frame, 1_500);
         assert_eq!(server.handler_mut().driver_mut().poll_count(), 1);
+    }
+
+    #[test]
+    fn uptime_refreshes_under_continuous_non_poll_traffic() {
+        // Codex review on #81: poll-gated refresh alone left uptime stale
+        // when commands stream without GetSlotStatus. Dispatch-time refresh
+        // must keep time-varying diagnostics current regardless of traffic mix.
+        let mut server = server_with(true);
+        let frame = command_frame(PC_TO_RDR_ICC_POWER_ON, 1);
+
+        feed_frame(&mut server, &frame, 1_000);
+        let early = server.handler_mut().diagnostics().uptime_ticks;
+        // feed_frame advances ticks per byte; uptime reflects the frame's
+        // last dispatched byte, so it is at (and near) the base tick.
+        assert!(early >= 1_000, "uptime recorded at dispatch ({early})");
+
+        for seq in 2..6u8 {
+            feed_frame(
+                &mut server,
+                &command_frame(PC_TO_RDR_ICC_POWER_ON, seq),
+                5_000 + seq as u32,
+            );
+        }
+        let late = server.handler_mut().diagnostics().uptime_ticks;
+        assert!(
+            late > early,
+            "uptime advanced without any GetSlotStatus ({late} > {early})"
+        );
+        assert!(
+            late >= 5_005 && late < 5_005 + 32,
+            "uptime tracks the last dispatched frame ({late})"
+        );
     }
 }
