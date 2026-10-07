@@ -52,7 +52,28 @@ impl EspPn7160Transport {
     pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
         t.ven_cycle();
+        t.add_pn_device()?;
         Ok(t)
+    }
+
+    /// nci.c adds the PN7160 device only after probing post-VEN; we mirror
+    /// that (device-add is bus-silent, but ordering is replicated exactly).
+    fn add_pn_device(&mut self) -> Result<(), EspError> {
+        if !self.dev.is_null() {
+            return Ok(());
+        }
+        let mut dev_cfg: esp_idf_sys::i2c_device_config_t = unsafe { core::mem::zeroed() };
+        dev_cfg.dev_addr_length = esp_idf_sys::i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7;
+        dev_cfg.device_address = PN7160_I2C_ADDR as u16;
+        dev_cfg.scl_speed_hz = 100_000;
+        unsafe {
+            EspError::convert(esp_idf_sys::i2c_master_bus_add_device(
+                self.bus,
+                &dev_cfg,
+                &mut self.dev,
+            ))?;
+        }
+        Ok(())
     }
 
     /// Verdict A (pads stuck): clear gpio hold + sleep isolation on the
@@ -73,6 +94,7 @@ impl EspPn7160Transport {
     pub fn bringup_ven_timing(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
         t.ven_cycle_extended();
+        t.add_pn_device()?;
         Ok(t)
     }
 
@@ -114,28 +136,15 @@ impl EspPn7160Transport {
             bus_cfg.glitch_ignore_cnt = 7;
             // flags stay zeroed: internal pull-ups OFF (external 2.2k)
             EspError::convert(esp_idf_sys::i2c_new_master_bus(&bus_cfg, &mut bus))?;
-            let mut dev_cfg: esp_idf_sys::i2c_device_config_t = core::mem::zeroed();
-            dev_cfg.dev_addr_length = esp_idf_sys::i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7;
-            dev_cfg.device_address = PN7160_I2C_ADDR as u16;
-            dev_cfg.scl_speed_hz = 100_000;
-            EspError::convert(esp_idf_sys::i2c_master_bus_add_device(
-                bus, &dev_cfg, &mut dev,
-            ))?;
 
-            // Bus priming: the wallet firmware ALWAYS does display probe (0x3C)
-            // + keypad transaction (0x20 + transmit) BEFORE the PN7160 VEN
-            // cycle. The SCL activity from these transactions releases the
-            // PN7160's I2C slave from power-on reset. Without it, the
-            // PN7160 takes ~45 probe attempts (~3.75 min) to start ACKing
-            // — or doesn't ACK at all on a cold boot.
-            let oled = esp_idf_sys::i2c_master_probe(bus, 0x3C, 50);
-            log::warn!("priming: OLED @0x3C rc={} (expected NAK, clocks bus)", oled);
-
-            // Keypad bring-up replica (wallet fw keypad_init ordering): a
-            // probe + device-add + one real transmit to the PCF8574 at 0x20
-            // BEFORE any PN7160 transaction — the wallet fw always runs
-            // this sequence first and its bus is clean; A/B whether this
-            // first real transaction settles the driver/bus state.
+            // Wallet-replica bus priming (nci.c + keypad.c ordering): the
+            // ONLY pre-VEN I2C traffic the wallet generates is one keypad
+            // probe + device-add + transmit to the PCF8574 at 0x20. The
+            // wallet's display_init is a stub (GPIO quiesce only, returns
+            // before any 0x3C probe) — probing the unpowered OLED's ESD
+            // leak path disturbs the bus, so we must NOT send 0x3C.
+            // The PN7160 device is also added only AFTER the VEN cycle
+            // (nci.c adds it post-probe); we mirror that ordering.
             if esp_idf_sys::i2c_master_probe(bus, 0x20, 50) == 0 {
                 let mut kdev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
                 let mut kcfg: esp_idf_sys::i2c_device_config_t = core::mem::zeroed();

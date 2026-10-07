@@ -10,6 +10,7 @@
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
+    log::warn!("FWID pn7160-m1 rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
     log::warn!("M1v2: bus + VEN + probe (build 18:25)");
 
     let mut bus: esp_idf_sys::i2c_master_bus_handle_t = core::ptr::null_mut();

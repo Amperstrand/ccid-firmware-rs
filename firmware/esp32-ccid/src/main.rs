@@ -769,6 +769,7 @@ mod pad_diag {
         esp_idf_sys::link_patches();
         esp_idf_svc::log::EspLogger::initialize_default();
         log::set_max_level(log::LevelFilter::Debug);
+        log::warn!("FWID esp32-ccid rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
         log::warn!("pad-diag: rust main ALIVE (v53)");
 
         // 1. Boot-default IO_MUX dump — before touching any pad.

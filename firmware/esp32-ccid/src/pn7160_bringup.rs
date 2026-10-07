@@ -69,6 +69,7 @@ pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
     crate::netlog::init();
+    log::warn!("FWID pn7160-bringup rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
     log::warn!("pn7160-bringup: rust main ALIVE (verdict {})", VERDICT);
 
     log::warn!("step: Peripherals::take...");
