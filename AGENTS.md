@@ -498,6 +498,43 @@ This bit us because the board's `run_esptool()` method originally placed
 `--after` after the subcommand. If you get "No such option '--after'",
 check the option ordering.
 
+## PN7160 ACK Window (issue #63 root cause, bench-proven 2026-10-08)
+
+The PN7160's I2C slave only ACKs when the host talks to it **immediately
+after VEN rise and keeps talking**. Probing 5s after the VEN cycle = the
+chip is permanently mute (NAK forever); probing 50ms after and proceeding
+straight into CORE_RESET/CORE_INIT without pause = the chip responds and
+stays alive. The wallet firmware always did the latter (nci_init probes
+at +50ms); our firmware always probed seconds later — every earlier
+theory (ISR priorities, sdkconfig diffs, bus priming, address straps,
+build system) was a red herring.
+
+Proven via C-control bisection (idf.py + IDF 5.5.1 builds of the same
+sequence): v1-v3 NAK (build system exonerated — issue #83 disproved),
+v4-v9 = wallet's own functions from a minimal main ACK (wifi/nvs/console/
+keypad all unnecessary), v10 = the timing test that isolated the window.
+
+The fix lives in `pn7160_i2c.rs` (v10raw-verified init: bus first, raw
+gpio_config IRQ+ISR machinery, single clean VEN cycle, probe immediately)
+and `pn7160_bringup.rs` (VEN re-cycle + immediate probe on NAK; ladder
+runs without pause on ACK). `pn7160_v10raw.rs` is the known-good
+pure-syscall reference binary — flash it first when in doubt.
+
+**Init-order hazard**: `gpio_install_isr_service` BEFORE
+`i2c_new_master_bus` hard-hangs the app (interrupt allocation deadlock,
+C-control v5/v6 + Rust both). The bus must be created before any ISR
+service installation.
+
+**IRQ ISR contract**: any ISR handler on the PN7160's IRQ pin must
+quench the level interrupt itself (`gpio_intr_disable`) — the chip holds
+IRQ high until read; a no-op handler = interrupt storm that starves the
+console/USB the moment the chip comes alive.
+
+**Console starvation**: the NCI ladder's `Ets::delay_us` busy-wait (IRQ
+polling) starves the USB console task during the ladder — console output
+dies while the app + chip keep working (verify via GDB-over-JTAG, which
+shows live transport state). Convert ladder waits to FreeRtos delays.
+
 ## ESP32-C3 nucula Build Flow (issues #63/#64, ai-legion)
 
 The nucula (ESP32-C3 + PN7160) firmware builds with the nightly toolchain
