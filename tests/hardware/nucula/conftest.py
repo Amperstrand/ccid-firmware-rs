@@ -12,9 +12,11 @@ Usage:
     # Just check the board is responsive:
     pytest tests/hardware/nucula/test_nucula.py -v --hil -k test_board_responsive
 
-All flashes go through board.flash_and_boot(): no-reset flash + JTAG
-reset + FWID/marker verification — a flash that leaves stale firmware
-running FAILS HERE instead of silently testing the wrong binary.
+All flashes go through board.flash_and_boot(): flash → boot-marker
+verification (FWID for ours, prompt for the wallet) with a reset
+ladder (JTAG reset, esptool flash-id round-trip) for dropped resets
+and download-latch states — a flash that leaves stale firmware running
+FAILS HERE instead of silently testing the wrong binary.
 """
 
 import pytest

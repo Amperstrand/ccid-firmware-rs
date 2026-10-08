@@ -387,7 +387,7 @@ class NuculaBoard:
         try:
             self.flash_and_boot(wallet=True, boot_timeout=40.0)
             return True
-        except RuntimeError as e:
+        except (RuntimeError, FileNotFoundError) as e:
             print(f"[restore_known_good] FAILED: {e}")
             return False
 
