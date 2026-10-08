@@ -222,6 +222,15 @@ sudo cp firmware/esp32-ccid/reader.conf /etc/reader.conf.d/GemPCTwin.conf
 
 This tells `pcscd` to use `libccidtwin.so` for `/dev/ttyUSB0`.
 
+**Nucula (USB-CDC) gotcha**: `DEVICENAME` uses a `device:reader` split on the
+FIRST colon — `/dev/serial/by-id/...` paths contain colons (MAC bytes) and
+parse wrong (`Nucula CCID init failed` in the journal). Use the resolved
+`/dev/ttyACM0`-style path instead:
+
+```
+DEVICENAME  /dev/ttyACM0:GemPCTwin
+```
+
 ### 3. Restart pcscd
 
 ```bash
