@@ -745,7 +745,10 @@ fn main() {}
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn7160",
-    not(feature = "pn7160-bringup")
+    not(feature = "pn7160-bringup"),
+    not(feature = "pn7160-bitbang"),
+    not(feature = "pn7160-m1"),
+    not(feature = "pn7160-v10raw")
 ))]
 mod pad_diag {
     const IO_MUX_BASE: *mut u32 = 0x60009000 as *mut u32;
@@ -767,6 +770,11 @@ mod pad_diag {
         esp_idf_sys::link_patches();
         esp_idf_svc::log::EspLogger::initialize_default();
         log::set_max_level(log::LevelFilter::Debug);
+        log::warn!(
+            "FWID esp32-ccid rev={} build={}",
+            env!("FW_GIT_REV"),
+            env!("FW_BUILD_TS")
+        );
         log::warn!("pad-diag: rust main ALIVE (v53)");
 
         // 1. Boot-default IO_MUX dump — before touching any pad.
@@ -853,7 +861,10 @@ mod pad_diag {
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn7160",
     not(feature = "pn7160-bringup"),
-    not(feature = "pn7160-ccid")
+    not(feature = "pn7160-ccid"),
+    not(feature = "pn7160-bitbang"),
+    not(feature = "pn7160-m1"),
+    not(feature = "pn7160-v10raw")
 ))]
 fn main() {
     crate::pad_diag::run()
@@ -869,8 +880,38 @@ fn main() {
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-v10raw"
+))]
+fn main() {
+    esp32_ccid::pn7160_v10raw::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "pn7160-ccid"
 ))]
 fn main() {
     esp32_ccid::pn7160_ccid::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-bitbang",
+    not(any(feature = "pn7160-bringup", feature = "pn7160-ccid"))
+))]
+fn main() {
+    esp32_ccid::pn7160_bitbang::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-m1",
+    not(any(
+        feature = "pn7160-bringup",
+        feature = "pn7160-ccid",
+        feature = "pn7160-bitbang"
+    ))
+))]
+fn main() {
+    esp32_ccid::pn7160_m1::run()
 }

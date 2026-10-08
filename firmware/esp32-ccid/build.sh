@@ -19,6 +19,15 @@ set -euo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The esp-idf-sys build script locates the workspace by popping its OUT_DIR
+# six levels — with a shared/global CARGO_TARGET_DIR that resolves INSIDE the
+# target dir, not to this checkout, and the build silently pins whatever
+# ESP-IDF the stale state there says (the bench built v5.2.3 for a full day
+# while the manifest said v5.2.4/v5.5.1). Pinning the workspace explicitly
+# makes the [package.metadata.esp-idf-sys] esp_idf_version pin authoritative.
+export CARGO_WORKSPACE_DIR="${SCRIPT_DIR}/../.."
+
 # Bench default: global ~/.cargo/config.toml pins target-dir to ~/.cargo-target
 # (shared across checkouts); honor an explicit CARGO_TARGET_DIR if set.
 TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cargo-target}"

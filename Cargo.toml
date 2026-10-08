@@ -14,6 +14,8 @@ resolver = "2"
 
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
+# Patched hal: legacy I2C module opt-in (issue #63/#80) — see vendor/esp-idf-hal/src/lib.rs
+esp-idf-hal = { path = "vendor/esp-idf-hal" }
 
 [profile.release]
 debug = 2

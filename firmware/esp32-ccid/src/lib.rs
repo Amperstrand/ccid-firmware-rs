@@ -30,10 +30,27 @@ pub mod pn7160_driver;
 pub mod pn7160_i2c;
 
 #[cfg(all(
+    feature = "pn7160-bitbang",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod pn7160_bitbang;
+
+#[cfg(all(
+    feature = "pn7160-m1",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod pn7160_m1;
+
+#[cfg(all(
     feature = "pn7160-bringup",
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod pn7160_bringup;
+#[cfg(all(
+    feature = "pn7160-v10raw",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod pn7160_v10raw;
 
 #[cfg(all(
     feature = "pn7160-ccid",

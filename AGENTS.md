@@ -585,6 +585,35 @@ cargo build --target riscv32imc-esp-espidf --no-default-features \
   --features pn7160-bringup,pn7160-verdict-b
 ```
 
+### ⚠️ Global target-dir: set `CARGO_WORKSPACE_DIR` or the IDF pin is ignored
+
+This machine's `~/.cargo/config.toml` pins `target-dir = /root/.cargo-target`
+(shared by every checkout). The esp-idf-sys build script locates the root
+crate by popping its OUT_DIR six levels — under a shared target dir that
+lands INSIDE the target dir, `cargo metadata` finds no project, and the
+build silently falls back to whatever IDF the stale `.embuild` state holds.
+Observed: the bench compiled **v5.2.3 all day** while the manifest said
+v5.2.4 (and later v5.5.1) — the pin was never even read. CI is unaffected
+(per-repo target dir), which is why CI cloned v5.2.4 correctly while the
+bench diverged.
+
+Fix (encoded in `build.sh`):
+
+```bash
+export CARGO_WORKSPACE_DIR="<repo root>"
+```
+
+Verify after building — the `esp_idf_dir` must match the manifest pin:
+
+```bash
+python3 -c "import json,glob; print(json.load(open(glob.glob('/root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*/out/esp-idf-build.json')[0]))['esp_idf_dir'])"
+```
+
+Also note: changing `esp_idf_version` in Cargo.toml does NOT rerun the build
+script (nothing declares rerun-if-changed on manifest metadata) —
+`cargo clean -p esp-idf-sys --target <triple>` (or delete the
+`build/esp-idf-sys-*` dirs) after a version bump.
+
 ### ⚠️ The env var is `ESP_IDF_SDKCONFIG`, not `SDKCONFIG`
 
 esp-idf-sys/embuild reads **`ESP_IDF_SDKCONFIG`**. A plain `SDKCONFIG` export
