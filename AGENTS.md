@@ -614,6 +614,40 @@ script (nothing declares rerun-if-changed on manifest metadata) —
 `cargo clean -p esp-idf-sys --target <triple>` (or delete the
 `build/esp-idf-sys-*` dirs) after a version bump.
 
+### ⚠️ Shared target-dir cmake-cache contamination (multiple checkouts, 2026-10-08 trap)
+
+Same root cause as above, second symptom: the esp-idf-sys cmake cache
+records **absolute IDF paths** under the building checkout's `.embuild`.
+When two checkouts/worktrees of this repo share the global target-dir,
+checkout B reuses checkout A's cache and fails with:
+
+```
+CMake Error: The source ".../components/bootloader/subproject/CMakeLists.txt"
+does not match the source "/tmp/opencode/<other-checkout>/.embuild/..."
+used to generate cache.  Re-run cmake with a different source directory.
+```
+
+**Fix**: `build.sh` auto-cleans contaminated esp-idf-sys build dirs (it
+greps `esp-idf_SOURCE_DIR` in each CMakeCache.txt and removes any that
+point outside the current workspace — expect a ~10 min full IDF rebuild
+afterward). For ad-hoc `cargo build` invocations, clean manually:
+
+```bash
+rm -rf /root/.cargo-target/riscv32imc-esp-espidf/debug/build/esp-idf-sys-*
+rm -rf /root/.cargo-target/debug/build/esp-idf-sys-*
+```
+
+**The stale-ELF amplifier**: a failed cargo build leaves the PREVIOUS
+target's ELF in place — `elf2image` then "succeeds" on the old binary.
+Never pipe `cargo build` through `grep` in scripts (the rc comes from
+grep, reporting success on failure). Check the ELF mtime, or gate on
+cargo's own exit (`set -o pipefail` + PIPESTATUS, or no pipe). build.sh
+propagates rc correctly; ad-hoc scripts are the hazard.
+
+Prefer ONE checkout per machine for esp-idf-sys targets, or per-checkout
+`CARGO_TARGET_DIR`. Delete merged worktrees (`git worktree remove`) —
+they keep building contamination for as long as they exist.
+
 ### ⚠️ The env var is `ESP_IDF_SDKCONFIG`, not `SDKCONFIG`
 
 esp-idf-sys/embuild reads **`ESP_IDF_SDKCONFIG`**. A plain `SDKCONFIG` export

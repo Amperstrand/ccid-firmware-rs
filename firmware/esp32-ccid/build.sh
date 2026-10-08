@@ -41,11 +41,13 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|m5stick|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|m5stick|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
   c3       ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
            sdkconfig.full, ota_0 slot @ 0x40000, baud 460800)
+  c3-ccid  ESP32-C3 nucula, PN7160 CCID over USB-CDC (as c3; the full
+           reader firmware — flash + host pcscd via libccidtwin)
   m5stick  ESP32 M5StickC, MFRC522 CCID (esp toolchain, release,
            sdkconfig-xtensa.full, ota_0 slot @ 0x40000, baud 115200)
   m5atom   ESP32 M5Stack Atom, MFRC522 CCID (as m5stick, default features)
@@ -107,6 +109,17 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
         ;;
+    c3-ccid)
+        TOOLCHAIN="nightly"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features pn7160-ccid)
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
     m5stick)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa.full"
@@ -130,7 +143,7 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, m5stick, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, m5stick, or m5atom)" >&2
         exit 1
         ;;
 esac
@@ -209,6 +222,32 @@ else
             cp "${SCRIPT_DIR}/partitions-ota.csv" "${out_dir}/partitions.csv"
         done
     fi
+fi
+
+# Shared-target-dir cmake cache guard (bench trap, 2026-10-08): the global
+# ~/.cargo/config.toml target-dir is shared by every checkout/worktree. The
+# esp-idf-sys cmake cache records ABSOLUTE IDF paths under the building
+# checkout's .embuild — reusing another checkout's cache fails with
+# "CMake Error: The source ... does not match the source ... used to generate
+# cache", and the stale ELF + piped-rc habits can silently flash OLD firmware.
+# Auto-clean any esp-idf-sys build dir whose cache points elsewhere.
+if [ "${DRY_RUN}" -eq 0 ]; then
+    for cache in "${TARGET_DIR}/${TRIPLE}"/debug/build/esp-idf-sys-*/out/build/CMakeCache.txt \
+                 "${TARGET_DIR}"/debug/build/esp-idf-sys-*/out/build/CMakeCache.txt \
+                 "${TARGET_DIR}/${TRIPLE}"/release/build/esp-idf-sys-*/out/build/CMakeCache.txt \
+                 "${TARGET_DIR}"/release/build/esp-idf-sys-*/out/build/CMakeCache.txt; do
+        [ -f "${cache}" ] || continue
+        idf_src="$(grep -m1 '^esp-idf_SOURCE_DIR:STATIC=' "${cache}" | cut -d= -f2)"
+        case "${idf_src}" in
+            "${CARGO_WORKSPACE_DIR}"/.embuild/*) ;;
+            *)
+                warn "stale esp-idf-sys cache: ${cache}"
+                warn "  cache points at ${idf_src:-<empty>} — not this workspace"
+                warn "  removing the contaminated build dir (full IDF rebuild follows, ~10 min)"
+                rm -rf "$(dirname "$(dirname "$(dirname "${cache}")")")"
+                ;;
+        esac
+    done
 fi
 
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
