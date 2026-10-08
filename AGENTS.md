@@ -337,6 +337,240 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
+## ESP32-C3 Nucula Board — USB Port Lifecycle (CRITICAL)
+
+The nucula's USB-Serial/JTAG is a **composite device** (CDC serial + JTAG on one USB port). Three failure modes that WILL happen if you're not careful:
+
+### ⚠️ Failure mode 1: Port contention
+
+When firmware with console output is running, the CDC endpoint is actively streaming. If any process (bench logger, test fixture, `tail -f`, another terminal) holds `/dev/ttyACM*`, **esptool cannot open the port** — it hangs or gets "device reports readiness to read but returned no data".
+
+**Prevention**:
+```bash
+# ALWAYS kill port holders before flashing
+fuser -k /dev/ttyACM* 2>/dev/null
+pkill -9 -f nucula_logger.py
+sleep 2  # let the OS actually release the port
+```
+
+### ⚠️ Failure mode 2: Partition table mismatch
+
+Flashing only the app (at 0x40000) while the board has the wallet firmware's partition table (factory app at 0x30000) means the bootloader loads the WRONG binary or nothing at all. Symptoms: silent board, old firmware running, "M1" probes appearing from a binary you flashed 30 minutes ago.
+
+**Prevention**: ALWAYS flash bootloader + partition table + app together:
+```bash
+esptool write-flash 0x0 <bootloader> 0x8000 <partition-table> 0x40000 <app>
+```
+
+### ⚠️ Failure mode 3: USB peripheral state corruption
+
+After a full chip erase or certain flash sequences, the C3's USB peripheral stops responding to software reset (DTR/RTS toggle). **Only a hard power cycle (USB replug) recovers.** No software fix.
+
+**Prevention**: Avoid `erase-flash` unless truly needed. If you must, expect to replug afterward.
+
+### ⚠️ Failure mode 4: silently-dropped reset → stale firmware (CRITICAL for test integrity)
+
+esptool's post-flash "hard reset" (RTS control request to the USB-JTAG) is
+**intermittently dropped**: the flash log says "Hash of data verified. Hard
+resetting via RTS pin..." but the chip never resets and the OLD firmware keeps
+running. Bench proof (2026-10-07): health counter continued 52→124 across a
+"successful" flash; the "new firmware" test silently exercised stale code.
+Raw `setRTS()` toggles on an open port fail the same way.
+
+**Prevention** — never trust the flash log alone; PROVE what booted:
+
+1. **FWID markers**: every Rust firmware logs `FWID <name> rev=<git> build=<ts>`
+   as its first console line (build.rs stamps `FW_GIT_REV`/`FW_BUILD_TS`).
+2. **`board.flash_and_boot()`** (tests/hardware/nucula/board.py) runs the full
+   protocol: flash → verify expected marker (FWID / wallet prompt) → if the
+   reset was dropped: JTAG reset (`openocd init; reset run; shutdown`) →
+   verify → if the chip latched in download mode (`boot:0x5`): esptool
+   `flash-id --after hard-reset` round-trip → verify → raise with console
+   evidence.
+3. **Pre/post-test checklist**: `pretest_check()` (port exists, no port
+   holders, esptool responsive) gates every HIL session; the session teardown
+   runs `ensure_responsive()` and falls back to `restore_known_good()` (wallet
+   flash) if the board is wedged.
+
+Note: the FWID line can print during the USB re-enumeration window and be
+lost — the ladder's retry handles that; periodic markers (`health[1..2]`,
+low counters) are an additional fresh-boot signal.
+
+### ⚠️ Failure mode 5: bootloader offsets differ by chip family + overwriting unknown firmware without a backup (m5stick incident, 2026-10-08)
+
+The bench M5Stack (Hades2001 USB-serial, classic ESP32) boot-looped with
+`flash read err, 1000 / ets_main.c 371` after a manual full-set flash.
+ROOT CAUSE (found next morning, device fully recovered): the bootloader
+was written to **0x0** — the ESP32-**C3** offset. Classic ESP32 boots its
+second-stage bootloader from **0x1000**. Five "recovery attempts" failed
+because they all repeated the same wrong offset while patching header
+bytes (DIO/20MHz) — when N recovery attempts fail, re-derive the basics
+instead of tuning guesses.
+
+**Bootloader flash offsets (memorize or check before every manual flash):**
+
+| Chip | Bootloader offset | Partition table | Typical app |
+|---|---|---|---|
+| ESP32 (classic, xtensa) | **0x1000** | 0x8000 | per table (default factory: 0x30000) |
+| ESP32-C3 / S3 / C2 | **0x0** | 0x8000 | per table (our OTA table: 0x40000) |
+
+The app must land where the partition table you ACTUALLY flashed points
+(read it from the boot log — `boot: 2 factory factory app 00 00 00030000`
+means factory@0x30000). build.sh --flash handles this; manual esptool
+invocations are where the offset bugs creep in.
+
+Recovery outcome: bootloader@0x1000 + default PT@0x8000 + app@0x30000 →
+esp32-ccid MFRC522 firmware boots, pcscd enumerates it as
+`GemPCTwin serial` on /dev/ttyUSB2, CCID GetSlotStatus answers correctly.
+
+**Prevention**: before overwriting unknown firmware on ANY bench device:
+
+```bash
+esptool --chip esp32 -p PORT read-flash 0x0 0x400000 device-backup.bin
+```
+
+One minute of backup versus a soft-bricked board nobody can restore
+unattended. This belongs in the HIL pretest checklist for shared rigs.
+
+### ⚠️ Boot message loss during USB-CDC re-enumeration
+
+After flashing, the USB device disconnects and reconnects. The first 1-2 seconds of boot output (including boot banners, VEN cycle logs, early probe results) are lost. This is NOT a firmware bug.
+
+**Prevention**: Use `ConsoleCapture` (tests/hardware/nucula/console.py) which polls the by-id path at 50ms intervals. Add boot markers to distinguish firmware versions.
+
+### Board state decision tree
+
+```
+Board silent after flash?
+├── Check port exists: ls /dev/serial/by-id/usb-Espressif*
+│   └── No port → USB replug needed (failure mode 3)
+├── Check what's running: is old firmware's console output visible?
+│   └── Old firmware → partition table mismatch (failure mode 2)
+├── Try esptool flash-id
+│   └── Hangs → port contention (failure mode 1)
+└── Try RTS reset
+    └── Still silent → USB replug needed
+```
+
+### Recovery: the nuclear option
+
+```bash
+# Kill everything
+fuser -k /dev/ttyACM* 2>/dev/null
+pkill -9 -f "esptool|nucula_logger|python.*serial"
+
+# Wait for USB to settle
+sleep 5
+
+# Full flash from known-good wallet firmware
+cd /tmp/opencode/nucula-fw/build-551
+esptool --chip esp32c3 -p /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00 \
+  --baud 460800 --after hard-reset write-flash \
+  0x0 bootloader/bootloader.bin \
+  0x8000 partition_table/partition-table.bin \
+  0x30000 nucula.bin
+
+# Verify: console shows "nucula>" prompt
+# If still silent → try JTAG reset (below), then USB replug as last resort
+```
+
+### JTAG reset — the software-only recovery (no replug needed)
+
+The USB-JTAG peripheral has a JTAG path **separate from the CDC serial path**. Even when the CDC is stuck, JTAG often still works. This is the first recovery to try before reaching for the USB cable:
+
+```bash
+# One-liner: connect via JTAG, issue system reset, resume, disconnect
+/opt/espressif/openocd-esp32/bin/openocd \
+  -f board/esp32c3-builtin.cfg \
+  -c "init; reset run; shutdown"
+```
+
+If the board responds to JTAG (you see "JTAG tap: esp32c3.tap0 tap/device found"), the reset was issued. Wait 2–3 seconds for the board to reboot, then try esptool or console again.
+
+**Recovery escalation ladder** (try in order):
+```
+Board stuck / unresponsive?
+├── 1. Kill port holders: fuser -k /dev/ttyACM*; pkill -9 -f nucula_logger
+├── 2. RTS/DTR reset: python3 -c "import serial,time; s=serial.Serial(PORT,115200); s.setRTS(True); time.sleep(0.2); s.setRTS(False); s.close()"
+├── 3. esptool reset: esptool --chip esp32c3 -p PORT --after hard-reset flash-id
+├── 4. JTAG reset: openocd -f board/esp32c3-builtin.cfg -c "init; reset run; shutdown"
+└── 5. USB replug (nuclear — last resort)
+```
+
+Steps 1–3 fix port contention (failure mode 1).
+Step 4 fixes USB peripheral corruption (failure mode 3) WITHOUT replug.
+Step 5 fixes everything but requires physical access.
+
+### Labgrid test framework (tests/hardware/nucula/)
+
+Automated flash + test cycle — eliminates manual flash-and-pray:
+
+```bash
+# Run all nucula HIL tests
+pytest tests/hardware/nucula/test_nucula.py -v --hil
+
+# Just check board is responsive
+pytest tests/hardware/nucula/test_nucula.py -v --hil -k test_board_responsive
+
+# Flash wallet firmware and verify NCI init
+pytest tests/hardware/nucula/test_nucula.py -v --hil -k test_wallet
+```
+
+Components:
+- `board.py` — board metadata (pins, flash offsets, I2C devices) + esptool with port cleanup and retry logic
+- `console.py` — USB-CDC capture with fast re-enumeration handling + boot markers
+- `conftest.py` — pytest fixtures
+- `test_nucula.py` — test pyramid: responsive → wallet boots → I2C scan → our firmware ACKs → NCI init → sustained
+
+### esptool v5.3.1 gotcha: global options before subcommand
+
+`--after` is a **global** option and must come BEFORE `write-flash`:
+```bash
+# CORRECT: esptool ... --after hard-reset write-flash ...
+# WRONG:   esptool ... write-flash --after hard-reset ...  ← "No such option"
+```
+
+This bit us because the board's `run_esptool()` method originally placed
+`--after` after the subcommand. If you get "No such option '--after'",
+check the option ordering.
+
+## PN7160 ACK Window (issue #63 root cause, bench-proven 2026-10-08)
+
+The PN7160's I2C slave only ACKs when the host talks to it **immediately
+after VEN rise and keeps talking**. Probing 5s after the VEN cycle = the
+chip is permanently mute (NAK forever); probing 50ms after and proceeding
+straight into CORE_RESET/CORE_INIT without pause = the chip responds and
+stays alive. The wallet firmware always did the latter (nci_init probes
+at +50ms); our firmware always probed seconds later — every earlier
+theory (ISR priorities, sdkconfig diffs, bus priming, address straps,
+build system) was a red herring.
+
+Proven via C-control bisection (idf.py + IDF 5.5.1 builds of the same
+sequence): v1-v3 NAK (build system exonerated — issue #83 disproved),
+v4-v9 = wallet's own functions from a minimal main ACK (wifi/nvs/console/
+keypad all unnecessary), v10 = the timing test that isolated the window.
+
+The fix lives in `pn7160_i2c.rs` (v10raw-verified init: bus first, raw
+gpio_config IRQ+ISR machinery, single clean VEN cycle, probe immediately)
+and `pn7160_bringup.rs` (VEN re-cycle + immediate probe on NAK; ladder
+runs without pause on ACK). `pn7160_v10raw.rs` is the known-good
+pure-syscall reference binary — flash it first when in doubt.
+
+**Init-order hazard**: `gpio_install_isr_service` BEFORE
+`i2c_new_master_bus` hard-hangs the app (interrupt allocation deadlock,
+C-control v5/v6 + Rust both). The bus must be created before any ISR
+service installation.
+
+**IRQ ISR contract**: any ISR handler on the PN7160's IRQ pin must
+quench the level interrupt itself (`gpio_intr_disable`) — the chip holds
+IRQ high until read; a no-op handler = interrupt storm that starves the
+console/USB the moment the chip comes alive.
+
+**Console starvation**: the NCI ladder's `Ets::delay_us` busy-wait (IRQ
+polling) starves the USB console task during the ladder — console output
+dies while the app + chip keep working (verify via GDB-over-JTAG, which
+shows live transport state). Convert ladder waits to FreeRtos delays.
+
 ## ESP32-C3 nucula Build Flow (issues #63/#64, ai-legion)
 
 The nucula (ESP32-C3 + PN7160) firmware builds with the nightly toolchain

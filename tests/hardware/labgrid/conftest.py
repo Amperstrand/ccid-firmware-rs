@@ -62,6 +62,31 @@ SCardReleaseContext(hcontext)
 print(" ".join("%02X" % b for b in atr))
 '''.strip()
 
+REMOTE_ESCAPE_SCRIPT = r'''
+import sys
+from smartcard.pcsc.PCSCPart10 import (
+    getFeatureRequest, hasFeature, FEATURE_CCID_ESC_COMMAND, SCARD_CTL_CODE
+)
+from smartcard.scard import SCARD_SHARE_DIRECT, SCARD_LEAVE_CARD
+from smartcard.System import readers
+
+rs = readers()
+if not rs:
+    print("ERROR:NOREADER")
+    sys.exit(1)
+c = rs[0].createConnection()
+c.connect(mode=SCARD_SHARE_DIRECT, disposition=SCARD_LEAVE_CARD)
+try:
+    features = getFeatureRequest(c)
+    esc_ioctl = hasFeature(features, FEATURE_CCID_ESC_COMMAND)
+    if esc_ioctl is None:
+        esc_ioctl = SCARD_CTL_CODE(1)
+    resp = c.control(esc_ioctl, [0xD0])
+    print(bytes(resp).hex())
+finally:
+    c.disconnect()
+'''.strip()
+
 
 def pytest_addoption(parser):
     parser.addoption("--ssh-host", action="store",
@@ -134,6 +159,7 @@ def helpers(remote: RemoteHost):
     """Upload helper scripts to the remote host once per session."""
     remote.put_script("/tmp/hil_apdu.py", REMOTE_APDU_SCRIPT)
     remote.put_script("/tmp/hil_atr.py", REMOTE_ATR_SCRIPT)
+    remote.put_script("/tmp/hil_escape.py", REMOTE_ESCAPE_SCRIPT)
     yield remote
 
 

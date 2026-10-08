@@ -200,11 +200,16 @@ impl CcidSmartcardDriver for SmartcardWrapper {
     type Error = SmartcardError;
 
     fn power_on(&mut self) -> core::result::Result<&[u8], Self::Error> {
+        // A fresh card session must not inherit the previous session's
+        // failure streak (Codex review #36: one early failure in a new
+        // session would otherwise trigger a hidden cold reset).
+        self.consecutive_failures = 0;
         let atr = self.uart.power_on()?;
         Ok(&atr.raw[..atr.len])
     }
 
     fn power_off(&mut self) {
+        self.consecutive_failures = 0;
         self.uart.power_off()
     }
 
@@ -333,6 +338,15 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.bitbang.set_clock_and_rate(clock_hz, rate_bps)
+    }
+
+    // Codex review #45/#44: without this override the F746 reported the
+    // trait default — all-zero counters AND card_present=false even with
+    // a card active — fabricated data on the 0xD0 diagnostic query.
+    fn diagnostics(&self) -> ccid_core::Diagnostics {
+        let mut d = ccid_core::Diagnostics::new();
+        d.card_present = self.bitbang.is_card_present();
+        d
     }
 }
 

@@ -222,8 +222,17 @@ if [ -n "${FLASH_PORT}" ]; then
     # otherwise lack the ota slots (and the c3 coredump partition) that this
     # build assumes. Idempotent — safe to reflash every time.
     PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
+    # Codex review on #82: writing ota_0 while otadata still points at
+    # ota_1 leaves the bootloader on the OLD image after a "successful"
+    # flash. Erasing otadata resets boot selection to the first valid
+    # app partition. Safe ONLY because PART_TABLE (our OTA table, where
+    # 0x30000 is otadata) is flashed in the same invocation — under the
+    # legacy single-app table that offset IS the factory app.
+    OTADATA_OFFSET="0x30000"
     run esptool --chip "${CHIP}" -p "${FLASH_PORT}" --baud "${FLASH_BAUD}" \
         write-flash 0x8000 "${PART_TABLE}" "${FLASH_OFFSET}" "${IMAGE}"
+    run esptool --chip "${CHIP}" -p "${FLASH_PORT}" --baud "${FLASH_BAUD}" \
+        erase-region "${OTADATA_OFFSET}" 0x2000
     if [ "${CHIP}" = "esp32" ]; then
         warn "FTDI DTR/RTS wedge: physically replug the M5Stack board before expecting"
         warn "serial communication to work again (see flash_and_test.sh header)."

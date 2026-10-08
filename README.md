@@ -91,7 +91,7 @@ This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
 ### Stub Rationale
 
 The stubbed commands are intentional:
-- **Escape**: 0xD0 vendor extension returns diagnostic counters (28 bytes LE). Other escape codes still return CMD_NOT_SUPPORTED.
+- **Escape**: 0xD0 vendor extension returns diagnostic counters (28 bytes LE). 0x6A returns firmware-features (Gemalto IDBridge convention). Other escape codes return CMD_NOT_SUPPORTED.
 - **T0APDU**: TPDU-level control, we use Short APDU level
 - **Mechanical**: No mechanical card eject/capture hardware
 - **Abort**: Single-slot synchronous reader, no async operations to abort

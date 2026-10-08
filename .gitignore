@@ -82,3 +82,4 @@ tools/gp/*.cap
 # C3 bring-up host-bypass artifacts (see issue "ESP32-C3 port"); not for upstream
 firmware/esp32-ccid/ld-args.txt
 firmware/esp32-ccid/native/
+.omo/
