@@ -10,7 +10,11 @@
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    log::warn!("FWID pn7160-m1 rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
+    log::warn!(
+        "FWID pn7160-m1 rev={} build={}",
+        env!("FW_GIT_REV"),
+        env!("FW_BUILD_TS")
+    );
     log::warn!("M1v2: bus + VEN + probe (build 18:25)");
 
     let mut bus: esp_idf_sys::i2c_master_bus_handle_t = core::ptr::null_mut();
@@ -19,8 +23,7 @@ pub fn run() -> ! {
         cfg.i2c_port = 0;
         cfg.sda_io_num = 4;
         cfg.scl_io_num = 5;
-        cfg.__bindgen_anon_1.clk_source =
-            esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
+        cfg.__bindgen_anon_1.clk_source = esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
         cfg.glitch_ignore_cnt = 7;
         let rc = esp_idf_sys::i2c_new_master_bus(&cfg, &mut bus);
         log::warn!("M1: i2c_new_master_bus rc={}", rc);
@@ -31,7 +34,7 @@ pub fn run() -> ! {
         }
     }
 
-        // Wallet-firmware bus priming: the wallet ALWAYS does display probe
+    // Wallet-firmware bus priming: the wallet ALWAYS does display probe
     // + keypad transaction BEFORE the PN7160 VEN cycle. The SCL activity
     // from these transactions appears to release the PN7160's I2C slave
     // from power-on reset. Without it, the PN7160 needs ~45 probe attempts
@@ -64,16 +67,25 @@ pub fn run() -> ! {
     {
         use esp_idf_hal::gpio::{Output, PinDriver};
         let peripherals = esp_idf_hal::peripherals::Peripherals::take().unwrap();
-        let mut ven: PinDriver<'static, Output> = PinDriver::output(peripherals.pins.gpio7).unwrap();
+        let mut ven: PinDriver<'static, Output> =
+            PinDriver::output(peripherals.pins.gpio7).unwrap();
         ven.set_high().unwrap();
-        unsafe { esp_idf_sys::vTaskDelay(2); }
+        unsafe {
+            esp_idf_sys::vTaskDelay(2);
+        }
         ven.set_low().unwrap();
-        unsafe { esp_idf_sys::vTaskDelay(5); }
+        unsafe {
+            esp_idf_sys::vTaskDelay(5);
+        }
         ven.set_high().unwrap();
-        unsafe { esp_idf_sys::vTaskDelay(5); }
+        unsafe {
+            esp_idf_sys::vTaskDelay(5);
+        }
         log::warn!("M2: VEN PinDriver cycle done");
         drop(ven);
-        unsafe { esp_idf_sys::vTaskDelay(50); } // 500ms settling
+        unsafe {
+            esp_idf_sys::vTaskDelay(50);
+        } // 500ms settling
     }
 
     let mut n: u32 = 0;

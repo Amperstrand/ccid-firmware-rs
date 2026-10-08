@@ -455,7 +455,11 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         // SET_CONFIG with num_params=1 → the ladder aborted every time
         // after a fully successful CORE_INIT.
         let status = if matches!(step, Step::SetConfigTc1) {
-            if rsp.len >= 2 { Some(rsp.payload[1]) } else { None }
+            if rsp.len >= 2 {
+                Some(rsp.payload[1])
+            } else {
+                None
+            }
         } else {
             rsp.status()
         };

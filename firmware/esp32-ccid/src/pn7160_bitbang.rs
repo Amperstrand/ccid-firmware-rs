@@ -104,7 +104,11 @@ pub fn run() -> ! {
 
     for addr in [0x20u8, 0x28, 0x7C] {
         let ack = bitbang_probe(addr);
-        log::warn!("bitbang: probe 0x{:02X} -> {}", addr, if ack { "ACK" } else { "NAK" });
+        log::warn!(
+            "bitbang: probe 0x{:02X} -> {}",
+            addr,
+            if ack { "ACK" } else { "NAK" }
+        );
         unsafe { esp_idf_sys::esp_rom_delay_us(50_000) };
     }
     log::warn!("bitbang: done — parking");

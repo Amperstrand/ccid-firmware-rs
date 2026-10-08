@@ -17,7 +17,11 @@ const VEN: i32 = 7;
 pub fn run() -> ! {
     sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
-    log::warn!("FWID pn7160-v10raw rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
+    log::warn!(
+        "FWID pn7160-v10raw rev={} build={}",
+        env!("FW_GIT_REV"),
+        env!("FW_BUILD_TS")
+    );
     log::warn!("v10raw: bus + irq/isr + ven + cycle + immediate probe");
 
     unsafe {
@@ -65,7 +69,11 @@ pub fn run() -> ! {
 
         // nci.c:90 — probe IMMEDIATELY after the cycle
         let rc_probe = sys::i2c_master_probe(bus, 0x28, 50);
-        log::warn!("v10raw: IMMEDIATE probe rc={} ({})", rc_probe, if rc_probe == 0 { "ACK !!!" } else { "no-ack" });
+        log::warn!(
+            "v10raw: IMMEDIATE probe rc={} ({})",
+            rc_probe,
+            if rc_probe == 0 { "ACK !!!" } else { "no-ack" }
+        );
 
         let mut hb: u32 = 0;
         loop {

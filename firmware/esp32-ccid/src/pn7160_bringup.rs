@@ -71,7 +71,11 @@ pub fn run() -> ! {
     // netlog::init() drives the LOG BACKEND (println → USB console);
     // removing it silently kills all log output while the app runs fine.
     crate::netlog::init();
-    log::warn!("FWID pn7160-bringup rev={} build={}", env!("FW_GIT_REV"), env!("FW_BUILD_TS"));
+    log::warn!(
+        "FWID pn7160-bringup rev={} build={}",
+        env!("FW_GIT_REV"),
+        env!("FW_BUILD_TS")
+    );
     log::warn!("pn7160-bringup: rust main ALIVE (verdict {})", VERDICT);
 
     log::warn!("step: Peripherals::take...");
@@ -171,60 +175,62 @@ pub fn run() -> ! {
                 let t = transport_slot
                     .as_mut()
                     .expect("transport must exist while driver does not");
-            match t.probe() {
-                Err(e) => {
-                    log::warn!(
-                        "health[{}]: PN7160 @0x28 no-ack: {:?} (isr_rc={}/{})*",
-                        hb,
-                        e,
-                        crate::pn7160_i2c::ISR_SERVICE_RC.load(core::sync::atomic::Ordering::Relaxed),
-                        crate::pn7160_i2c::ISR_ADD_RC.load(core::sync::atomic::Ordering::Relaxed)
-                    );
-                    // ROOT CAUSE (#63/#80, bench-proven 2026-10-08 via C
-                    // controls v1-v10): the PN7160's I2C slave only ACKs
-                    // within a window after VEN rise. Probing 5s later is
-                    // forever mute; the wallet ACKs because nci_init
-                    // probes 50ms after the VEN cycle. Fix: re-cycle VEN
-                    // and probe IMMEDIATELY after it.
-                    log::warn!("health[{}]: VEN re-cycle + immediate probe", hb);
-                    t.ven_cycle();
-                    match t.probe() {
-                        Ok(()) => {
-                            log::warn!(
+                match t.probe() {
+                    Err(e) => {
+                        log::warn!(
+                            "health[{}]: PN7160 @0x28 no-ack: {:?} (isr_rc={}/{})*",
+                            hb,
+                            e,
+                            crate::pn7160_i2c::ISR_SERVICE_RC
+                                .load(core::sync::atomic::Ordering::Relaxed),
+                            crate::pn7160_i2c::ISR_ADD_RC
+                                .load(core::sync::atomic::Ordering::Relaxed)
+                        );
+                        // ROOT CAUSE (#63/#80, bench-proven 2026-10-08 via C
+                        // controls v1-v10): the PN7160's I2C slave only ACKs
+                        // within a window after VEN rise. Probing 5s later is
+                        // forever mute; the wallet ACKs because nci_init
+                        // probes 50ms after the VEN cycle. Fix: re-cycle VEN
+                        // and probe IMMEDIATELY after it.
+                        log::warn!("health[{}]: VEN re-cycle + immediate probe", hb);
+                        t.ven_cycle();
+                        match t.probe() {
+                            Ok(()) => {
+                                log::warn!(
                                 "health[{}]: PN7160 ACK @0x28 after VEN re-cycle — running init ladder",
                                 hb
                             );
-                            recovered = true;
+                                recovered = true;
+                            }
+                            Err(e2) => {
+                                log::warn!("health[{}]: still no-ack after re-cycle: {:?}", hb, e2);
+                            }
                         }
-                        Err(e2) => {
-                            log::warn!("health[{}]: still no-ack after re-cycle: {:?}", hb, e2);
-                        }
-                    }
-                    // nucula-board wiring-audit: ADR0/ADR1 are strapped via
-                    // 100k pull-downs against the PN7160's internal 55-120k
-                    // pull-ups — strap level 0.46-0.65 x VDD is INDETERMINATE
-                    // (guaranteed LOW needs <= 0.35). The shipped R2 BOM kept
-                    // 100k (prescribed fix was 0R/10k). If the chip samples
-                    // the straps high at VEN rise it lands on 0x29-0x2B.
-                    if hb % 6 == 1 {
-                        for alt in [0x29u8, 0x2A, 0x2B] {
-                            if let Ok(()) = t.probe_addr(alt) {
-                                log::warn!(
+                        // nucula-board wiring-audit: ADR0/ADR1 are strapped via
+                        // 100k pull-downs against the PN7160's internal 55-120k
+                        // pull-ups — strap level 0.46-0.65 x VDD is INDETERMINATE
+                        // (guaranteed LOW needs <= 0.35). The shipped R2 BOM kept
+                        // 100k (prescribed fix was 0R/10k). If the chip samples
+                        // the straps high at VEN rise it lands on 0x29-0x2B.
+                        if hb % 6 == 1 {
+                            for alt in [0x29u8, 0x2A, 0x2B] {
+                                if let Ok(()) = t.probe_addr(alt) {
+                                    log::warn!(
                                     "health[{}]: *** PN7160 responds at 0x{:02X} — strap margin CONFIRMED (fix: R23/R24 -> 0R)",
                                     hb, alt
                                 );
+                                }
                             }
                         }
                     }
+                    Ok(()) => {
+                        log::warn!(
+                            "health[{}]: PN7160 ACK @0x28 — chip is BACK, running init ladder",
+                            hb
+                        );
+                        recovered = true;
+                    }
                 }
-                Ok(()) => {
-                    log::warn!(
-                        "health[{}]: PN7160 ACK @0x28 — chip is BACK, running init ladder",
-                        hb
-                    );
-                    recovered = true;
-                }
-            }
             }
             if recovered {
                 let t = transport_slot

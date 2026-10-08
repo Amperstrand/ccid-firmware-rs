@@ -24,8 +24,10 @@ const XFER_TIMEOUT_MS: i32 = 500;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
 const NTF_SLOTS: usize = 4;
 
-pub(crate) static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-999);
-pub(crate) static ISR_ADD_RC: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-999);
+pub(crate) static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 =
+    core::sync::atomic::AtomicI32::new(-999);
+pub(crate) static ISR_ADD_RC: core::sync::atomic::AtomicI32 =
+    core::sync::atomic::AtomicI32::new(-999);
 
 unsafe extern "C" fn dummy_irq_isr(_arg: *mut core::ffi::c_void) {
     // nci.c replica: the ISR must quench the level interrupt itself (the
@@ -136,44 +138,43 @@ impl EspPn7160Transport {
             bus_cfg.i2c_port = 0;
             bus_cfg.sda_io_num = SDA_PIN as esp_idf_sys::gpio_num_t;
             bus_cfg.scl_io_num = SCL_PIN as esp_idf_sys::gpio_num_t;
-            bus_cfg.__bindgen_anon_1.clk_source = esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
+            bus_cfg.__bindgen_anon_1.clk_source =
+                esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
             bus_cfg.glitch_ignore_cnt = 7;
             // flags stay zeroed: internal pull-ups OFF (external 2.2k)
             EspError::convert(esp_idf_sys::i2c_new_master_bus(&bus_cfg, &mut bus))?;
-        // v10raw-verified sequence (Rust ACK on bench 2026-10-08): raw
-        // gpio_config for IRQ + VEN, ISR machinery installed, single clean
-        // VEN cycle, probe IMMEDIATELY after. No PinDriver on these pins —
-        // the hal wrapper was present in every failing build.
-        unsafe {
-            let mut irq_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
-            irq_cfg.pin_bit_mask = 1u64 << IRQ_PIN;
-            irq_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
-            irq_cfg.pull_down_en = esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_ENABLE;
-            irq_cfg.intr_type = esp_idf_sys::gpio_int_type_t_GPIO_INTR_HIGH_LEVEL;
-            esp_idf_sys::gpio_config(&irq_cfg);
-            ISR_SERVICE_RC.store(
-                esp_idf_sys::gpio_install_isr_service(0),
-                core::sync::atomic::Ordering::Relaxed,
-            );
-            ISR_ADD_RC.store(
-                esp_idf_sys::gpio_isr_handler_add(
-                    IRQ_PIN,
-                    Some(dummy_irq_isr),
-                    core::ptr::null_mut(),
-                ),
-                core::sync::atomic::Ordering::Relaxed,
-            );
-            esp_idf_sys::gpio_intr_disable(IRQ_PIN);
+            // v10raw-verified sequence (Rust ACK on bench 2026-10-08): raw
+            // gpio_config for IRQ + VEN, ISR machinery installed, single clean
+            // VEN cycle, probe IMMEDIATELY after. No PinDriver on these pins —
+            // the hal wrapper was present in every failing build.
+            unsafe {
+                let mut irq_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+                irq_cfg.pin_bit_mask = 1u64 << IRQ_PIN;
+                irq_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
+                irq_cfg.pull_down_en = esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_ENABLE;
+                irq_cfg.intr_type = esp_idf_sys::gpio_int_type_t_GPIO_INTR_HIGH_LEVEL;
+                esp_idf_sys::gpio_config(&irq_cfg);
+                ISR_SERVICE_RC.store(
+                    esp_idf_sys::gpio_install_isr_service(0),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                ISR_ADD_RC.store(
+                    esp_idf_sys::gpio_isr_handler_add(
+                        IRQ_PIN,
+                        Some(dummy_irq_isr),
+                        core::ptr::null_mut(),
+                    ),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                esp_idf_sys::gpio_intr_disable(IRQ_PIN);
 
-            let mut ven_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
-            ven_cfg.pin_bit_mask = 1u64 << VEN_PIN;
-            ven_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT;
-            esp_idf_sys::gpio_config(&ven_cfg);
-        }
-        let _ = p.irq; // raw gpio_config owns IRQ now
-        let _ = p.ven; // raw gpio_config owns VEN now
-
-
+                let mut ven_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+                ven_cfg.pin_bit_mask = 1u64 << VEN_PIN;
+                ven_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT;
+                esp_idf_sys::gpio_config(&ven_cfg);
+            }
+            let _ = p.irq; // raw gpio_config owns IRQ now
+            let _ = p.ven; // raw gpio_config owns VEN now
         }
         log::warn!("step: i2c bus + device OK (driver_ng)");
         Ok(Self {
@@ -279,9 +280,7 @@ impl EspPn7160Transport {
     /// nucula-board R23/R24 = 100k vs internal pull-ups → the chip may
     /// land on 0x29-0x2B instead of 0x28 at VEN rise).
     pub fn probe_addr(&mut self, addr: u8) -> Result<(), EspError> {
-        EspError::convert(unsafe {
-            esp_idf_sys::i2c_master_probe(self.bus, addr as u16, 50)
-        })
+        EspError::convert(unsafe { esp_idf_sys::i2c_master_probe(self.bus, addr as u16, 50) })
     }
 
     /// Probe 0x01..=0x7F; log every ACK and the error kind at the PN7160
