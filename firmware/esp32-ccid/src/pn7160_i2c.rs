@@ -13,7 +13,7 @@ use esp_idf_hal::delay::FreeRtos;
 use esp_idf_hal::gpio::{Input, Output, PinDriver, Pull};
 use esp_idf_sys::EspError;
 use pn7160_nci::transport::{IRQ_PIN, PN7160_I2C_ADDR, SCL_PIN, SDA_PIN, VEN_PIN};
-use pn7160_nci::{Frame, Transport, MT_RSP};
+use pn7160_nci::{Frame, Transport, MT_NTF};
 
 use crate::pn7160_driver::Pn7160NfcDriver;
 
@@ -313,7 +313,12 @@ impl Transport for EspPn7160Transport {
         loop {
             if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
                 let f = self.read_frame()?;
-                if f.mt == MT_RSP {
+                // The reply to what we sent is the first NON-NTF frame:
+                // MT_RSP for commands, MT_DATA for DATA packets. Returning
+                // only MT_RSP stashed every APDU response as a notification
+                // and starved all card exchanges (mock/hardware divergence
+                // — the mock returns any queued reply; bench 2026-10-08).
+                if f.mt != MT_NTF {
                     return Some(f);
                 }
                 log::warn!("transact: stashing NTF gid={:#x} oid={:#x}", f.gid, f.oid);

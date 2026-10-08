@@ -178,7 +178,11 @@ impl<D: NfcDriver> CcidHandler<D> {
                     response,
                 )
             }
-            Err(_) => {
+            Err(e) => {
+                // Bring-up diagnostics (bench 2026-10-08): the NCI
+                // activation failure reason is otherwise invisible — the
+                // USB console carries it alongside the CCID frames.
+                log::warn!("power_on failed: {:?}", e);
                 // Don't poll after activation failure — the card may be in an
                 // uncertain ISO 14443-3A state (e.g. READY after a partial
                 // WUPA). Polling now could send WUPA from READY which keeps

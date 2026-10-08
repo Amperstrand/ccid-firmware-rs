@@ -155,6 +155,16 @@ pub mod tx {
     /// Annex F (TC1 definition); nci.c:240.
     pub const SET_CONFIG_TC1: [u8; 7] = [MT_CMD, OID_CORE_SET_CONFIG, 0x04, 0x01, 0x52, 0x01, 0x00];
 
+    /// CORE_SET_CONFIG TOTAL_DURATION (param id 0x0200) = 0x01FE — NCI
+    /// §5.1.3 / Table 90. Without it the PN7160 completes ONE discovery
+    /// cycle and stops emitting RF_DISCOVER_NTFs: the card is reported a
+    /// single time, then presence flaps and activation starves (bench
+    /// 2026-10-08; the wallet firmware always sets this — nci.c
+    /// nci_configure_settings "TOTAL_DURATION").
+    pub const SET_CONFIG_TOTAL_DURATION: [u8; 8] = [
+        MT_CMD, OID_CORE_SET_CONFIG, 0x05, 0x01, 0x00, 0x02, 0xFE, 0x01,
+    ];
+
     /// RF_DISCOVER_MAP with one mapping: ISO-DEP protocol to ISO-DEP
     /// interface, poll mode. Payload [num=1, protocol, interface, mode=1]
     /// — NCI §6.1.1 (mapping mode 1 = poll) — reader-flavoured analogue of
@@ -403,6 +413,7 @@ pub enum Step {
     CoreReset,
     CoreInit,
     SetConfigTc1,
+    SetConfigTotalDuration,
     RfDiscoverMap,
     RfDiscover,
 }
@@ -413,6 +424,7 @@ impl Step {
             Step::CoreReset => &tx::CORE_RESET,
             Step::CoreInit => &tx::CORE_INIT,
             Step::SetConfigTc1 => &tx::SET_CONFIG_TC1,
+            Step::SetConfigTotalDuration => &tx::SET_CONFIG_TOTAL_DURATION,
             Step::RfDiscoverMap => &tx::RF_DISCOVER_MAP_ISO_DEP,
             Step::RfDiscover => &tx::RF_DISCOVER_PASSIVE_A,
         }
@@ -442,6 +454,7 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     for step in [
         Step::CoreInit,
         Step::SetConfigTc1,
+        Step::SetConfigTotalDuration,
         Step::RfDiscoverMap,
         Step::RfDiscover,
     ] {
@@ -454,7 +467,7 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         // PARAMETER COUNT against STATUS_OK — the real PN7160 answers
         // SET_CONFIG with num_params=1 → the ladder aborted every time
         // after a fully successful CORE_INIT.
-        let status = if matches!(step, Step::SetConfigTc1) {
+        let status = if matches!(step, Step::SetConfigTc1 | Step::SetConfigTotalDuration) {
             if rsp.len >= 2 {
                 Some(rsp.payload[1])
             } else {
@@ -598,11 +611,12 @@ mod tests {
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
         t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass");
-        assert_eq!(t.sent.len(), 5);
+        assert_eq!(t.sent.len(), 6);
         assert_eq!(t.drained, 1);
     }
 
@@ -613,11 +627,12 @@ mod tests {
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
         t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass with reset NTF");
-        assert_eq!(t.sent.len(), 5);
+        assert_eq!(t.sent.len(), 6);
         assert_eq!(t.drained, 1);
     }
 

@@ -5,6 +5,7 @@
 //! `NfcDriver` delegation.
 
 use super::{reader, Transport};
+use reader::DiscoverNtf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -20,6 +21,9 @@ pub struct Pn7160Driver<T: Transport> {
     active: bool,
     uid: [u8; 10],
     uid_len: usize,
+    /// Last discovery notification (edge-triggered chips report a tag
+    /// ONCE on arrival): presence polls refresh it, activation reuses it.
+    last_ntf: Option<DiscoverNtf>,
 }
 
 impl<T: Transport> Pn7160Driver<T> {
@@ -29,6 +33,7 @@ impl<T: Transport> Pn7160Driver<T> {
             active: false,
             uid: [0u8; 10],
             uid_len: 0,
+            last_ntf: None,
         }
     }
 
@@ -50,13 +55,18 @@ impl<T: Transport> Pn7160Driver<T> {
 
     /// Check whether a tag is in the field (consumes pending notifications).
     pub fn is_card_present(&mut self) -> bool {
-        reader::wait_for_discovery(&mut self.transport).is_some()
+        if let Some(n) = reader::wait_for_discovery(&mut self.transport) {
+            self.last_ntf = Some(n);
+        }
+        self.last_ntf.is_some()
     }
 
     /// Discover, select, and activate a tag; copies the ATS (from the
     /// activation notification's Initial_Params — NCI §6.3.4) into `atr`.
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
-        let ntf = reader::wait_for_discovery(&mut self.transport).ok_or(Error::NoCard)?;
+        let ntf = reader::wait_for_discovery(&mut self.transport)
+            .or(self.last_ntf)
+            .ok_or(Error::NoCard)?;
         if let Some(uid) = reader::nfca_uid(&ntf) {
             self.uid_len = uid.len().min(10);
             self.uid[..self.uid_len].copy_from_slice(&uid[..self.uid_len]);
@@ -81,6 +91,7 @@ impl<T: Transport> Pn7160Driver<T> {
         let _ = reader::deactivate_idle(&mut self.transport);
         self.active = false;
         self.uid_len = 0;
+        self.last_ntf = None;
     }
 
     /// Exchange one APDU with the activated tag (connection 0).
@@ -127,6 +138,13 @@ mod tests {
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
         t.push_notification(&[MT_NTF, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_INIT, 0x01, STATUS_OK]);
+        t.push_reply(&[
+            MT_RSP | GID_CORE,
+            OID_CORE_SET_CONFIG,
+            0x02,
+            0x01,
+            STATUS_OK,
+        ]);
         t.push_reply(&[
             MT_RSP | GID_CORE,
             OID_CORE_SET_CONFIG,
