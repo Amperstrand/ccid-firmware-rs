@@ -230,23 +230,30 @@ fi
 # checkout's .embuild — reusing another checkout's cache fails with
 # "CMake Error: The source ... does not match the source ... used to generate
 # cache", and the stale ELF + piped-rc habits can silently flash OLD firmware.
-# Auto-clean any esp-idf-sys build dir whose cache points elsewhere.
+# Both cargo layouts are scanned (esp-idf-sys-<hash> AND esp-idf-sys/<hash>);
+# contamination = a CMakeCache pointing elsewhere, or any .cmake reference
+# to a foreign .embuild path (survives in CMakeFiles even without a cache).
 if [ "${DRY_RUN}" -eq 0 ]; then
-    for cache in "${TARGET_DIR}/${TRIPLE}"/debug/build/esp-idf-sys-*/out/build/CMakeCache.txt \
-                 "${TARGET_DIR}"/debug/build/esp-idf-sys-*/out/build/CMakeCache.txt \
-                 "${TARGET_DIR}/${TRIPLE}"/release/build/esp-idf-sys-*/out/build/CMakeCache.txt \
-                 "${TARGET_DIR}"/release/build/esp-idf-sys-*/out/build/CMakeCache.txt; do
-        [ -f "${cache}" ] || continue
-        idf_src="$(grep -m1 '^esp-idf_SOURCE_DIR:STATIC=' "${cache}" | cut -d= -f2)"
-        case "${idf_src}" in
-            "${CARGO_WORKSPACE_DIR}"/.embuild/*) ;;
-            *)
-                warn "stale esp-idf-sys cache: ${cache}"
-                warn "  cache points at ${idf_src:-<empty>} — not this workspace"
-                warn "  removing the contaminated build dir (full IDF rebuild follows, ~10 min)"
-                rm -rf "$(dirname "$(dirname "$(dirname "${cache}")")")"
-                ;;
-        esac
+    for out_build in "${TARGET_DIR}"/{,${TRIPLE}}/{debug,release}/build/esp-idf-sys{,-}*/out/build; do
+        [ -d "${out_build}" ] || continue
+        contaminated=""
+        if [ -f "${out_build}/CMakeCache.txt" ]; then
+            idf_src="$(grep -m1 '^esp-idf_SOURCE_DIR:STATIC=' "${out_build}/CMakeCache.txt" | cut -d= -f2)"
+            case "${idf_src}" in
+                "${CARGO_WORKSPACE_DIR}"/.embuild/*) ;;
+                *) contaminated="CMakeCache esp-idf_SOURCE_DIR=${idf_src:-<empty>}" ;;
+            esac
+        fi
+        if [ -z "${contaminated}" ] && grep -rIhs '/\.embuild/' "${out_build}/CMakeFiles" 2>/dev/null \
+                | grep -vF "${CARGO_WORKSPACE_DIR}/.embuild" | grep -q '/\.embuild/'; then
+            contaminated="stale .embuild reference in CMakeFiles"
+        fi
+        if [ -n "${contaminated}" ]; then
+            warn "stale esp-idf-sys build: ${out_build}"
+            warn "  reason: ${contaminated} — not this workspace"
+            warn "  removing the contaminated build dir (full IDF rebuild follows, ~10 min)"
+            rm -rf "$(dirname "$(dirname "$(dirname "$(dirname "${out_build}")")")")"
+        fi
     done
 fi
 
