@@ -154,10 +154,15 @@ fn fuzz_state_machine_sequence_storms() {
         for i in 0..storm {
             let msg = [
                 types[rng.below(types.len())],
-                0, 0, 0, 0,
+                0,
+                0,
+                0,
+                0,
                 0,
                 i as u8,
-                0, 0, 0,
+                0,
+                0,
+                0,
             ];
             if round_trip_ok(&mut h, &msg) >= 10 {
                 answered += 1;

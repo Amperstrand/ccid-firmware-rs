@@ -10,9 +10,9 @@
 //! - **serial_framing**: CCID-over-serial framing protocol
 //! - **ccid_handler**: CCID command handling logic
 
+pub mod ccid_fuzz;
 pub mod ccid_handler;
 pub mod ccid_serial_server;
-pub mod ccid_fuzz;
 pub mod ccid_types;
 pub mod nfc;
 pub mod pn532_driver;
