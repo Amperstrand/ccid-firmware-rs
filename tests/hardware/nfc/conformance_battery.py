@@ -87,6 +87,7 @@ def parse_frames(buf: bytes):
 class Reader:
     def __init__(self, name: str, port: str):
         self.name = name
+        self.port = port
         self.s = serial.Serial(port, 115200, timeout=0.2)
         self.seq = 0
 
@@ -96,6 +97,25 @@ class Reader:
         except Exception:
             pass
 
+    def reopen(self) -> bool:
+        """Recover from a USB-CDC drop (the nucula re-enumerates on reset).
+
+        A mid-battery disconnect raises SerialException from read/write;
+        one clean close+open cycle is the documented bench remedy.
+        """
+        try:
+            self.s.close()
+        except Exception:
+            pass
+        for _ in range(5):
+            time.sleep(1.0)
+            try:
+                self.s = serial.Serial(self.port, 115200, timeout=0.2)
+                return True
+            except serial.SerialException:
+                continue
+        return False
+
     def exchange(self, msg_type: int, data: bytes = b"", raw: bytes | None = None,
                  settle: float = 0.15) -> list:
         """Send (raw bytes if given, else a frame); return parsed RDR frames.
@@ -103,16 +123,33 @@ class Reader:
         Reads until the line goes idle (two consecutive empty reads) or
         1.5 s elapse — reader error paths legitimately take up to ~0.8 s
         (presence retries + status LED logging on the m5stick).
+
+        A transient port drop yields [] after a reopen attempt instead
+        of killing the whole battery with an unhandled SerialException.
         """
         self.seq = (self.seq % 255) + 1
-        self.s.reset_input_buffer()
-        self.s.write(raw if raw is not None else frame(msg_type, self.seq, data))
+        payload = raw if raw is not None else frame(msg_type, self.seq, data)
+        try:
+            self.s.reset_input_buffer()
+            self.s.write(payload)
+        except serial.SerialException:
+            if not self.reopen():
+                return []
+            try:
+                self.s.write(payload)
+            except serial.SerialException:
+                return []
         self.s.timeout = 0.15
         buf = b""
         idle = 0
         t0 = time.time()
         while time.time() - t0 < 1.5 and idle < 2:
-            chunk = self.s.read(8192)
+            try:
+                chunk = self.s.read(8192)
+            except serial.SerialException:
+                if not self.reopen():
+                    return []
+                continue
             if chunk:
                 buf += chunk
                 idle = 0
@@ -226,8 +263,12 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
     for rname, r in readers.items():
         for name, raw in cases:
             r.seq = (r.seq % 255) + 1
-            r.s.reset_input_buffer()
-            r.s.write(raw)
+            try:
+                r.s.reset_input_buffer()
+                r.s.write(raw)
+            except serial.SerialException:
+                r.reopen()
+                continue
             time.sleep(0.05)
             # resync proof: a valid GetSlotStatus must still work. Generous
             # settle: the m5stick's presence poll + status LED logging take
@@ -236,9 +277,34 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
             if not (resp and resp[0][0] == 0x81):
                 wedges[rname] += 1
                 ok = False
-                print(f"  WEDGE {rname} after {name}: no valid GetSlotStatus")
+                latency = recovery_latency(r, raw)
+                print(f"  WEDGE {rname} after {name}: no valid GetSlotStatus"
+                      + (f"; recovered after {latency:.2f}s" if latency is not None
+                         else "; NO RECOVERY within 5s"))
         print(f"  {rname}: {len(cases)} fuzz cases, {wedges[rname]} wedges")
     return ok
+
+
+def recovery_latency(r: Reader, raw: bytes, budget: float = 5.0) -> float | None:
+    """#89 instrumentation: map how long a wedged reader takes to recover.
+
+    Re-sends the SAME malformed case (keeping the reader in the wedged
+    state), then polls GetSlotStatus every 200 ms until a valid response
+    — the latency distribution distinguishes 'slow path' from 'real
+    stall until next-frame resync'.
+    """
+    t0 = time.time()
+    try:
+        r.s.write(raw)
+    except serial.SerialException:
+        r.reopen()
+        return None
+    while time.time() - t0 < budget:
+        time.sleep(0.2)
+        resp = r.exchange(MSG_GET_SLOT_STATUS, settle=0.2)
+        if resp and resp[0][0] == 0x81:
+            return time.time() - t0
+    return None
 
 
 # ------------------------------------------------------------------ soaks
