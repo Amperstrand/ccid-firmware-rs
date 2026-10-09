@@ -50,16 +50,41 @@ pub enum ServeAction {
 ///   behaviors were hardware-validated across months of bench runs)
 /// - USB-CDC main drops parse errors silently and never notifies (its
 ///   13/13 on-target tests passed exactly with these semantics)
-#[derive(Debug, Clone, Copy, Default)]
+/// - `inline_poll` (default `true`): GetSlotStatus may trigger the
+///   physical presence poll inline. The m5stick disables it (#89):
+///   MFRC522 polls on marginal coupling block for hundreds of ms
+///   (WUPA timeouts + escalation), wedging the response. With
+///   `inline_poll: false`, GetSlotStatus answers from cached presence,
+///   physical polls run only on read-idle (no response pending), and
+///   transitions detected there are delivered as NotifySlotChange in
+///   the NEXT command window (echo → notify → response) — preserving
+///   the sync-mode contract "after the host command and _before_ the
+///   reader answer".
+#[derive(Debug, Clone, Copy)]
 pub struct ServeConfig {
     pub nak_on_error: bool,
     pub notify_slot_change: bool,
+    pub inline_poll: bool,
+}
+
+impl Default for ServeConfig {
+    fn default() -> Self {
+        // The USB-CDC (nucula) profile: silent on parse errors, never
+        // notifies, and keeps inline GetSlotStatus polls — its presence
+        // behavior (TTL re-arm, #88) is bench-verified with this timing.
+        Self {
+            nak_on_error: false,
+            notify_slot_change: false,
+            inline_poll: true,
+        }
+    }
 }
 
 pub struct CcidSerialServer<D: NfcDriver> {
     handler: CcidHandler<D>,
     parser: FrameParser,
     config: ServeConfig,
+    pending_notify: Option<bool>,
     echo_buf: [u8; MAX_FRAME_SIZE],
     notify_buf: [u8; 2],
     notify_len: usize,
@@ -103,6 +128,7 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             handler,
             config,
             parser: FrameParser::new(),
+            pending_notify: None,
             notify_buf: [0; 2],
             notify_len: 0,
             nak_buf: [0; 3],
@@ -153,13 +179,20 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         self.echo_len = frame.len();
         self.echo_buf[..self.echo_len].copy_from_slice(frame);
 
-        // Time-gated card poll on GetSlotStatus (mirrors the UART mains):
-        // a presence transition emits NotifySlotChange between echo and
-        // response when the profile enables it.
+        // Presence for GetSlotStatus: either a fresh inline poll (profiles
+        // with `inline_poll`, e.g. the USB-CDC main) or the transition the
+        // idle path already observed (`pending_notify`, m5stick #89). The
+        // notification rides between echo and response per sync mode.
         self.notify_len = 0;
-        if ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS) && self.poll_due(now_ticks) {
-            self.handler.refresh_diagnostics(now_ticks);
-            if let Some(present) = self.handler.check_card_change() {
+        if ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS) {
+            let stale = self.pending_notify.take();
+            let fresh = if self.config.inline_poll && self.poll_due(now_ticks) {
+                self.handler.refresh_diagnostics(now_ticks);
+                self.handler.check_card_change()
+            } else {
+                None
+            };
+            if let Some(present) = fresh.or(stale) {
                 if self.config.notify_slot_change {
                     self.notify_len = build_slot_change_notification(present, &mut self.notify_buf);
                 }
@@ -227,7 +260,9 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         self.parser.reset();
         if self.poll_due(now_ticks) {
             self.handler.refresh_diagnostics(now_ticks);
-            self.handler.check_card_change();
+            if let Some(present) = self.handler.check_card_change() {
+                self.pending_notify = Some(present);
+            }
             true
         } else {
             false
@@ -247,7 +282,9 @@ impl<D: NfcDriver> CcidSerialServer<D> {
 mod tests {
     use super::*;
     use crate::nfc::MockNfcDriver;
-    use ccid_protocol::types::{PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON};
+    use ccid_protocol::types::{
+        PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON,
+    };
     use ccid_transport_serial::{calculate_lrc, SYNC};
 
     const POLL_INTERVAL: u32 = 500;
@@ -450,6 +487,7 @@ mod tests {
             ServeConfig {
                 nak_on_error: true,
                 notify_slot_change: false,
+                inline_poll: true,
             },
         );
         let mut bad = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
@@ -484,7 +522,7 @@ mod tests {
 
     #[test]
     fn notify_mode_emits_slot_change_on_presence_transition() {
-        // UART-main profile: GetSlotStatus-triggered poll that flips
+        // Legacy inline-poll profile: GetSlotStatus-triggered poll that flips
         // presence emits NotifySlotChange between echo and response
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(mock_driver(true)),
@@ -493,6 +531,7 @@ mod tests {
             ServeConfig {
                 nak_on_error: false,
                 notify_slot_change: true,
+                inline_poll: true,
             },
         );
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
@@ -516,6 +555,103 @@ mod tests {
             0,
             "no notification without a transition"
         );
+    }
+
+    /// m5stick UART-main profile (#89): no physical poll may ever block a
+    /// pending response — GetSlotStatus answers from cached presence.
+    fn m5stick_profile(card_present: bool) -> CcidSerialServer<MockNfcDriver> {
+        let mut driver = mock_driver(card_present);
+        driver.init().unwrap();
+        CcidSerialServer::with_config(
+            CcidHandler::new(driver),
+            POLL_INTERVAL,
+            0,
+            ServeConfig {
+                nak_on_error: true,
+                notify_slot_change: true,
+                inline_poll: false,
+            },
+        )
+    }
+
+    #[test]
+    fn no_inline_poll_profile_never_polls_on_get_slot_status() {
+        let mut server = m5stick_profile(true);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let polls_before = server.handler_mut().driver_mut().poll_count();
+
+        // GetSlotStatus storms past the poll interval: still zero driver polls
+        for seq in 2..6u8 {
+            feed_frame(&mut server, &frame, POLL_INTERVAL * seq as u32 + 1);
+        }
+        assert_eq!(
+            server.handler_mut().driver_mut().poll_count(),
+            polls_before,
+            "GetSlotStatus must not trigger a physical poll in this profile"
+        );
+
+        // ...but every command still gets answered
+        let resp = server.response();
+        assert_eq!(resp[2], 0x81, "RDR_to_PC_SlotStatus");
+    }
+
+    #[test]
+    fn idle_poll_transition_notified_in_next_command_window() {
+        // Card appears while the line is idle: the idle poll detects it, the
+        // NEXT command delivers NotifySlotChange between echo and response
+        // (sync-mode contract), and the response carries the fresh presence.
+        let mut server = m5stick_profile(true);
+        server.handler_mut().driver_mut().set_card_present(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+
+        // Prime: one idle poll with no card (no transition recorded)
+        assert!(server.on_read_idle(POLL_INTERVAL + 1));
+        assert_eq!(server.notify().len(), 0);
+
+        // Card lands on the coil; the idle poll sees the transition
+        server.handler_mut().driver_mut().set_card_present(true);
+        assert!(server.on_read_idle(2 * POLL_INTERVAL + 1));
+
+        // Next command: notify between echo and response
+        assert_eq!(
+            feed_frame(&mut server, &frame, 2 * POLL_INTERVAL + 20),
+            ServeAction::Respond
+        );
+        let notify = server.notify();
+        assert_eq!(notify, &[0x50, 0x03], "present notification");
+
+        // No transition since: the following command carries no notify
+        assert_eq!(
+            feed_frame(&mut server, &frame, 3 * POLL_INTERVAL + 20),
+            ServeAction::Respond
+        );
+        assert_eq!(
+            server.notify().len(),
+            0,
+            "pending notify consumed exactly once"
+        );
+    }
+
+    #[test]
+    fn idle_poll_transition_survives_a_non_status_command_in_between() {
+        // The pending transition must wait for a command window, not be lost
+        // to intermediate traffic that is not GetSlotStatus.
+        let mut server = m5stick_profile(true);
+        server.handler_mut().driver_mut().set_card_present(false);
+        server.on_read_idle(POLL_INTERVAL + 1);
+
+        server.handler_mut().driver_mut().set_card_present(true);
+        assert!(server.on_read_idle(2 * POLL_INTERVAL + 1));
+
+        // An Escape in between must neither emit nor consume the transition
+        let escape = command_frame(PC_TO_RDR_ESCAPE, 5);
+        feed_frame(&mut server, &escape, 2 * POLL_INTERVAL + 10);
+        assert_eq!(server.notify().len(), 0);
+
+        // The GetSlotStatus delivers it
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 6);
+        feed_frame(&mut server, &frame, 2 * POLL_INTERVAL + 20);
+        assert_eq!(server.notify(), &[0x50, 0x03]);
     }
 
     #[test]
