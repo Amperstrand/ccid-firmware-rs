@@ -1,4 +1,21 @@
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+//! BLE GATT debug console server (issue #66).
+//!
+//! Advertises a Nordic UART Service (NUS) lookalike — service
+//! `6E400001-…`, one Notify characteristic on `6E400003-…` — so stock
+//! centrals (nRF Connect, Serial Bluetooth Terminal, bleak /
+//! `tests/hardware/ble/ble_log_capture.py`) attach without custom
+//! tooling. Logging rides GATT notifications instead of the USB-CDC
+//! console, keeping the CCID wire clean.
+//!
+//! Real implementation on any ESP target (xtensa classic ESP32 or
+//! riscv32 ESP32-C3 — both have Bluetooth) built with the `ble`
+//! feature; a no-op stub elsewhere so host tests compile. Requires
+//! `CONFIG_BT_ENABLED=y` + `CONFIG_BT_BLUEDROID_ENABLED=y` in the
+//! sdkconfig (the `sdkconfig-*-ble.full` bench variants) — a `ble`
+//! feature build against a BT-disabled sdkconfig fails at compile
+//! time, which is the loud failure we want.
+
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "ble"))]
 mod imp {
     use std::sync::{Arc, Mutex};
 
@@ -13,8 +30,11 @@ mod imp {
 
     pub const APP_ID: u16 = 0;
     pub const DEVICE_NAME: &str = "ESP32-CCID-Debug";
-    pub const SERVICE_UUID: u128 = 0x8f4211d65b444e8c9c7a7f0f4e8d0001;
-    pub const LOG_CHAR_UUID: u128 = 0x8f4211d65b444e8c9c7a7f0f4e8d0002;
+    /// Nordic UART Service (NUS) service UUID, canonical (big-endian)
+    /// u128 form; `BtUuid::uuid128` applies the LSB-first on-air order.
+    pub const SERVICE_UUID: u128 = 0x6E400001_B5A3_F393_E0A9_E50E24DCCA9E;
+    /// NUS TX characteristic (peripheral → central notifications).
+    pub const LOG_CHAR_UUID: u128 = 0x6E400003_B5A3_F393_E0A9_E50E24DCCA9E;
 
     const CCCD_UUID: u16 = 0x2902;
     const DEFAULT_MTU: usize = 23;
@@ -149,9 +169,24 @@ mod imp {
                 _ => {}
             }
 
+            // Canonical Bluedroid bring-up chain (mirrors the IDF
+            // gatt_server example): ADV-data write completes → write the
+            // SCAN_RSP → its completion is the only safe point to start
+            // advertising. Starting on the first completion races the
+            // scan-rsp write at the HCI level — the C3 controller answers
+            // LE Set Advertising Parameters with Command Disallowed (0x0c)
+            // and never advertises (bench 2026-10-09).
             if let BleGapEvent::AdvertisingConfigured(status) = event {
                 self.check_bt_status(status)?;
-                self.gap.start_advertising()?;
+                self.set_scan_rsp_conf()?;
+            }
+
+            if let BleGapEvent::ScanResponseConfigured(status) = event {
+                self.check_bt_status(status)?;
+                println!("ble: adv + scan rsp configured — starting advertising");
+                if let Err(e) = self.gap.start_advertising() {
+                    println!("ble: start_advertising FAILED: {e}");
+                }
             }
 
             Ok(())
@@ -225,11 +260,21 @@ mod imp {
         }
 
         fn set_adv_conf(&self) -> Result<(), EspError> {
+            // The 31-byte ADV payload fits flags + 128-bit UUID + TX power;
+            // the device name (19 B) only fits the scan response (written
+            // on AdvertisingConfigured — see on_gap_event for the chain).
             self.gap.set_adv_conf(&AdvConfiguration {
-                include_name: true,
                 include_txpower: true,
                 flag: 2,
                 service_uuid: Some(BtUuid::uuid128(SERVICE_UUID)),
+                ..Default::default()
+            })
+        }
+
+        fn set_scan_rsp_conf(&self) -> Result<(), EspError> {
+            self.gap.set_adv_conf(&AdvConfiguration {
+                set_scan_rsp: true,
+                include_name: true,
                 ..Default::default()
             })
         }
@@ -413,7 +458,11 @@ mod imp {
         }
 
         fn check_esp_status(&self, status: Result<(), EspError>) {
-            let _ = status;
+            // Raw println!: the BLE log sink may itself be what's failing;
+            // event-chain errors must surface on the console.
+            if let Err(e) = status {
+                println!("ble: event-chain error: {e}");
+            }
         }
 
         fn check_bt_status(&self, status: BtStatus) -> Result<(), EspError> {
@@ -434,7 +483,7 @@ mod imp {
     }
 }
 
-#[cfg(not(all(target_arch = "xtensa", feature = "backend-mfrc522")))]
+#[cfg(not(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "ble")))]
 mod imp {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Connection;
@@ -447,8 +496,8 @@ mod imp {
 
     pub const APP_ID: u16 = 0;
     pub const DEVICE_NAME: &str = "ESP32-CCID-Debug";
-    pub const SERVICE_UUID: u128 = 0x8f4211d65b444e8c9c7a7f0f4e8d0001;
-    pub const LOG_CHAR_UUID: u128 = 0x8f4211d65b444e8c9c7a7f0f4e8d0002;
+    pub const SERVICE_UUID: u128 = 0x6E400001_B5A3_F393_E0A9_E50E24DCCA9E;
+    pub const LOG_CHAR_UUID: u128 = 0x6E400003_B5A3_F393_E0A9_E50E24DCCA9E;
 
     impl BleDebugServer {
         pub fn has_subscribers(&self) -> bool {

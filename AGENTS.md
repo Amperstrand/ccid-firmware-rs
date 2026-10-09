@@ -337,6 +337,203 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
+## Crash Dumps & Snapshot Debugging (dump-and-retrieve)
+
+**The preferred debug workflow for time-sensitive paths** (NFC card I/O,
+PN7160 ACK window, CCID wire timing): don't log or debug live — run the
+firmware undisturbed, then capture state post-mortem. No debug channel
+means no timing perturbation and no wire contention.
+
+### Workflow
+
+1. **Crashes**: the panic handler writes a flash coredump automatically
+   (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y`, coredump partition
+   `0x3F0000..0x400000` in `partitions-ota.csv`; verified end-to-end,
+   issue #64).
+2. **Suspicious state, no crash**: induce one — send **CCID Escape 0xD1**
+   over the serial CCID wire. The firmware acks (`RDR_to_PC_Escape`
+   payload `0xD1`), then the serve loop panics with
+   `escape 0xD1: diagnostic snapshot requested` AFTER the ack is on the
+   wire, so the panic handler writes a coredump of the live state.
+   **Verified on the nucula (2026-10-09, IDF v5.5.1)**: trigger → ack on
+   wire → silent dump → reboot → `retrieve` decodes a symbolized
+   backtrace (`abort_internal` → `panic_abort`) plus every task's state,
+   and the reader serves CCID again after the reboot.
+3. **Retrieve + decode**:
+   ```bash
+   python3 tests/hardware/esp32_coredump.py trigger /dev/ttyACM0   # induce
+   sleep 6                                                          # dump write + reboot
+   python3 tests/hardware/esp32_coredump.py retrieve \
+       /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid   # read + decode
+   python3 tests/hardware/esp32_coredump.py erase   /dev/ttyACM0    # when done
+   ```
+   The script auto-discovers the esp-idf copy + python env under the
+   cargo target dir (`ESP_COREDUMP_IDF_PY`/`ESP_COREDUMP_PYTHON`
+   override); decode uses `gdb-multiarch`. Manual procedure (esptool
+   read-flash + espcoredump.py info_corefile) is documented below in
+   "Coredump decode".
+
+### The silent-panic rule (bench-proven 2026-10-09)
+
+All full sdkconfigs set `CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT=y`. The
+default PRINT_REBOOT mode **hangs on the nucula**: the panic handler's
+print stage blocks on the C3's USB-Serial/JTAG console once
+`UsbSerialDriver` has claimed the peripheral — the escape-0xD1 snapshot
+reached `panic_abort`'s unimp trap (JTAG-verified), then no backtrace,
+no coredump, no reboot. Silent mode skips printing and goes straight to
+the coredump write + reboot, which is the dump-and-retrieve philosophy
+anyway: read the dump offline, not on the wire. (On UART-console boards
+panic prints would additionally corrupt the CCID wire.) Do not "fix"
+this back to PRINT_REBOOT without re-verifying the full round-trip.
+
+### Limits (and the complement)
+
+A coredump is a frozen instant: it answers "what state was the firmware
+in", not "what sequence led there". For sequence-dependent failures
+(stalls, flapping presence, starvation), the complements are the
+flight-recorder-style channels that already exist:
+
+- **Escape 0xD0 diagnostics** (28-byte counters over the same CCID wire,
+  zero extra wiring): apdu tx/rx, NAKs, reinits, presence, uptime.
+- **`pn7160-actdiag`** diagnostic main (no USB-CDC claim, logs every NCI
+  step) for card-path dives where the console is usable.
+- **BLE debug console** (experimental, xtensa only — next section) for
+  wireless live logs when a serial connection is impractical.
+- **GDB-over-JTAG** for live single-stepping (procedure below).
+
+### STM32 note
+
+The 0xD1 escape + coredump workflow is ESP32-only (STM32 has no flash
+coredump partition); the STM32 debug channel stays defmt + RTT.
+
+## BLE Debug Console (issue #66) — EXPERIMENTAL, xtensa bench only
+
+Firmware logs can ride **BLE GATT notifications** instead of the serial
+console, keeping the CCID wire (USB-CDC on nucula, UART0 on M5 boards)
+free of debug traffic. The GATT service imitates the **Nordic UART
+Service (NUS)** — service `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`, one
+Notify characteristic on `6E400003-…` — so stock centrals work without
+custom tooling (nRF Connect, "Serial Bluetooth Terminal", bleak).
+
+### Module map (firmware/esp32-ccid/src/)
+
+| Module | Role |
+|---|---|
+| `ble_log_queue.rs` | Pure ring buffer + line formatting (drop-oldest, dropped counter, attach banner). Always compiled, 7 host tests. |
+| `ble_logger.rs` | `log::Log` sink: `log()` only enqueues (never blocks); `drain()` pumps the ring into GATT at safe loop points. |
+| `ble_debug.rs` | Bluedroid GATT server (esp-idf-svc `EspBleGap`/`EspGatts`), CCCD subscribe tracking, MTU-3 chunking, per-connection notify latch. |
+| `ble_console.rs` | `BleConsole::init(modem, silence_c_logs)` facade every main calls: installs the logger, optionally silences C-level ESP_LOGx, brings up BtDriver + GATT + advertising. `drain()` from the serve loop. |
+
+### Build + capture
+
+> **Status (2026-10-09): parked by owner decision** — dump-and-retrieve
+> (previous section) is the preferred debugging style; live BLE logging
+> stays available where it already works (M5Stick bench builds). The C3
+> path is blocked (see "C3/Bluedroid sdkconfig traps") and no
+> `c3-ccid-ble` board exists. The code is feature-gated, host-tested,
+> and costs nothing in non-`ble` builds.
+
+```bash
+# build (BT-enabled sdkconfig variants; stamp guard auto-invalidates cmake)
+cd firmware/esp32-ccid
+./build.sh m5stick-ble --flash <port>   # M5Stick: logs over BLE, UART0 = CCID only
+
+# capture on the bench (hci0)
+sudo rfkill unblock bluetooth && sudo hciconfig hci0 up
+pip install bleak
+python3 tests/hardware/ble/ble_log_capture.py            # scan + follow
+python3 tests/hardware/ble/ble_log_capture.py --list     # scan only
+python3 tests/hardware/ble/ble_log_capture.py --send 'x' # write to NUS RX
+```
+
+Logs queue from logger-install time (32 lines × 200 B, drop-oldest); a
+central that attaches later receives an `=== BLE log attached; N older
+lines dropped ===` banner, then the retained history, then live lines.
+
+### The pairing rule (compile-loud)
+
+The cargo `ble` feature REQUIRES a BT-enabled sdkconfig
+(`sdkconfig-c3-ble.full` / `sdkconfig-xtensa-ble.full` — the build.sh
+`*-ble` board entries pair them automatically). A `ble` feature build
+against a BT-disabled sdkconfig fails to COMPILE (esp-idf-svc's bt
+module vanishes) — deliberately loud. The reverse (BT sdkconfig, no
+`ble` feature) merely wastes flash.
+
+build.sh's sdkconfig stamp is keyed per (triple, profile), NOT per
+board: boards sharing a target share one esp-idf-sys cmake cache, so a
+sdkconfig switch between boards (e.g. `c3-ccid` ↔ `c3-ccid-ble`)
+invalidates the cache and rebuilds (~10 min). This is the fix for the
+"cmake cache doesn't pick up sdkconfig BT changes" blocker from the
+original issue.
+
+### The logger-ordering rule (latent-bug class)
+
+The Rust `log` crate accepts exactly ONE global logger — first
+installer wins, permanently. `EspLogger::initialize_default()` claims
+it; a later `BleLogger::install()` silently fails (its Err is usually
+swallowed). Under the `ble` feature a main must NEVER call
+`EspLogger::initialize_default()` — `BleConsole::init` installs the
+BLE logger itself. The original M5Stick build had both calls and its
+BLE queue stayed empty forever while logs kept hitting the console.
+
+### C3/Bluedroid sdkconfig traps (bench-proven)
+
+- `CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y` is REQUIRED: esp-idf-svc
+  uses the legacy 4.2 advertising API; on C3 it defaults OFF and the
+  two `esp_ble_gap_*` adv symbols vanish from libbt.a (link error).
+- `CONFIG_BT_BLE_50_FEATURES_SUPPORTED` must be OFF on C3: with
+  BLE-5.0 extended advertising enabled the controller rejects LE Set
+  Advertising Parameters with Command Disallowed (0x0c) and the device
+  never advertises (`bta_dm_ble_set_adv_params_all` / `hci write adv
+  params error 0xc` in the console with C logs unsilenced).
+- **OPEN: even with 42-on/50-off, a correct adv/scan-rsp split, and the
+  canonical IDF event chaining (adv-data complete → scan-rsp write →
+  scan-rsp complete → start_advertising), the C3 still answers the adv
+  params write with 0x0c** (bench 2026-10-09, firmware prints `ble:
+  event-chain error: ESP_FAIL` from the AdvertisingStarted event). The
+  GATT chain itself completes — only advertising is blocked. There is
+  **no `c3-ccid-ble` build.sh board** until this is root-caused;
+  `sdkconfig-c3-ble.full` is kept with a header warning for the next
+  attempt. The nucula debug story stays: standard build (console shares
+  CDC; the GemPC parser tolerates log noise), coredumps for crashes
+  (issue #64), `pn7160-actdiag` for card-path dives, GDB-over-JTAG for
+  live state.
+
+### Bench central (BlueZ) gotchas
+
+- The capture tool passes the **discovery object** (not a bare
+  address) to `BleakClient` — a bare address lets bluetoothd resolve a
+  stale BR/EDR Device object and PAGE the peripheral over classic
+  (symptom: `Create Connection (0x0005)` + `Page Timeout` in btmon,
+  bleak `TimeoutError` while the device keeps advertising fine).
+- If connects keep timing out: `systemctl restart bluetooth`, ensure
+  `hciconfig hci0` shows UP, and prefer a fresh scan in the same
+  process as the connect.
+- `rfkill` soft-blocks hci0 on this bench after reboots — unblock
+  before scanning.
+
+### FWID + labgrid/test integration stance
+
+In `ble` builds the FWID banner goes to the BLE ring, NOT the console
+(console carries CCID only; C-level logs are silenced at runtime —
+ROM/bootloader output still appears early, which the CCID serve loop
+purges). **HIL/labgrid verification therefore stays on standard
+(non-ble) builds** where FWID lands on the console as usual — BLE
+builds are for interactive bench debugging. Tests read behavior
+(pcscd, ATRs, FWID markers on standard builds), never BLE log lines.
+Coredump-to-flash (issue #64) already covers crash forensics — BLE
+logging is complementary live observability, not a substitute.
+
+### Debug-channel matrix (per board)
+
+| Board | CCID wire | Debug channel |
+|---|---|---|
+| STM32F469/F746 | USB CCID | defmt + RTT via probe-rs (separate from USB) |
+| M5Stick/M5Atom (standard) | UART0 | console NONE by default; netlog (UDP :4567) with WiFi creds |
+| M5Stick/M5Atom (`ble` build, experimental) | UART0 | BLE NUS notifications (`m5stick-ble`) |
+| nucula standard | USB-CDC | console on the same CDC (parser tolerates log noise) |
+| nucula (`ble` build) | USB-CDC | blocked — no `c3-ccid-ble` board until the C3 adv quirk is root-caused |
+
 ## Session Lessons: PN7160 Card Path + Reader Fuzzing (2026-10-09)
 
 ### Mock/hardware divergence — the #1 firmware-bug class this week
@@ -754,12 +951,15 @@ component reports no partition.
 The coredump partition (`coredump, data, coredump, 0x3F0000, 0x10000` in
 `partitions-ota.csv`, `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` in
 `sdkconfig.full`) is verified end-to-end: panic → flash write → host decode.
-Read + decode with the embuild IDF copy and gdb-multiarch:
+The scripted path is `tests/hardware/esp32_coredump.py retrieve <elf>`
+(auto-discovers the embuild IDF copy + python env — the example below
+pinned v5.2.3 manually and rotted when the manifest moved to v5.5.1;
+prefer the script). Manual equivalent:
 
 ```bash
 esptool --chip esp32c3 -p $PORT read-flash 0x3F0000 0x10000 coredump.bin
-VENV=/root/.cargo-target/.embuild/espressif/python_env/idf5.2_py3.12_env/bin/python
-$VENV /root/.cargo-target/.embuild/espressif/esp-idf/v5.2.3/components/espcoredump/espcoredump.py \
+VENV=$(ls -d /root/.cargo-target/.embuild/espressif/python_env/idf*_py*_env/bin/python | tail -1)
+$VENV $(ls /root/.cargo-target/.embuild/espressif/esp-idf/v*/components/espcoredump/espcoredump.py | tail -1) \
   --chip esp32c3 info_corefile --core coredump.bin --core-format raw \
   --gdb /usr/bin/gdb-multiarch \
   /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid

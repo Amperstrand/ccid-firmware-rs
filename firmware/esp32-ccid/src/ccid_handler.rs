@@ -23,6 +23,7 @@ pub struct CcidHandler<D: NfcDriver> {
     presence_state: PresenceState,
     tx_buf: [u8; 271],
     sync_notifications: bool,
+    diagnostic_snapshot_requested: bool,
     current_protocol: u8,
     diagnostics: Diagnostics,
 }
@@ -35,6 +36,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             presence_state: PresenceState { present: false },
             tx_buf: [0u8; 271],
             sync_notifications: false,
+            diagnostic_snapshot_requested: false,
             current_protocol: 1,
             diagnostics: Diagnostics::new(),
         };
@@ -43,6 +45,14 @@ impl<D: NfcDriver> CcidHandler<D> {
         // the handler existed; without this the first 0xD0 query reports 0.
         handler.diagnostics.reinit_count = handler.nfc.reinit_count();
         handler
+    }
+
+    /// Escape 0xD1 arms a diagnostic snapshot: the response is acked, the
+    /// serve loop consumes this flag AFTER the ack went out and panics
+    /// with a marker reason so the panic handler writes a flash coredump
+    /// for post-mortem retrieval (AGENTS.md "Crash dumps & snapshots").
+    pub fn take_snapshot_request(&mut self) -> bool {
+        core::mem::replace(&mut self.diagnostic_snapshot_requested, false)
     }
 
     /// Refresh time-varying diagnostic fields. Called from the firmware's
@@ -398,6 +408,23 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
+        // Dump-and-retrieve debugging: ack, then the serve loop panics with
+        // a marker reason after this response goes out — the panic handler
+        // writes the flash coredump (retrieve + decode: AGENTS.md).
+        if payload.first() == Some(&0xD1) {
+            self.diagnostic_snapshot_requested = true;
+            return write_message(
+                RDR_TO_PC_ESCAPE,
+                header.slot,
+                header.seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                0,
+                0,
+                &[0xD1],
+                response,
+            );
+        }
+
         // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
         if payload.first() == Some(&0x02) {
             return write_message(
@@ -696,6 +723,25 @@ mod tests {
             build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC)
         );
         assert_eq!(payload, FIRMWARE_VERSION);
+    }
+
+    #[test]
+    fn test_escape_snapshot_arms_exactly_once() {
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 9, &[0xD1]);
+        let mut response = [0u8; 271];
+
+        assert!(!handler.take_snapshot_request());
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(payload, &[0xD1]);
+        // The serve loop consumes the flag AFTER the ack went out; it must
+        // fire exactly once so a retried 0xD1 is a fresh snapshot.
+        assert!(handler.take_snapshot_request());
+        assert!(!handler.take_snapshot_request());
     }
 
     #[test]

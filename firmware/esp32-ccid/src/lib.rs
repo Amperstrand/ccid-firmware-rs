@@ -85,8 +85,14 @@ pub mod wifi;
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
-#[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+/// Host-testable log ring shared by the BLE debug logger shells.
+pub mod ble_log_queue;
+
+#[cfg(feature = "ble")]
 pub mod ble_debug;
 
-#[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
+#[cfg(feature = "ble")]
 pub mod ble_logger;
+
+#[cfg(all(feature = "ble", any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod ble_console;

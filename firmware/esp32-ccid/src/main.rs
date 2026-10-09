@@ -73,7 +73,7 @@ use mfrc522_pcd::recover_i2c_bus;
     feature = "backend-mfrc522",
     feature = "ble"
 ))]
-use esp32_ccid::{ble_debug::BleDebugServer, ble_logger::BleLogger};
+use esp32_ccid::ble_console::BleConsole;
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
@@ -87,21 +87,6 @@ use esp32_ccid::{
         FrameParser,
     },
 };
-#[cfg(all(
-    any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-mfrc522",
-    feature = "ble"
-))]
-use esp_idf_svc::{
-    bt::{ble::gap::EspBleGap, ble::gatt::server::EspGatts, Ble, BtDriver},
-    nvs::EspDefaultNvsPartition,
-};
-#[cfg(all(
-    any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-mfrc522",
-    feature = "ble"
-))]
-use std::sync::Arc;
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -363,6 +348,11 @@ fn main() {
 
                         frame_len = 0;
                         frame_parser.reset();
+                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
+                        // now so the panic handler writes the flash coredump.
+                        if ccid_handler.take_snapshot_request() {
+                            panic!("escape 0xD1: diagnostic snapshot requested");
+                        }
                     }
                     Some(FrameEvent::Error(_)) => {
                         let mut nak = [0u8; 3];
@@ -405,10 +395,15 @@ fn main() {
     // (console enabled) and in the `ble` feature build (BLE log bridge).
     #[cfg(not(feature = "ble"))]
     esp32_ccid::netlog::init();
-    #[cfg(feature = "ble")]
-    esp_idf_svc::log::EspLogger::initialize_default();
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
+
+    // BLE debug console (issue #66): logs ride GATT notifications; UART0 and
+    // C-level console output stay reserved for CCID. Installs the global
+    // `log` sink — no EspLogger::initialize_default() under `ble` (first
+    // installer wins and would permanently displace the BLE logger).
+    #[cfg(feature = "ble")]
+    let ble_console = BleConsole::init(peripherals.modem, true);
 
     // WiFi + OTA for serial-free bring-up (bench power bricks): the
     // modem is exclusive with the `ble` feature build, and credentials
@@ -438,35 +433,14 @@ fn main() {
         _ => log::warn!("wifi: no credentials baked in - CCID only"),
     }
 
-    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-    let ble_server = (|| -> Result<BleDebugServer, EspError> {
-        let nvs = EspDefaultNvsPartition::take().ok();
-        let bt = Arc::new(BtDriver::<Ble>::new(peripherals.modem, nvs)?);
-        let gap = Arc::new(EspBleGap::new(bt.clone())?);
-        let gatts = Arc::new(EspGatts::new(bt.clone())?);
-        let server = BleDebugServer::new(gap, gatts);
-        server.subscribe()?;
-        server.register_app()?;
-        Ok(server)
-    })()
-    .ok();
-
-    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-    let _ = BleLogger::install();
-    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Debug);
-    // When BLE is disabled, suppress ALL log output — UART0 is reserved
-    // exclusively for CCID serial protocol, no debug output allowed.
-    #[cfg(not(all(feature = "backend-mfrc522", feature = "ble")))]
-    log::set_max_level(log::LevelFilter::Info);
-    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-    log::info!("ESP32-CCID: BLE logger installed");
-    #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-    if ble_server.is_some() {
-        log::info!("ESP32-CCID: BLE server started, advertising");
+    #[cfg(feature = "ble")]
+    if ble_console.is_some() {
+        log::info!("ESP32-CCID: BLE debug console started, advertising");
     } else {
-        log::warn!("ESP32-CCID: BLE server FAILED to start");
+        log::warn!("ESP32-CCID: BLE debug console FAILED to start");
     }
+    #[cfg(not(feature = "ble"))]
+    log::set_max_level(log::LevelFilter::Info);
 
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))
@@ -683,9 +657,14 @@ fn main() {
                         frame_parser.reset();
 
                         // Drain BLE logs after every command (not just on timeout)
-                        #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-                        if let Some(server) = ble_server.as_ref() {
-                            BleLogger::global().drain(server);
+                        #[cfg(feature = "ble")]
+                        if let Some(ble) = ble_console.as_ref() {
+                            ble.drain();
+                        }
+                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
+                        // now so the panic handler writes the flash coredump.
+                        if ccid_handler.take_snapshot_request() {
+                            panic!("escape 0xD1: diagnostic snapshot requested");
                         }
                     }
                     Some(FrameEvent::Error(_)) => {
@@ -704,9 +683,9 @@ fn main() {
                 frame_len = 0;
                 frame_parser.reset();
 
-                #[cfg(all(feature = "backend-mfrc522", feature = "ble"))]
-                if let Some(server) = ble_server.as_ref() {
-                    BleLogger::global().drain(server);
+                #[cfg(feature = "ble")]
+                if let Some(ble) = ble_console.as_ref() {
+                    ble.drain();
                 }
 
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };

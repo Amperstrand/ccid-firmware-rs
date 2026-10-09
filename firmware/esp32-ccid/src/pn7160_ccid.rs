@@ -28,8 +28,23 @@ static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
+    #[cfg(not(feature = "ble"))]
     esp_idf_svc::log::EspLogger::initialize_default();
+    #[cfg(not(feature = "ble"))]
     log::set_max_level(log::LevelFilter::Info);
+
+    let peripherals = Peripherals::take().expect("peripherals already taken");
+
+    // BLE debug console (issue #66): firmware logs ride NUS GATT
+    // notifications so the USB-CDC port carries CCID frames only.
+    // Installs the global `log` sink (no EspLogger under `ble` — first
+    // installer wins) and silences C-level ESP_LOGx on the shared CDC.
+    // The FWID banner below lands in the BLE ring and greets the first
+    // central to attach; it no longer appears on the console in ble
+    // builds (verify those via the capture tool or a non-ble build).
+    #[cfg(feature = "ble")]
+    let ble_console = crate::ble_console::BleConsole::init(peripherals.modem, true);
+
     log::warn!(
         "FWID pn7160-ccid rev={} build={}",
         env!("FW_GIT_REV"),
@@ -37,9 +52,9 @@ pub fn run() -> ! {
     );
     log::warn!("pn7160-ccid: rust main ALIVE");
 
-    let peripherals = Peripherals::take().expect("peripherals already taken");
-
-    // USB-CDC: both console and CCID serial (frame parser ignores logs)
+    // USB-CDC: CCID serial transport. In non-ble builds the console
+    // shares this port too (frame parser ignores logs); in ble builds
+    // it is CCID-only by construction.
     let usb = UsbSerialDriver::new(
         peripherals.usb_serial,
         peripherals.pins.gpio18,
@@ -120,12 +135,25 @@ pub fn run() -> ! {
                     // GemPC Twin: echo the received frame, then the response
                     let _ = usb.write(server.echo(), write_timeout);
                     let _ = usb.write(server.response(), write_timeout);
+                    #[cfg(feature = "ble")]
+                    if let Some(ble) = ble_console.as_ref() {
+                        ble.drain();
+                    }
+                    // Dump-and-retrieve: escape 0xD1 ack went out — panic
+                    // now so the panic handler writes the flash coredump.
+                    if server.take_snapshot_request() {
+                        panic!("escape 0xD1: diagnostic snapshot requested");
+                    }
                 }
             }
             _ => {
                 // Read idle — background card poll
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 server.poll_if_due(now);
+                #[cfg(feature = "ble")]
+                if let Some(ble) = ble_console.as_ref() {
+                    ble.drain();
+                }
             }
         }
     }

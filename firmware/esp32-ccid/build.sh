@@ -41,16 +41,25 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|m5stick|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|m5stick|m5stick-ble|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
-  c3       ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
-           sdkconfig.full, ota_0 slot @ 0x40000, baud 460800)
-  c3-ccid  ESP32-C3 nucula, PN7160 CCID over USB-CDC (as c3; the full
-           reader firmware — flash + host pcscd via libccidtwin)
-  m5stick  ESP32 M5StickC, MFRC522 CCID (esp toolchain, release,
-           sdkconfig-xtensa.full, ota_0 slot @ 0x40000, baud 115200)
-  m5atom   ESP32 M5Stack Atom, MFRC522 CCID (as m5stick, default features)
+  c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
+               sdkconfig.full, ota_0 slot @ 0x40000, baud 460800)
+  c3-ccid      ESP32-C3 nucula, PN7160 CCID over USB-CDC (as c3; the full
+               reader firmware — flash + host pcscd via libccidtwin)
+  m5stick      ESP32 M5StickC, MFRC522 CCID (esp toolchain, release,
+               sdkconfig-xtensa.full, ota_0 slot @ 0x40000, baud 115200)
+  m5stick-ble  as m5stick + BLE debug console (issue #66): logs ride NUS GATT
+               notifications (sdkconfig-xtensa-ble.full, +ble feature),
+               UART0 carries CCID only. Capture:
+               tests/hardware/ble/ble_log_capture.py
+  m5atom       ESP32 M5Stack Atom, MFRC522 CCID (as m5stick, default features)
+
+Note: there is no c3-ccid-ble yet — the C3 controller rejects LE Set
+Advertising Parameters with Command Disallowed (0x0c) on this bench
+(bench findings in AGENTS.md "BLE Debug Console" > C3 traps). The Rust
+side compiles and runs on riscv32; only advertising is blocked.
 
 Options:
   --flash <port>  esptool write-flash after a successful build
@@ -59,7 +68,7 @@ Options:
 
 Env:
   CARGO_TARGET_DIR             honored; defaults to ~/.cargo-target
-  NUCULA_WIFI_SSID/_PASS       passed through (baked in at build time)
+  NUCULA_WIFI_SSID/_PASS       passed through (baked at build time)
 EOF
 }
 
@@ -131,6 +140,17 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
         ;;
+    m5stick-ble)
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa-ble.full"
+        TRIPLE="xtensa-esp32-espidf"
+        PROFILE="release"
+        RELEASE_ARGS=(--release)
+        FEATURE_ARGS=(--no-default-features --features backend-mfrc522,board-m5stick,ble)
+        CHIP="esp32"
+        FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
+        FLASH_BAUD="115200"
+        ;;
     m5atom)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa.full"
@@ -143,7 +163,7 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, m5stick, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, m5stick, m5stick-ble, or m5atom)" >&2
         exit 1
         ;;
 esac
@@ -185,11 +205,15 @@ fi
 #   (target-dir root + existing esp-idf-sys out dirs).
 # Full-sdkconfig change detection (Codex reviews on #73/#79): cmake caches
 # the configure; a stale CMakeCache.txt silently builds with the PREVIOUS
-# sdkconfig. A stamp records the last-applied sdkconfig — when it differs
+# sdkconfig. The stamp records the last-applied sdkconfig — when it differs
 # (or when caches exist but no stamp does — first run against a shared
 # target dir predating this scheme), the caches are dropped before cargo
-# runs so the new config is real.
-STAMP="${TARGET_DIR}/${BOARD}.sdkconfig.stamp"
+# runs so the new config is real. The stamp is keyed per (triple, profile)
+# — NOT per board — because boards sharing a target triple+profile (c3 vs
+# c3-ccid vs c3-ccid-ble, m5stick vs m5atom) share one esp-idf-sys cmake
+# cache; a per-board stamp would let e.g. a non-BT cache silently serve a
+# `-ble` build after switching boards (issue #66 pairing rule).
+STAMP="${TARGET_DIR}/sdkconfig.${TRIPLE}.${PROFILE}.stamp"
 if [ "${DRY_RUN}" -eq 0 ]; then
     STALE=0
     if [ ! -f "${STAMP}" ]; then

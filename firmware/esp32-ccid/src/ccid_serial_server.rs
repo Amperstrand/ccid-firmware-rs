@@ -51,6 +51,13 @@ pub struct CcidSerialServer<D: NfcDriver> {
 }
 
 impl<D: NfcDriver> CcidSerialServer<D> {
+    /// Escape 0xD1 passthrough: true once, after the ack response was
+    /// consumed — the caller panics then, so the flash coredump is written
+    /// with the ack already on the wire (AGENTS.md "Crash dumps & snapshots").
+    pub fn take_snapshot_request(&mut self) -> bool {
+        self.handler.take_snapshot_request()
+    }
+
     /// `now_ticks` seeds the poll gate the same way the on-device loop
     /// captures the boot tick, so the first poll fires only after one full
     /// interval.

@@ -204,6 +204,51 @@ On a failed station connect the firmware now scans and logs every visible AP
 (SSID/channel/RSSI/auth) — distinguishes "target SSID out of range from this
 board" from association/auth failures without host-side tooling.
 
+## Dump-and-retrieve debugging (preferred)
+
+For time-sensitive paths (NFC card I/O, CCID wire timing) prefer capturing
+state post-mortem over live logging — no debug channel means no timing
+perturbation and no wire contention:
+
+```bash
+python3 ../../tests/hardware/esp32_coredump.py trigger /dev/ttyACM0  # Escape 0xD1
+sleep 6                                                              # coredump write + reboot
+python3 ../../tests/hardware/esp32_coredump.py retrieve <firmware-ELF>
+python3 ../../tests/hardware/esp32_coredump.py erase    /dev/ttyACM0  # when done
+```
+
+The firmware acks the escape, then panics with a marker reason so the
+panic handler writes a flash coredump of the live state (crashes write
+one automatically). See AGENTS.md "Crash Dumps & Snapshot Debugging"
+for limits and the complementary channels (Escape 0xD0 counters,
+`pn7160-actdiag`, GDB-over-JTAG).
+
+## BLE debug builds (issue #66) — EXPERIMENTAL
+
+`m5stick-ble` routes firmware logs to BLE GATT notifications (Nordic
+UART Service lookalike) so the UART0 wire carries CCID frames only.
+Parked as experimental: bench-central connects are flaky (host-side
+BlueZ quirk), and the ESP32-C3 path is blocked by a controller quirk
+(no `c3-ccid-ble` board — see AGENTS.md "BLE Debug Console" > C3
+traps). The code is feature-gated and costs nothing in standard
+builds.
+
+```bash
+./build.sh m5stick-ble  --flash /dev/serial/by-id/<m5stick-port>
+sudo rfkill unblock bluetooth && sudo hciconfig hci0 up
+python3 ../../tests/hardware/ble/ble_log_capture.py
+```
+
+Notes:
+- The `ble` feature requires a BT-enabled sdkconfig; a mismatched pair
+  fails at compile time (deliberately loud).
+- Under `ble` the main must never call `EspLogger::initialize_default()`
+  — `BleConsole::init` installs the log sink (first installer wins).
+- WiFi/netlog is compiled out under `ble` (modem is exclusive).
+- BLE builds are bench-debug builds: HIL/labgrid verification stays on
+  standard builds (FWID lands on the console there; in ble builds it
+  goes to the BLE ring). See AGENTS.md "BLE Debug Console".
+
 ## Host setup
 
 ### 1. Install pcscd and drivers
@@ -283,6 +328,10 @@ The included `setup.sh` automates the host setup:
 | `pn7160_bringup.rs` | PN7160 bring-up mains: NCI init ladder + card heartbeat (target-only) |
 | `pn7160_ccid.rs` | nucula CCID main: serves CCID over the USB-Serial/JTAG CDC port (target-only) |
 | `ccid_serial_server.rs` | Host-testable GemPC serial CCID serving core: echo, framed response, interval-gated card polling (shared by the USB-CDC main) |
+| `ble_console.rs` | BLE debug console facade (issue #66): logger install + Bluedroid GATT bring-up + C-log silencing, one `init`/`drain` pair per main (target-only, `ble` feature) |
+| `ble_debug.rs` | NUS-lookalike BLE GATT server for the debug console (target-only, `ble` feature) |
+| `ble_logger.rs` | `log` crate sink queueing records for the BLE console (target-only, `ble` feature) |
+| `ble_log_queue.rs` | Pure log ring buffer + formatting shared by the BLE logger shells (host-tested) |
 | `wifi.rs`/`ota.rs`/`netlog.rs` | WiFi station, OTA update, UDP logging for serial-free bring-up (target-only) |
 | `mfrc522_transceiver.rs` | PcdTransceiver bridge between mfrc522 crate and iso14443 (MFRC522 backend) |
 | `led.rs` | M5Stack Atom LED status display (WS2812 RMT driver, 5×5 grid patterns) |

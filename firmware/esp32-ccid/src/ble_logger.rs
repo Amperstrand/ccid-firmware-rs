@@ -1,17 +1,19 @@
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+//! `log` crate sink that queues records for the BLE debug console
+//! (issue #66). `log()` only enqueues — never blocks, never touches the
+//! radio — and the main loop pumps the queue into GATT notifications at
+//! safe points via `drain()`. Queue semantics live in the host-tested
+//! `ble_log_queue` module.
+
+#[cfg(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "ble"))]
 mod imp {
-    use std::collections::VecDeque;
-    use std::fmt::Write as _;
     use std::sync::{Mutex, OnceLock};
 
     use crate::ble_debug::BleDebugServer;
+    use crate::ble_log_queue::{format_record, LogQueue};
 
-    pub const MAX_LOG_LINE_LEN: usize = 200;
-    const QUEUE_CAPACITY: usize = 32;
-
-    #[derive(Default)]
     struct LoggerState {
-        queue: VecDeque<Vec<u8>>,
+        queue: LogQueue,
+        subscribers_attached: bool,
     }
 
     pub struct BleLogger {
@@ -21,7 +23,10 @@ mod imp {
     impl BleLogger {
         pub fn new() -> Self {
             Self {
-                state: Mutex::new(LoggerState::default()),
+                state: Mutex::new(LoggerState {
+                    queue: LogQueue::new(),
+                    subscribers_attached: false,
+                }),
             }
         }
 
@@ -30,6 +35,10 @@ mod imp {
             LOGGER.get_or_init(Self::new)
         }
 
+        /// Installs this logger as the crate-global `log` sink. Must run
+        /// BEFORE any `EspLogger::initialize_default()` — the log crate
+        /// accepts exactly one global logger, and the ESP console logger
+        /// claims it permanently (first installer wins).
         pub fn install() -> Result<&'static Self, log::SetLoggerError> {
             let logger = Self::global();
             log::set_logger(logger)?;
@@ -43,15 +52,31 @@ mod imp {
             })
         }
 
+        /// Pump queued lines into the GATT server. Called at safe points
+        /// in the main loop (post-command, read-idle); a no-op while no
+        /// central subscribes — the queue keeps filling (drop-oldest) so
+        /// a late-attaching central still gets recent history behind the
+        /// "attached; N lines dropped" banner.
         pub fn drain(&self, server: &BleDebugServer) {
             if !server.has_subscribers() {
+                self.lock_state().subscribers_attached = false;
                 return;
+            }
+
+            {
+                let mut state = self.lock_state();
+                if !state.subscribers_attached {
+                    state.subscribers_attached = true;
+                    let banner = state.queue.take_banner();
+                    drop(state);
+                    let _ = server.send_log_bytes(&banner);
+                }
             }
 
             loop {
                 let next = {
                     let state = self.lock_state();
-                    state.queue.front().cloned()
+                    state.queue.front().map(|line| line.to_vec())
                 };
 
                 let Some(next) = next else {
@@ -61,41 +86,15 @@ mod imp {
                 if server.send_log_bytes(&next) {
                     self.lock_state().queue.pop_front();
                 } else {
+                    // Delivery latched off mid-drain: the failed line stays
+                    // at the front for the next attach/drain.
                     break;
                 }
             }
         }
 
         fn enqueue(&self, line: Vec<u8>) {
-            let mut state = self.lock_state();
-
-            if state.queue.len() >= QUEUE_CAPACITY {
-                state.queue.pop_front();
-            }
-
-            state.queue.push_back(line);
-        }
-
-        fn format_record(record: &log::Record) -> Vec<u8> {
-            let module = record.module_path().unwrap_or(record.target());
-            let mut rendered = String::new();
-            let _ = write!(
-                &mut rendered,
-                "[{}] {}: {}\n",
-                record.level(),
-                module,
-                record.args()
-            );
-
-            let mut bytes = rendered.into_bytes();
-            if bytes.len() > MAX_LOG_LINE_LEN {
-                bytes.truncate(MAX_LOG_LINE_LEN.saturating_sub(1));
-                if bytes.last().copied() != Some(b'\n') {
-                    bytes.push(b'\n');
-                }
-            }
-
-            bytes
+            self.lock_state().queue.push_line(line);
         }
     }
 
@@ -109,15 +108,20 @@ mod imp {
                 return;
             }
 
-            self.enqueue(Self::format_record(record));
+            let module = record.module_path().unwrap_or(record.target());
+            let message = record.args().to_string();
+            let line = format_record(&record.level().to_string(), module, &message);
+            self.enqueue(line);
         }
 
         fn flush(&self) {}
     }
 }
 
-#[cfg(not(all(target_arch = "xtensa", feature = "backend-mfrc522")))]
+#[cfg(not(all(any(target_arch = "xtensa", target_arch = "riscv32"), feature = "ble")))]
 mod imp {
+    use crate::ble_debug::BleDebugServer;
+
     #[derive(Default)]
     pub struct BleLogger;
 
@@ -135,7 +139,7 @@ mod imp {
             Ok(Self::global())
         }
 
-        pub fn drain(&self, _server: &()) {}
+        pub fn drain(&self, _server: &BleDebugServer) {}
     }
 }
 
