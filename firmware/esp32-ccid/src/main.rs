@@ -173,6 +173,81 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     }
 }
 
+/// Shared UART serving loop (issue #90): both classic mains route through
+/// [`CcidSerialServer`] with the UART-main profile (NAK on malformed
+/// frames, NotifySlotChange on presence transitions) — one implementation
+/// instead of three near-copies that drifted apart bug-by-bug.
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    any(feature = "backend-mfrc522", feature = "backend-pn532")
+))]
+fn serve_uart<D: crate::nfc::NfcDriver>(
+    uart: &UartDriver,
+    handler: crate::ccid_handler::CcidHandler<D>,
+) -> ! {
+    use crate::ccid_serial_server::{CcidSerialServer, ServeAction, ServeConfig};
+
+    let poll_interval_ticks =
+        esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
+    let mut server = CcidSerialServer::with_config(
+        handler,
+        poll_interval_ticks,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+        ServeConfig {
+            nak_on_error: true,
+            notify_slot_change: true,
+        },
+    );
+
+    // Purge any stale UART data from boot/init: pcscd expects a clean
+    // protocol start (SYNC byte first).
+    FreeRtos::delay_ms(500);
+    uart.wait_tx_done(esp_idf_hal::delay::TickType::new_millis(100).into())
+        .ok();
+    let mut drain = [0u8; 256];
+    loop {
+        match uart.read(&mut drain, 1) {
+            Ok(n) if n > 0 => continue,
+            _ => break,
+        }
+    }
+
+    let mut byte_buf = [0u8; 1];
+    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
+    loop {
+        match uart.read(&mut byte_buf, timeout_ticks) {
+            Ok(1) => {
+                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                match server.feed_byte(byte_buf[0], now) {
+                    ServeAction::Respond => {
+                        write_all_logged(uart, server.echo());
+                        let notify = server.notify();
+                        if !notify.is_empty() {
+                            write_all_logged(uart, notify);
+                        }
+                        write_all_logged(uart, server.response());
+                        let _ = uart.flush_write();
+                        // Dump-and-retrieve: the 0xD1 ack went out — panic
+                        // now so the panic handler writes the flash coredump.
+                        if server.take_snapshot_request() {
+                            panic!("escape 0xD1: diagnostic snapshot requested");
+                        }
+                    }
+                    ServeAction::Nak => {
+                        write_all_logged(uart, server.nak_frame());
+                    }
+                    ServeAction::None => {}
+                }
+            }
+            _ => {
+                // Read idle: abandon any partial frame, background poll.
+                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                server.on_read_idle(now);
+            }
+        }
+    }
+}
+
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
@@ -260,127 +335,7 @@ fn main() {
         }
     }
 
-    let mut ccid_handler = CcidHandler::new(pn532_driver);
-    let mut frame_parser = FrameParser::new();
-    let mut last_byte_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
-    let mut frame_buf = [0u8; MAX_FRAME_SIZE];
-    let mut frame_len = 0usize;
-    let mut byte_buf = [0u8; 1];
-    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
-    let poll_interval_ticks =
-        esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
-    let mut last_card_poll_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
-
-    // Purge any stale UART data from ESP-IDF boot log and PN532 init.
-    // pcscd expects a clean protocol start (SYNC byte first).
-    FreeRtos::delay_ms(500);
-    uart.wait_tx_done(esp_idf_hal::delay::TickType::new_millis(100).into())
-        .ok();
-    let mut drain = [0u8; 256];
-    loop {
-        match uart.read(&mut drain, 1) {
-            Ok(n) if n > 0 => continue,
-            _ => break,
-        }
-    }
-
-    loop {
-        match uart.read(&mut byte_buf, timeout_ticks) {
-            Ok(1) => {
-                let byte = byte_buf[0];
-
-                if frame_len < frame_buf.len() {
-                    frame_buf[frame_len] = byte;
-                    frame_len += 1;
-                } else {
-                    let mut nak = [0u8; 3];
-                    let nak_len = build_nak_frame(&mut nak);
-                    write_all_logged(&uart, &nak[..nak_len]);
-                    ccid_handler.record_nak();
-                    frame_len = 0;
-                    frame_parser.reset();
-                    continue;
-                }
-
-                // Fuzz-proven desync guard (2026-10-09): a partial frame
-                // older than 10ms is garbage — truncated headers otherwise
-                // consume the next valid frame's bytes as header filler.
-                let now_tick = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if frame_parser.mid_frame() && now_tick.wrapping_sub(last_byte_tick) > 10 {
-                    frame_parser.reset();
-                }
-                last_byte_tick = now_tick;
-                match frame_parser.feed(byte) {
-                    Some(FrameEvent::Command { ccid_bytes }) => {
-                        // GemPC Twin protocol: echo → [NotifySlotChange] → response
-                        write_all_logged(&uart, &frame_buf[..frame_len]);
-
-                        // Time-gated card poll on GetSlotStatus only.
-                        // InListPassiveTarget (PN532 UM §7.3.5) takes ~1s over SPI.
-                        // libccidtwin readTimeout is 3s so this is safe.
-                        let is_get_slot_status =
-                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
-                        if is_get_slot_status {
-                            let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                            if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                                last_card_poll_tick = now;
-                                ccid_handler.refresh_diagnostics(now);
-                                if let Some(present) = ccid_handler.check_card_change() {
-                                    let mut notif = [0u8; 2];
-                                    let notif_len =
-                                        build_slot_change_notification(present, &mut notif);
-                                    write_all_logged(&uart, &notif[..notif_len]);
-                                }
-                            }
-                        }
-
-                        // Fresh uptime for any 0xD0 in flight (Codex review
-                        // on #81): card-poll-gated refresh alone goes stale
-                        // under continuous non-GetSlotStatus traffic.
-                        ccid_handler
-                            .refresh_diagnostics(unsafe { esp_idf_sys::xTaskGetTickCount() });
-                        let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
-                        let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
-
-                        let mut frame_out = [0u8; MAX_FRAME_SIZE];
-                        let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
-                        write_all_logged(&uart, &frame_out[..out_len]);
-                        let _ = uart.flush_write();
-                        frame_len = 0;
-                        frame_parser.reset();
-                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
-                        // now so the panic handler writes the flash coredump.
-                        if ccid_handler.take_snapshot_request() {
-                            panic!("escape 0xD1: diagnostic snapshot requested");
-                        }
-                    }
-                    Some(FrameEvent::Error(_)) => {
-                        let mut nak = [0u8; 3];
-                        let nak_len = build_nak_frame(&mut nak);
-                        write_all_logged(&uart, &nak[..nak_len]);
-                        ccid_handler.record_nak();
-                        frame_len = 0;
-                        frame_parser.reset();
-                    }
-                    _ => {}
-                }
-            }
-            _ => {
-                frame_len = 0;
-                frame_parser.reset();
-
-                // Background card state tracking when UART is idle.
-                // Only update internal state — do NOT send unsolicited
-                // NotifySlotChange (pcscd's ReadSerial doesn't expect it).
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                    last_card_poll_tick = now;
-                    ccid_handler.refresh_diagnostics(now);
-                    ccid_handler.check_card_change();
-                }
-            }
-        }
-    }
+    serve_uart(&uart, CcidHandler::new(pn532_driver));
 }
 
 #[cfg(all(
@@ -445,7 +400,7 @@ fn main() {
     // through Escape 0xD0 counters / 0xD1 coredumps / `ble` builds — the
     // wire itself stays pristine.
     #[cfg(not(feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Off);
+    log::set_max_level(log::LevelFilter::Debug);
 
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))
@@ -566,155 +521,7 @@ fn main() {
         led.set_state(esp32_ccid::led::LedState::Error);
     }
 
-    let mut ccid_handler = CcidHandler::new(mfrc522_driver);
-    let mut frame_parser = FrameParser::new();
-    let mut last_byte_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
-    let mut frame_buf = [0u8; MAX_FRAME_SIZE];
-    let mut frame_len = 0usize;
-    let mut byte_buf = [0u8; 1];
-    let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
-    let poll_interval_ticks =
-        esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
-    let mut last_card_poll_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
-
-    FreeRtos::delay_ms(500);
-    uart.wait_tx_done(esp_idf_hal::delay::TickType::new_millis(100).into())
-        .ok();
-    let mut drain = [0u8; 256];
-    loop {
-        match uart.read(&mut drain, 1) {
-            Ok(n) if n > 0 => continue,
-            _ => break,
-        }
-    }
-
-    loop {
-        match uart.read(&mut byte_buf, timeout_ticks) {
-            Ok(1) => {
-                let byte = byte_buf[0];
-                if frame_len < frame_buf.len() {
-                    frame_buf[frame_len] = byte;
-                    frame_len += 1;
-                } else {
-                    let mut nak = [0u8; 3];
-                    let nak_len = build_nak_frame(&mut nak);
-                    write_all_logged(&uart, &nak[..nak_len]);
-                    ccid_handler.record_nak();
-                    frame_len = 0;
-                    frame_parser.reset();
-                    continue;
-                }
-                // Fuzz-proven desync guard (2026-10-09): a partial frame
-                // older than 10ms is garbage — truncated headers otherwise
-                // consume the next valid frame's bytes as header filler.
-                let now_tick = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if frame_parser.mid_frame() && now_tick.wrapping_sub(last_byte_tick) > 10 {
-                    frame_parser.reset();
-                }
-                last_byte_tick = now_tick;
-                match frame_parser.feed(byte) {
-                    Some(FrameEvent::Command { ccid_bytes }) => {
-                        write_all_logged(&uart, &frame_buf[..frame_len]);
-                        let is_get_slot_status =
-                            ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS);
-                        if is_get_slot_status {
-                            let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                            if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                                last_card_poll_tick = now;
-                                ccid_handler.refresh_diagnostics(now);
-                                if let Some(present) = ccid_handler.check_card_change() {
-                                    if present {
-                                        led.blink_state(
-                                            esp32_ccid::led::LedState::CardPresent,
-                                            3,
-                                            120,
-                                            80,
-                                        );
-                                    } else {
-                                        led.blink_state(
-                                            esp32_ccid::led::LedState::Ready,
-                                            3,
-                                            120,
-                                            80,
-                                        );
-                                    }
-                                    let mut notif = [0u8; 2];
-                                    let notif_len =
-                                        build_slot_change_notification(present, &mut notif);
-                                    write_all_logged(&uart, &notif[..notif_len]);
-                                }
-                            }
-                        }
-                        let prev_led = led.state();
-                        led.set_state(esp32_ccid::led::LedState::TxRx);
-                        // Fresh uptime for any 0xD0 in flight (Codex review
-                        // on #81): card-poll-gated refresh alone goes stale
-                        // under continuous non-GetSlotStatus traffic.
-                        ccid_handler
-                            .refresh_diagnostics(unsafe { esp_idf_sys::xTaskGetTickCount() });
-                        let mut resp_buf = [0u8; MAX_CCID_RESPONSE_SIZE];
-                        let resp_len = ccid_handler.process_command(&ccid_bytes, &mut resp_buf);
-                        led.set_state(prev_led);
-                        let mut frame_out = [0u8; MAX_FRAME_SIZE];
-                        let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
-                        write_all_logged(&uart, &frame_out[..out_len]);
-                        // The UART write only QUEUES into the driver's TX
-                        // ring; panicking now would reset the peripheral
-                        // before the 0xD1 ack clocks out. Drain it first.
-                        let _ = uart.flush_write();
-                        frame_len = 0;
-                        frame_parser.reset();
-
-                        // Drain BLE logs after every command (not just on timeout)
-                        #[cfg(feature = "ble")]
-                        if let Some(ble) = ble_console.as_ref() {
-                            ble.drain();
-                        }
-                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
-                        // now so the panic handler writes the flash coredump.
-                        if ccid_handler.take_snapshot_request() {
-                            panic!("escape 0xD1: diagnostic snapshot requested");
-                        }
-                    }
-                    Some(FrameEvent::Error(_)) => {
-                        led.set_state(esp32_ccid::led::LedState::Error);
-                        let mut nak = [0u8; 3];
-                        let nak_len = build_nak_frame(&mut nak);
-                        write_all_logged(&uart, &nak[..nak_len]);
-                        ccid_handler.record_nak();
-                        frame_len = 0;
-                        frame_parser.reset();
-                    }
-                    _ => {}
-                }
-            }
-            _ => {
-                frame_len = 0;
-                frame_parser.reset();
-
-                #[cfg(feature = "ble")]
-                if let Some(ble) = ble_console.as_ref() {
-                    ble.drain();
-                }
-
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if now.wrapping_sub(last_card_poll_tick) >= poll_interval_ticks {
-                    last_card_poll_tick = now;
-                    ccid_handler.refresh_diagnostics(now);
-                    if let Some(present) = ccid_handler.check_card_change() {
-                        if present {
-                            led.blink_state(esp32_ccid::led::LedState::CardPresent, 3, 120, 80);
-                        } else {
-                            led.blink_state(esp32_ccid::led::LedState::Ready, 3, 120, 80);
-                        }
-                        let mut notif = [0u8; 2];
-                        let notif_len = build_slot_change_notification(present, &mut notif);
-                        write_all_logged(&uart, &notif[..notif_len]);
-                    }
-                }
-            }
-        }
-    }
+    serve_uart(&uart, CcidHandler::new(mfrc522_driver));
 }
 
 #[cfg(any(

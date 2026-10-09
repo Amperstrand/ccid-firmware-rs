@@ -295,8 +295,8 @@ fn build_pcsc_atr_from_historical(
     atr_buf[4..4 + n].copy_from_slice(historical);
 
     let mut tck: u8 = 0;
-    for i in 1..(atr_len - 1) {
-        tck ^= atr_buf[i];
+    for &b in &atr_buf[1..atr_len - 1] {
+        tck ^= b;
     }
     atr_buf[atr_len - 1] = tck;
 

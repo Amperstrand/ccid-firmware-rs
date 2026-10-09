@@ -20,7 +20,9 @@
 use crate::ccid_handler::CcidHandler;
 use crate::nfc::NfcDriver;
 use ccid_protocol::types::PC_TO_RDR_GET_SLOT_STATUS;
-use ccid_transport_serial::{build_response_frame, FrameEvent, FrameParser};
+use ccid_transport_serial::{
+    build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent, FrameParser,
+};
 
 /// Max CCID message (short APDU): 10-byte header + 261-byte payload.
 pub const MAX_CCID_RESPONSE_SIZE: usize = 271;
@@ -30,17 +32,38 @@ const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServeAction {
     /// A complete command was served: write [`Self::echo()`] first, then
-    /// [`Self::response()`] (two writes, matching the verified on-device
-    /// order).
+    /// [`Self::notify()`] if present, then [`Self::response()`].
     Respond,
-    /// No output: partial frame, or a dropped parse error.
+    /// A malformed frame arrived and [`ServeConfig::nak_on_error`] is on:
+    /// write [`Self::nak_frame()`].
+    Nak,
+    /// No output: partial frame, or a dropped parse error (silent mode).
     None,
+}
+
+/// Wire-behavior profile — the differences between the UART mains and the
+/// USB-CDC main that the serving core now owns instead of three copies in
+/// `main.rs` (issue #90):
+///
+/// - UART mains NAK malformed frames and emit NotifySlotChange on poll
+///   transitions (libccidtwin's ReadSerial path expects both; the
+///   behaviors were hardware-validated across months of bench runs)
+/// - USB-CDC main drops parse errors silently and never notifies (its
+///   13/13 on-target tests passed exactly with these semantics)
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ServeConfig {
+    pub nak_on_error: bool,
+    pub notify_slot_change: bool,
 }
 
 pub struct CcidSerialServer<D: NfcDriver> {
     handler: CcidHandler<D>,
     parser: FrameParser,
+    config: ServeConfig,
     echo_buf: [u8; MAX_FRAME_SIZE],
+    notify_buf: [u8; 2],
+    notify_len: usize,
+    nak_buf: [u8; 3],
     last_byte_tick: u32,
     echo_len: usize,
     ccid_resp_buf: [u8; MAX_CCID_RESPONSE_SIZE],
@@ -62,9 +85,27 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// captures the boot tick, so the first poll fires only after one full
     /// interval.
     pub fn new(handler: CcidHandler<D>, poll_interval_ticks: u32, now_ticks: u32) -> Self {
+        Self::with_config(
+            handler,
+            poll_interval_ticks,
+            now_ticks,
+            ServeConfig::default(),
+        )
+    }
+
+    pub fn with_config(
+        handler: CcidHandler<D>,
+        poll_interval_ticks: u32,
+        now_ticks: u32,
+        config: ServeConfig,
+    ) -> Self {
         Self {
             handler,
+            config,
             parser: FrameParser::new(),
+            notify_buf: [0; 2],
+            notify_len: 0,
+            nak_buf: [0; 3],
             echo_buf: [0; MAX_FRAME_SIZE],
             last_byte_tick: now_ticks,
             echo_len: 0,
@@ -93,9 +134,17 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         }
         let ccid_bytes = match self.parser.feed(byte) {
             Some(FrameEvent::Command { ccid_bytes }) => ccid_bytes,
-            // Parse errors: drop silently; the parser has reset itself and
-            // resynchronizes on the next SYNC byte.
-            Some(FrameEvent::Error(_)) | None => return ServeAction::None,
+            Some(FrameEvent::Error(_)) => {
+                if self.config.nak_on_error {
+                    self.handler.record_nak();
+                    build_nak_frame(&mut self.nak_buf);
+                    return ServeAction::Nak;
+                }
+                // Silent mode: the parser has reset itself and resyncs on
+                // the next SYNC byte.
+                return ServeAction::None;
+            }
+            None => return ServeAction::None,
         };
 
         // Echo the received frame (GemPC Twin protocol). The parser's
@@ -104,9 +153,17 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         self.echo_len = frame.len();
         self.echo_buf[..self.echo_len].copy_from_slice(frame);
 
-        // Time-gated card poll on GetSlotStatus (mirrors the on-device loop).
+        // Time-gated card poll on GetSlotStatus (mirrors the UART mains):
+        // a presence transition emits NotifySlotChange between echo and
+        // response when the profile enables it.
+        self.notify_len = 0;
         if ccid_bytes.first() == Some(&PC_TO_RDR_GET_SLOT_STATUS) && self.poll_due(now_ticks) {
-            self.handler.check_card_change();
+            self.handler.refresh_diagnostics(now_ticks);
+            if let Some(present) = self.handler.check_card_change() {
+                if self.config.notify_slot_change {
+                    self.notify_len = build_slot_change_notification(present, &mut self.notify_buf);
+                }
+            }
         }
 
         // Fresh uptime for any 0xD0 in flight (Codex review on #81):
@@ -146,10 +203,35 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         &self.echo_buf[..self.echo_len]
     }
 
-    /// Wire bytes to write second after [`ServeAction::Respond`]: the
+    /// Wire bytes to write last after [`ServeAction::Respond`]: the
     /// framed CCID response (SYNC + ACK + CCID message + LRC).
     pub fn response(&self) -> &[u8] {
         &self.resp_buf[..self.resp_len]
+    }
+
+    /// Wire bytes to write between echo and response when a presence
+    /// transition was observed (empty when none).
+    pub fn notify(&self) -> &[u8] {
+        &self.notify_buf[..self.notify_len]
+    }
+
+    /// Wire bytes for [`ServeAction::Nak`]: the 3-byte NAK frame.
+    pub fn nak_frame(&self) -> &[u8] {
+        &self.nak_buf
+    }
+
+    /// Read-idle path (UART mains): reset any partial frame (the 100ms
+    /// read timeout means garbage mid-frame is abandoned), then poll card
+    /// presence if the interval elapsed.
+    pub fn on_read_idle(&mut self, now_ticks: u32) -> bool {
+        self.parser.reset();
+        if self.poll_due(now_ticks) {
+            self.handler.refresh_diagnostics(now_ticks);
+            self.handler.check_card_change();
+            true
+        } else {
+            false
+        }
     }
 
     pub fn handler_mut(&mut self) -> &mut CcidHandler<D> {
@@ -357,6 +439,108 @@ mod tests {
     }
 
     #[test]
+    fn nak_mode_naks_malformed_frames_and_counts() {
+        // UART-main profile: bad LRC → NAK frame + record_nak
+        let mut driver = mock_driver(false);
+        driver.init().unwrap();
+        let mut server = CcidSerialServer::with_config(
+            CcidHandler::new(driver),
+            POLL_INTERVAL,
+            0,
+            ServeConfig {
+                nak_on_error: true,
+                notify_slot_change: false,
+            },
+        );
+        let mut bad = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        bad[12] ^= 0xFF;
+
+        assert_eq!(feed_frame(&mut server, &bad, 0), ServeAction::Nak);
+        assert_eq!(server.nak_frame(), &[0x03, 0x15, 0x16]);
+        assert_eq!(
+            server.handler_mut().diagnostics().nak_count,
+            1,
+            "NAK recorded in diagnostics"
+        );
+
+        // Recovery: the next valid frame serves normally.
+        let good = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        assert_eq!(feed_frame(&mut server, &good, 0), ServeAction::Respond);
+    }
+
+    #[test]
+    fn silent_mode_still_drops_errors() {
+        // USB-CDC profile (default): parse errors produce no output at all
+        let mut server = server_with(false);
+        let mut bad = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        bad[12] ^= 0xFF;
+        assert_eq!(feed_frame(&mut server, &bad, 0), ServeAction::None);
+        assert_eq!(
+            server.handler_mut().diagnostics().nak_count,
+            0,
+            "silent mode does not count NAKs"
+        );
+    }
+
+    #[test]
+    fn notify_mode_emits_slot_change_on_presence_transition() {
+        // UART-main profile: GetSlotStatus-triggered poll that flips
+        // presence emits NotifySlotChange between echo and response
+        let mut server = CcidSerialServer::with_config(
+            CcidHandler::new(mock_driver(true)),
+            POLL_INTERVAL,
+            0,
+            ServeConfig {
+                nak_on_error: false,
+                notify_slot_change: true,
+            },
+        );
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+
+        // First poll past the interval: absent → present transition
+        assert_eq!(
+            feed_frame(&mut server, &frame, POLL_INTERVAL + 1),
+            ServeAction::Respond
+        );
+        let notify = server.notify();
+        assert_eq!(notify.len(), 2, "NotifySlotChange is a 2-byte frame");
+        assert_eq!(notify[0], 0x50, "RDR_to_PC_NotifySlotChange");
+
+        // No transition on the next poll: no notification
+        assert_eq!(
+            feed_frame(&mut server, &frame, 2 * POLL_INTERVAL + 1),
+            ServeAction::Respond
+        );
+        assert_eq!(
+            server.notify().len(),
+            0,
+            "no notification without a transition"
+        );
+    }
+
+    #[test]
+    fn on_read_idle_resets_partial_frame_and_polls() {
+        let mut server = CcidSerialServer::with_config(
+            CcidHandler::new(mock_driver(true)),
+            POLL_INTERVAL,
+            0,
+            ServeConfig::default(),
+        );
+        // Feed half a frame
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        for &b in &frame[..6] {
+            server.feed_byte(b, 0);
+        }
+        // Idle: parser resets (partial frame abandoned), poll fires
+        assert!(server.on_read_idle(POLL_INTERVAL + 1));
+        // The next full frame still parses (the reset didn't strand state)
+        assert_eq!(
+            feed_frame(&mut server, &frame, POLL_INTERVAL + 20),
+            ServeAction::Respond
+        );
+    }
+
+    #[test]
     fn uptime_refreshes_under_continuous_non_poll_traffic() {
         // Codex review on #81: poll-gated refresh alone left uptime stale
         // when commands stream without GetSlotStatus. Dispatch-time refresh
@@ -383,7 +567,7 @@ mod tests {
             "uptime advanced without any GetSlotStatus ({late} > {early})"
         );
         assert!(
-            late >= 5_005 && late < 5_005 + 32,
+            (5_005..5_005 + 32).contains(&late),
             "uptime tracks the last dispatched frame ({late})"
         );
     }
