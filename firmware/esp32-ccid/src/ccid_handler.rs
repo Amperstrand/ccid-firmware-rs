@@ -6,6 +6,7 @@ use crate::ccid_types::{
     PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS,
 };
 use crate::nfc::{NfcDriver, PresenceState};
+use crate::t1;
 use ccid_core::params::default_params;
 use ccid_core::pps::is_pps_request;
 use ccid_core::response::{write_message, write_slot_status};
@@ -25,6 +26,8 @@ pub struct CcidHandler<D: NfcDriver> {
     sync_notifications: bool,
     diagnostic_snapshot_requested: bool,
     current_protocol: u8,
+    t1: t1::T1Endpoint,
+    t1_armed: bool,
     diagnostics: Diagnostics,
 }
 
@@ -38,6 +41,8 @@ impl<D: NfcDriver> CcidHandler<D> {
             sync_notifications: false,
             diagnostic_snapshot_requested: false,
             current_protocol: 1,
+            t1: t1::T1Endpoint::new(),
+            t1_armed: false,
             diagnostics: Diagnostics::new(),
         };
         // Sync recovery history at construction (Codex reviews on #46/#42):
@@ -174,6 +179,7 @@ impl<D: NfcDriver> CcidHandler<D> {
             Ok(atr_len) => {
                 self.presence_state.present = true;
                 self.slot_state = SlotState::PresentActive;
+                self.t1.reset();
                 write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
@@ -267,6 +273,132 @@ impl<D: NfcDriver> CcidHandler<D> {
             );
         }
 
+        // libccidtwin T=1 wall fix: at TPDU exchange level the host's
+        // T=1 engine sends T=1 blocks (S-block IFSD requests, I-blocks)
+        // as XfrBlock payloads. Route them through the endpoint when the
+        // host has selected T=1. The Relay path re-enters the SAME APDU
+        // pipeline (pseudo-APDUs, PPS, CLA rewrite) so unwrapped APDUs
+        // get identical treatment.
+        if self.t1_armed && self.current_protocol == 1 {
+            match self.t1.feed(apdu) {
+                t1::FeedResult::Immediate(bytes) => {
+                    return write_message(
+                        RDR_TO_PC_DATABLOCK,
+                        header.slot,
+                        header.seq,
+                        build_bstatus(
+                            COMMAND_STATUS_NO_ERROR,
+                            SlotState::PresentActive.icc_status(),
+                        ),
+                        0,
+                        0,
+                        &bytes,
+                        response,
+                    );
+                }
+                t1::FeedResult::Apdu(card_apdu) => {
+                    let mut apdu_buf = [0u8; 254];
+                    let an = card_apdu.len().min(apdu_buf.len());
+                    apdu_buf[..an].copy_from_slice(&card_apdu[..an]);
+                    let mut scratch = [0u8; 271];
+                    let n = self.apdu_pipeline(&apdu_buf[..an], &mut scratch);
+                    let took = 0u32; // TODO(bench): wire a real tick delta
+                                     // strip the 10-byte CCID DataBlock header: T=1 INF
+                                     // carries only the APDU-level payload
+                    let payload = &scratch[10.min(n)..n];
+                    let blocks = self.t1.card_response(payload, took);
+                    return write_message(
+                        RDR_TO_PC_DATABLOCK,
+                        header.slot,
+                        header.seq,
+                        build_bstatus(
+                            COMMAND_STATUS_NO_ERROR,
+                            SlotState::PresentActive.icc_status(),
+                        ),
+                        0,
+                        0,
+                        &blocks,
+                        response,
+                    );
+                }
+            }
+        }
+
+        self.apdu_pipeline(apdu, response)
+    }
+
+    fn answer_get_uid(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
+        let Some(uid) = self.nfc.card_uid() else {
+            return self.write_sw(header, &[0x63, 0x00], response);
+        };
+        let uid_len = uid.len();
+        self.tx_buf[..uid_len].copy_from_slice(uid);
+        self.tx_buf[uid_len] = 0x90;
+        self.tx_buf[uid_len + 1] = 0x00;
+        // Local reader-generated answer — no card I/O, so no rx counting
+        // (Codex review on #81: to/from-card semantics).
+        write_message(
+            RDR_TO_PC_DATABLOCK,
+            header.slot,
+            header.seq,
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentActive.icc_status(),
+            ),
+            0,
+            0,
+            &self.tx_buf[..uid_len + 2],
+            response,
+        )
+    }
+
+    fn write_sw(&mut self, header: &CcidHeader, sw: &[u8; 2], response: &mut [u8]) -> usize {
+        // Local reader-generated status word — no card I/O, no rx counting.
+        write_message(
+            RDR_TO_PC_DATABLOCK,
+            header.slot,
+            header.seq,
+            build_bstatus(
+                COMMAND_STATUS_NO_ERROR,
+                SlotState::PresentActive.icc_status(),
+            ),
+            0,
+            0,
+            sw,
+            response,
+        )
+    }
+
+    fn handle_set_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
+        self.current_protocol = header.specific[0];
+        self.t1_armed = true;
+        self.write_parameters(header, response)
+    }
+
+    fn handle_reset_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
+        // Reset restores T=1 (reader default) and re-arms the route.
+        self.current_protocol = 1;
+        self.t1_armed = true;
+        self.write_parameters(header, response)
+    }
+
+    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
+    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
+    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
+    /// APDU-level pipeline shared by the direct XfrBlock path and the
+    /// T=1 Relay path: pseudo-APDUs (0xFF), PPS echo, invalid-CLA
+    /// rewrite, card relay. Writes CCID DataBlock bytes into `out`
+    /// (10-byte header + payload) and returns the total length; T=1
+    /// callers extract the payload for block framing.
+    fn apdu_pipeline(&mut self, apdu: &[u8], out: &mut [u8]) -> usize {
+        let header = &CcidHeader {
+            message_type: 0,
+            length: 0,
+            slot: 0,
+            seq: 0,
+            specific: [0; 3],
+        };
+        let response = out;
         if is_pps_request(apdu) {
             log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
             // PPS is handled locally (echoed), not forwarded to the card —
@@ -337,61 +469,6 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
     }
 
-    fn answer_get_uid(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        let Some(uid) = self.nfc.card_uid() else {
-            return self.write_sw(header, &[0x63, 0x00], response);
-        };
-        let uid_len = uid.len();
-        self.tx_buf[..uid_len].copy_from_slice(uid);
-        self.tx_buf[uid_len] = 0x90;
-        self.tx_buf[uid_len + 1] = 0x00;
-        // Local reader-generated answer — no card I/O, so no rx counting
-        // (Codex review on #81: to/from-card semantics).
-        write_message(
-            RDR_TO_PC_DATABLOCK,
-            header.slot,
-            header.seq,
-            build_bstatus(
-                COMMAND_STATUS_NO_ERROR,
-                SlotState::PresentActive.icc_status(),
-            ),
-            0,
-            0,
-            &self.tx_buf[..uid_len + 2],
-            response,
-        )
-    }
-
-    fn write_sw(&mut self, header: &CcidHeader, sw: &[u8; 2], response: &mut [u8]) -> usize {
-        // Local reader-generated status word — no card I/O, no rx counting.
-        write_message(
-            RDR_TO_PC_DATABLOCK,
-            header.slot,
-            header.seq,
-            build_bstatus(
-                COMMAND_STATUS_NO_ERROR,
-                SlotState::PresentActive.icc_status(),
-            ),
-            0,
-            0,
-            sw,
-            response,
-        )
-    }
-
-    fn handle_set_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        self.current_protocol = header.specific[0];
-        self.write_parameters(header, response)
-    }
-
-    fn handle_reset_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        self.current_protocol = 1;
-        self.write_parameters(header, response)
-    }
-
-    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
-    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
-    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
         if payload.first() == Some(&0xD0) {
             let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
@@ -1090,5 +1167,77 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
         assert!(payload.is_empty());
         assert_eq!(header.specific[1], ICC_NOT_ACTIVE);
+    }
+
+    #[test]
+    fn t1_ifsd_request_answered_on_wire() {
+        // The exact libccidtwin exchange (bench-proven bytes): the host
+        // sends S-block IFS request 00 C1 01 FE LRC as an XfrBlock
+        // payload; the reader must answer 00 E1 01 FE LRC — proto-t1.c
+        // lines 795-810 reject anything else.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.current_protocol = 1;
+        handler.t1_armed = true;
+        let ifsd = [0x00u8, 0xC1, 0x01, 0xFE, 0x3E];
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 1, &ifsd);
+        let mut resp = [0u8; 512];
+        let n = handler.process_command(&msg, &mut resp);
+        let (_hdr, payload) = parse_response(&resp[..n]);
+        assert_eq!(
+            payload,
+            &[0x00, 0xE1, 0x01, 0xFE, 0x1E][..],
+            "S-block IFS response must be byte-exact"
+        );
+        assert_eq!(
+            payload,
+            &[0x00, 0xE1, 0x01, 0xFE, 0x1E][..],
+            "S-block IFS response must be byte-exact"
+        );
+    }
+
+    #[test]
+    fn t1_i_block_apdu_relays_and_returns_i_block() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.current_protocol = 1;
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let apdu = [0x00u8, 0xA4, 0x04, 0x00, 0x00];
+        let mut iblock = [0x00u8, 0x00, apdu.len() as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        iblock[3..3 + apdu.len()].copy_from_slice(&apdu);
+        let end = 3 + apdu.len();
+        iblock[end] = iblock[..end].iter().fold(0u8, |a, b| a ^ b);
+
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 2, &iblock[..end + 1]);
+        let n = handler.process_command(&msg, &mut resp);
+        assert!(n >= 10);
+        let (_hdr, payload) = parse_response(&resp[..n]);
+        assert_eq!(payload[0], 0x00);
+        assert_eq!(payload[1] & 0x80, 0x00, "I-block, not R/S");
+        let plen = payload[2] as usize;
+        assert_eq!(&payload[3..3 + plen], &[0x90, 0x00], "card answer in INF");
+        let e = 3 + plen;
+        assert_eq!(payload[e], payload[..e].iter().fold(0u8, |a, b| a ^ b));
+    }
+
+    #[test]
+    fn malformed_block_under_t1_demands_retransmit() {
+        // At TPDU level the host engine sends ONLY T=1 blocks; a 4-byte
+        // fragment is a malformed block (LEN says 4, only 1 INF byte
+        // arrived) — the endpoint answers R(N(R), error) per §11.5.3.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.current_protocol = 1;
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let fragment = [0x00u8, 0xA4, 0x04, 0x00];
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 3, &fragment);
+        let n = handler.process_command(&msg, &mut resp);
+        assert!(n >= 10);
+        let (_hdr, payload) = parse_response(&resp[..n]);
+        assert_eq!(payload[1] & 0xC0, 0x80, "R-block, not I/S");
     }
 }

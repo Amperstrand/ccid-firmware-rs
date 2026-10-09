@@ -56,16 +56,7 @@ def find_reader(key: str):
 
 
 def connect_reader(reader, attempts: int = 3, delay: float = 1.5):
-    """Connect with retries; returns (conn, atr_bytes) or (None, reason).
-
-    reason distinguishes the two bench-real failure classes:
-    - "no card"  — reader sees no card (RF coupling, or none placed)
-    - "unresponsive" — card present, ATR flows, but pcscd connect fails:
-      on the serial GemPC Twin path this is the libccidtwin T=1 wall
-      (AGENTS.md "Session Lessons" open gap #3 — S-block-as-APDU, SW 6E00),
-      NOT a coupling problem; do not chase RF.
-    """
-    last = "no card"
+    """Connect with retries; returns (conn, atr_bytes) or (None, None)."""
     for _ in range(attempts):
         try:
             conn = reader.createConnection()
@@ -75,11 +66,10 @@ def connect_reader(reader, attempts: int = 3, delay: float = 1.5):
         except NoCardException:
             time.sleep(delay)
         except CardConnectionException:
-            last = "unresponsive"
             # readers that report 'unpowered' on first try usually power
             # up on the second connect attempt
             time.sleep(delay)
-    return None, last
+    return None, None
 
 
 def select_aid(conn, aid_hex: str):
@@ -104,16 +94,10 @@ def card_session(request, reader_key):
     if reader is None:
         pytest.fail(f"reader not present in pcscd: {reader_key} "
                     f"(looked for '{READER_MATCHES[reader_key]}')")
-    conn, result = connect_reader(reader)
+    conn, atr = connect_reader(reader)
     if conn is None:
-        if result == "unresponsive":
-            pytest.skip(
-                f"card present but connect failed on {reader_key} — on the "
-                f"serial GemPC path this is the libccidtwin T=1 wall "
-                f"(AGENTS.md open gap #3), not RF coupling"
-            )
         pytest.skip(f"no card detected on {reader_key} (RF coupling?)")
-    yield {"key": reader_key, "conn": conn, "atr": result}
+    yield {"key": reader_key, "conn": conn, "atr": atr}
     try:
         conn.disconnect()
     except Exception:
