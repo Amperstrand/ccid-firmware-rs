@@ -51,15 +51,28 @@ def gempc_frame(payload: bytes, seq: int = 0) -> bytes:
 def trigger(port: str) -> int:
     import serial
 
-    with serial.Serial(port, 115200, timeout=2) as s:
+    with serial.Serial(port, 115200, timeout=0.2) as s:
+        # Wait for boot/banner traffic to stop: right after a flash or
+        # reset the board is still printing and a frame sent now is
+        # processed (or dropped) unpredictably mid-boot.
+        quiet_deadline = time.time() + 15
+        while time.time() < quiet_deadline:
+            if not s.read(4096):
+                break
         s.reset_input_buffer()
         s.write(gempc_frame(b"\xD1"))
-        time.sleep(0.5)
-        # Expect the echo + the ack response (payload D1) before the panic.
-        data = s.read(256)
-        print(f"received {len(data)} bytes: {data.hex()}")
-        if b"\xd1" not in data[2:]:
-            print("warning: no D1 ack seen — frame may not have been parsed", file=sys.stderr)
+        # Chatty ports (netlog on UART0) bury the ack in boot/LED noise —
+        # read until the echo+ack pair shows up or ~3 s pass.
+        wire = b""
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            wire += s.read(4096)
+            if bytes([0x03, 0x06, 0x83]) in wire and b"\xD1" in wire:
+                break
+        print(f"received {len(wire)} bytes: {wire[:120].hex()}...")
+        if bytes([0x03, 0x06, 0x83]) not in wire:
+            print("warning: no RDR_to_PC_Escape ack seen — frame may not have "
+                  "been parsed before the panic", file=sys.stderr)
     print("snapshot requested; firmware reboots after the coredump write "
           "(watch the console); run `retrieve` next")
     return 0

@@ -386,6 +386,51 @@ anyway: read the dump offline, not on the wire. (On UART-console boards
 panic prints would additionally corrupt the CCID wire.) Do not "fix"
 this back to PRINT_REBOOT without re-verifying the full round-trip.
 
+The same applies to the HIL defaults flow: `sdkconfig.wallet-test`
+(the `build_firmware()` fragment) also sets SILENT_REBOOT + coredump,
+overriding `sdkconfig.defaults.esp32c3`'s PRINT_REBOOT (it layers
+last). **Verified on both chips** (2026-10-09): nucula via the HIL test
+`test_escape_d1_snapshot_roundtrip` (including the size-optimized
+defaults-flow build), M5Stick via the manual round-trip — the xtensa
+configs previously had coredump set to NONE (issue #64 only configured
+the C3), now `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` everywhere.
+
+### The ack-before-panic flush (UART mains)
+
+On the UART serve loops the 0xD1 response write only QUEUES into the
+UART driver's TX ring; panicking immediately resets the peripheral
+before the ack clocks out (symptom: echo on the wire, dump written, but
+no `RDR_to_PC_Escape` frame). The mains call `uart.flush_write()`
+between the response write and the snapshot panic. The USB-CDC path
+drains fast enough not to need it.
+
+### Decoder quirks (esp-coredump on this bench)
+
+- IDF 5.5.1's `esp_coredump` thread printer crashes on newer
+  gdb-multiarch `LWP N` thread ids **after** emitting the panic info —
+  the decode still yields the panic reason, crashed task, registers,
+  and memory map (the HIL test tolerates the nonzero exit). Full
+  symbolized backtraces are reliable on the debug/C3 path; xtensa
+  release builds may show `<unavailable>` frames (optimization +
+  windowed registers).
+- The xtensa dump's `exccause` reads `IllegalInstructionCause` with the
+  EPC inside the trap path — that is IDF's deliberate `asm("ill")` in
+  `panic_abort`, not a real fault.
+
+### espup crosstool pin (CI, 2026-10-09)
+
+CI pins `espup install -c 14.2.0_20241119` (the GCC IDF v5.5.1's
+`tool_version_check` accepts). espup defaults to the LATEST crosstool
+and its bin dir lands ahead of embuild's own copy in PATH — the day's
+`esp-16.2.0_20260914` release failed every xtensa matrix entry at cmake
+configure. **Bench landmine**: this machine's espup crosstool is
+`esp-15.2.0_20250920` and works only because the bench's cmake
+configure is cache-stamped; a FRESH bench configure (stamp loss, new
+checkout) would fail the same check — pin the bench espup too if it
+bites. Also: pushes touching `.github/workflows/` must go over SSH
+(`git push git@github.com:…`) — the OAuth tokens here lack the
+`workflow` scope.
+
 ### Limits (and the complement)
 
 A coredump is a frozen instant: it answers "what state was the firmware

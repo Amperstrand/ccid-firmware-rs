@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — dump-and-retrieve verified on BOTH chips + hardened (issue #66 direction)
+
+- **xtensa coredump configs** — `sdkconfig-xtensa.full`/`sdkconfig-xtensa-ble.full` previously had `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y` (issue #64 only configured the C3); now `ENABLE_TO_FLASH` + ELF format everywhere. **M5Stick round-trip verified on hardware**: 0xD1 → echo + ack on the wire → silent flash coredump → reboot → decode (panic registers, task list, memory map).
+- **Ack-before-panic flush** — the UART mains call `uart.flush_write()` between the 0xD1 response write and the snapshot panic: the UART write only queues into the driver's TX ring, and panicking immediately reset the peripheral before the ack clocked out (echo + dump present, ack missing). USB-CDC drains fast enough not to need it.
+- **`sdkconfig.wallet-test`** (HIL `build_firmware()` fragment) now carries SILENT_REBOOT + coredump-to-flash, overriding `sdkconfig.defaults.esp32c3`'s PRINT_REBOOT (the hang mode) — the HIL firmware matches bench dump behavior.
+- **HIL regression test** — `test_escape_d1_snapshot_roundtrip` (tests/hardware/nucula): flash `pn7160-ccid` via the verified-boot ladder → erase coredump partition → Escape 0xD1 → assert echo+ack on the wire → assert dump written → decode (panic reason, abort marker, crashed task `main`) → clean erase. Tolerates the IDF 5.5.1 esp_coredump thread-printer crash on newer gdb `LWP` ids (documented in AGENTS.md).
+- **`esp32_coredump.py trigger` hardened** — waits for boot/banner traffic to stop before sending (a frame fired mid-boot is processed unpredictably), and reads until the echo+ack pair instead of a fixed 256-byte window (netlog on UART0 buries the ack in LED noise).
+- **CI espup crosstool pin** — `espup install -c 14.2.0_20241119`: espup defaults to the latest crosstool whose bin dir precedes embuild's copy in PATH, and the `esp-16.2.0_20260914` release (2026-10-09) failed every xtensa matrix entry at IDF's `tool_version_check`. Also added a `c3-nucula-ccid` matrix entry so the bench-shipped reader firmware has target-compile coverage (previously host-tests only).
+
 ### Added — dump-and-retrieve snapshot debugging (issue #66 direction)
 
 Preferred debug workflow for time-sensitive paths (NFC card I/O, CCID wire timing): run the firmware undisturbed, then capture state post-mortem — no live debug channel means no timing perturbation and no wire contention.

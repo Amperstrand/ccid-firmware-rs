@@ -345,7 +345,7 @@ fn main() {
                         let mut frame_out = [0u8; MAX_FRAME_SIZE];
                         let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
                         write_all_logged(&uart, &frame_out[..out_len]);
-
+                        let _ = uart.flush_write();
                         frame_len = 0;
                         frame_parser.reset();
                         // Dump-and-retrieve: escape 0xD1 ack went out — panic
@@ -653,6 +653,10 @@ fn main() {
                         let mut frame_out = [0u8; MAX_FRAME_SIZE];
                         let out_len = build_response_frame(&resp_buf[..resp_len], &mut frame_out);
                         write_all_logged(&uart, &frame_out[..out_len]);
+                        // The UART write only QUEUES into the driver's TX
+                        // ring; panicking now would reset the peripheral
+                        // before the 0xD1 ack clocks out. Drain it first.
+                        let _ = uart.flush_write();
                         frame_len = 0;
                         frame_parser.reset();
 

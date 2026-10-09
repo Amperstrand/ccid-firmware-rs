@@ -98,3 +98,17 @@ def flashed_firmware(board):
     assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
     print(f"[flashed_firmware] {fwid}")
     yield board
+
+
+@pytest.fixture(scope="session")
+def flashed_ccid_firmware(board):
+    """Flash the pn7160-ccid reader firmware (USB-CDC CCID serve loop)
+    and VERIFY via FWID marker — the binary the dump-and-retrieve
+    workflow (Escape 0xD1, AGENTS.md) is exercised against."""
+    binary = board.build_firmware(features="pn7160-ccid")
+    assert binary is not None, "Firmware build failed"
+    text = board.flash_and_boot(binary)
+    fwid = BootMarker.parse_fwid(text)
+    assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
+    print(f"[flashed_ccid_firmware] {fwid}")
+    yield board

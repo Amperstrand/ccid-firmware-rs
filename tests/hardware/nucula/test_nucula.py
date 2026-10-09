@@ -11,6 +11,7 @@ Test pyramid (bottom to top):
 """
 
 import re
+import subprocess
 import time
 
 import pytest
@@ -99,3 +100,77 @@ def test_our_firmware_sustained_acks(flashed_firmware, console):
     # Allow a few initial NAKs during boot/settling, but require sustained ACKs
     assert ack_count >= 5, f"Only {ack_count} ACKs in 30s. NAKs: {nak_count}"
     assert nak_count <= 5, f"Too many NAKs ({nak_count}) — unstable. ACKs: {ack_count}"
+
+
+# --- Dump-and-retrieve workflow (Escape 0xD1, AGENTS.md) ---
+
+SNAPSHOT_ELF = "/root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid"
+COREDUMP_OFFSET = "0x3F0000"
+COREDUMP_SIZE = "0x10000"
+
+
+def _load_coredump_helpers():
+    import importlib.util
+    import pathlib
+    helpers = pathlib.Path(__file__).resolve().parent.parent / "esp32_coredump.py"
+    spec = importlib.util.spec_from_file_location("esp32_coredump", helpers)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.hil
+def test_escape_d1_snapshot_roundtrip(flashed_ccid_firmware):
+    """Dump-and-retrieve regression test (AGENTS.md "Crash Dumps & Snapshot
+    Debugging"): Escape 0xD1 over the CCID wire → ack → silent flash
+    coredump → reboot → host-side decode yields the panic marker frames.
+    The coredump partition is erased before AND after, so the test both
+    starts and leaves a clean bench state."""
+    import serial as pyserial
+
+    board = flashed_ccid_firmware
+    coredump = _load_coredump_helpers()
+
+    board.run_esptool("erase-region", COREDUMP_OFFSET, COREDUMP_SIZE)
+
+    board._free_port()
+    with pyserial.Serial(board.port, 115200, timeout=0.5) as s:
+        s.reset_input_buffer()
+        s.write(coredump.gempc_frame(b"\xD1"))
+        wire = b""
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            wire += s.read(4096)
+            if b"\xd1" in wire[2:] and bytes([0x83]) in wire:
+                break
+    echo = bytes([0x03, 0x06, 0x6B]) in wire
+    ack = bytes([0x03, 0x06, 0x83]) in wire and b"\xD1" in wire
+    assert echo and ack, (
+        f"Escape 0xD1 not acked on the wire: {wire.hex()}"
+    )
+
+    time.sleep(8)  # coredump write + silent reboot
+
+    raw = "/tmp/opencode/nucula-hil-coredump.bin"
+    board.run_esptool("read-flash", COREDUMP_OFFSET, COREDUMP_SIZE, raw)
+    data = open(raw, "rb").read()
+    non_ff = any(chunk != b"\xff" * len(chunk) for chunk in (data[i:i+256] for i in range(0, len(data), 256)))
+    assert non_ff, "coredump partition is empty — panic did not write a dump"
+
+    decode = subprocess.run(
+        [coredump.find_idf_python(), coredump.find_espcoredump_py(),
+         "--chip", "esp32c3", "info_corefile", "--core", raw, "--core-format", "raw",
+         "--gdb", "gdb-multiarch", SNAPSHOT_ELF],
+        capture_output=True, text=True, timeout=180,
+    )
+    out = decode.stdout + decode.stderr
+    # esp_coredump 5.5.1's thread printer crashes on newer gdb-multiarch
+    # 'LWP N' thread ids AFTER emitting the panic info — tolerate the
+    # nonzero exit as long as the essentials decoded.
+    assert "Panic reason" in out, f"no panic reason in decode output: {out[-500:]}"
+    assert "abort() was called at PC" in out, (
+        f"panic reason is not an abort (snapshot panics via abort): {out[-500:]}"
+    )
+    assert "'main'" in out, f"crashed task is not main: {out[-500:]}"
+
+    board.run_esptool("erase-region", COREDUMP_OFFSET, COREDUMP_SIZE)

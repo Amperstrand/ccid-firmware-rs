@@ -56,3 +56,12 @@ CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+
+# Dump-and-retrieve (AGENTS.md): silent panics + flash coredumps. This
+# fragment layers last, overriding the esp32c3 default PRINT_REBOOT —
+# whose print stage hangs on the claimed USB-Serial/JTAG console once
+# UsbSerialDriver takes the peripheral (bench 2026-10-09). The partition
+# table above already carries the coredump partition at 0x3F0000.
+CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
