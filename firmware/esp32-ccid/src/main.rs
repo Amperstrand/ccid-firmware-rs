@@ -196,6 +196,11 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
         ServeConfig {
             nak_on_error: true,
             notify_slot_change: true,
+            // #89: MFRC522 presence polls on marginal coupling block for
+            // hundreds of ms — never make a pending response wait on one.
+            // Polls run on read-idle; transitions are delivered in the next
+            // command window (ccid_serial_server ServeConfig docs).
+            inline_poll: false,
         },
     );
 
