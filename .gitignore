@@ -83,3 +83,6 @@ tools/gp/*.cap
 firmware/esp32-ccid/ld-args.txt
 firmware/esp32-ccid/native/
 .omo/
+
+# HIL run ledger (bench-local state, never committed)
+tests/hardware/labgrid/results/

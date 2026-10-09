@@ -37,6 +37,17 @@ from pathlib import Path
 
 import pytest
 
+# Direct-name imports: this conftest also defines a `bench` FIXTURE (the
+# host runner), which would shadow a module import of the same name.
+from bench import (  # noqa: F401  (PLACES re-exported for addoption default)
+    PLACES,
+    BenchLockHeld,
+    acquired_place,
+    bench_lock as _bench_lock_ctx,
+    ledger as _ledger,
+    place_holder as _place_holder,
+)
+
 PLACE = "stm32-ccid"
 DUT_READER_SERIAL = "ST2XXX-001"
 CHERRY_VID_PID = "046a:003e"
@@ -123,6 +134,9 @@ def pytest_addoption(parser):
                      help="Path to .bin to flash before tests. If omitted, run against current flash.")
     parser.addoption("--skip-labgrid", action="store_true", default=False,
                      help="Skip labgrid place acquisition (coordinator-outage escape hatch).")
+    parser.addoption("--places", action="store", default=",".join(PLACES),
+                     help="Comma-separated subset of bench places to cover "
+                          "(stm32-ccid,nucula-c3,m5stick,ref-acr1252,ref-cardman).")
 
 
 def pytest_configure(config):
@@ -138,6 +152,43 @@ def pytest_collection_modifyitems(config, items):
 
 
 # ---------------------------------------------------------------- fixtures
+
+@pytest.fixture(scope="session")
+def bench_lock(request):
+    """Cross-project bench flock (bolty-rs protocol, layer 1) for tests
+    that drive pcscd or serial ports. Held for the session."""
+    if request.config.getoption("--skip-labgrid"):
+        yield None
+        return
+    try:
+        with _bench_lock_ctx():
+            print("[bench] flock acquired (cross-project)")
+            yield True
+    except BenchLockHeld as e:
+        pytest.skip(f"bench busy: {e}")
+
+
+@pytest.fixture(params=list(PLACES))
+def place_name(request):
+    """Parametrized over the bench places selected via --places. Busy
+    places SKIP (with the holder named) instead of failing a run — a
+    shared bench yields partial coverage, visibly."""
+    wanted = request.config.getoption("--places").split(",")
+    if request.param not in wanted:
+        pytest.skip(f"place not selected: {request.param}")
+    if request.config.getoption("--skip-labgrid"):
+        yield request.param
+        return
+    holder = _place_holder(request.param)
+    if holder is None:
+        pytest.fail(f"coordinator unreachable for place {request.param}")
+    if holder:
+        pytest.skip(f"place held by {holder}: {request.param}")
+    with acquired_place(request.param) as p:
+        _ledger("place_acquired", place=p)
+        yield p
+    _ledger("place_released", place=request.param)
+
 
 @pytest.fixture(scope="session")
 def labgrid_place(request):
