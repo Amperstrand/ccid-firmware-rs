@@ -272,7 +272,13 @@ jobs:
       - name: Install ESP toolchain (xtensa)
         if: matrix.toolchain == 'esp'
         run: |
-          espup install
+          # Pin the crosstool GCC to what IDF v5.5.1's tool_version_check
+          # accepts ('esp-14.2.0_20241119'). espup installs the LATEST
+          # crosstool by default; its bin dir lands ahead of embuild's own
+          # copy in PATH, and a brand-new release (esp-16.2.0_20260914,
+          # 2026-10-09) made every xtensa matrix entry fail the IDF
+          # version check at cmake configure time.
+          espup install -c 14.2.0_20241119
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
 
