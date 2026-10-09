@@ -40,6 +40,7 @@ pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 # M1 milestone: minimal bus+probe, nothing else (issues #63/#80).
 pn7160-m1 = ["backend-pn7160", "board-nucula"]
 pn7160-v10raw = ["backend-pn7160", "board-nucula"]
+pn7160-actdiag = ["backend-pn7160", "board-nucula"]
 ble = []
 
 [dependencies]
