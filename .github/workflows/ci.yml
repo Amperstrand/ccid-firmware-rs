@@ -194,6 +194,20 @@ jobs:
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
             sdkconfig_full: true
+          # The nucula CCID main — the bench-shipped reader firmware
+          # (build.sh c3-ccid): carries the USB-CDC serve loop, the
+          # Escape 0xD1 snapshot trigger, and the coredump config that
+          # the dump-and-retrieve workflow depends on. Target-compile
+          # coverage so regressions surface in CI, not on the bench.
+          - name: c3-nucula-ccid
+            features: "pn7160-ccid"
+            no-default-features: true
+            gate: false
+            toolchain: nightly
+            profile: ""
+            target: riscv32imc-esp-espidf
+            sdkconfig: "sdkconfig.full"
+            sdkconfig_full: true
     steps:
       - uses: actions/checkout@v5
         with:
