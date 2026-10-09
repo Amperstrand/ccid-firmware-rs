@@ -399,35 +399,43 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
    building. The April "pcscd + card responds" record likely only
    exercised ATR display + direct-serial tests, not full pcscd T=1
    connects.
-4. **GPG applet end-to-end — everything staged except the card's GP keys**:
-   - **Keys (the only hard blocker)**: default `40..4F` rejected — card
-     cryptogram invalid, one retry consumed. The GlobalPlatformPro wiki
-     (the authoritative public list) documents exactly two well-known
-     keys: the default and a Gemalto VISA2-diversified key that does not
-     apply to NXP silicon; **no NXP/JCOP factory key exists publicly**
-     ("only the card vendor can help"). DO NOT guess further — the ISD
-     retry counter (typically 10) can brick the card. Owner input
-     needed: the card's real keys, a default-key dev card, or a real
-     OpenPGP card.
-   - **Applet staged and verified** (SmartPGP, ANSSI — proven on the
-     exact same card: NXP JCOP4 P71 J3R180): `/tmp/opencode/gp/` holds
-     `gp.jar` (GlobalPlatformPro v25.10.20), `SmartPGP-jc304-rsa4096.cap`
-     (JavaCard 3.0.4 build — the P71D321/JCOP4 primary),
-     `SmartPGP-jc31-rsa4096.cap` (fallback), and the full kit zip.
-     Re-fetch from `github.com/github-af/SmartPGP/releases`
-     (tag `v1.23.0-javacard-3.0.4`) if /tmp is lost.
-   - **Install** (through the ACR1252 reference reader — our serial
-     readers are blocked by item 3): `java -jar gp.jar -key <KEY> -install
-     SmartPGP-jc304-rsa4096.cap -r "ACS ACR1252 ... PICC 02 00"`.
-   - **SmartPGP caveats** (bench-attested by the 2024-02 DIY writeup on
-     the same card): on-card key generation ONLY — key import is buggy,
-     always answer NO to GnuPG's backup/move prompt; set `key-attr` in
-     `gpg --edit-card` before generating; RSA 1024–4096 and NIST P-384
-     work, Curve25519/Brainpool do not; no key backup is possible.
+4. **GPG applet end-to-end — INSTALLED AND OPERATIONAL (2026-10-09)**:
+   - **Keys found in-repo**: the AUTH triple from
+     `tests/soak/soak_02_globalplatform.py` (`--key-enc 5A9E...9EDF
+     --key-mac 7CCC...2998 --key-dek B040...AA80`) authenticates the
+     bench P71's ISD (the default 40..4F is rejected — one retry
+     consumed; do not blind-guess further).
+   - **SmartPGP v1.23.0 (JC 3.0.4, RSA-4096 build) installed** through
+     the ACR1252 via `gp -install`; applet AID `D276000124010304AFAF...`
+     SELECTABLE; `gp.jar` + CAPs cached at /tmp/opencode/gp/ (re-fetch:
+     github.com/github-af/SmartPGP releases, tag v1.23.0-javacard-3.0.4).
+   - **Three RSA-2048 keys generated ON-card** via raw APDUs
+     (GENERATE ASYMMETRIC KEY PAIR `00 47 80 00 02 B8/B6/A4 00` — note
+     the **case-4 Le byte is REQUIRED** through the ACR: without the
+     trailing `00` the card answers 6700). SmartPGP does NOT auto-write
+     fingerprint DOs after on-card generation — compute SHA-1 over the
+     pubkey packet (`99 05 14 || len(n) || n || len(e) || e`) and PUT
+     DATA C7/C8/C9 (the combined C5 write is 6A88 — unsupported).
+   - **gpg --card-status reads the card fully** (keys, fingerprints,
+     counters). Bench gpg quirk: scdaemon's internal CCID driver fights
+     pcscd for the ACR — run gpg with pcscd briefly stopped
+     (`systemctl stop pcscd pcscd.socket; gpg --card-status; systemctl
+     start pcscd`), or expect "ccid open error" / "No such device".
+     If the ACR PICC interface vanishes from pcscd entirely, a USB
+     device reset (USBDEVFS_RESET ioctl on /dev/bus/usb/001/<dev>)
+     recovers it.
+   - **OPEN QUIRK — PSO signature format**: PSO COMPUTE DIGITAL
+     SIGNATURE (`00 2A 9E 9A`) returns 9000 + 256 B after PW1 verify,
+     but the result does not verify as PKCS#1 v1.5 (SHA-256 DigestInfo
+     in, DigestInfo-out mismatch) nor PSS at common salt lengths against
+     the key read back via `00 47 81`. SHA-1 input gives 6985 (rejected
+     — good). Raw APDU artifacts kept at /tmp/opencode/sigpub_do.bin +
+     sig.bin. Suspects: SmartPGP padding variant or a key-slot readback
+     subtlety. First test through gpg itself (scd drives PSO with its
+     own framing) before assuming a card bug.
    - The bench NFC card is **P71D321 silicon** (CPLC `ICType=D321`,
      fabricator 4790=NXP) — "J3R180" is NXP's JCOP4 R-series PRODUCT
-     name on that silicon, so both labels can describe the same card;
-     CPLC is how you tell (gp -i).
+     name on that silicon.
 
 ### Working-tree coordination
 
