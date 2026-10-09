@@ -28,10 +28,12 @@ static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
+    // Issue #91: the shim logger replaces EspLogger (the log crate takes
+    // exactly one global sink, first installer wins). Pre-claim lines go
+    // to the console exactly as EspLogger's did; after log_shim::install()
+    // they route into the drained ring.
     #[cfg(not(feature = "ble"))]
-    esp_idf_svc::log::EspLogger::initialize_default();
-    #[cfg(not(feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Info);
+    crate::log_shim::init(log::LevelFilter::Info);
 
     let peripherals = Peripherals::take().expect("peripherals already taken");
 
@@ -63,6 +65,10 @@ pub fn run() -> ! {
     )
     .expect("USB-CDC init failed");
     let mut usb = usb;
+    // Issue #91: from here on direct console writes are dropped (the
+    // driver claim takes the peripheral) — route logs into the ring and
+    // drain them onto the claimed driver from the serving loop.
+    crate::log_shim::install();
     log::warn!("pn7160-ccid: USB-CDC ready");
 
     let bus = BusPins {
@@ -135,6 +141,9 @@ pub fn run() -> ! {
                     // GemPC Twin: echo the received frame, then the response
                     let _ = usb.write(server.echo(), write_timeout);
                     let _ = usb.write(server.response(), write_timeout);
+                    // Logs queued since the last drain ride out after the
+                    // response; host parsers scan for SYNC-anchored frames.
+                    crate::log_shim::drain_into(&mut usb);
                     #[cfg(feature = "ble")]
                     if let Some(ble) = ble_console.as_ref() {
                         ble.drain();
@@ -147,9 +156,10 @@ pub fn run() -> ! {
                 }
             }
             _ => {
-                // Read idle — background card poll
+                // Read idle — background card poll + log drain (issue #91)
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 server.poll_if_due(now);
+                crate::log_shim::drain_into(&mut usb);
                 #[cfg(feature = "ble")]
                 if let Some(ble) = ble_console.as_ref() {
                     ble.drain();

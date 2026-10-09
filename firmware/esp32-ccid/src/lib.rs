@@ -87,6 +87,10 @@ pub mod wifi;
 #[cfg(feature = "backend-mfrc522")]
 pub mod led;
 
+/// Host-testable log ring shared by the USB-CDC log shim (issue #91);
+/// the esp-idf sink/drain shell is target-gated inside the module.
+pub mod log_shim;
+
 /// Host-testable log ring shared by the BLE debug logger shells.
 pub mod ble_log_queue;
 
