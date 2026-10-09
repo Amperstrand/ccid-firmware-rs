@@ -337,6 +337,53 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
+## Session Lessons: PN7160 Card Path + Reader Fuzzing (2026-10-09)
+
+### Mock/hardware divergence — the #1 firmware-bug class this week
+The pn7160 mock `transact` returned ANY queued reply; the real transport
+filtered for MT_RSP only, stashing every NCI DATA packet (the APDU
+responses!) as a "notification". 13/13 protocol tests passed while the
+hardware starved. **Rule: mocks must model the transport's filtering
+semantics, not just the happy reply queue.** When hardware fails where
+the mock passes, diff the transport contract first.
+
+### The wallet firmware is a reference, not a gospel
+Its TOTAL_DURATION SET_CONFIG TLV is malformed (missing LEN octet,
+plen=5 for a 4-byte param body → NFCC answers num_applied=0). Harmless
+for its LISTEN mode, fatal for reader mode (single-shot discovery).
+Byte-copying wallet sequences requires validating the RSP payload, not
+just the transport status: check `num_applied` on every SET_CONFIG.
+
+### Edge-triggered discovery NTFs
+The PN7160 emits one RF_DISCOVER_NTF per tag ARRIVAL, none while the
+tag rests in the field. The driver caches the last NTF (presence polls
+refresh it, power_on reuses it, power_off clears it). Consequence:
+presence is sticky — a marginal coupling event at boot reports
+present+inactive indefinitely. Removal-detection needs a strategy
+(re-discovery cycle or activation-state tracking) — open issue.
+
+### Main-loop logging dies after the USB-CDC driver claim
+esp-idf logs flow until `UsbSerialDriver::new` takes the peripheral;
+after that the CCID serving loop's log output silently drops. For
+card-path debugging use a no-claim diagnostic main (`pn7160-actdiag`
+feature) that logs every NCI step — it isolated this week's failures
+in one run each.
+
+### Reader test timing
+GemPC Twin error paths legitimately take up to ~0.8 s (presence
+retries over I2C + status LED logging). Fixed-sleep probes misreport
+slow responses as wedges: read drain-until-idle (two empty reads,
+1.5 s cap). The m5stick echoes interleaved with log text — frame
+parsers must scan for SYNC-anchored, LRC-validated frames, never
+assume clean streams.
+
+### Two CCID serving paths in esp32-ccid
+The classic mains (main.rs) duplicate the serving loop the
+USB-CDC main gets from `ccid_serial_server` (echo, poll gating,
+timeout guards). Bug fixes now need THREE patch sites (server +
+two main loops) — the stall guard went in exactly there. Refactor
+opportunity: route the classic mains through CcidSerialServer.
+
 ## ESP32-C3 Nucula Board — USB Port Lifecycle (CRITICAL)
 
 The nucula's USB-Serial/JTAG is a **composite device** (CDC serial + JTAG on one USB port). Three failure modes that WILL happen if you're not careful:
