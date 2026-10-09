@@ -135,7 +135,12 @@ class Reader:
             return self._exchange_once(msg_type, data, raw, settle)
         except serial.SerialException:
             self.reopen()  # nucula CDC readiness quirk — one clean cycle
-            return self._exchange_once(msg_type, data, raw, settle)
+            try:
+                return self._exchange_once(msg_type, data, raw, settle)
+            except serial.SerialException:
+                # Degrade to no-response, never kill the battery run: the
+                # case counts as failed, the remaining cases still run.
+                return []
 
     def _exchange_once(self, msg_type: int, data: bytes, raw: bytes | None,
                        settle: float) -> list:
