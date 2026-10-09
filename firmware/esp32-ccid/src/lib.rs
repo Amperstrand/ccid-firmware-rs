@@ -10,6 +10,7 @@
 //! - **serial_framing**: CCID-over-serial framing protocol
 //! - **ccid_handler**: CCID command handling logic
 
+#[cfg(test)]
 pub mod ccid_fuzz;
 pub mod ccid_handler;
 pub mod ccid_serial_server;
