@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — USB-CDC log output restored after the driver claim (issue #91)
+
+From the moment `UsbSerialDriver::new` claims the nucula's USB-Serial/JTAG peripheral, every log line logged afterwards was silently dropped — the PN7160 init ladder, `power_on failed: …` diagnostics, all serving-loop output. New `log_shim` module routes logs around the claim:
+
+- **`esp_log_set_vprintf` sink for C-level `ESP_LOGx`** — the extern-C sink formats each chunk with `vsnprintf` (locally declared with the bindgen `va_list` alias; ABI round-trip bench-verified: riscv32 passes a pointer, xtensa passes the 12-byte va_list by value) and appends to a 4 KB static ring. IDF 5.5's text formatter calls the sink up to three times per line (header/message/`\n`), so the ring assembles lines from arbitrary chunks and only exposes newline-terminated ones.
+- **`log` facade routing for Rust `log::warn!`/`error!`** — necessary addition to the researched design: esp-idf-svc 0.52's `EspLogger` writes via `fwrite` to newlib stdout, NOT through the vprintf sink, so the prescribed mechanism alone would leave the Rust diagnostics (the primary symptom) dead. `log_shim::init` replaces `EspLogger::initialize_default()` in the `pn7160-ccid` main; pre-claim lines still go to stdout (the FWID boot marker keeps landing on the console), post-claim they route into the same ring.
+- **Ring semantics** — drop-oldest under overflow with a dropped-lines counter (drain emits an `=== N lines dropped ===` marker), 200-byte line cap, never blocks, never panics. Extracted as the pure host-tested `LogRing` (9 tests) mirroring the `ble_log_queue` pattern; the esp-idf shell is gated on `pn7160-ccid` + esp targets. ESP32 host tests: 100 → 109.
+- **Drain points** — the serving loop drains the ring onto the claimed driver post-response and in the read-idle path (bounded burst; a failed write stops the pass). Interleaving with GemPC frames is safe: host-side parsers scan for SYNC-anchored LRC-validated frames (conformance-battery-proven; USB-CDC main only — the UART mains' clean-wire rule is untouched).
+
 ### Changed — dump-and-retrieve verified on BOTH chips + hardened (issue #66 direction)
 
 - **xtensa coredump configs** — `sdkconfig-xtensa.full`/`sdkconfig-xtensa-ble.full` previously had `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y` (issue #64 only configured the C3); now `ENABLE_TO_FLASH` + ELF format everywhere. **M5Stick round-trip verified on hardware**: 0xD1 → echo + ack on the wire → silent flash coredump → reboot → decode (panic registers, task list, memory map).
