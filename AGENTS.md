@@ -552,8 +552,15 @@ counters, 0xD1 coredumps, or a `ble` build. Bench host side of the same
 rule: the FTDI `latency_timer` must be 1
 (`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`, issue #51) — a
 USB re-enumeration (ftdi_sio unbind/rebind, replug) RESETS it to 4 and
-pcscd error-loops until it is set back; re-enumeration may also renumber
-the tty (check `/etc/reader.conf.d/gempc-bench` after any rebind).
+pcscd error-loops until it is set back. Re-enumeration also renumbers
+ttyUSBx, but nothing on the bench hardcodes tty numbers anymore (2026-10-09):
+`/etc/reader.conf.d/gempc-bench` uses the renumber-proof by-id
+`DEVICENAME`, bench scripts resolve ports via
+`tests/hardware/serial_ports.py` (by-id globs, `NUCULA_PORT`/`M5STICK_PORT`
+env overrides), and `flash_and_test.sh` autodetects. Only the latency_timer
+still needs manual re-set after a rebind. The nucula CDC path cannot use
+by-id in reader.conf (its by-id contains colons, which DEVICENAME splits
+on) — its config keeps the resolved `/dev/ttyACM0`-style path.
 
 ### Limits (and the complement)
 

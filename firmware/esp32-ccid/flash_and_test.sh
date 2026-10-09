@@ -23,7 +23,25 @@ export PATH="$HOME/.cargo/bin:$PATH"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 FIRMWARE="target/xtensa-esp32-espidf/release/esp32-ccid"
-PORT="${ESPFLASH_PORT:-/dev/ttyUSB0}"
+
+# Detect the serial port from stable by-id identities — never hardcode
+# /dev/ttyUSBx: USB re-enumeration renumbers it (FTDI unbind/rebind, replug).
+# ESPFLASH_PORT always wins for explicit one-off targeting.
+detect_port() {
+    local p
+    for p in /dev/serial/by-id/usb-Hades2001_M5stack_*-if00-port0 \
+             /dev/serial/by-id/usb-FTDI_*-if00-port0; do
+        [ -e "$p" ] && { echo "$p"; return 0; }
+    done
+    return 1
+}
+PORT="${ESPFLASH_PORT:-$(detect_port || true)}"
+if [ -z "${PORT}" ]; then
+    error "No serial port detected (no Hades2001/FTDI by-id device present)."
+    error "Replug the board or set ESPFLASH_PORT=/dev/... explicitly."
+    exit 1
+fi
+info "Serial port: ${PORT}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

@@ -7,6 +7,11 @@ card-absent responses structurally, then fuzzes the serial framing and
 proves resync after every malformed input. Finishes with pcscd-restart
 and GetSlotStatus soaks.
 
+Reader ports are resolved dynamically from stable /dev/serial/by-id
+identities (tests/hardware/serial_ports.py) — never hardcoded ttyUSBx,
+which renumbers on USB re-enumeration. Override with NUCULA_PORT /
+M5STICK_PORT env vars.
+
 Direct serial access: pcscd MUST be stopped (it holds the ports).
 The script stops/starts it itself.
 
@@ -19,8 +24,12 @@ import random
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import serial
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serial_ports import resolve  # noqa: E402
 
 SYNC = 0x03
 CTRL_ACK = 0x06
@@ -33,10 +42,7 @@ MSG_GET_PARAMETERS = 0x61
 MSG_XFR_BLOCK = 0x6F
 MSG_ESCAPE = 0x6B
 
-READERS = {
-    "nucula": "/dev/ttyACM0",
-    "m5stick": "/dev/ttyUSB2",
-}
+READERS = ("nucula", "m5stick")
 
 
 def lrc(data: bytes) -> int:
@@ -259,7 +265,7 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
             print(f"  restart {i}: nucula={nuc} m5stick={gem} — FAIL")
             # the known CDC-state remedy: one clean open/close cycle
             try:
-                s = serial.Serial(READERS["nucula"], 115200, timeout=0.5)
+                s = serial.Serial(resolve("nucula"), 115200, timeout=0.5)
                 s.close()
             except Exception:
                 pass
@@ -302,8 +308,8 @@ def main():
     pcscd_stop()
     readers: dict[str, Reader] = {}
     try:
-        for name, port in READERS.items():
-            readers[name] = Reader(name, port)
+        for name in READERS:
+            readers[name] = Reader(name, resolve(name))
         ok1 = conformance_battery(readers)
         ok2 = fuzz_battery(readers, 20 if args.quick else 80)
         ok3 = pcscd_restart_soak(readers, 3 if args.quick else 10)
@@ -315,7 +321,7 @@ def main():
                 readers[name].close()
             except Exception:
                 pass
-            readers[name] = Reader(name, READERS[name])
+            readers[name] = Reader(name, resolve(name))
         ok4 = slot_status_soak(readers, 100 if args.quick else 1000)
     finally:
         for r in readers.values():
