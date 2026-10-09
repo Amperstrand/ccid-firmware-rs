@@ -439,8 +439,13 @@ fn main() {
     } else {
         log::warn!("ESP32-CCID: BLE debug console FAILED to start");
     }
+    // UART0 is the CCID wire in this main and libccidtwin's parser is
+    // strict: even WARN-level failure lines ("power_on failed") interleave
+    // with GemPC frames and pcscd rejects the handshake. Diagnostics go
+    // through Escape 0xD0 counters / 0xD1 coredumps / `ble` builds — the
+    // wire itself stays pristine.
     #[cfg(not(feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Info);
+    log::set_max_level(log::LevelFilter::Off);
 
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))

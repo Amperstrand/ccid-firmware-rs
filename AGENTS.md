@@ -431,6 +431,20 @@ bites. Also: pushes touching `.github/workflows/` must go over SSH
 (`git push git@github.com:…`) — the OAuth tokens here lack the
 `workflow` scope.
 
+### The clean-wire rule (UART mains + pcscd, 2026-10-09)
+
+libccidtwin's parser is STRICT: even WARN-level failure lines
+("power_on failed: …") interleaving with GemPC frames make pcscd reject
+the handshake or error-loop in EHStatusHandlerThread. The mfrc522 UART
+main therefore sets `log::set_max_level(Off)` in non-`ble` builds —
+UART0 carries CCID frames only; diagnostics go through Escape 0xD0
+counters, 0xD1 coredumps, or a `ble` build. Bench host side of the same
+rule: the FTDI `latency_timer` must be 1
+(`/sys/bus/usb-serial/devices/ttyUSB0/latency_timer`, issue #51) — a
+USB re-enumeration (ftdi_sio unbind/rebind, replug) RESETS it to 4 and
+pcscd error-loops until it is set back; re-enumeration may also renumber
+the tty (check `/etc/reader.conf.d/gempc-bench` after any rebind).
+
 ### Limits (and the complement)
 
 A coredump is a frozen instant: it answers "what state was the firmware
