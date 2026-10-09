@@ -534,6 +534,58 @@ logging is complementary live observability, not a substitute.
 | nucula standard | USB-CDC | console on the same CDC (parser tolerates log noise) |
 | nucula (`ble` build) | USB-CDC | blocked — no `c3-ccid-ble` board until the C3 adv quirk is root-caused |
 
+## Labgrid Bench Doctrine (ai-legion NFC/CCID testbed, 2026-10-09)
+
+The bench (ai-legion, multi-homed as 192.168.13.208) carries five labgrid
+places, all exported by the `ai-legion-nfc` exporter from the in-repo
+config `tests/hardware/labgrid/exporter-ai-legion-nfc.yaml` (deployed to
+`/etc/labgrid/exporter-nfc.yaml`, restarted via nohup after edits):
+
+| Place | Device | Identity |
+|---|---|---|
+| `stm32-ccid` | F469-DISCO CCID DUT | ST-LINK serial + Cherry-emul USB serial `ST2XXX-001` |
+| `nucula-c3` | nucula PN7160 DUT | Espressif USB-JTAG by-id path |
+| `m5stick` | M5Stack MFRC522 DUT | Hades2001 by-id path |
+| `ref-acr1252` | ACS ACR1252 reference NFC reader | USB path 1-4 (serial-less) |
+| `ref-cardman` | OmniKey CardMan 3121 reference contact reader | USB path 1-11 (serial-less) |
+
+**The rules:**
+1. **labgrid coordinates hardware** — every HIL session acquires the DUT's
+   place before touching hardware (`labgrid-client -p <place> acquire`,
+   release on teardown; the pytest conftest does this automatically).
+   Concurrent sessions cannot race a device.
+2. **pcscd owns logical reader access** — tests select readers by stable
+   identity (USB serial embedded in the pcscd name), NEVER by enumeration
+   order. Zero or multiple matches is a loud error with a listing.
+3. **DUTs and reference readers are disjoint by identity** — our F469
+   Cherry-emulation carries iSerial `ST2XXX-001`; the authentic ACR1252 /
+   CardMan / NR7101 can never match it. If a real Cherry is ever added to
+   the bench, its serial will differ.
+4. **Tests run ON the bench host** — helpers are local subprocesses. SSH is
+   only for genuinely remote benches (labgrid SSHDriver + NetworkService).
+
+**Daily driver commands:**
+```bash
+python3 tests/hardware/labgrid/bench_inventory.py   # one-shot bench health
+pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil          # F469 CCID
+labgrid-client -p stm32-ccid acquire                # manual reservation
+```
+
+**Cross-project**: bolty-rs and micronuts use the SAME bench and places —
+acquire the relevant place before any bench work there too.
+
+**Exporter config trap**: the config is a Jinja2 template with
+`line_statement_prefix="#"` — every `#`-line is a JINJA STATEMENT, not a
+comment. Comments must be `##`. Symptom of getting it wrong:
+`TemplateSyntaxError: Encountered unknown tag ...` on line 1. Also: this
+labgrid build only supports STRING udev matches
+(`match: 'ID_VENDOR_ID=046a ...'`), not dicts — dicts die with
+`cannot translate OrderedDict to MapValue`.
+
+**pcscd reader.conf trap**: `DEVICENAME` splits on the FIRST colon —
+`/dev/serial/by-id/` paths contain colons (MAC bytes). Use the resolved
+`/dev/ttyACM0`-style path (see /etc/reader.conf.d/nucula-ccid).
+
 ## Session Lessons: PN7160 Card Path + Reader Fuzzing (2026-10-09)
 
 ### Mock/hardware divergence — the #1 firmware-bug class this week

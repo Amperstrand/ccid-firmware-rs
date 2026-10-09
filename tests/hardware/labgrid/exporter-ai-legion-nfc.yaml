@@ -1,0 +1,55 @@
+## Bench exporter: ai-legion NFC/CCID testbed (deploy to /etc/labgrid/)
+##
+## Doctrine (AGENTS.md "Labgrid bench doctrine"):
+##   - labgrid coordinates hardware (places + acquisition)
+##   - pcscd owns logical reader access (tests select by USB serial, never
+##     enumeration order)
+##   - DUTs and reference readers are DISJOINT by identity: our F469
+##     Cherry-emulation carries USB serial ST2XXX-001; the authentic bench
+##     readers (ACR1252, CardMan 3121) can never match it.
+##
+## Matches are stable across reboots: serials where the device has one,
+## physical USB path (bus port) for serial-less devices.
+
+## --- DUTs -----------------------------------------------------------------
+
+nucula-c3:
+  SerialPort:
+    port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
+    speed: 115200
+
+m5stick-ftdi:
+  SerialPort:
+    port: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0
+    speed: 115200
+
+m5stick-usb:
+  SerialPort:
+    port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0
+    speed: 115200
+
+### F469-DISCO SWD flash + console (ST-LINK V2.1 CDC; serial is IN the
+## by-id path — stable without a udev match)
+stm32f469-stlink:
+  SerialPort:
+    port: /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066FFF515786534867184152-if02
+    speed: 115200
+
+## The F469 CCID firmware enumerating as Cherry ST-2xxx. The serial
+## ST2XXX-001 is OUR firmware's iSerial — the DUT identity marker.
+stm32f469-ccid:
+  USBDevice:
+    match: 'ID_VENDOR_ID=046a ID_MODEL_ID=003e ID_SERIAL_SHORT=ST2XXX-001'
+
+## --- reference readers (comparison oracles; never DUTs) -------------------
+
+## ACS ACR1252: reference NFC reader (PICC + SAM slots). Serial-less: bound
+## to the physical USB port (stable per cabling).
+ref-acr1252:
+  USBDevice:
+    match: 'ID_VENDOR_ID=072f ID_MODEL_ID=223b ID_PATH=pci-0000:00:14.0-usb-0:4'
+
+## OmniKey CardMan 3121: reference contact reader. Serial-less: physical port.
+ref-cardman:
+  USBDevice:
+    match: 'ID_VENDOR_ID=076b ID_MODEL_ID=3021 ID_PATH=pci-0000:00:14.0-usb-0:11'

@@ -1,30 +1,39 @@
-# labgrid environment config — used by labgrid-client on the build host (.221)
-# to acquire the STM32 CCID testbed from the exporter on .208.
-#
-# Usage:
-#   export LG_ENV=tests/hardware/labgrid/environment.yaml
-#   labgrid-client resources     # list available resources
-#   labgrid-client acquire       # lock the testbed
-#   labgrid-client release       # unlock
-#
-# The exporter must be running on .208 first:
-#   ssh root@192.168.13.208 'labgrid-exporter /root/ccid-firmware-rs/tests/hardware/labgrid/exporter-208.yaml &'
+## Labgrid environment for the ai-legion NFC/CCID bench.
+##
+## DOCTRINE (AGENTS.md "Labgrid bench doctrine"):
+##   - every HIL session acquires the DUT's place (labgrid coordinates)
+##   - pcscd owns logical reader access; tests select by USB serial
+##   - DUTs and reference readers are disjoint by identity
+##
+## Usage (labgrid pytest plugin or client):
+##   export LG_ENV=tests/hardware/labgrid/environment.yaml
+##   labgrid-client -p stm32-ccid console    # ST-Link console
+##   pytest tests/hardware/labgrid/ -v --hil # conftest acquires the place
+##
+## NOTE: this environment targets the LOCAL coordinator (default
+## 127.0.0.1:20408 on ai-legion). For remote benches, duplicate this file
+## per site and point LG_COORDINATOR at the site's coordinator.
 
 targets:
   main:
-    # Codex review #41: bind the network path through a NetworkService
-    # resource instead of SSHDriver-local host/user — labgrid can then
-    # manage/export the network device like any other resource, and
-    # driver config stays free of connection details.
     resources:
-      NetworkService:
-        address: '192.168.13.208'
-        username: 'root'
-    drivers:
-      SSHDriver:
-        keyfile: '~/.ssh/id_ed25519'
+      RemotePlace:
+        name: stm32-ccid
 
 places:
   stm32-ccid:
     matches:
-      - name: 'stm32-ccid'
+      - name: 'stm32f469-stlink'
+      - name: 'stm32f469-ccid'
+  nucula-c3:
+    matches:
+      - name: 'nucula-c3'
+  m5stick:
+    matches:
+      - name: 'm5stick-usb'
+  ref-acr1252:
+    matches:
+      - name: 'ref-acr1252'
+  ref-cardman:
+    matches:
+      - name: 'ref-cardman'
