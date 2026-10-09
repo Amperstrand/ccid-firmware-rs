@@ -399,25 +399,46 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
    building. The April "pcscd + card responds" record likely only
    exercised ATR display + direct-serial tests, not full pcscd T=1
    connects.
-4. **GPG applet end-to-end**: blocked on the bench P71's GP keys
-   (default 4041..4F rejected — card cryptogram invalid; DO NOT retry
-   keys blindly, the ISD retry counter can brick the card). Owner
-   input needed: the card's real keys, a default-key dev card, or a
-   real OpenPGP card. Staged: `gp.jar` (GlobalPlatformPro v25.10.20)
-   at /tmp/opencode/gp/; the bench NFC card is **P71D321 silicon**
-   (CPLC `ICType=D321`, fabricator 4790=NXP) — "J3R180" is NXP's
-   JCOP4 R-series PRODUCT name on that silicon, so both labels can
-   describe the same card; CPLC is how you tell (gp -i). Also blocked
-   on item 3 for any GPG-over-pcscd testing through our readers.
+4. **GPG applet end-to-end — everything staged except the card's GP keys**:
+   - **Keys (the only hard blocker)**: default `40..4F` rejected — card
+     cryptogram invalid, one retry consumed. The GlobalPlatformPro wiki
+     (the authoritative public list) documents exactly two well-known
+     keys: the default and a Gemalto VISA2-diversified key that does not
+     apply to NXP silicon; **no NXP/JCOP factory key exists publicly**
+     ("only the card vendor can help"). DO NOT guess further — the ISD
+     retry counter (typically 10) can brick the card. Owner input
+     needed: the card's real keys, a default-key dev card, or a real
+     OpenPGP card.
+   - **Applet staged and verified** (SmartPGP, ANSSI — proven on the
+     exact same card: NXP JCOP4 P71 J3R180): `/tmp/opencode/gp/` holds
+     `gp.jar` (GlobalPlatformPro v25.10.20), `SmartPGP-jc304-rsa4096.cap`
+     (JavaCard 3.0.4 build — the P71D321/JCOP4 primary),
+     `SmartPGP-jc31-rsa4096.cap` (fallback), and the full kit zip.
+     Re-fetch from `github.com/github-af/SmartPGP/releases`
+     (tag `v1.23.0-javacard-3.0.4`) if /tmp is lost.
+   - **Install** (through the ACR1252 reference reader — our serial
+     readers are blocked by item 3): `java -jar gp.jar -key <KEY> -install
+     SmartPGP-jc304-rsa4096.cap -r "ACS ACR1252 ... PICC 02 00"`.
+   - **SmartPGP caveats** (bench-attested by the 2024-02 DIY writeup on
+     the same card): on-card key generation ONLY — key import is buggy,
+     always answer NO to GnuPG's backup/move prompt; set `key-attr` in
+     `gpg --edit-card` before generating; RSA 1024–4096 and NIST P-384
+     work, Curve25519/Brainpool do not; no key backup is possible.
+   - The bench NFC card is **P71D321 silicon** (CPLC `ICType=D321`,
+     fabricator 4790=NXP) — "J3R180" is NXP's JCOP4 R-series PRODUCT
+     name on that silicon, so both labels can describe the same card;
+     CPLC is how you tell (gp -i).
 
 ### Working-tree coordination
 
-Sessions share this checkout. Another session's WIP (the #90
-serving-path consolidation) is in `firmware/esp32-ccid/src/` right now;
-check `git status` before building. Known flag for the refactor: the
-clean-wire `Off` ceiling and the `flush_write()`-before-snapshot-panic
-invariant must survive the consolidation (one session's sed left a
-`Debug` in the WIP main.rs where `Off` belongs).
+Sessions share this checkout — check `git status` before building.
+The #90 serving-path consolidation HAS landed (both classic mains are
+one-line `serve_uart` calls over `ServeConfig`); the two flags raised
+while it was in flight were resolved in commit `9fd1626`: the bin-side
+`crate::` import break (bin now uses `esp32_ccid::` paths — CI had been
+red for ~2 h before anyone noticed) and the clean-wire `Off` ceiling
+restored in the mfrc522 main. Verify `cargo build` for the BIN target,
+not just host tests, after main.rs surgery.
 
 ## Crash Dumps & Snapshot Debugging (dump-and-retrieve)
 
