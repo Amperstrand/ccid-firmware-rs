@@ -423,7 +423,14 @@ CI pins `espup install -c 14.2.0_20241119` (the GCC IDF v5.5.1's
 `tool_version_check` accepts). espup defaults to the LATEST crosstool
 and its bin dir lands ahead of embuild's own copy in PATH — the day's
 `esp-16.2.0_20260914` release failed every xtensa matrix entry at cmake
-configure. **Bench landmine**: this machine's espup crosstool is
+configure. The SAME day exposed a second failure mode: the
+espressif-cache restore-key chain fell back across toolchain
+generations and restored v5.2-era `esp-13.2.0` embuild tools against
+IDF v5.5.1 — the red run then SAVED that poison under a fresh exact
+key. The cache key/restore-keys now carry a generation prefix (`v6`)
+that only falls back within the current generation; **bump it whenever
+the toolchain/IDF world moves** (ci.yml carries the same note).
+**Bench landmine**: this machine's espup crosstool is
 `esp-15.2.0_20250920` and works only because the bench's cmake
 configure is cache-stamped; a FRESH bench configure (stamp loss, new
 checkout) would fail the same check — pin the bench espup too if it
