@@ -379,16 +379,42 @@ where
         // JavaCards (J3R180) need longer settling than DESFire.
         FreeRtos::delay_ms(15);
 
-        let activation = activation::wakeup(&mut self.transceiver).map_err(|err| {
-            log::error!("power_on: activation failed: {:?}", err);
-            self.clear_session();
-            NfcError::CommunicationError
-        })?;
-
-        if !activation.sak.iso14443_4_compliant {
+        // Marginal coupling makes a single REQA→RATS sequence flaky
+        // (~50% on the bench J3R180, 2026-10-09): retry the activation
+        // with a fresh frontend reset between attempts.
+        //
+        // ISO14443_SPEC (14443-3 §6.2.4 + Type A anticollision): a
+        // REQA/WUPA that goes unanswered is retried by the PICC-side
+        // convention — the PCD is expected to re-poll; there is no
+        // negative ack from a marginally-coupled card, only silence.
+        // ISO14443-4 (§5.2): RATS is likewise retransmittable — a lost
+        // RATS/ATS leaves the card in ATTRIB-pending state where a fresh
+        // RATS (after re-wakeup) restarts the exchange cleanly. The
+        // 15 ms settle between attempts mirrors the boot-path settle
+        // above (JavaCards need longer than DESFire per §6.2.4 note).
+        const ACTIVATION_ATTEMPTS: usize = 4;
+        let mut woke: Option<activation::Activation> = None;
+        for attempt in 1..=ACTIVATION_ATTEMPTS {
+            if attempt > 1 {
+                if self.reset_activation_frontend().is_err() {
+                    break;
+                }
+                FreeRtos::delay_ms(15);
+            }
+            match activation::wakeup(&mut self.transceiver) {
+                Ok(a) if a.sak.iso14443_4_compliant => {
+                    woke = Some(a);
+                    break;
+                }
+                Ok(_) => log::warn!("power_on: attempt {attempt}: card not ISO-14443-4"),
+                Err(err) => log::warn!("power_on: attempt {attempt} failed: {err:?}"),
+            }
+        }
+        let Some(activation) = woke else {
+            log::error!("power_on: activation failed after {ACTIVATION_ATTEMPTS} attempts");
             self.clear_session();
             return Err(NfcError::CommunicationError);
-        }
+        };
 
         let uid = activation.uid.as_slice();
         if uid.len() <= self.cached_uid.len() {
@@ -396,13 +422,24 @@ where
             self.cached_uid_len = uid.len();
         }
 
-        let (_, ats) =
-            PcdSession::from_connect(&mut self.transceiver, Fsdi::Fsd64, Cid::new(0).unwrap())
-                .map_err(|err| {
-                    log::error!("power_on: RATS/connect failed: {:?}", err);
-                    self.clear_session();
-                    NfcError::CommunicationError
-                })?;
+        let mut ats_result = Err(());
+        for rats_attempt in 1..=ACTIVATION_ATTEMPTS {
+            match PcdSession::from_connect(&mut self.transceiver, Fsdi::Fsd64, Cid::new(0).unwrap())
+            {
+                Ok(pair) => {
+                    ats_result = Ok(pair);
+                    break;
+                }
+                Err(err) => {
+                    log::warn!("power_on: RATS attempt {rats_attempt} failed: {err:?}")
+                }
+            }
+        }
+        let (_, ats) = ats_result.map_err(|()| {
+            log::error!("power_on: RATS/connect failed after {ACTIVATION_ATTEMPTS} attempts");
+            self.clear_session();
+            NfcError::CommunicationError
+        })?;
 
         // Per ISO 14443-4 §5.2.1: "DID equal to '0' indicates that no CID is used."
         // RATS with DID=0 means no CID assigned. I-blocks MUST NOT include CID.

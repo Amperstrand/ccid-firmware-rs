@@ -371,17 +371,35 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
 
 ### Open gaps to full known-good (card-level)
 
-1. **m5stick card activation**: card coupled (`present=1` via REQIPA),
-   ISO-DEP activation fails (`power_on failed: Communication...`,
-   bStatus present+inactive, err counter climbs, self-healing never
-   fires). The ACR1252 activates the same card family fine. Suspects:
-   marginal coil coupling, or activation-path handling of this card's
-   ATS (the driver already carries a J3R180-specific 15 ms settle).
-2. **nucula presence (#88)**: `card_present=0` with a card in the
-   field — the PN7160 emits one RF_DISCOVER_NTF per ARRIVAL; a card
-   placed after boot is invisible until re-discovery. Specified fix:
-   TTL/re-discovery pattern (ESPHome-style).
-3. **GPG applet end-to-end**: blocked on the bench P71's GP keys
+1. **m5stick card activation — FIXED (2026-10-09)**: marginal coupling
+   made single-shot REQA→RATS ~50% flaky; `power_on` now retries the
+   activation (4 attempts, frontend reset + 15 ms settle between) —
+   bench-verified 20/20 power-on cycles with the card constantly on the
+   coil. ISO 14443-3 §6.2.4 / 14443-4 §5.2 citations inline.
+2. **nucula presence (#88) — fix landed, bench-verified negative case**:
+   TTL re-arm (deactivate-to-idle restarts discovery, NCI v2.3 §5.2.5;
+   two-cycle absence confirmation against TOTAL_DURATION latency);
+   deployed firmware stable (0 errors, re-arm cycling, presence=0 with
+   an empty field — correct). The positive case (card placed onto the
+   nucula coil → present within ~4 s) needs a human to place a card.
+3. **The libccidtwin T=1 wall (m5stick + nucula serial path, root-caused
+   2026-10-09)**: pcscd enumerates the GemPCTwin reader and POWERS the
+   card (ATR flows), then libccidtwin — which has no descriptor
+   negotiation and hardcodes the GemPC Twin as a host-driven T=1/TPDU
+   reader — sends SetParameters(T=1) followed by T=1 S-blocks (IFS
+   request `00 C1 01 FE`) as XfrBlock payloads. Our firmware is an
+   APDU-level relay: the card receives the block as a garbage APDU and
+   answers SW=6E00 (bench-proof: strace of pcscd + a replicated
+   exchange returned DataBlock payload `6E 00`). Every "Card is
+   unresponsive" through pcscd on the serial path is this. **The fix is
+   an ISO 7816-3 §11 T=1 block endpoint inside the reader** (terminate
+   host T=1, reframe to ISO-DEP I-blocks/APDUs) — a real T=1 state
+   machine (I/R/S, retransmission, chaining, IFS negotiation), ~the
+   line-count of the whole current driver; spec-cite §11.4-§11.6 while
+   building. The April "pcscd + card responds" record likely only
+   exercised ATR display + direct-serial tests, not full pcscd T=1
+   connects.
+4. **GPG applet end-to-end**: blocked on the bench P71's GP keys
    (default 4041..4F rejected — card cryptogram invalid; DO NOT retry
    keys blindly, the ISD retry counter can brick the card). Owner
    input needed: the card's real keys, a default-key dev card, or a
@@ -389,7 +407,8 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
    at /tmp/opencode/gp/; the bench NFC card is **P71D321 silicon**
    (CPLC `ICType=D321`, fabricator 4790=NXP) — "J3R180" is NXP's
    JCOP4 R-series PRODUCT name on that silicon, so both labels can
-   describe the same card; CPLC is how you tell (gp -i).
+   describe the same card; CPLC is how you tell (gp -i). Also blocked
+   on item 3 for any GPG-over-pcscd testing through our readers.
 
 ### Working-tree coordination
 

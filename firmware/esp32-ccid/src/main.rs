@@ -181,11 +181,11 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     any(target_arch = "xtensa", target_arch = "riscv32"),
     any(feature = "backend-mfrc522", feature = "backend-pn532")
 ))]
-fn serve_uart<D: crate::nfc::NfcDriver>(
+fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
     uart: &UartDriver,
-    handler: crate::ccid_handler::CcidHandler<D>,
+    handler: esp32_ccid::ccid_handler::CcidHandler<D>,
 ) -> ! {
-    use crate::ccid_serial_server::{CcidSerialServer, ServeAction, ServeConfig};
+    use esp32_ccid::ccid_serial_server::{CcidSerialServer, ServeAction, ServeConfig};
 
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
@@ -400,7 +400,7 @@ fn main() {
     // through Escape 0xD0 counters / 0xD1 coredumps / `ble` builds — the
     // wire itself stays pristine.
     #[cfg(not(feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Debug);
+    log::set_max_level(log::LevelFilter::Off);
 
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))
