@@ -263,11 +263,18 @@ jobs:
           # configure with a source-directory mismatch (observed when a
           # v5.2.3 experiment cache poisoned v5.2.4 runs; failed jobs still
           # save their cache, which is how the poison spreads).
-          key: espressif-${{ runner.os }}-v5-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
+          # Cache-generation bump discipline: when the toolchain/IDF world
+          # moves (espup release, IDF pin, embuild tools), bump the v<N>
+          # prefix in key AND restore-keys. Restore-keys only fall back
+          # within the SAME generation — a cross-generation fallback once
+          # restored v5.2-era 13.2.0 tools against IDF v5.5.1 (which wants
+          # esp-14.2.0_20241119) and the red run then SAVED that poison
+          # under a fresh exact key (2026-10-09). v6 evicts that.
+          key: espressif-${{ runner.os }}-v6-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
           restore-keys: |
-            espressif-${{ runner.os }}-v5-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
-            espressif-${{ runner.os }}-v5-${{ matrix.name }}-
-            espressif-${{ runner.os }}-v5-
+            espressif-${{ runner.os }}-v6-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
+            espressif-${{ runner.os }}-v6-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v6-
 
       - name: Install ESP toolchain (xtensa)
         if: matrix.toolchain == 'esp'
