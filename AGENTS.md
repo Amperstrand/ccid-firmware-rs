@@ -337,6 +337,69 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
+## Known-Good Bench State (2026-10-09)
+
+The per-board verification matrix — run these probes after acquiring a
+place or whenever bench reality is in doubt. **A place you don't hold is
+a board you don't own**: the bench is shared with micronuts/bolty-rs,
+and the m5stick was re-flashed by a micronuts session within ~30 min of
+a release the same day.
+
+| Board | Identity probe (run this) | State 2026-10-09 ~16:15 |
+|---|---|---|
+| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @0c47f92, PN7160 init attempt 1, CCID loop up, reader in pcscd |
+| m5stick | CCID Escape 0x02 over /dev/ttyUSB0 → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @14:29 bench build, reader in pcscd; card activation = known gap (below) |
+| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 |
+| ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
+
+**Why the m5stick has no FWID probe**: the UART main applies the
+clean-wire log ceiling BEFORE its FWID log line — identity on the CCID
+wire must be ON-DEMAND (the Escape 0x02 string is today's identity;
+folding the git rev into it is the tracked improvement). Never put an
+unsolicited FWID on the UART0 wire — libccidtwin is strict.
+
+### Recovery events (2026-10-09, all resolved)
+
+- **m5stick re-flashed by micronuts** (display showed their app,
+  console silent): re-flashed our bench binary
+  (`~/.cargo-target/esp32-ccid-m5stick.bin`), identity re-verified.
+- **nucula latched in ROM download mode** (`boot:0x5, waiting for
+  download` — stale esptool state, reader vanished from pcscd):
+  recovered via the documented ladder (`esptool flash-id --after
+  hard-reset` + reset-and-capture-in-one-serial-session; a read window
+  opened AFTER the reset loses the boot banner to CDC re-enumeration).
+
+### Open gaps to full known-good (card-level)
+
+1. **m5stick card activation**: card coupled (`present=1` via REQIPA),
+   ISO-DEP activation fails (`power_on failed: Communication...`,
+   bStatus present+inactive, err counter climbs, self-healing never
+   fires). The ACR1252 activates the same card family fine. Suspects:
+   marginal coil coupling, or activation-path handling of this card's
+   ATS (the driver already carries a J3R180-specific 15 ms settle).
+2. **nucula presence (#88)**: `card_present=0` with a card in the
+   field — the PN7160 emits one RF_DISCOVER_NTF per ARRIVAL; a card
+   placed after boot is invisible until re-discovery. Specified fix:
+   TTL/re-discovery pattern (ESPHome-style).
+3. **GPG applet end-to-end**: blocked on the bench P71's GP keys
+   (default 4041..4F rejected — card cryptogram invalid; DO NOT retry
+   keys blindly, the ISD retry counter can brick the card). Owner
+   input needed: the card's real keys, a default-key dev card, or a
+   real OpenPGP card. Staged: `gp.jar` (GlobalPlatformPro v25.10.20)
+   at /tmp/opencode/gp/; the bench NFC card is **P71D321 silicon**
+   (CPLC `ICType=D321`, fabricator 4790=NXP) — "J3R180" is NXP's
+   JCOP4 R-series PRODUCT name on that silicon, so both labels can
+   describe the same card; CPLC is how you tell (gp -i).
+
+### Working-tree coordination
+
+Sessions share this checkout. Another session's WIP (the #90
+serving-path consolidation) is in `firmware/esp32-ccid/src/` right now;
+check `git status` before building. Known flag for the refactor: the
+clean-wire `Off` ceiling and the `flush_write()`-before-snapshot-panic
+invariant must survive the consolidation (one session's sed left a
+`Debug` in the WIP main.rs where `Off` belongs).
+
 ## Crash Dumps & Snapshot Debugging (dump-and-retrieve)
 
 **The preferred debug workflow for time-sensitive paths** (NFC card I/O,
