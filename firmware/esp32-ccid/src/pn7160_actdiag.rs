@@ -74,7 +74,10 @@ pub fn run() -> ! {
     // select with raw frame visibility
     let cmd = reader::rf_discover_select(ntf.discovery_id, ntf.protocol, ntf.interface);
     log::warn!("actdiag: SELECT cmd={:02X?}", cmd);
-    let rsp = d.transport_mut().transact(&cmd).expect("select RSP timeout");
+    let rsp = d
+        .transport_mut()
+        .transact(&cmd)
+        .expect("select RSP timeout");
     log::warn!("actdiag: SELECT RSP: {}", show(&rsp));
     log::warn!("actdiag: SELECT status byte: {:?}", rsp.status());
     let activation = d.transport_mut().drain();

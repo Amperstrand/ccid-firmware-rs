@@ -277,6 +277,7 @@ fn main() {
 
     let mut ccid_handler = CcidHandler::new(pn532_driver);
     let mut frame_parser = FrameParser::new();
+    let mut last_byte_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
     let mut frame_buf = [0u8; MAX_FRAME_SIZE];
     let mut frame_len = 0usize;
     let mut byte_buf = [0u8; 1];
@@ -316,6 +317,14 @@ fn main() {
                     continue;
                 }
 
+                // Fuzz-proven desync guard (2026-10-09): a partial frame
+                // older than 10ms is garbage — truncated headers otherwise
+                // consume the next valid frame's bytes as header filler.
+                let now_tick = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                if frame_parser.mid_frame() && now_tick.wrapping_sub(last_byte_tick) > 10 {
+                    frame_parser.reset();
+                }
+                last_byte_tick = now_tick;
                 match frame_parser.feed(byte) {
                     Some(FrameEvent::Command { ccid_bytes }) => {
                         // GemPC Twin protocol: echo → [NotifySlotChange] → response
@@ -580,6 +589,7 @@ fn main() {
 
     let mut ccid_handler = CcidHandler::new(mfrc522_driver);
     let mut frame_parser = FrameParser::new();
+    let mut last_byte_tick: u32 = unsafe { esp_idf_sys::xTaskGetTickCount() };
     let mut frame_buf = [0u8; MAX_FRAME_SIZE];
     let mut frame_len = 0usize;
     let mut byte_buf = [0u8; 1];
@@ -615,6 +625,14 @@ fn main() {
                     frame_parser.reset();
                     continue;
                 }
+                // Fuzz-proven desync guard (2026-10-09): a partial frame
+                // older than 10ms is garbage — truncated headers otherwise
+                // consume the next valid frame's bytes as header filler.
+                let now_tick = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                if frame_parser.mid_frame() && now_tick.wrapping_sub(last_byte_tick) > 10 {
+                    frame_parser.reset();
+                }
+                last_byte_tick = now_tick;
                 match frame_parser.feed(byte) {
                     Some(FrameEvent::Command { ccid_bytes }) => {
                         write_all_logged(&uart, &frame_buf[..frame_len]);

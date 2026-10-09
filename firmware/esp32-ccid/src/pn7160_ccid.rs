@@ -86,7 +86,10 @@ pub fn run() -> ! {
         }
     }
     let driver = driver.unwrap_or_else(|| {
-        log::warn!("pn7160-ccid: PN7160 unresponsive after {} attempts — card-absent mode", INIT_ATTEMPTS);
+        log::warn!(
+            "pn7160-ccid: PN7160 unresponsive after {} attempts — card-absent mode",
+            INIT_ATTEMPTS
+        );
         Pn7160NfcDriver::new(transport.take().expect("transport"))
     });
 

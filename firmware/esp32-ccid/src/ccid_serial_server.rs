@@ -41,6 +41,7 @@ pub struct CcidSerialServer<D: NfcDriver> {
     handler: CcidHandler<D>,
     parser: FrameParser,
     echo_buf: [u8; MAX_FRAME_SIZE],
+    last_byte_tick: u32,
     echo_len: usize,
     ccid_resp_buf: [u8; MAX_CCID_RESPONSE_SIZE],
     resp_buf: [u8; MAX_FRAME_SIZE],
@@ -58,6 +59,7 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             handler,
             parser: FrameParser::new(),
             echo_buf: [0; MAX_FRAME_SIZE],
+            last_byte_tick: now_ticks,
             echo_len: 0,
             ccid_resp_buf: [0; MAX_CCID_RESPONSE_SIZE],
             resp_buf: [0; MAX_FRAME_SIZE],
@@ -69,7 +71,19 @@ impl<D: NfcDriver> CcidSerialServer<D> {
 
     /// Feed one byte received from the host. `now_ticks` is a monotonic
     /// (wrapping) tick source such as FreeRTOS `xTaskGetTickCount()`.
+    /// Bytes of a valid frame arrive back-to-back (USB batching). A gap
+    /// this large (ticks == ms at the 1000 Hz tick rate) means the frame
+    /// began with garbage: a truncated header otherwise eats the NEXT
+    /// valid frame while the parser waits for bytes that never come
+    /// (fuzz-proven, 2026-10-09).
+    const INTER_BYTE_STALL_TICKS: u32 = 10;
+
     pub fn feed_byte(&mut self, byte: u8, now_ticks: u32) -> ServeAction {
+        let gap = now_ticks.wrapping_sub(self.last_byte_tick);
+        self.last_byte_tick = now_ticks;
+        if gap > Self::INTER_BYTE_STALL_TICKS {
+            self.parser.reset();
+        }
         let ccid_bytes = match self.parser.feed(byte) {
             Some(FrameEvent::Command { ccid_bytes }) => ccid_bytes,
             // Parse errors: drop silently; the parser has reset itself and

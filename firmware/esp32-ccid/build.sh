@@ -209,20 +209,12 @@ if [ "${DRY_RUN}" -eq 0 ]; then
     fi
 fi
 
-if [ "${CHIP}" = "esp32c3" ]; then
-    export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
-    export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
-else
-    echo "+ cp ${SCRIPT_DIR}/partitions-ota.csv ${TARGET_DIR}/partitions.csv (+ esp-idf-sys out dirs)"
-    if [ "${DRY_RUN}" -eq 0 ]; then
-        mkdir -p "${TARGET_DIR}"
-        cp "${SCRIPT_DIR}/partitions-ota.csv" "${TARGET_DIR}/partitions.csv"
-        for out_dir in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out; do
-            [ -d "${out_dir}" ] || continue
-            cp "${SCRIPT_DIR}/partitions-ota.csv" "${out_dir}/partitions.csv"
-        done
-    fi
-fi
+# Both chips use the esp-idf-sys GLOB injection: partitions-ota.csv is
+# copied into the embuild out dir BEFORE cmake configure (robust against
+# fingerprint changes recreating the out dir — the old post-hoc cp dance
+# lost the file exactly there, bench 2026-10-09).
+export ESP_IDF_GLOB_PARTCSV_BASE="${SCRIPT_DIR}"
+export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
 
 # Shared-target-dir cmake cache guard (bench trap, 2026-10-08): the global
 # ~/.cargo/config.toml target-dir is shared by every checkout/worktree. The

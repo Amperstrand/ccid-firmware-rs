@@ -159,10 +159,20 @@ pub mod tx {
     /// §5.1.3 / Table 90. Without it the PN7160 completes ONE discovery
     /// cycle and stops emitting RF_DISCOVER_NTFs: the card is reported a
     /// single time, then presence flaps and activation starves (bench
-    /// 2026-10-08; the wallet firmware always sets this — nci.c
-    /// nci_configure_settings "TOTAL_DURATION").
-    pub const SET_CONFIG_TOTAL_DURATION: [u8; 8] = [
-        MT_CMD, OID_CORE_SET_CONFIG, 0x05, 0x01, 0x00, 0x02, 0xFE, 0x01,
+    /// 2026-10-08). NOTE: the wallet's nci.c sends this MALFORMED (plen=5,
+    /// param TLV missing the LEN octet) — the NFCC answers num_applied=0;
+    /// harmless for its LISTEN mode, fatal for reader mode. Correct TLV:
+    /// [num=1][id=0x0200 LE][len=2][value=0x01FE].
+    pub const SET_CONFIG_TOTAL_DURATION: [u8; 9] = [
+        MT_CMD,
+        OID_CORE_SET_CONFIG,
+        0x06,
+        0x01,
+        0x00,
+        0x02,
+        0x02,
+        0xFE,
+        0x01,
     ];
 
     /// RF_DISCOVER_MAP with one mapping: ISO-DEP protocol to ISO-DEP

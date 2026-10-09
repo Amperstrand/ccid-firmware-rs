@@ -133,6 +133,14 @@ impl FrameParser {
                 None
             }
             ParserState::WaitCtrl => {
+                // A stray SYNC here means the previous SYNC was garbage:
+                // restart collection on the new SYNC instead of consuming
+                // the next real frame's bytes (fuzz-proven desync, 2026-10-09).
+                if byte == SYNC {
+                    self.frame.clear();
+                    self.start_frame(byte);
+                    return None;
+                }
                 self.push_frame_byte(byte);
                 match byte {
                     CTRL_ACK => {
@@ -196,6 +204,13 @@ impl FrameParser {
         } else {
             &self.received_frame
         }
+    }
+
+    /// True while a partial frame is being collected — lets callers apply
+    /// an inter-byte stall timeout (garbage mid-frame otherwise eats the
+    /// next valid frame, fuzz-proven 2026-10-09).
+    pub fn mid_frame(&self) -> bool {
+        !matches!(self.state, ParserState::WaitSync)
     }
 
     pub fn reset(&mut self) {
