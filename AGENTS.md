@@ -347,7 +347,7 @@ a release the same day.
 
 | Board | Identity probe (run this) | State 2026-10-09 ~16:15 |
 |---|---|---|
-| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @0c47f92, PN7160 init attempt 1, CCID loop up, reader in pcscd |
+| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @3e47a96 log-shim build (~23:00, post-claim logs restored per #91), CCID loop up, reader in pcscd |
 | m5stick | CCID Escape 0x02 over /dev/ttyUSB0 → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @14:29 bench build, reader in pcscd; card activation = known gap (below) |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
@@ -368,6 +368,16 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
   recovered via the documented ladder (`esptool flash-id --after
   hard-reset` + reset-and-capture-in-one-serial-session; a read window
   opened AFTER the reset loses the boot banner to CDC re-enumeration).
+- **nucula download-latch via DTR-asserted port holder** (2026-10-09
+  evening, twice): a python holder on ttyACM* opened with pyserial's
+  DEFAULT DTR-asserted state makes every subsequent reset (RTS pulse,
+  openocd `reset run`) boot into `boot:0x5` download mode — the C3's
+  USB-Serial/JTAG peripheral latches host line state across soft
+  resets (same class as the STM32 PHY issue #22). Symptom: their
+  conformance battery read 0/1000 on the soak while the board sat in
+  the ROM prompt. Rule: `setDTR(False); setRTS(False)` immediately
+  after EVERY open on the nucula CDC, and recover with the flash-id
+  ladder only when no other process holds the port.
 
 ### Open gaps to full known-good (card-level)
 
@@ -795,12 +805,18 @@ presence is sticky — a marginal coupling event at boot reports
 present+inactive indefinitely. Removal-detection needs a strategy
 (re-discovery cycle or activation-state tracking) — open issue.
 
-### Main-loop logging dies after the USB-CDC driver claim
+### Main-loop logging dies after the USB-CDC driver claim — FIXED by `log_shim` (issue #91, bench-verified 2026-10-09)
 esp-idf logs flow until `UsbSerialDriver::new` takes the peripheral;
-after that the CCID serving loop's log output silently drops. For
-card-path debugging use a no-claim diagnostic main (`pn7160-actdiag`
-feature) that logs every NCI step — it isolated this week's failures
-in one run each.
+after that the CCID serving loop's log output silently drops. **Fix
+(bench-verified)**: `log_shim::install()` after the claim routes logs
+into a drained ring — `esp_log_set_vprintf` for C `ESP_LOGx` plus a
+`log`-facade sink (esp-idf-svc's EspLogger writes to newlib stdout,
+NOT the vprintf sink, so the facade must be routed too —
+`log_shim::init` replaces `EspLogger::initialize_default`). Verified on
+the nucula: FWID + full PN7160 ladder visible post-claim, LRC-valid
+CCID responses interleaved with log text. The no-claim diagnostic main
+(`pn7160-actdiag`) remains the tool for card-path dives where the
+console claim itself is the problem.
 
 ### Reader test timing
 GemPC Twin error paths legitimately take up to ~0.8 s (presence
@@ -816,6 +832,39 @@ USB-CDC main gets from `ccid_serial_server` (echo, poll gating,
 timeout guards). Bug fixes now need THREE patch sites (server +
 two main loops) — the stall guard went in exactly there. Refactor
 opportunity: route the classic mains through CcidSerialServer.
+
+## Session Lessons: Log-Shim Bench Verify + Multi-Session Bench Racing (2026-10-09, #91)
+
+The #91 verification ran while TWO sibling opencode sessions
+(`ccid-4950`, `ccid-specc`, both on issue #89) were cycling
+conformance batteries against the same nucula. Traps, all paid for:
+
+- **Raw port grabs contaminate sibling batteries.** An esptool/openocd
+  attempt that opens ttyACM2 mid-battery resets the board under their
+  probes — their soak reads 0/1000 and the verdict says FAIL for
+  reasons that are not their firmware. Wait for battery PIDs to exit
+  (`ps` on `conformance_battery.py`), and remember their `finally`
+  block RESTARTS pcscd, which then holds the port — stop pcscd for the
+  flash window, restart it after.
+- **Shared target-dir flash images get silently overwritten.** Sibling
+  sessions rebuild esp32-ccid into the shared `/root/.cargo-target`; a
+  scratch `elf2image` output (even with your own filename in
+  /tmp/opencode) can be someone else's binary hours later — the
+  compile-time stamp and FWID rev in the boot log are the truth. Build
+  flash images in a private `CARGO_TARGET_DIR`, or elf2image
+  immediately before flashing and prove what booted via FWID.
+- **CDC bulk READS stall; writes are fine.** `read-flash` and
+  esptool's post-write verify die with "Packet content transfer
+  stopped" (460800 always, 115200 intermittently, `--no-stub` gets
+  ~97% then dies). `write-flash` at 115200 is reliable. Flash, then
+  prove the image by boot behavior (FWID rev marker), not read-back.
+- **Verification pattern that worked**: one python session, open the
+  by-id port with `setDTR(False); setRTS(False)`, RTS pulse (0.2 s)
+  for a fresh boot, aggressive reconnect through the re-enumeration
+  (the RTS reset kills your own fd — catch, close, reopen), then
+  framed GetSlotStatus/IccPowerOn while still capturing: assert
+  LRC-valid responses AND log lines in the same byte stream. The FWID
+  `rev=<git>` line proves WHICH build answered.
 
 ## ESP32-C3 Nucula Board — USB Port Lifecycle (CRITICAL)
 
