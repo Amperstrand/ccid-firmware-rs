@@ -95,12 +95,19 @@ impl<T: Transport> Pn7160Driver<T> {
         // access to frames arriving in response to the deactivate cycle
         // (a discovery read BEFORE the re-arm would consume them as plain
         // pending notifications instead).
-        if self.last_ntf.is_some() {
-            self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
-            if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
-                self.polls_since_ntf = 0;
-                self.rearm_discovery();
-            }
+        //
+        // The re-arm cadence is UNCONDITIONAL (bench 2026-10-10): gating it
+        // on `last_ntf.is_some()` left a driver whose boot-time discovery
+        // NTF was consumed by the bring-up reads permanently inert — no
+        // cached NTF, no re-arm, no fresh discovery, presence stuck absent
+        // with the tag sitting on the coil. Running the cadence regardless
+        // means an empty field cycles deactivate+discover (the deployed
+        // negative-case behaviour) and a boot-present tag is re-discovered
+        // within one cycle (~4 s).
+        self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
+        if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
+            self.polls_since_ntf = 0;
+            self.rearm_discovery();
         }
         if let Some(n) = reader::wait_for_discovery(&mut self.transport) {
             self.last_ntf = Some(n);
@@ -397,13 +404,37 @@ mod tests {
         for _ in 0..PRESENCE_REARM_POLLS - 1 {
             assert!(!drv.is_card_present());
         }
-        // Hmm — with last_ntf None the TTL never fires; a late-arriving
-        // card is found through the plain discovery read below (this is
-        // the NOT-yet-cached direction; the cached direction is covered
-        // by late_ntf_after_rearm_restores_presence_without_clear).
+        // With last_ntf None the plain discovery read still finds a
+        // late-arriving NTF within one poll (the NOT-yet-cached
+        // direction; the cached direction is covered by
+        // late_ntf_after_rearm_restores_presence_without_clear).
         let t = drv.transport_mut();
         t.push_notification(&discover_ntf());
         assert!(drv.is_card_present());
+    }
+
+    // given the boot-time discovery NTF was consumed by the bring-up reads
+    // (never latched into last_ntf), when the unconditional re-arm cycle
+    // restarts discovery, then the still-present tag is re-discovered
+    // (bench regression, nucula 2026-10-10: tag on coil at boot, presence
+    // stuck absent forever, Escape 0xD0 card_present=0).
+    #[test]
+    fn boot_ntf_eaten_by_bringup_rediscovered_by_rearm() {
+        let mut drv = Pn7160Driver::new(MockTransport::new());
+        for _ in 0..PRESENCE_REARM_POLLS - 1 {
+            assert!(!drv.is_card_present(), "no NTF latched yet");
+        }
+        let t = drv.transport_mut();
+        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x01,
+            DEACTIVATE_TYPE_IDLE,
+        ]);
+        t.push_notification(&discover_ntf());
+        assert!(drv.is_card_present(), "re-arm must rediscover the boot tag");
+        assert!(drv.is_card_present(), "and stay present");
     }
 
     #[test]
