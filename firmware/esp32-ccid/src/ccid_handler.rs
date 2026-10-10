@@ -382,9 +382,6 @@ impl<D: NfcDriver> CcidHandler<D> {
         self.write_parameters(header, response)
     }
 
-    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
-    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
-    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     /// APDU-level pipeline shared by the direct XfrBlock path and the
     /// T=1 Relay path: pseudo-APDUs (0xFF), PPS echo, invalid-CLA
     /// rewrite, card relay. Writes CCID DataBlock bytes into `out`
@@ -469,6 +466,9 @@ impl<D: NfcDriver> CcidHandler<D> {
         }
     }
 
+    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
+    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
+    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
         if payload.first() == Some(&0xD0) {
             let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
