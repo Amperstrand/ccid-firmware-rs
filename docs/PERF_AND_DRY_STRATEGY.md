@@ -11,9 +11,9 @@ handling into one shared core. Update it as lanes land.
 |---|---|---|---|---|---|
 | ACR1252 (reference) | full GPG | 8.8 ms | 8.9 | 39 ms | — |
 | CardMan 3121 (reference) | full | 10.9 ms | 11.0 | 39 ms | — |
-| **Cherry/STM32F469 (ours)** | works | **95.3 ms** | 95.4 | **1507 ms** | fixed per-exchange cost (agent: stm32-perf) |
+| **Cherry/STM32F469 (ours)** | works | 95.3 → **42.8 ms** (round 2 running) | 43.0 | 1507 → **504 ms** | fixed per-exchange cost, agent iterating (a8fef3b) |
 | **GemPCTwin/m5stick (ours)** | works, cardless | ~10–30 ms (T=1 relay) | — | ~300 ms | card off coil (physical); CAP-upload relay latency |
-| **Nucula (ours)** | enumerates | **5.1 ms** p50 | — | — | **2.0 s stalls @ 5.7 s cadence** → pcscd retirement (agent: nucula-rearm); cardless |
+| **Nucula (ours)** | **fixed 2026-10-10** | **5.1 ms** p50, max 8.3 | — | — | ~~2.0 s stalls~~ ELIMINATED (5f702e4); 10-min pcscd soak 20/20 clean; cardless (physical) |
 
 Interpretation:
 - The STM32 gap is a *systematic fixed cost* (p99−p50 = 0.09 ms — it is a
@@ -91,8 +91,8 @@ block↔APDU logic) and moves to ccid-core unchanged.
 
 | # | Lane | State | Unblock |
 |---|---|---|---|
-| 1 | nucula re-arm stall fix | **agent running** (nucula-rearm, wG) | nucula pcscd survival |
-| 2 | STM32 95 ms root-cause | **agent running** (stm32-perf, wH) | STM32 on-par |
+| 1 | nucula re-arm stall fix | **DONE** — 5f702e4: p50 5.1/max 8.3 ms, 10-min soak 20/20 | nucula pcscd survival |
+| 2 | STM32 95 ms root-cause | **round 1 landed** (a8fef3b): 95.3→42.8 ms; round 2 running | STM32 on-par |
 | 3 | card placement (m5stick + nucula coils) | **human** — both verified cardless via known-good + power-cycle | #87 differential, GPG-through-our-readers |
 | 4 | differential rerun (#87 close) | blocked on 3 | card-level correctness across readers |
 | 5 | handler unification (3.1) | blocked on 1+2 landing + battery gate | the big DRY |
