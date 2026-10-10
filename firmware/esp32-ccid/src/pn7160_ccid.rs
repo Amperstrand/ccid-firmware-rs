@@ -131,6 +131,15 @@ pub fn run() -> ! {
         }
     }
     log::warn!("pn7160-ccid: CCID loop starting");
+    // Clean-wire rule (bench 2026-10-10): the #91 shim's live logs
+    // (presence/auto-activation events from the #88/#105 firmware)
+    // race pcscd's strict serial handshake — it reads the noise and
+    // fails "Get firmware" permanently for the session. Boot output
+    // (FWID for HIL verify) has already been purged above; from here
+    // the CDC carries CCID frames only. Diagnostics: Escape 0xD0/0xD1
+    // or a `ble` build.
+    #[cfg(not(feature = "ble"))]
+    log::set_max_level(log::LevelFilter::Off);
 
     loop {
         match usb.read(&mut byte_buf, timeout_ticks) {

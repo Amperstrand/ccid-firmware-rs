@@ -717,6 +717,27 @@ builds are for interactive bench debugging. Tests read behavior
 Coredump-to-flash (issue #64) already covers crash forensics — BLE
 logging is complementary live observability, not a substitute.
 
+**GPG-on-readers HIL (2026-10-10)**: `tests/hardware/nfc/test_gpg.py`
+runs the OpenPGP flow per reader — enumerate → AID SELECT (9000 =
+applet present) → full `gpg --card-status` via scdaemon pinned to the
+reader index (`disable-ccid` + `reader-port <n>`; indices shift on
+re-enumeration — always resolve fresh). Current gating: acr1252 full
+PASS; m5stick card-gated (T=1 stack proven 5/5 pcscd sessions +
+real SWs — the SmartPGP install through our relay stalls on the
+~470-block CAP upload, per-block MFRC522 I2C latency; the perf pass
+is the unlock); nucula card-gated on the coil question + a reader
+stability item (see below); stm32 card-gated (move a card into the
+contact slot). The m5stick multi-session fix that unblocked this:
+`t1_armed` disarms on card reset (pcscd's PPS-before-SetParameters
+probe) — commit 60b3fa3, regression test included.
+
+**Nucula reader-retirement issue (open)**: with the #88/#105
+auto-activation + unconditional re-arm firmware, the nucula enumerates
+but pcscd retires it minutes later (status-poll vs re-arm-cycle
+collision — finding posted to PR #107). The clean-wire commit (Off at
+serve time) removes log noise as a variable; #107's battery probes
+are the instrument for the cadence fix.
+
 ### Debug-channel matrix (per board)
 
 | Board | CCID wire | Debug channel |
