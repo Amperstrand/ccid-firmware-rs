@@ -484,7 +484,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
     fn handle_get_slot_status(&mut self, seq: u8) {
         let icc_status = self.get_icc_status();
-        ccid_debug!(
+        ccid_info!(
             "GetSlotStatus: slot_state={} icc={}",
             self.slot_state as u8,
             icc_status
@@ -543,7 +543,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             return;
         }
 
-        ccid_debug!("CCID: XfrBlock APDU len={}", copy_len,);
+        ccid_info!("CCID: XfrBlock APDU len={}", copy_len,);
         let mut response_buf = [0u8; MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE];
         let resp_len: usize;
 
@@ -553,7 +553,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         {
             Ok(len) => {
                 resp_len = len;
-                ccid_debug!("CCID: XfrBlock OK resp_len={}", resp_len);
+                ccid_info!("CCID: XfrBlock OK resp_len={}", resp_len);
             }
             Err(_e) => {
                 ccid_error!("CCID: XfrBlock failed (card timeout or protocol error)");

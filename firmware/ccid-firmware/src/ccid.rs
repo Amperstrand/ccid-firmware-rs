@@ -233,7 +233,7 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
         let mut temp_buf = [0u8; PACKET_SIZE];
         match self.ep_out.read(&mut temp_buf) {
             Ok(len) => {
-                defmt::debug!("CCID: USB received {} bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+                defmt::info!("CCID: USB received {} bytes: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
                     len,
                     temp_buf[0], temp_buf[1], temp_buf[2], temp_buf[3],
                     temp_buf[4], temp_buf[5], temp_buf[6], temp_buf[7],
