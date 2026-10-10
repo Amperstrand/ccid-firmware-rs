@@ -108,7 +108,7 @@ done
 
 case "${BOARD}" in
     c3)
-        TOOLCHAIN="nightly"
+        TOOLCHAIN="nightly-2026-09-29"  # pinned: 2026-10-09 nightly ICEs on esp-idf-svc (see ci.yml)
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
@@ -119,7 +119,7 @@ case "${BOARD}" in
         FLASH_BAUD="460800"
         ;;
     c3-ccid)
-        TOOLCHAIN="nightly"
+        TOOLCHAIN="nightly-2026-09-29"  # pinned: 2026-10-09 nightly ICEs on esp-idf-svc (see ci.yml)
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"

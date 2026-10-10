@@ -189,7 +189,10 @@ jobs:
             features: "pn7160-bringup,pn7160-verdict-b"
             no-default-features: true
             gate: false
-            toolchain: nightly
+            # Pinned nightly: 2026-10-09 nightly (32dba69d6) ICEs on
+            # esp-idf-svc 0.52.1 (compare_impl_item on wifi::scan_n);
+            # 2026-09-29 (f3865b2a4) is the bench-verified compiler.
+            toolchain: nightly-2026-09-29
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
@@ -203,7 +206,7 @@ jobs:
             features: "pn7160-ccid"
             no-default-features: true
             gate: false
-            toolchain: nightly
+            toolchain: nightly-2026-09-29
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
@@ -290,9 +293,9 @@ jobs:
           rustup component add rustfmt --toolchain esp || true
 
       - name: Install nightly toolchain (riscv/C3)
-        if: matrix.toolchain == 'nightly'
+        if: startsWith(matrix.toolchain, 'nightly')
         run: |
-          rustup toolchain install nightly --profile minimal --component rust-src
+          rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component rust-src
 
       - name: Build firmware (${{ matrix.name }})
         working-directory: firmware/esp32-ccid

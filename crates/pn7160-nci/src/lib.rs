@@ -76,6 +76,12 @@ pub const PBF_MASK: u8 = 0x10;
 pub const DEACTIVATE_TYPE_IDLE: u8 = 0x00;
 pub const DEACTIVATE_TYPE_SLEEP: u8 = 0x01;
 pub const DEACTIVATE_TYPE_SLEEP_AF: u8 = 0x02;
+/// RF_DEACTIVATE type DISCOVERY — kernel `NCI_DEACTIVATE_TYPE_DISCOVERY`
+/// (torvalds include/net/nfc/nci.h): deactivate the RF interface AND
+/// return the NFCC to the DISCOVERY state in one command (issue #105:
+/// type IDLE leaves the PN7160 idle with discovery stopped, and a manual
+/// RF_DISCOVER re-issue per cycle mutes the chip after ~11 cycles —
+/// bench 2026-10-10).
 pub const DEACTIVATE_TYPE_DISCOVERY: u8 = 0x03;
 
 /// One decoded NCI frame. GID and OID are kept separate, exactly as they
@@ -349,16 +355,138 @@ pub mod reader {
         Some((f.payload[0], f.payload[1], f.payload[2]))
     }
 
-    /// Drain notifications until a tag appears. CORE_CONN_CREDITS and other
-    /// NTFs are skipped (the wallet's loop ignores credits the same way).
+    /// Drain notifications until a tag appears. Accepts both tag-arrival
+    /// shapes: an RF_DISCOVER_NTF, or the RF_INTF_ACTIVATED NTF the
+    /// PN7160 emits when it AUTO-ACTIVATES an ISO-DEP tag during
+    /// discovery (issue #88 bench evidence 2026-10-10: for auto-activated
+    /// tags the chip NEVER sends a DISCOVER NTF — the activation NTF is
+    /// the only arrival signal). CORE_CONN_CREDITS and other NTFs are
+    /// skipped (the wallet's loop ignores credits the same way).
     pub fn wait_for_discovery<T: Transport>(t: &mut T) -> Option<DiscoverNtf> {
+        wait_for_tag(t).map(|(n, _)| n)
+    }
+
+    /// [`wait_for_discovery`] plus the ATS carried by an auto-activation
+    /// NTF (absent for plain discovery NTFs — the ATS only arrives with
+    /// the select response in that flow). [`power_on`](crate::driver::
+    /// Pn7160Driver::power_on) uses it as the already-activated
+    /// fallback path.
+    pub fn wait_for_tag<T: Transport>(t: &mut T) -> Option<(DiscoverNtf, Option<Vec<u8, 32>>)> {
         for _ in 0..8 {
             let f = t.drain()?;
             if let Some(n) = DiscoverNtf::decode(&f) {
-                return Some(n);
+                return Some((n, None));
+            }
+            if let Some(n) = activation_to_discover(&f) {
+                let ats = activation_ats(&f);
+                return Some((n, ats));
             }
         }
         None
+    }
+
+    /// What a presence drain saw (issue #88). `LinkLost` is the
+    /// RF_DEACTIVATE_NTF with reason RF-link-lost (NCI §5.2.5.2) — the
+    /// removal signal for an AUTO-ACTIVATED tag: while the tag sits in
+    /// the live RF interface, its physical removal tears the link and
+    /// the chip announces it. (Resting-in-discovery tags emit nothing on
+    /// removal — that absence-of-signal was the original #88 bug.)
+    pub enum TagEvent {
+        Tag(DiscoverNtf, Option<Vec<u8, 32>>),
+        LinkLost,
+    }
+
+    /// Presence drain accepting all three signals: a discovery NTF, an
+    /// auto-activation NTF (with its ATS), or the link-loss deactivation
+    /// of an auto-activated tag.
+    pub fn wait_for_event<T: Transport>(t: &mut T) -> Option<TagEvent> {
+        for _ in 0..8 {
+            let f = t.drain()?;
+            if let Some(n) = DiscoverNtf::decode(&f) {
+                return Some(TagEvent::Tag(n, None));
+            }
+            if let Some(n) = activation_to_discover(&f) {
+                let ats = activation_ats(&f);
+                return Some(TagEvent::Tag(n, ats));
+            }
+            if f.mt == MT_NTF
+                && f.gid == GID_RF
+                && f.oid == NTF_RF_DEACTIVATE
+                && f.len >= 2
+                && f.payload[1] == 0x00
+            {
+                return Some(TagEvent::LinkLost);
+            }
+        }
+        None
+    }
+
+    /// Synthesize a [`DiscoverNtf`] from the PN7160's auto-activation
+    /// RF_INTF_ACTIVATED NTF (issue #88): NCI 2.0 layout (kernel
+    /// `struct nci_rf_intf_activated_ntf`, torvalds `include/net/nfc/nci.h`)
+    /// = [DiscoveryID, Interface, Protocol, TechAndMode, MaxDataPayload,
+    /// InitialNumCredits, RF-tech-params-len, RF-tech-params, DataExch(3),
+    /// Activation-params-len, ActivationParams…]. For NFC-A ISO-DEP the
+    /// tech params carry [SENS_RES(2), NFCID1_LEN, NFCID1, …] — re-emitted
+    /// in the DISCOVER_NTF shape so [`nfca_uid`] keeps working.
+    pub fn activation_to_discover(f: &Frame) -> Option<DiscoverNtf> {
+        if f.mt != MT_NTF || f.gid != GID_RF || f.oid != NTF_RF_INTF_ACTIVATED || f.len < 5 {
+            return None;
+        }
+        let mut tech_params = [0u8; 16];
+        let mut tech_params_len = 0usize;
+        if f.len >= 8 {
+            let v = tech_params_slice(f)?;
+            let uid_len = v[2] as usize;
+            if uid_len > 0 && 3 + uid_len <= v.len() {
+                let copy = (3 + uid_len).min(16);
+                tech_params[..copy].copy_from_slice(&v[..copy]);
+                tech_params_len = copy;
+            }
+        }
+        Some(DiscoverNtf {
+            discovery_id: f.payload[0],
+            protocol: f.payload[2],
+            tech_and_mode: f.payload[3],
+            interface: f.payload[1],
+            tech_params,
+            tech_params_len,
+        })
+    }
+
+    /// ATS (RATS response) from an auto-activation NTF's Activation
+    /// Parameters — the NCI 2.0 tail after the tech params and the three
+    /// data-exchange octets: bench frame (2026-10-10) ends
+    /// `… 0x0A, 0x09, 0x78, 0x77, 0x91, 0x02, 0x80, 0x73, 0xC8, 0x21, 0x10`
+    /// (len 0x0A, then the ATS, TL=0x09; `ats_to_atr` bounds the body by
+    /// the TL so a trailing octet is harmless).
+    pub fn activation_ats(f: &Frame) -> Option<Vec<u8, 32>> {
+        if f.mt != MT_NTF || f.gid != GID_RF || f.oid != NTF_RF_INTF_ACTIVATED {
+            return None;
+        }
+        let v = tech_params_slice(f)?;
+        let ats_len_pos = 7 + v.len() + 3;
+        if f.len <= ats_len_pos {
+            return None;
+        }
+        let ats_len = f.payload[ats_len_pos] as usize;
+        if ats_len == 0 || ats_len_pos + 1 + ats_len > f.len {
+            return None;
+        }
+        let mut ats = Vec::new();
+        ats.extend_from_slice(&f.payload[ats_len_pos + 1..ats_len_pos + 1 + ats_len])
+            .ok()?;
+        Some(ats)
+    }
+
+    /// The RF-technology-specific parameters region of an NCI 2.0
+    /// activation NTF: length at payload[6], body from payload[7].
+    fn tech_params_slice(f: &Frame) -> Option<&[u8]> {
+        let tlen = f.payload[6] as usize;
+        if 7 + tlen > f.len {
+            return None;
+        }
+        Some(&f.payload[7..7 + tlen])
     }
 
     /// Select the discovered tag; returns the INTF_ACTIVATED notification
@@ -414,6 +542,32 @@ pub mod reader {
             return Err("deactivate response mismatch");
         }
         t.drain().map(|_| ()).ok_or("no deactivate notification")
+    }
+
+    /// Deactivate the RF interface straight back into the DISCOVERY
+    /// state (RF_DEACTIVATE type DISCOVERY, NCI §5.2 / kernel
+    /// NCI_DEACTIVATE_TYPE_DISCOVERY) — the one-command presence re-arm:
+    /// discovery resumes natively, so a tag still in the field is
+    /// re-found (auto-activated ISO-DEP tags re-emit INTF_ACTIVATED
+    /// within ~TOTAL_DURATION) without stacking RF_DISCOVER re-issues.
+    pub fn deactivate_to_discovery<T: Transport>(t: &mut T) -> Result<(), &'static str> {
+        let cmd = [
+            MT_CMD | GID_RF,
+            OID_RF_DEACTIVATE,
+            0x01,
+            DEACTIVATE_TYPE_DISCOVERY,
+        ];
+        let rsp = t.transact(&cmd).ok_or("no deactivate response")?;
+        if !rsp.is_rsp_to(&cmd) {
+            return Err("deactivate response mismatch");
+        }
+        if rsp.status() != Some(STATUS_OK) {
+            return Err("deactivate status != OK");
+        }
+        // The DEACTIVATE_NTF is optional timing-wise; a missing one is
+        // not fatal — discovery restart is what matters.
+        let _ = t.drain();
+        Ok(())
     }
 }
 
@@ -503,6 +657,7 @@ pub mod mock {
     use std::collections::VecDeque;
     use std::vec::Vec as StdVec;
 
+    #[derive(Default)]
     pub struct MockTransport {
         pub sent: StdVec<StdVec<u8>>,
         pub replies: VecDeque<StdVec<u8>>,
