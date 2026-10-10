@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — PN7160 auto-activated ISO-DEP tags now detected end-to-end (issue #88 positive case, closes #105)
+
+Bench root cause (nucula, 2026-10-10): the PN7160 AUTO-ACTIVATES a single ISO-DEP target during discovery — an NCI-sanctioned behavior (Linux kernel `nci_target_auto_activated()`, torvalds `net/nfc/nci/ntf.c`; ESPHome's pn7160 handles the same) — and emits `RF_INTF_ACTIVATED` instead of `RF_DISCOVER`, which the presence path discarded. The bench card was therefore reported absent by every firmware revision while sitting on the coil. Three coordinated changes in `pn7160-nci`:
+
+- **Presence accepts auto-activations** — `wait_for_event` counts the activation NTF as a tag sighting; the NCI 2.0 payload (kernel `struct nci_rf_intf_activated_ntf` layout) yields the NFC-A UID from the tech params and the ATS from the activation params.
+- **`power_on` never selects an activated interface** — the ATS is cached with the sighting and the ATR is built from it directly; APDUs ride the established connection. Bench-proven necessity: `RF_DISCOVER_SELECT` on an auto-activated interface WEDGES the PN7160 (I2C NACKs until power cycle).
+- **Removal = RF_DEACTIVATE_NTF(reason RF-link-lost)** — an auto-activated tag leaving the field tears the RF link and the chip announces it; the driver clears presence immediately (the removal signal that never existed for discovery-resting tags). The empty-field re-arm now deactivates straight back to DISCOVERY (type 0x03, kernel `NCI_DEACTIVATE_TYPE_DISCOVERY`) — the manual `RF_DISCOVER` re-issue mutes the chip after ~11 cycles.
+
+Bench-verified on the nucula (card on coil): 12/12 presence polls, `IccPowerOn` → ATR `3B 78 77 91 02 80 73 C8 21`, APDU round-trip `90 00`. The physical-removal leg is implemented and mock-tested; on-hardware removal verification still needs a hand. Also documents the #105 correction: deactivate-to-idle does NOT auto-restart discovery on this chip (the §5.2.5 claim in `9fd1626` was wrong).
+
 ### Changed — log-shim hardening: timestamps, visible truncation, HIL regression (issue #91)
 
 Follow-up to the #91 fix, shaped by a best-practices pass (ESP-IDF's own

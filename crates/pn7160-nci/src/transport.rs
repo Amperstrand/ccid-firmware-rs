@@ -16,6 +16,7 @@ pub const SDA_PIN: i32 = 4;
 pub const SCL_PIN: i32 = 5;
 
 /// Stub transport: the firmware crate wires this to esp-idf-sys I2C.
+#[derive(Default)]
 pub struct I2cTransport {
     pub bus_ready: bool,
 }

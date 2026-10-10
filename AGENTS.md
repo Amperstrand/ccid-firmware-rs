@@ -386,12 +386,14 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
    activation (4 attempts, frontend reset + 15 ms settle between) —
    bench-verified 20/20 power-on cycles with the card constantly on the
    coil. ISO 14443-3 §6.2.4 / 14443-4 §5.2 citations inline.
-2. **nucula presence (#88) — fix landed, bench-verified negative case**:
-   TTL re-arm (deactivate-to-idle restarts discovery, NCI v2.3 §5.2.5;
-   two-cycle absence confirmation against TOTAL_DURATION latency);
-   deployed firmware stable (0 errors, re-arm cycling, presence=0 with
-   an empty field — correct). The positive case (card placed onto the
-   nucula coil → present within ~4 s) needs a human to place a card.
+2. **nucula presence (#88) — RESOLVED (2026-10-10, bench-verified)**:
+   the missing piece was never TTL tuning — the PN7160 AUTO-ACTIVATES
+   the ISO-DEP bench card (RF_INTF_ACTIVATED, no RF_DISCOVER ever) and
+   every revision discarded that NTF. Fixed end-to-end (presence +
+   IccPowerOn ATR + APDU verified with the card on the coil); model and
+   chip-wedge constraints under "Session Lessons". The physical-removal
+   leg (RF_DEACTIVATE reason link-lost) is implemented, mock-tested,
+   awaiting one hand-verified card removal.
  3. **The libccidtwin T=1 wall — RESOLVED (46cb50c, bench-verified
     2026-10-10, #101)**: pcscd used to enumerate the GemPCTwin reader,
     power the card (ATR flows), then die at connect ("Card is
@@ -794,13 +796,25 @@ for its LISTEN mode, fatal for reader mode (single-shot discovery).
 Byte-copying wallet sequences requires validating the RSP payload, not
 just the transport status: check `num_applied` on every SET_CONFIG.
 
-### Edge-triggered discovery NTFs
-The PN7160 emits one RF_DISCOVER_NTF per tag ARRIVAL, none while the
-tag rests in the field. The driver caches the last NTF (presence polls
-refresh it, power_on reuses it, power_off clears it). Consequence:
-presence is sticky — a marginal coupling event at boot reports
-present+inactive indefinitely. Removal-detection needs a strategy
-(re-discovery cycle or activation-state tracking) — open issue.
+### Edge-triggered discovery NTFs — SUPERSEDED by the auto-activation model (2026-10-10, #88)
+The "one RF_DISCOVER_NTF per ARRIVAL" model was wrong for the bench card
+class: the PN7160 AUTO-ACTIVATES a single ISO-DEP target during discovery
+(NCI-sanctioned — kernel `nci_target_auto_activated()`) and emits
+RF_INTF_ACTIVATED instead of RF_DISCOVER. Correct model, now in the driver:
+- **Presence** = a live auto-activation (the tag sits IN the active RF
+  interface). No re-arm cycling in this state — repeatedly deactivating an
+  auto-activated interface WEDGES the chip (~10-11 cycles → I2C NACKs until
+  power cycle; both IDLE+RF_DISCOVER-re-issue and type-DISCOVERY variants
+  wedge identically when a card is in the field).
+- **power_on** builds the ATR from the activation NTF's own ATS (NCI 2.0
+  tail TLV) and MUST NOT send RF_DISCOVER_SELECT (select-on-activated is
+  the other chip-wedger).
+- **Removal** announces itself: RF_DEACTIVATE_NTF(reason=RF-link-lost) →
+  absent immediately. Empty-field re-arm cycles are safe (overnight soak,
+  9fd1626) and now use deactivate-type-DISCOVERY (0x03).
+- Boot timing: the boot auto-activation lands ~800 ms after the ladder
+  (~TOTAL_DURATION after discovery start) — anything reading earlier sees
+  nothing; don't "fix" the wait.
 
 ### Main-loop logging dies after the USB-CDC driver claim — FIXED by `log_shim` (issue #91, bench-verified 2026-10-09)
 esp-idf logs flow until `UsbSerialDriver::new` takes the peripheral;

@@ -24,6 +24,13 @@ pub struct Pn7160Driver<T: Transport> {
     /// Last discovery notification (edge-triggered chips report a tag
     /// ONCE on arrival): presence polls refresh it, activation reuses it.
     last_ntf: Option<DiscoverNtf>,
+    /// ATS carried by the last AUTO-ACTIVATION NTF (issue #88), kept in
+    /// lockstep with `last_ntf`: when the chip already activated the
+    /// tag, `power_on` builds the ATR from it and must NOT select (a
+    /// select on an activated interface wedges the PN7160 — bench
+    /// 2026-10-10). `None` for plain DISCOVER-NTF tags (ATS arrives
+    /// with the select response there).
+    last_auto_ats: Option<heapless::Vec<u8, 32>>,
     /// #88 TTL re-arm bookkeeping: polls since the last discovery
     /// notification, and consecutive re-arm cycles that saw no tag.
     polls_since_ntf: u32,
@@ -47,6 +54,7 @@ impl<T: Transport> Pn7160Driver<T> {
             uid: [0u8; 10],
             uid_len: 0,
             last_ntf: None,
+            last_auto_ats: None,
             polls_since_ntf: 0,
             absent_rearms: 0,
         }
@@ -76,11 +84,12 @@ impl<T: Transport> Pn7160Driver<T> {
     /// re-arms confirm absence.
     ///
     /// NCI_SPEC (v2.3 §5.2.5, RF_DEACTIVATE): deactivation with type IDLE
-    /// returns the NFCC to the IDLE state, from which the discovery
-    /// process (§5.1) restarts automatically — one fresh RF_DISCOVER_NTF
-    /// (§4.4.2) is emitted per technology detected in the new cycle. The
-    /// NTF is edge-triggered per ARRIVAL only while discovery CONTINUES to
-    /// run; restarting the cycle is the only re-report mechanism.
+    /// returns the NFCC to the IDLE state. BENCH CORRECTION (2026-10-10,
+    /// issue #105): the PN7160 does NOT auto-restart discovery from
+    /// IDLE — `rearm_discovery` re-issues RF_DISCOVER explicitly; a tag
+    /// still in the field answers with a fresh NTF (DISCOVER, or the
+    /// INTF_ACTIVATED of an auto-activated ISO-DEP tag) up to
+    /// TOTAL_DURATION (~0.5 s) later.
     ///
     /// Timing basis: TOTAL_DURATION (CORE_SET_CONFIG TLV 0x0202, set in
     /// the init ladder to 510 ms) bounds the discovery cycle, so a re-arm
@@ -104,33 +113,69 @@ impl<T: Transport> Pn7160Driver<T> {
         // means an empty field cycles deactivate+discover (the deployed
         // negative-case behaviour) and a boot-present tag is re-discovered
         // within one cycle (~4 s).
+        match reader::wait_for_event(&mut self.transport) {
+            Some(reader::TagEvent::Tag(n, ats)) => {
+                self.last_ntf = Some(n);
+                self.last_auto_ats = ats;
+                self.polls_since_ntf = 0;
+                self.absent_rearms = 0;
+                // Fresh sighting: present, and this poll does not count
+                // toward the re-arm cadence (the TTL clock starts NOW).
+                return true;
+            }
+            // RF_DEACTIVATE_NTF(reason = RF link lost, NCI §5.2.5.2):
+            // the auto-activated tag left the field — clear immediately.
+            // (Host-requested deactivations carry reason DH-request and
+            // are filtered out in `wait_for_event`.)
+            Some(reader::TagEvent::LinkLost) => {
+                self.last_ntf = None;
+                self.last_auto_ats = None;
+                self.polls_since_ntf = 0;
+                self.absent_rearms = 0;
+                return false;
+            }
+            None => {}
+        }
+        if self.last_auto_ats.is_some() {
+            // Live auto-activation: the tag sits IN the active RF
+            // interface — presence is physical fact, and removal
+            // announces itself (LinkLost above). NO re-arm cycling in
+            // this state: repeatedly deactivating an auto-activated
+            // interface wedges the PN7160 after ~10-11 cycles (bench
+            // 2026-10-10: clean cycles for ~44 s, then I2C NACKs until
+            // power cycle), and the cycles yield no fresh NTFs anyway.
+            return true;
+        }
         self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
         if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
             self.polls_since_ntf = 0;
             self.rearm_discovery();
         }
-        if let Some(n) = reader::wait_for_discovery(&mut self.transport) {
-            self.last_ntf = Some(n);
-            self.polls_since_ntf = 0;
-            self.absent_rearms = 0;
-        }
         self.last_ntf.is_some()
     }
 
     fn rearm_discovery(&mut self) {
-        if reader::deactivate_idle(&mut self.transport).is_err() {
+        // One-command re-arm (#105): RF_DEACTIVATE(type=DISCOVERY) both
+        // tears down the RF interface and returns the NFCC to the
+        // discovery loop. The manual alternative — type IDLE plus an
+        // RF_DISCOVER re-issue per cycle — mutes the PN7160 after ~11
+        // cycles (bench 2026-10-10: clean DEACTIVATE RSPs for 44 s,
+        // then I2C NACKs), so it must not come back.
+        if reader::deactivate_to_discovery(&mut self.transport).is_err() {
             // Transport-level failure: keep the last known presence.
             return;
         }
-        match reader::wait_for_discovery(&mut self.transport) {
-            Some(n) => {
+        match reader::wait_for_tag(&mut self.transport) {
+            Some((n, ats)) => {
                 self.last_ntf = Some(n);
+                self.last_auto_ats = ats;
                 self.absent_rearms = 0;
             }
             None => {
                 self.absent_rearms = self.absent_rearms.saturating_add(1);
                 if self.absent_rearms >= ABSENT_REARMS_TO_CLEAR {
                     self.last_ntf = None;
+                    self.last_auto_ats = None;
                     self.absent_rearms = 0;
                 }
             }
@@ -139,20 +184,45 @@ impl<T: Transport> Pn7160Driver<T> {
 
     /// Discover, select, and activate a tag; copies the ATS (from the
     /// activation notification's Initial_Params — NCI §6.3.4) into `atr`.
+    ///
+    /// Auto-activated tags (issue #88): when the PN7160 has already
+    /// activated the tag on its own, the RF interface is UP and
+    /// `RF_DISCOVER_SELECT` must NOT be sent — bench 2026-10-10:
+    /// selecting an already-activated interface wedges the chip (I2C
+    /// NACKs, RSP timeouts until power cycle). In that flow the ATS
+    /// comes from the activation NTF itself (its tail TLV) and the
+    /// established connection serves APDUs directly.
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
-        let ntf = reader::wait_for_discovery(&mut self.transport)
-            .or(self.last_ntf)
-            .ok_or(Error::NoCard)?;
+        let (fresh_ntf, fresh_ats) = match reader::wait_for_tag(&mut self.transport) {
+            Some((n, ats)) => {
+                self.last_ntf = Some(n);
+                self.last_auto_ats = ats.clone();
+                (Some(n), ats)
+            }
+            None => (None, None),
+        };
+        let ntf = fresh_ntf.or(self.last_ntf).ok_or(Error::NoCard)?;
+        let auto_ats = fresh_ats.or_else(|| self.last_auto_ats.clone());
         if let Some(uid) = reader::nfca_uid(&ntf) {
             self.uid_len = uid.len().min(10);
             self.uid[..self.uid_len].copy_from_slice(&uid[..self.uid_len]);
         }
-        let activation = reader::select_tag(&mut self.transport, &ntf).map_err(Error::Select)?;
-        let ats =
-            reader::extract_ats(&activation).ok_or(Error::Select("activation carries no ATS"))?;
+        let ats: heapless::Vec<u8, 32> = match auto_ats {
+            Some(ats) => ats,
+            None => {
+                let activation =
+                    reader::select_tag(&mut self.transport, &ntf).map_err(Error::Select)?;
+                let extracted = reader::extract_ats(&activation)
+                    .ok_or(Error::Select("activation carries no ATS"))?;
+                let mut v = heapless::Vec::new();
+                v.extend_from_slice(extracted)
+                    .map_err(|_| Error::Select("ATS too long"))?;
+                v
+            }
+        };
         // Construct a PC/SC-compatible ATR from the ATS (proper TS byte,
         // no TL/CRC_A) per PC/SC Part 3 contactless ATR rules.
-        let atr_bytes = crate::transport::ats_to_atr(ats)
+        let atr_bytes = crate::transport::ats_to_atr(&ats)
             .ok_or(Error::Select("ATS too short for ATR construction"))?;
         if atr.len() < atr_bytes.len() {
             return Err(Error::BufferTooSmall);
@@ -168,6 +238,7 @@ impl<T: Transport> Pn7160Driver<T> {
         self.active = false;
         self.uid_len = 0;
         self.last_ntf = None;
+        self.last_auto_ats = None;
     }
 
     /// Exchange one APDU with the activated tag (connection 0).
@@ -198,7 +269,7 @@ mod tests {
     use super::*;
     use crate::mock::MockTransport;
     use crate::{
-        DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_NTF, MT_RSP, NCI_INTERFACE_ISO_DEP,
+        DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF, MT_RSP, NCI_INTERFACE_ISO_DEP,
         NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER, NTF_RF_INTF_ACTIVATED,
         OID_CORE_INIT, OID_CORE_RESET, OID_CORE_SET_CONFIG, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
         OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
@@ -395,6 +466,137 @@ mod tests {
         ]
     }
 
+    /// The PN7160's auto-activation RF_INTF_ACTIVATED NTF, byte-for-byte
+    /// as captured on the nucula bench (2026-10-10, issue #88; ISO-DEP
+    /// card on the coil): [disc=1, intf=ISO_DEP, proto=ISO_DEP,
+    /// tech=NFC-A poll, max=0xFF, TLV(0x01, 13: ATQA 0x0048, UID
+    /// 04 39 80 8A AE 17 90, …), 0,0,0, TLV(0x0A, ATS
+    /// 09 78 77 91 02 80 73 C8 21)].
+    fn auto_activation_ntf() -> [u8; 37] {
+        [
+            97, 5, 34, 1, 2, 4, 0, 255, 1, 13, 72, 0, 7, 4, 57, 128, 138, 174, 23, 144, 1, 32, 0,
+            0, 0, 0, 10, 9, 120, 119, 145, 2, 128, 115, 200, 33, 16,
+        ]
+    }
+
+    // given the chip AUTO-ACTIVATES the ISO-DEP tag during discovery (no
+    // RF_DISCOVER_NTF ever emitted — issue #88 bench evidence), when the
+    // activation NTF arrives, then presence reports the tag.
+    #[test]
+    fn auto_activation_ntf_counts_as_presence() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        let mut drv = Pn7160Driver::new(t);
+
+        assert!(drv.is_card_present());
+    }
+
+    // given the tag is ALREADY activated (auto-activation), when the host
+    // powers on, then NO RF_DISCOVER_SELECT is sent (it wedges the
+    // PN7160 — bench 2026-10-10), the ATR comes from the activation
+    // NTF's ATS TLV, and the session serves APDUs over the established
+    // connection.
+    #[test]
+    fn power_on_auto_activated_tag_skips_select_and_uses_ntf_ats() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        // APDU reply rides the already-established connection 0.
+        let mut apdu_rsp = heapless::Vec::<u8, 258>::new();
+        let _ = apdu_rsp.extend_from_slice(&[0x00, 0x00, 0x02, 0x90, 0x00]);
+        t.push_reply(&apdu_rsp);
+
+        let mut drv = Pn7160Driver::new(t);
+        assert!(
+            drv.is_card_present(),
+            "presence consumes the activation NTF"
+        );
+
+        let mut atr = [0u8; 32];
+        let atr_len = drv
+            .power_on(&mut atr)
+            .expect("power_on via auto-activation");
+        assert_eq!(
+            &atr[..atr_len],
+            &[0x3B, 0x78, 0x77, 0x91, 0x02, 0x80, 0x73, 0xC8, 0x21],
+            "ATR from the cached activation ATS"
+        );
+        assert_eq!(
+            drv.uid(),
+            [0x04, 0x39, 0x80, 0x8A, 0xAE, 0x17, 0x90],
+            "UID from the activation NTF's tech params"
+        );
+        assert!(drv.session_active());
+
+        let mut rsp = [0u8; 256];
+        let n = drv.transmit_apdu(&[0x00, 0xA4], &mut rsp).expect("apdu");
+        assert_eq!(&rsp[..n], &[0x90, 0x00]);
+
+        // The wire never saw an RF_DISCOVER_SELECT.
+        let recovered = drv.into_transport();
+        assert!(
+            !recovered
+                .sent
+                .iter()
+                .any(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER_SELECT),
+            "select must not be attempted on an auto-activated tag"
+        );
+    }
+
+    // given a live auto-activation, when presence is polled many times,
+    // then NO re-arm cycles run (deactivating an auto-activated
+    // interface wedges the PN7160 — bench 2026-10-10) and the tag stays
+    // present.
+    #[test]
+    fn auto_presence_survives_many_polls_without_cycling() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+
+        let sent_when_cached = drv.transport_mut().sent.len();
+        for i in 0..(PRESENCE_REARM_POLLS * 3) {
+            assert!(drv.is_card_present(), "poll {}", i);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            sent_when_cached,
+            "live activation must not trigger re-arm cycles"
+        );
+    }
+
+    // given an auto-activated tag, when the chip reports RF_DEACTIVATE
+    // with reason RF-link-lost (the tag left the field), then presence
+    // clears immediately; a DH-requested deactivation (our own
+    // teardown) must not be mistaken for removal.
+    #[test]
+    fn rf_link_lost_clears_auto_presence() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+
+        // reason 0x01 = DH request (e.g. a host power_off in flight) —
+        // not a removal; presence unchanged.
+        drv.transport_mut().push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            0x01,
+        ]);
+        assert!(drv.is_card_present(), "DH-requested deactivate ≠ removal");
+
+        // reason 0x00 = RF link lost — the tag is gone.
+        drv.transport_mut().push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            0x00,
+        ]);
+        assert!(!drv.is_card_present(), "link loss = immediate absent");
+    }
+
     #[test]
     fn card_arriving_after_boot_is_found_via_rearm() {
         let mut drv = Pn7160Driver::new(MockTransport::new());
@@ -451,7 +653,8 @@ mod tests {
         for _ in 0..PRESENCE_REARM_POLLS - 1 {
             assert!(drv.is_card_present());
         }
-        // Poll 8 = re-arm 1: deactivate RSP + NTF, discovery stays empty.
+        // Poll 8 = re-arm 1: deactivate RSP + NTF, re-issued discovery
+        // answers OK, no tag NTF follows.
         let t = drv.transport_mut();
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
         t.push_notification(&[
@@ -494,12 +697,7 @@ mod tests {
         // the re-arm's own read is empty, absent_rearms=1, no clear.
         let t = drv.transport_mut();
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
-        t.push_notification(&[
-            MT_NTF | GID_RF,
-            NTF_RF_DEACTIVATE,
-            0x01,
-            DEACTIVATE_TYPE_IDLE,
-        ]);
+        t.push_notification(&[NTF_RF_DEACTIVATE, 0x01, DEACTIVATE_TYPE_IDLE]);
         assert!(drv.is_card_present(), "late NTF must not flap presence");
 
         // The discovery NTF lands during the next window's plain read:
