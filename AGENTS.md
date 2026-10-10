@@ -761,7 +761,12 @@ Bench hygiene lessons from the same run: JTAG-connected resets
 sees the JTAG session; shut openocd down BEFORE resetting for a
 normal boot. And the safe CDC opener is `Serial(); port=…; dtr=False;
 rts=False; open()` — pyserial asserts DTR at plain `Serial(port)`
-open time, which is itself a latch hazard on any later reset.
+open time, which is itself a latch hazard on any later reset. The
+latch recurred 2026-10-10 ~17:35 under `conformance_battery.py`
+(its `Reader` opens the CDC with pyserial defaults): the nucula
+answered "no response" on every case until RTS-pulse-recovered —
+pre-open dtr/rts deassert in the battery's `Reader` is the tracked
+hardening item alongside PR #107.
 
 ### Debug-channel matrix (per board)
 
