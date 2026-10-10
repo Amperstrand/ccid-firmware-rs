@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — log-shim hardening: timestamps, visible truncation, HIL regression (issue #91)
+
+Follow-up to the #91 fix, shaped by a best-practices pass (ESP-IDF's own
+`I (ms)` line format; drop-oldest rings as the embedded standard):
+
+- **Millisecond stamps on facade lines** — Rust `log` lines in the ring
+  now carry an `esp_timer` stamp: `[WARN] (12345ms) target: message`
+  (host-tested `format_stamped_record`). Sequence-diagnosis value the
+  unstamped BLE-console format lacked; C-side `ESP_LOGx` lines keep
+  IDF's own timestamped header.
+- **Truncation is visible** — lines truncated by the 200-byte cap now
+  end `~\n` (the marker rewrites the last payload byte at newline
+  time, keeping the cap exact). A truncated log that looks whole is
+  worse than one that admits it.
+- **HIL regression test** — `test_log_shim_post_claim_output`
+  (tests/hardware/nucula): DTR-low reset-and-capture asserts the
+  pre-claim FWID, the ring-drained post-claim lines, and an LRC-valid
+  GetSlotStatus answer amid the log text — locking the #91 behavior
+  the way `test_escape_d1_snapshot_roundtrip` locks dump-and-retrieve.
+  ESP32 host tests: 124 → 127.
+
 ### Fixed — USB-CDC log output restored after the driver claim (issue #91)
 
 From the moment `UsbSerialDriver::new` claims the nucula's USB-Serial/JTAG peripheral, every log line logged afterwards was silently dropped — the PN7160 init ladder, `power_on failed: …` diagnostics, all serving-loop output. New `log_shim` module routes logs around the claim:

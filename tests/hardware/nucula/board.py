@@ -82,15 +82,30 @@ class NuculaBoard:
 
     def __post_init__(self):
         self.firmware_dir = self.workspace_root / "firmware" / "esp32-ccid"
+        self._resolve_esp_idf_sys_out()
+
+    def _resolve_esp_idf_sys_out(self) -> None:
+        """(Re)resolve the esp-idf-sys out dir with a complete IDF build.
+
+        Lazy on purpose: a session that sweeps a contaminated cmake cache
+        (the documented shared-target-dir fix) wipes the partition table
+        AFTER this board object was constructed — resolving once in
+        __post_init__ left esp_idf_sys_out as Path("") for the rest of
+        the session. Multiple esp-idf-sys hash dirs can exist
+        (feature/config drift); only ones with the partition table count.
+        """
         target = Path("/root/.cargo-target/riscv32imc-esp-espidf")
-        # Multiple esp-idf-sys hash dirs can exist (feature/config drift);
-        # only ones with a complete IDF build have the partition table.
         candidates = [
             p for p in target.glob("debug/build/esp-idf-sys/*/out")
             if (p / "build" / "partition_table" / "partition-table.bin").exists()
         ]
         if candidates:
             self.esp_idf_sys_out = max(candidates, key=lambda p: p.stat().st_mtime)
+
+    def _esp_idf_sys_out(self) -> Path:
+        if not (self.esp_idf_sys_out / "build" / "partition_table" / "partition-table.bin").exists():
+            self._resolve_esp_idf_sys_out()
+        return self.esp_idf_sys_out
 
     @property
     def port(self) -> str:
@@ -157,7 +172,7 @@ class NuculaBoard:
 
     def flash_app(self, binary: Path) -> bool:
         """Flash partition table + app atomically. Returns True on success."""
-        pt = self.esp_idf_sys_out / "build" / "partition_table" / "partition-table.bin"
+        pt = self._esp_idf_sys_out() / "build" / "partition_table" / "partition-table.bin"
         if not pt.exists():
             raise FileNotFoundError(f"Partition table not found: {pt}")
         if not binary.exists():
@@ -259,7 +274,7 @@ class NuculaBoard:
             )
 
     def _our_partition_table(self) -> Path:
-        pt = self.esp_idf_sys_out / "build" / "partition_table" / "partition-table.bin"
+        pt = self._esp_idf_sys_out() / "build" / "partition_table" / "partition-table.bin"
         if not pt.exists():
             raise FileNotFoundError(f"Partition table not found: {pt}")
         return pt
@@ -293,7 +308,7 @@ class NuculaBoard:
                 raise FileNotFoundError(f"App binary not found: {binary}")
             pt = self._our_partition_table()
             if full:
-                bl_dir = self.esp_idf_sys_out / "build" / "bootloader"
+                bl_dir = self._esp_idf_sys_out() / "build" / "bootloader"
                 bl = next(bl_dir.glob("bootloader.bin"), None)
                 self.flash_image({0x0: bl, 0x8000: pt, 0x40000: binary})
             else:
@@ -444,6 +459,12 @@ class NuculaBoard:
             timeout=600,
         )
         if result.returncode != 0:
+            # Loud failure: the captured build output is the only way to
+            # diagnose env problems (missing LIBCLANG, sdkconfig cache
+            # flips) — pytest -s shows it, the log capture keeps it.
+            print("=== firmware build FAILED ===")
+            print(result.stdout[-2000:])
+            print(result.stderr[-4000:])
             return None
 
         elf = Path("/root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid")

@@ -814,7 +814,10 @@ into a drained ring — `esp_log_set_vprintf` for C `ESP_LOGx` plus a
 NOT the vprintf sink, so the facade must be routed too —
 `log_shim::init` replaces `EspLogger::initialize_default`). Verified on
 the nucula: FWID + full PN7160 ladder visible post-claim, LRC-valid
-CCID responses interleaved with log text. The no-claim diagnostic main
+CCID responses interleaved with log text. Facade lines carry an
+`esp_timer` ms stamp (`[WARN] (123ms) target: msg`); over-long lines
+end `~\n` so truncation is visible. The HIL regression is
+`test_log_shim_post_claim_output`. The no-claim diagnostic main
 (`pn7160-actdiag`) remains the tool for card-path dives where the
 console claim itself is the problem.
 

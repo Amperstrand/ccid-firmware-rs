@@ -174,3 +174,122 @@ def test_escape_d1_snapshot_roundtrip(flashed_ccid_firmware):
     assert "'main'" in out, f"crashed task is not main: {out[-500:]}"
 
     board.run_esptool("erase-region", COREDUMP_OFFSET, COREDUMP_SIZE)
+
+
+@pytest.mark.hil
+def test_log_shim_post_claim_output(flashed_ccid_firmware):
+    """Issue #91 regression: after the USB-CDC driver claim, log lines
+    must still reach the wire (ring-drained by the serving loop) and
+    framed CCID commands must get LRC-valid answers amid the log text.
+
+    Capture discipline (AGENTS.md "Session Lessons: Log-Shim Bench
+    Verify"): one serial session, DTR/RTS held low (a DTR-asserted
+    holder latches boot:0x5 download mode across resets), RTS pulse for
+    a fresh boot, aggressive reconnect through the CDC re-enumeration
+    (the reset kills our own fd)."""
+    import serial as pyserial
+
+    board = flashed_ccid_firmware
+    board._free_port()
+
+    def open_clean():
+        s = pyserial.Serial(board.port, 115200, timeout=0.1)
+        s.setDTR(False)
+        s.setRTS(False)
+        return s
+
+    s = open_clean()
+    s.reset_input_buffer()
+    s.setRTS(True)
+    time.sleep(0.2)
+    s.setRTS(False)
+
+    buf = bytearray()
+    deadline = time.time() + 14
+    while time.time() < deadline:
+        try:
+            data = s.read(4096)
+            if data:
+                buf.extend(data)
+        except (pyserial.SerialException, OSError):
+            try:
+                s.close()
+            except Exception:
+                pass
+            s = None
+            while s is None and time.time() < deadline:
+                try:
+                    s = open_clean()
+                except (pyserial.SerialException, OSError):
+                    s = None
+                    time.sleep(0.05)
+    text = bytes(buf).decode("utf-8", "replace")
+
+    assert "FWID pn7160-ccid" in text, (
+        f"pre-claim FWID missing from boot console: {text[-300:]!r}"
+    )
+    assert "USB-CDC ready" in text, (
+        f"post-claim line not ring-drained (issue #91 regression): "
+        f"{text[-300:]!r}"
+    )
+    assert any(
+        marker in text for marker in ("pn7160_i2c", "init attempt", "PN7160")
+    ), f"PN7160 bring-up ladder not visible post-claim: {text[-300:]!r}"
+
+    # Framed GetSlotStatus over the same open port: the response must be
+    # SYNC-anchored and LRC-valid despite the interleaved log text.
+    # Host line-state wiggling at reconnect can fire the C3's reset
+    # magic — a second boot may still be running its ladder here, so
+    # wait for the serve loop, then retry the frame a few times.
+    gss = bytes([0x65, 0, 0, 0, 0, 0, 42, 0, 0, 0])
+    frame = bytes([0x03, 0x06]) + gss
+    lrc = 0
+    for b in frame:
+        lrc ^= b
+    frame = frame + bytes([lrc])
+
+    def read_available(deadline):
+        got = bytearray()
+        while time.time() < deadline:
+            try:
+                got += s.read(4096)
+            except (pyserial.SerialException, OSError):
+                break
+        return bytes(got)
+
+    ready_deadline = time.time() + 8
+    while time.time() < ready_deadline:
+        tail = read_available(time.time() + 0.5)
+        if b"CCID loop starting" in tail:
+            break
+
+    wire = bytearray()
+    for _ in range(3):
+        try:
+            s.write(frame)
+        except (pyserial.SerialException, OSError):
+            pytest.fail("port died before the framed probe")
+        wire += read_available(time.time() + 1.5)
+        if bytes([0x03, 0x06, 0x81]) in wire:
+            break
+        time.sleep(0.5)
+    try:
+        s.close()
+    except Exception:
+        pass
+
+    needle = bytes([0x03, 0x06, 0x81])
+    valid = False
+    stream = bytes(wire)
+    i = stream.find(needle)
+    while i >= 0 and not valid:
+        end = i + 13  # SYNC+CTRL+10-byte CCID header+LRC
+        if end <= len(stream):
+            x = 0
+            for b in stream[i:end]:
+                x ^= b
+            valid = x == 0
+        i = stream.find(needle, i + 1)
+    assert valid, (
+        f"no LRC-valid GetSlotStatus answer amid log text: {stream.hex()}"
+    )

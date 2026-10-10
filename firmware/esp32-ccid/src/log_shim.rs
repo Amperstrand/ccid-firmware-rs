@@ -58,6 +58,10 @@ pub struct LogRing {
     used: usize,
     /// Length of the trailing incomplete line (0 right after a newline).
     partial: usize,
+    /// Set when bytes of the current line were swallowed by the length
+    /// cap; the completing newline rewrites the last payload byte to
+    /// `~` so truncated lines are VISIBLE as truncated.
+    truncating: bool,
     /// Complete lines evicted by overflow since the last `take_dropped`.
     dropped: u32,
 }
@@ -75,6 +79,7 @@ impl LogRing {
             head: 0,
             used: 0,
             partial: 0,
+            truncating: false,
             dropped: 0,
         }
     }
@@ -105,7 +110,14 @@ impl LogRing {
         // cap keeps every COMPLETE line at `MAX_LINE_LEN` bytes or fewer,
         // newline included.
         if self.partial + 1 >= MAX_LINE_LEN && b != b'\n' {
+            self.truncating = true;
             return;
+        }
+        if b == b'\n' && self.truncating {
+            // The engagement threshold guarantees partial == MAX_LINE_LEN - 1
+            // here, so the marker overwrites a stored byte in place.
+            self.buf[self.head + self.used - 1] = b'~';
+            self.truncating = false;
         }
         if self.used >= RING_CAPACITY {
             self.evict_oldest();
@@ -200,6 +212,21 @@ impl LogRing {
         self.buf.copy_within(self.head..self.head + self.used, 0);
         self.head = 0;
     }
+}
+
+/// Format one facade record as `[LEVEL] (<ms>ms) target: message\n` —
+/// the millisecond stamp (esp_timer on target) keeps sequence-diagnosis
+/// value the BLE/console unstamped format lacks. Truncated to
+/// `MAX_LINE_LEN` while always keeping the trailing newline.
+pub fn format_stamped_record(level: &str, stamp_ms: u32, target: &str, message: &str) -> Vec<u8> {
+    let mut rendered = format!("[{level}] ({stamp_ms}ms) {target}: {message}\n").into_bytes();
+    if rendered.len() > MAX_LINE_LEN {
+        rendered.truncate(MAX_LINE_LEN.saturating_sub(1));
+        if rendered.last().copied() != Some(b'\n') {
+            rendered.push(b'\n');
+        }
+    }
+    rendered
 }
 
 #[cfg(test)]
@@ -321,6 +348,24 @@ mod tests {
     }
 
     #[test]
+    fn truncation_is_visible_in_the_line() {
+        let mut ring = LogRing::new();
+        // A normal line never gains a marker.
+        ring.push_line(b"short line");
+        // An over-long line: swallowed tail, marker replaces the last
+        // payload byte when the newline completes the line.
+        ring.push_bytes(&[b'y'; MAX_LINE_LEN + 10]);
+        ring.push_bytes(b"\n");
+        let lines = drain_all(&mut ring);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], line("short line"));
+        let long = &lines[1];
+        assert_eq!(long.len(), MAX_LINE_LEN);
+        assert_eq!(&long[long.len() - 2..], b"~\n");
+        assert!(long.starts_with(&[b'y'; MAX_LINE_LEN - 4]));
+    }
+
+    #[test]
     fn wraparound_keeps_bytes_intact() {
         // 100-byte lines totalling well past the capacity force head drift
         // and compaction; every surviving line must come back byte-identical.
@@ -362,6 +407,21 @@ mod tests {
         assert_eq!(ring.pop_line_into(&mut out), Some(1));
         assert_eq!(out[0], b'\n');
     }
+
+    #[test]
+    fn stamped_record_format() {
+        let line = format_stamped_record("WARN", 12345, "esp32_ccid::nfc", "coupling lost");
+        assert_eq!(line, b"[WARN] (12345ms) esp32_ccid::nfc: coupling lost\n");
+    }
+
+    #[test]
+    fn stamped_record_truncates_but_keeps_newline() {
+        let long = "z".repeat(500);
+        let line = format_stamped_record("INFO", 7, "m", &long);
+        assert_eq!(line.len(), MAX_LINE_LEN);
+        assert_eq!(line.last(), Some(&b'\n'));
+        assert!(line.starts_with(b"[INFO] (7ms) m: zzz"));
+    }
 }
 
 #[cfg(all(
@@ -376,8 +436,7 @@ mod imp {
     use esp_idf_hal::delay::TickType;
     use esp_idf_hal::usb_serial::UsbSerialDriver;
 
-    use super::{LogRing, MAX_LINE_LEN};
-    use crate::ble_log_queue::format_record;
+    use super::{format_stamped_record, LogRing, MAX_LINE_LEN};
 
     /// Stack buffer for one sink call's formatted output. Log lines longer
     /// than this (header + message) arrive as a truncated chunk; the ring's
@@ -449,8 +508,10 @@ mod imp {
         }
 
         fn log(&self, record: &log::Record) {
-            let line = format_record(
+            let stamp_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1000) as u32;
+            let line = format_stamped_record(
                 &record.level().to_string(),
+                stamp_ms,
                 record.target(),
                 &record.args().to_string(),
             );
