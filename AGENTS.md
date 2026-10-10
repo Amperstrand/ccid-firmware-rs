@@ -392,23 +392,20 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
    deployed firmware stable (0 errors, re-arm cycling, presence=0 with
    an empty field — correct). The positive case (card placed onto the
    nucula coil → present within ~4 s) needs a human to place a card.
-3. **The libccidtwin T=1 wall (m5stick + nucula serial path, root-caused
-   2026-10-09)**: pcscd enumerates the GemPCTwin reader and POWERS the
-   card (ATR flows), then libccidtwin — which has no descriptor
-   negotiation and hardcodes the GemPC Twin as a host-driven T=1/TPDU
-   reader — sends SetParameters(T=1) followed by T=1 S-blocks (IFS
-   request `00 C1 01 FE`) as XfrBlock payloads. Our firmware is an
-   APDU-level relay: the card receives the block as a garbage APDU and
-   answers SW=6E00 (bench-proof: strace of pcscd + a replicated
-   exchange returned DataBlock payload `6E 00`). Every "Card is
-   unresponsive" through pcscd on the serial path is this. **The fix is
-   an ISO 7816-3 §11 T=1 block endpoint inside the reader** (terminate
-   host T=1, reframe to ISO-DEP I-blocks/APDUs) — a real T=1 state
-   machine (I/R/S, retransmission, chaining, IFS negotiation), ~the
-   line-count of the whole current driver; spec-cite §11.4-§11.6 while
-   building. The April "pcscd + card responds" record likely only
-   exercised ATR display + direct-serial tests, not full pcscd T=1
-   connects.
+ 3. **The libccidtwin T=1 wall — RESOLVED (46cb50c, bench-verified
+    2026-10-10, #101)**: pcscd used to enumerate the GemPCTwin reader,
+    power the card (ATR flows), then die at connect ("Card is
+    unresponsive") because libccidtwin sends SetParameters(T=1) +
+    T=1 S-blocks as XfrBlock payloads which the APDU-relay firmware
+    forwarded to the card as garbage (SW=6E00). The fix — an ISO
+    7816-3 §11 T=1 block endpoint inside the reader (`t1.rs`: S-blocks
+    answered locally, I-block INF reassembled to APDUs through the
+    shared pipeline, responses re-framed) — is on main and
+    **bench-verified**: pcscd connect + SELECT/AID APDUs through the
+    serial reader return real card status words. Known caveat (#101):
+    after SetParameters arms the T=1 route, RAW-APDU XfrBlocks from
+    direct-serial consumers (battery-style) degrade — fuzz wedges up
+    to 3/27 with one >5 s recovery; pcscd traffic is unaffected.
 4. **GPG applet end-to-end — INSTALLED AND OPERATIONAL (2026-10-09)**:
    - **Keys found in-repo**: the AUTH triple from
      `tests/soak/soak_02_globalplatform.py` (`--key-enc 5A9E...9EDF
