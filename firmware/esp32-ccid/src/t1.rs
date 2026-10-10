@@ -510,3 +510,25 @@ mod tests {
         }
     }
 }
+
+/// Monotonic microseconds for the WTX decision (§11.6.2): the card path
+/// can run seconds (on-card RSA) — beyond any host BWT.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn now_us() -> i64 {
+    unsafe { esp_idf_sys::esp_timer_get_time() }
+}
+
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn elapsed_ms_since(started_us: i64) -> u32 {
+    ((unsafe { esp_idf_sys::esp_timer_get_time() } - started_us) / 1000).max(0) as u32
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn now_us() -> i64 {
+    0
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub fn elapsed_ms_since(_started_us: i64) -> u32 {
+    0
+}

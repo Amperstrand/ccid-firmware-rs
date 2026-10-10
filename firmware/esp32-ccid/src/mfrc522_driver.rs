@@ -368,8 +368,12 @@ where
             return Err(NfcError::NotInitialized);
         }
 
+        // pcscd does PowerUp→PowerDown→PowerUp as a WARM RESET sequence;
+        // a stale session (power-off lost mid-teardown) must not fail the
+        // next activation. Deactivate first, then re-activate.
         if self.lifecycle == CardLifecycle::ActiveSession || self.session.is_some() {
-            return Err(NfcError::CommunicationError);
+            log::warn!("power_on: stale session — deactivating before re-activation");
+            self.power_off();
         }
 
         self.reset_activation_frontend()?;

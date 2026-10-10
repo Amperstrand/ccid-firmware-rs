@@ -6,7 +6,7 @@ use crate::ccid_types::{
     PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS,
 };
 use crate::nfc::{NfcDriver, PresenceState};
-use crate::t1;
+use crate::t1::{self, elapsed_ms_since, now_us};
 use ccid_core::params::default_params;
 use ccid_core::pps::is_pps_request;
 use ccid_core::response::{write_message, write_slot_status};
@@ -179,7 +179,16 @@ impl<D: NfcDriver> CcidHandler<D> {
             Ok(atr_len) => {
                 self.presence_state.present = true;
                 self.slot_state = SlotState::PresentActive;
+                // Card reset invalidates the negotiated protocol (CCID
+                // spec §6.1.2: parameters do not survive ATR reset) —
+                // disarm the T=1 route so pcscd's post-reset PPS probe
+                // (`FF 01 FE`, sent BEFORE SetParameters) echoes as PPS
+                // instead of feeding a stale T=1 endpoint (which parses
+                // it as garbage and kills the session — bench-strace
+                // 2026-10-10: every second connect failed "Card is
+                // unresponsive" exactly here). SetParameters re-arms.
                 self.t1.reset();
+                self.t1_armed = false;
                 write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
@@ -301,10 +310,12 @@ impl<D: NfcDriver> CcidHandler<D> {
                     let an = card_apdu.len().min(apdu_buf.len());
                     apdu_buf[..an].copy_from_slice(&card_apdu[..an]);
                     let mut scratch = [0u8; 271];
+                    let started_us = now_us();
                     let n = self.apdu_pipeline(&apdu_buf[..an], &mut scratch);
-                    let took = 0u32; // TODO(bench): wire a real tick delta
-                                     // strip the 10-byte CCID DataBlock header: T=1 INF
-                                     // carries only the APDU-level payload
+                    let took = elapsed_ms_since(started_us);
+                    // The pipeline returns a full DataBlock message; T=1
+                    // INF carries only the APDU-level payload — strip the
+                    // 10-byte CCID header.
                     let payload = &scratch[10.min(n)..n];
                     let blocks = self.t1.card_response(payload, took);
                     return write_message(
@@ -1167,6 +1178,34 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
         assert!(payload.is_empty());
         assert_eq!(header.specific[1], ICC_NOT_ACTIVE);
+    }
+
+    #[test]
+    fn power_on_disarms_stale_t1_route_for_pps_probe() {
+        // Regression (bench-strace 2026-10-10): pcscd's connect sequence
+        // sends a PPS probe (FF 01 FE) BEFORE SetParameters. If a prior
+        // session left t1_armed set, the PPS feeds the T=1 endpoint and
+        // the R-block garbage answer kills every subsequent connect.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.t1_armed = true; // stale from a previous session
+                                 // simulate the card reset of a NEW connect: power cycle
+        let off = build_ccid_cmd(0x63, 0, 0, &[]);
+        let mut response = [0u8; 271];
+        let _ = handler.process_command(&off, &mut response);
+        power_on(&mut handler);
+
+        // After the card reset the route must be disarmed: a PPS request
+        // echoes as PPS (direct path), not as a T=1 R-block.
+        let pps = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 1, &[0xFF, 0x01, 0xFE]);
+        let len = handler.process_command(&pps, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(
+            payload,
+            &[0xFF, 0x01, 0xFE],
+            "PPS must echo before SetParameters"
+        );
     }
 
     #[test]
