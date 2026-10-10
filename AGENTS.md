@@ -345,11 +345,11 @@ a board you don't own**: the bench is shared with micronuts/bolty-rs,
 and the m5stick was re-flashed by a micronuts session within ~30 min of
 a release the same day.
 
-| Board | Identity probe (run this) | State 2026-10-09 ~16:15 |
+| Board | Identity probe (run this) | State 2026-10-10 ~03:2x |
 |---|---|---|
-| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @3e47a96 log-shim build (~23:00, post-claim logs restored per #91), CCID loop up, reader in pcscd |
-| m5stick | CCID Escape 0x02 over /dev/ttyUSB0 → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @14:29 bench build, reader in pcscd; card activation = known gap (below) |
-| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 |
+| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS on main-era firmware; battery clean (27/27 fuzz, 100/100 soak); #88 positive case still needs a card placed |
+| m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @main incl. T=1 endpoint (46cb50c) + #89 inline-poll fix; **pcscd card I/O VERIFIED** (#101): connect + real APDU SWs through `GemPCTwin serial`; battery floor 1/27 @0.65 s; bench cards get moved around — verify coupling before card tests |
+| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 (now under the #65 place framework) |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
 
 **Why the m5stick has no FWID probe**: the UART main applies the
