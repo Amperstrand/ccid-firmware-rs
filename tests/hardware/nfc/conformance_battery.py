@@ -189,6 +189,8 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
          lambda r: bool(r)),
         ("GetParameters (no card)", MSG_GET_PARAMETERS, b"",
          lambda r: bool(r)),
+        ("ResetParameters", 0x6D, b"",
+         lambda r: bool(r)),
         ("XfrBlock (no card)", MSG_XFR_BLOCK, bytes([0x00, 0xA4, 0x04, 0x00, 0x00]),
          lambda r: r and (r[0][2] & 0xC0) != 0),
     ]
@@ -273,6 +275,9 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
             # resync proof: a valid GetSlotStatus must still work. Generous
             # settle: the m5stick's presence poll + status LED logging take
             # ~500ms — a fast probe misreports a slow response as a wedge.
+            # ResetParameters first: T=1 fuzz payloads can arm the endpoint
+            # (issue #101) — disarm so the raw GetSlotStatus works.
+            r.exchange(0x6D, settle=0.2)
             resp = r.exchange(MSG_GET_SLOT_STATUS, settle=0.6)
             if not (resp and resp[0][0] == 0x81):
                 wedges[rname] += 1
