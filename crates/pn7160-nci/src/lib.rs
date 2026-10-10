@@ -213,8 +213,23 @@ pub mod tx {
 /// A link-level NCI transport: send a command, get its response; drain a
 /// pending notification. Implemented by I2C in firmware and by the mock in
 /// tests. Mirrors the C driver's nci_transceive / nci_read split.
+///
+/// The [`send`](Transport::send) / [`poll_frame`](Transport::poll_frame)
+/// pair splits `transact` for latency-sensitive callers (the presence
+/// re-arm, 2026-10-10 serve-loop-stall fix): a command is WRITTEN without
+/// waiting, and its response is collected on a later poll. NCI v2.3
+/// §5.2.5 — the NFCC may send the RF_DEACTIVATE_RSP only after finishing
+/// its current RF activity, so the RSP wait is the stall risk, not the
+/// write.
 pub trait Transport {
-    /// Send `cmd`, wait for the reply, return the decoded RSP frame.
+    /// Write `cmd` WITHOUT waiting for its response. Returns false on a
+    /// link failure. The reply surfaces later via
+    /// [`poll_frame`](Transport::poll_frame).
+    fn send(&mut self, cmd: &[u8]) -> bool;
+    /// Read ONE already-pending frame of any message type, if the link
+    /// has data ready (IRQ raised). Never waits.
+    fn poll_frame(&mut self) -> Option<Frame>;
+    /// Send a command, wait for the reply, return the decoded RSP frame.
     fn transact(&mut self, cmd: &[u8]) -> Option<Frame>;
     /// Read one already-pending notification (no command sent).
     fn drain(&mut self) -> Option<Frame>;
@@ -278,6 +293,17 @@ pub mod reader {
         OID_RF_DEACTIVATE,
         0x01,
         DEACTIVATE_TYPE_IDLE,
+    ];
+
+    /// RF_DEACTIVATE(type=DISCOVERY) — the one-command presence re-arm
+    /// (issue #105). Exported for the NON-BLOCKING re-arm path
+    /// (2026-10-10 serve-loop-stall fix): the driver writes it via
+    /// [`Transport::send`] and collects the RSP on later polls.
+    pub const RF_DEACTIVATE_DISCOVERY: [u8; 4] = [
+        MT_CMD | GID_RF,
+        OID_RF_DEACTIVATE,
+        0x01,
+        DEACTIVATE_TYPE_DISCOVERY,
     ];
 
     /// RF_DISCOVER_SELECT — NCI 2.0 §6.3.3.1 payload: [Discovery_ID,
@@ -396,26 +422,36 @@ pub mod reader {
         LinkLost,
     }
 
+    /// Classify ONE frame as a presence signal: a discovery NTF, an
+    /// auto-activation NTF (with its ATS), or the link-loss deactivation
+    /// of an auto-activated tag (NCI §5.2.5.2). `None` = not a presence
+    /// signal (RSP frames, CORE_CONN_CREDITS, DH-requested deactivations).
+    pub fn event_of(f: &Frame) -> Option<TagEvent> {
+        if let Some(n) = DiscoverNtf::decode(f) {
+            return Some(TagEvent::Tag(n, None));
+        }
+        if let Some(n) = activation_to_discover(f) {
+            return Some(TagEvent::Tag(n, activation_ats(f)));
+        }
+        if f.mt == MT_NTF
+            && f.gid == GID_RF
+            && f.oid == NTF_RF_DEACTIVATE
+            && f.len >= 2
+            && f.payload[1] == 0x00
+        {
+            return Some(TagEvent::LinkLost);
+        }
+        None
+    }
+
     /// Presence drain accepting all three signals: a discovery NTF, an
     /// auto-activation NTF (with its ATS), or the link-loss deactivation
     /// of an auto-activated tag.
     pub fn wait_for_event<T: Transport>(t: &mut T) -> Option<TagEvent> {
         for _ in 0..8 {
             let f = t.drain()?;
-            if let Some(n) = DiscoverNtf::decode(&f) {
-                return Some(TagEvent::Tag(n, None));
-            }
-            if let Some(n) = activation_to_discover(&f) {
-                let ats = activation_ats(&f);
-                return Some(TagEvent::Tag(n, ats));
-            }
-            if f.mt == MT_NTF
-                && f.gid == GID_RF
-                && f.oid == NTF_RF_DEACTIVATE
-                && f.len >= 2
-                && f.payload[1] == 0x00
-            {
-                return Some(TagEvent::LinkLost);
+            if let Some(ev) = event_of(&f) {
+                return Some(ev);
             }
         }
         None
@@ -550,13 +586,10 @@ pub mod reader {
     /// discovery resumes natively, so a tag still in the field is
     /// re-found (auto-activated ISO-DEP tags re-emit INTF_ACTIVATED
     /// within ~TOTAL_DURATION) without stacking RF_DISCOVER re-issues.
+    /// BLOCKING (waits for the RSP); the presence path uses the split
+    /// [`Transport::send`] + [`Transport::poll_frame`] form instead.
     pub fn deactivate_to_discovery<T: Transport>(t: &mut T) -> Result<(), &'static str> {
-        let cmd = [
-            MT_CMD | GID_RF,
-            OID_RF_DEACTIVATE,
-            0x01,
-            DEACTIVATE_TYPE_DISCOVERY,
-        ];
+        let cmd = RF_DEACTIVATE_DISCOVERY;
         let rsp = t.transact(&cmd).ok_or("no deactivate response")?;
         if !rsp.is_rsp_to(&cmd) {
             return Err("deactivate response mismatch");
@@ -663,6 +696,13 @@ pub mod mock {
         pub replies: VecDeque<StdVec<u8>>,
         pub notifications: VecDeque<StdVec<u8>>,
         pub drained: usize,
+        /// RSP parked by `send`, surfacing on the next `poll_frame` —
+        /// models the chip answering (IRQ rise) shortly after the
+        /// command write, without the caller blocking.
+        pub pending_rsp: Option<StdVec<u8>>,
+        /// Blocking `transact` call count — lets tests assert the
+        /// presence path never waits for a reply.
+        pub transacts: usize,
     }
 
     impl MockTransport {
@@ -672,6 +712,8 @@ pub mod mock {
                 replies: VecDeque::new(),
                 notifications: VecDeque::new(),
                 drained: 0,
+                pending_rsp: None,
+                transacts: 0,
             }
         }
 
@@ -687,7 +729,28 @@ pub mod mock {
     }
 
     impl Transport for MockTransport {
+        fn send(&mut self, cmd: &[u8]) -> bool {
+            self.sent.push(cmd.to_vec());
+            if let Some(raw) = self.replies.pop_front() {
+                self.pending_rsp = Some(raw);
+            }
+            true
+        }
+        fn poll_frame(&mut self) -> Option<Frame> {
+            if let Some(raw) = self.pending_rsp.take() {
+                return Frame::decode(&raw);
+            }
+            let f = self
+                .notifications
+                .pop_front()
+                .and_then(|raw| Frame::decode(&raw));
+            if f.is_some() {
+                self.drained += 1;
+            }
+            f
+        }
         fn transact(&mut self, cmd: &[u8]) -> Option<Frame> {
+            self.transacts += 1;
             self.sent.push(cmd.to_vec());
             self.replies.pop_front().and_then(|raw| Frame::decode(&raw))
         }

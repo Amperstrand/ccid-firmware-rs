@@ -28,6 +28,12 @@ impl I2cTransport {
 }
 
 impl Transport for I2cTransport {
+    fn send(&mut self, _cmd: &[u8]) -> bool {
+        false // wired to esp-idf-sys in the firmware crate
+    }
+    fn poll_frame(&mut self) -> Option<Frame> {
+        None
+    }
     fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
         None // wired to esp-idf-sys in the firmware crate
     }

@@ -4,7 +4,7 @@
 //! via the mock Transport; the firmware crate wraps it in a thin
 //! `NfcDriver` delegation.
 
-use super::{reader, Transport};
+use super::{reader, Transport, STATUS_OK};
 use reader::DiscoverNtf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +14,29 @@ pub enum Error {
     NoCard,
     ExchangeFailed,
     BufferTooSmall,
+}
+
+/// One step of the NON-BLOCKING presence re-arm (2026-10-10 serve-loop
+/// stall fix). NCI v2.3 §5.2.5: the DH sends RF_DEACTIVATE(type=
+/// DISCOVERY) and the NFCC answers RF_DEACTIVATE_RSP possibly only after
+/// finishing its current RF activity — waiting for that RSP inline is
+/// what stalled the CCID serve loop for ~2 s every re-arm cadence. The
+/// machine splits the exchange across presence polls: ONE write on the
+/// poll that enters the phase, ONE frame read per poll after, zero
+/// blocking waits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RearmPhase {
+    /// Deactivate written, RSP not collected yet. `polls` counts polls
+    /// spent waiting; the phase gives up (keeping last known presence)
+    /// after [`REARM_RSP_POLLS`].
+    AwaitRsp { polls: u8 },
+    /// RSP was STATUS_OK — discovery restarted natively (NCI v2.3
+    /// §5.2.5: type DISCOVERY returns the NFCC to the discovery loop; no
+    /// RF_DISCOVER re-issue, which mutes the PN7160 after ~11 cycles,
+    /// bench 2026-10-10). Tag NTFs are expected within TOTAL_DURATION
+    /// (~0.5 s, CORE_SET_CONFIG TLV 0x0202) and land via the normal
+    /// per-poll event drains.
+    AwaitNtf { polls: u8 },
 }
 
 pub struct Pn7160Driver<T: Transport> {
@@ -35,6 +58,8 @@ pub struct Pn7160Driver<T: Transport> {
     /// notification, and consecutive re-arm cycles that saw no tag.
     polls_since_ntf: u32,
     absent_rearms: u8,
+    /// In-flight split re-arm step (see [`RearmPhase`]).
+    rearm: Option<RearmPhase>,
 }
 
 /// Presence re-arm cadence in polls (issue #88): at the firmware's 500 ms
@@ -45,6 +70,20 @@ const PRESENCE_REARM_POLLS: u32 = 8;
 /// NTF can arrive one poll after the re-arm (TOTAL_DURATION latency) and
 /// must not flap presence to absent.
 const ABSENT_REARMS_TO_CLEAR: u8 = 2;
+
+/// Polls granted for the RF_DEACTIVATE_RSP to arrive (NCI v2.3 §5.2.5 —
+/// the NFCC may finish its current RF activity first). At the 500 ms
+/// presence interval this tolerates a ~1 s RSP delay; after that the
+/// re-arm is abandoned, keeping the last known presence (same contract
+/// as a transport failure in the old blocking path).
+const REARM_RSP_POLLS: u8 = 2;
+
+/// Polls of tag-collect window after a STATUS_OK RSP. Discovery
+/// restarts natively (NCI v2.3 §5.2.5, type DISCOVERY) and a tag NTF
+/// arrives within TOTAL_DURATION (~510 ms), so two 500 ms polls cover
+/// it with margin; expiry counts as one empty re-arm cycle toward
+/// [`ABSENT_REARMS_TO_CLEAR`].
+const REARM_NTF_POLLS: u8 = 2;
 
 impl<T: Transport> Pn7160Driver<T> {
     pub fn new(transport: T) -> Self {
@@ -57,6 +96,7 @@ impl<T: Transport> Pn7160Driver<T> {
             last_auto_ats: None,
             polls_since_ntf: 0,
             absent_rearms: 0,
+            rearm: None,
         }
     }
 
@@ -66,6 +106,11 @@ impl<T: Transport> Pn7160Driver<T> {
 
     pub fn into_transport(self) -> T {
         self.transport
+    }
+
+    /// In-flight split re-arm step, for diagnostics and tests.
+    pub fn rearm_phase(&self) -> Option<RearmPhase> {
+        self.rearm
     }
 }
 
@@ -86,10 +131,20 @@ impl<T: Transport> Pn7160Driver<T> {
     /// NCI_SPEC (v2.3 §5.2.5, RF_DEACTIVATE): deactivation with type IDLE
     /// returns the NFCC to the IDLE state. BENCH CORRECTION (2026-10-10,
     /// issue #105): the PN7160 does NOT auto-restart discovery from
-    /// IDLE — `rearm_discovery` re-issues RF_DISCOVER explicitly; a tag
-    /// still in the field answers with a fresh NTF (DISCOVER, or the
-    /// INTF_ACTIVATED of an auto-activated ISO-DEP tag) up to
-    /// TOTAL_DURATION (~0.5 s) later.
+    /// IDLE — the re-arm issues RF_DEACTIVATE(type=DISCOVERY), which
+    /// tears down the RF interface AND returns the NFCC to the discovery
+    /// loop in one command; a tag still in the field answers with a fresh
+    /// NTF (DISCOVER, or the INTF_ACTIVATED of an auto-activated ISO-DEP
+    /// tag) up to TOTAL_DURATION (~0.5 s) later.
+    ///
+    /// NON-BLOCKING (2026-10-10 serve-loop stall fix): the re-arm is a
+    /// state machine advanced one bounded step per call — the entering
+    /// poll performs exactly ONE transport write (the deactivate), each
+    /// later poll reads at most ONE pending frame or drains already-
+    /// pending notifications, and no step ever waits for the chip. The
+    /// bench regression this fixes: ~2 s GetSlotStatus stalls at the
+    /// ~5.7 s re-arm cadence (1414-probe histogram, 2026-10-10), which
+    /// retired the reader from pcscd (EHStatusHandlerThread).
     ///
     /// Timing basis: TOTAL_DURATION (CORE_SET_CONFIG TLV 0x0202, set in
     /// the init ladder to 510 ms) bounds the discovery cycle, so a re-arm
@@ -100,38 +155,18 @@ impl<T: Transport> Pn7160Driver<T> {
         if self.active {
             return true;
         }
-        // TTL check first: the re-arm's own discovery read then gets first
-        // access to frames arriving in response to the deactivate cycle
-        // (a discovery read BEFORE the re-arm would consume them as plain
-        // pending notifications instead).
-        //
-        // The re-arm cadence is UNCONDITIONAL (bench 2026-10-10): gating it
-        // on `last_ntf.is_some()` left a driver whose boot-time discovery
-        // NTF was consumed by the bring-up reads permanently inert — no
-        // cached NTF, no re-arm, no fresh discovery, presence stuck absent
-        // with the tag sitting on the coil. Running the cadence regardless
-        // means an empty field cycles deactivate+discover (the deployed
-        // negative-case behaviour) and a boot-present tag is re-discovered
-        // within one cycle (~4 s).
+        self.step_rearm();
         match reader::wait_for_event(&mut self.transport) {
             Some(reader::TagEvent::Tag(n, ats)) => {
-                self.last_ntf = Some(n);
-                self.last_auto_ats = ats;
-                self.polls_since_ntf = 0;
-                self.absent_rearms = 0;
-                // Fresh sighting: present, and this poll does not count
-                // toward the re-arm cadence (the TTL clock starts NOW).
+                self.latch_tag(n, ats);
                 return true;
             }
             // RF_DEACTIVATE_NTF(reason = RF link lost, NCI §5.2.5.2):
             // the auto-activated tag left the field — clear immediately.
             // (Host-requested deactivations carry reason DH-request and
-            // are filtered out in `wait_for_event`.)
+            // are filtered out in `event_of`.)
             Some(reader::TagEvent::LinkLost) => {
-                self.last_ntf = None;
-                self.last_auto_ats = None;
-                self.polls_since_ntf = 0;
-                self.absent_rearms = 0;
+                self.clear_tag();
                 return false;
             }
             None => {}
@@ -146,40 +181,102 @@ impl<T: Transport> Pn7160Driver<T> {
             // power cycle), and the cycles yield no fresh NTFs anyway.
             return true;
         }
-        self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
-        if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
-            self.polls_since_ntf = 0;
-            self.rearm_discovery();
+        if self.rearm.is_none() {
+            self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
+            if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
+                self.polls_since_ntf = 0;
+                if self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
+                    self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
+                }
+                // Write failure (mute link): keep the last known
+                // presence and retry after a full cadence.
+            }
         }
         self.last_ntf.is_some()
     }
 
-    fn rearm_discovery(&mut self) {
-        // One-command re-arm (#105): RF_DEACTIVATE(type=DISCOVERY) both
-        // tears down the RF interface and returns the NFCC to the
-        // discovery loop. The manual alternative — type IDLE plus an
-        // RF_DISCOVER re-issue per cycle — mutes the PN7160 after ~11
-        // cycles (bench 2026-10-10: clean DEACTIVATE RSPs for 44 s,
-        // then I2C NACKs), so it must not come back.
-        if reader::deactivate_to_discovery(&mut self.transport).is_err() {
-            // Transport-level failure: keep the last known presence.
-            return;
-        }
-        match reader::wait_for_tag(&mut self.transport) {
-            Some((n, ats)) => {
-                self.last_ntf = Some(n);
-                self.last_auto_ats = ats;
-                self.absent_rearms = 0;
+    /// Advance the split re-arm by one poll-bounded step (see
+    /// [`RearmPhase`]). At most one `poll_frame` read here; the one
+    /// write happened on the poll that entered the phase.
+    fn step_rearm(&mut self) {
+        let Some(phase) = self.rearm else { return };
+        match phase {
+            RearmPhase::AwaitRsp { polls } => {
+                match self.transport.poll_frame() {
+                    Some(f) if f.is_rsp_to(&reader::RF_DEACTIVATE_DISCOVERY) => {
+                        self.rearm = if f.status() == Some(STATUS_OK) {
+                            Some(RearmPhase::AwaitNtf { polls: 0 })
+                        } else {
+                            // NFCC refused the re-arm: keep last known
+                            // presence, retry after a full cadence.
+                            None
+                        };
+                    }
+                    Some(f) => match reader::event_of(&f) {
+                        // Presence signal: applied and the phase exits
+                        // with it (absorb clears `rearm`).
+                        Some(ev) => self.absorb_event(ev),
+                        // Presence-neutral frame (credits, DH-requested
+                        // deactivate NTF): stay in phase, deadline still
+                        // advances.
+                        None => self.advance_or_give_up(polls),
+                    },
+                    None => self.advance_or_give_up(polls),
+                }
             }
-            None => {
-                self.absent_rearms = self.absent_rearms.saturating_add(1);
-                if self.absent_rearms >= ABSENT_REARMS_TO_CLEAR {
-                    self.last_ntf = None;
-                    self.last_auto_ats = None;
-                    self.absent_rearms = 0;
+            RearmPhase::AwaitNtf { polls } => {
+                if polls + 1 >= REARM_NTF_POLLS {
+                    // Collect window expired: TOTAL_DURATION has lapsed
+                    // with no tag NTF — one empty re-arm cycle.
+                    self.rearm = None;
+                    self.polls_since_ntf = 0;
+                    self.absent_rearms = self.absent_rearms.saturating_add(1);
+                    if self.absent_rearms >= ABSENT_REARMS_TO_CLEAR {
+                        self.last_ntf = None;
+                        self.last_auto_ats = None;
+                        self.absent_rearms = 0;
+                    }
+                } else {
+                    self.rearm = Some(RearmPhase::AwaitNtf { polls: polls + 1 });
                 }
             }
         }
+    }
+
+    fn advance_or_give_up(&mut self, polls: u8) {
+        self.rearm = if polls + 1 >= REARM_RSP_POLLS {
+            // RSP never arrived within the granted polls (NCI v2.3
+            // §5.2.5 allows the NFCC to defer it behind RF activity):
+            // abandon the re-arm, keep last known presence.
+            None
+        } else {
+            Some(RearmPhase::AwaitRsp { polls: polls + 1 })
+        };
+    }
+
+    /// Apply a presence signal read OUTSIDE the normal drain path (the
+    /// re-arm's `poll_frame`); exits any in-flight phase.
+    fn absorb_event(&mut self, ev: reader::TagEvent) {
+        match ev {
+            reader::TagEvent::Tag(n, ats) => self.latch_tag(n, ats),
+            reader::TagEvent::LinkLost => self.clear_tag(),
+        }
+    }
+
+    fn latch_tag(&mut self, n: DiscoverNtf, ats: Option<heapless::Vec<u8, 32>>) {
+        self.last_ntf = Some(n);
+        self.last_auto_ats = ats;
+        self.polls_since_ntf = 0;
+        self.absent_rearms = 0;
+        self.rearm = None;
+    }
+
+    fn clear_tag(&mut self) {
+        self.last_ntf = None;
+        self.last_auto_ats = None;
+        self.polls_since_ntf = 0;
+        self.absent_rearms = 0;
+        self.rearm = None;
     }
 
     /// Discover, select, and activate a tag; copies the ATS (from the
@@ -239,6 +336,7 @@ impl<T: Transport> Pn7160Driver<T> {
         self.uid_len = 0;
         self.last_ntf = None;
         self.last_auto_ats = None;
+        self.rearm = None;
     }
 
     /// Exchange one APDU with the activated tag (connection 0).
@@ -626,8 +724,18 @@ mod tests {
         for _ in 0..PRESENCE_REARM_POLLS - 1 {
             assert!(!drv.is_card_present(), "no NTF latched yet");
         }
+        // Cadence poll: the deactivate is WRITTEN (RSP scripted for it);
+        // the tag NTFs only arrive on the wires afterwards, like the
+        // chip's post-deactivate discovery restart on hardware.
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        assert!(!drv.is_card_present());
+        assert_eq!(
+            drv.rearm_phase(),
+            Some(RearmPhase::AwaitRsp { polls: 0 }),
+            "cadence poll wrote the deactivate"
+        );
         let t = drv.transport_mut();
-        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
         t.push_notification(&[
             MT_NTF | GID_RF,
             NTF_RF_DEACTIVATE,
@@ -635,8 +743,37 @@ mod tests {
             DEACTIVATE_TYPE_IDLE,
         ]);
         t.push_notification(&discover_ntf());
+        // Next poll: RSP collected, then the plain event drain sees the
+        // re-issued discovery's NTF — the boot tag is back.
         assert!(drv.is_card_present(), "re-arm must rediscover the boot tag");
+        assert_eq!(drv.rearm_phase(), None);
         assert!(drv.is_card_present(), "and stay present");
+    }
+
+    fn deactivate_discovery_rsp_ok() -> [u8; 4] {
+        [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]
+    }
+
+    /// Advance polls (bounding each to the non-blocking contract) until
+    /// one re-arm cycle completes: the deactivate was written and the
+    /// phase machine returned to idle. `rsp` scripts the deactivate RSP.
+    fn run_rearm_cycle(drv: &mut Pn7160Driver<MockTransport>, rsp: &[u8]) {
+        drv.transport_mut().push_reply(rsp);
+        let writes_before = drv.transport_mut().sent.len();
+        for i in 0..(PRESENCE_REARM_POLLS as usize + 8) {
+            let _ = drv.is_card_present();
+            let wrote = drv.transport_mut().sent.len();
+            let done = wrote > writes_before && drv.rearm_phase().is_none();
+            if done {
+                return;
+            }
+            assert!(
+                wrote <= writes_before + 1,
+                "poll {} wrote more than one frame",
+                i
+            );
+        }
+        panic!("re-arm cycle did not complete within the poll budget");
     }
 
     #[test]
@@ -646,37 +783,10 @@ mod tests {
         let mut drv = Pn7160Driver::new(t);
         assert!(drv.is_card_present());
 
-        // Script frames per-poll (a pre-queued deactivate NTF would be
-        // drained by the next poll's discovery read before the re-arm
-        // needs it — on hardware these frames only arrive IN RESPONSE to
-        // the deactivate command).
-        for _ in 0..PRESENCE_REARM_POLLS - 1 {
-            assert!(drv.is_card_present());
-        }
-        // Poll 8 = re-arm 1: deactivate RSP + NTF, re-issued discovery
-        // answers OK, no tag NTF follows.
-        let t = drv.transport_mut();
-        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
-        t.push_notification(&[
-            MT_NTF | GID_RF,
-            NTF_RF_DEACTIVATE,
-            0x01,
-            DEACTIVATE_TYPE_IDLE,
-        ]);
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
         assert!(drv.is_card_present(), "one empty re-arm must not clear");
 
-        for _ in 0..PRESENCE_REARM_POLLS - 1 {
-            assert!(drv.is_card_present());
-        }
-        // Poll 16 = re-arm 2: still no tag → presence clears exactly here.
-        let t = drv.transport_mut();
-        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
-        t.push_notification(&[
-            MT_NTF | GID_RF,
-            NTF_RF_DEACTIVATE,
-            0x01,
-            DEACTIVATE_TYPE_IDLE,
-        ]);
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
         assert!(!drv.is_card_present(), "second empty re-arm must clear");
         // And it stays absent (no cached NTF → no re-arm path).
         assert!(!drv.is_card_present());
@@ -694,14 +804,114 @@ mod tests {
         }
         // Re-arm 1: the deactivate completes but the discovery NTF has
         // not arrived yet (TOTAL_DURATION latency on real hardware) —
-        // the re-arm's own read is empty, absent_rearms=1, no clear.
-        let t = drv.transport_mut();
-        t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
-        t.push_notification(&[NTF_RF_DEACTIVATE, 0x01, DEACTIVATE_TYPE_IDLE]);
+        // the collect window expires empty, absent_rearms=1, no clear.
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
         assert!(drv.is_card_present(), "late NTF must not flap presence");
 
         // The discovery NTF lands during the next window's plain read:
         drv.transport_mut().push_notification(&discover_ntf());
+        assert!(drv.is_card_present());
+    }
+
+    // --- Non-blocking re-arm (2026-10-10 serve-loop stall fix) ---
+
+    // given the ~2 s GetSlotStatus stalls were the re-arm's inline RSP
+    // wait, when presence polls run, then NO poll ever performs a
+    // blocking transact and at most ONE write happens per poll — the
+    // exchange is spread across polls instead.
+    #[test]
+    fn presence_polls_never_transact_and_write_at_most_once() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+
+        for cycle in 0..3 {
+            run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+            assert_eq!(
+                drv.transport_mut().transacts,
+                0,
+                "cycle {}: presence path must never block on a transact",
+                cycle
+            );
+        }
+    }
+
+    // given the NFCC defers the RF_DEACTIVATE_RSP behind its RF activity
+    // (NCI v2.3 §5.2.5 — the bench's ~2 s stall), when the RSP is not on
+    // the wire yet, then the write poll returns without waiting, the RSP
+    // is collected on a later poll, and a permanently missing RSP gives
+    // up at the deadline while keeping the last known presence.
+    #[test]
+    fn deferred_rsp_collected_later_and_missing_rsp_gives_up() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        for _ in 0..PRESENCE_REARM_POLLS - 1 {
+            assert!(drv.is_card_present());
+        }
+        // Cadence poll with NO scripted RSP: the write happens, nothing
+        // is waited for.
+        assert!(drv.is_card_present());
+        assert_eq!(drv.rearm_phase(), Some(RearmPhase::AwaitRsp { polls: 0 }));
+
+        // RSP lands before the deadline: collected, machine advances to
+        // the tag-collect window.
+        drv.transport_mut().pending_rsp = Some(deactivate_discovery_rsp_ok().to_vec());
+        assert!(drv.is_card_present());
+        assert_eq!(drv.rearm_phase(), Some(RearmPhase::AwaitNtf { polls: 0 }));
+
+        // Window expires without a tag: one empty cycle, presence held.
+        assert!(drv.is_card_present());
+        assert!(drv.is_card_present());
+        assert_eq!(drv.rearm_phase(), None);
+
+        // Now the mute-link direction: RSP never arrives at all. Poll
+        // until the cadence writes the next deactivate (the expiry poll
+        // itself counts toward the next cadence).
+        let mut wrote = false;
+        for _ in 0..(PRESENCE_REARM_POLLS + 2) {
+            assert!(drv.is_card_present());
+            if drv.rearm_phase() == Some(RearmPhase::AwaitRsp { polls: 0 }) {
+                wrote = true;
+                break;
+            }
+        }
+        assert!(wrote, "cadence must write a new deactivate");
+        assert!(drv.is_card_present());
+        assert_eq!(drv.rearm_phase(), Some(RearmPhase::AwaitRsp { polls: 1 }));
+        assert!(drv.is_card_present());
+        assert_eq!(
+            drv.rearm_phase(),
+            None,
+            "deadline expired: re-arm abandoned"
+        );
+        assert!(
+            drv.is_card_present(),
+            "abandoned re-arm keeps last known presence"
+        );
+    }
+
+    // given a tag arrives while a re-arm is mid-flight, when its NTF is
+    // the frame poll_frame reads, then it is absorbed (presence flips,
+    // phase exits) — the re-arm never masks a fresh sighting.
+    #[test]
+    fn tag_ntf_during_await_rsp_is_absorbed() {
+        let mut t = MockTransport::new();
+        let mut drv = Pn7160Driver::new(t);
+        for _ in 0..PRESENCE_REARM_POLLS - 1 {
+            assert!(!drv.is_card_present());
+        }
+        // Cadence poll writes the deactivate; no RSP scripted.
+        assert!(!drv.is_card_present());
+        assert_eq!(drv.rearm_phase(), Some(RearmPhase::AwaitRsp { polls: 0 }));
+        // The next pending frame is the tag's NTF (discovery restarted
+        // and found it immediately), not the RSP.
+        drv.transport_mut().push_notification(&discover_ntf());
+        assert!(drv.is_card_present());
+        assert_eq!(drv.rearm_phase(), None);
         assert!(drv.is_card_present());
     }
 

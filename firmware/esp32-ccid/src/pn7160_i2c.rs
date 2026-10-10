@@ -23,6 +23,13 @@ pub type EspPn7160NfcDriver = Pn7160NfcDriver<EspPn7160Transport>;
 const XFER_TIMEOUT_MS: i32 = 500;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
 const NTF_SLOTS: usize = 4;
+/// Fire-and-forget write bound for the non-blocking presence re-arm
+/// (2026-10-10 serve-loop stall fix): a 4-byte NCI command is ~0.5 ms on
+/// the live 100 kHz bus; 50 ms only caps the pathological stuck-bus case
+/// so a presence poll stays under the 100 ms serve-loop budget. The RSP
+/// is NOT waited for here — it is collected by `poll_frame` on later
+/// polls (NCI v2.3 §5.2.5 allows the NFCC to defer it behind RF work).
+const SEND_TIMEOUT_MS: i32 = 50;
 
 pub(crate) static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 =
     core::sync::atomic::AtomicI32::new(-999);
@@ -301,6 +308,29 @@ impl EspPn7160Transport {
 }
 
 impl Transport for EspPn7160Transport {
+    /// Write-only, no RSP wait (non-blocking re-arm path): one I2C
+    /// transmit bounded by SEND_TIMEOUT_MS.
+    fn send(&mut self, cmd: &[u8]) -> bool {
+        let rc = unsafe {
+            esp_idf_sys::i2c_master_transmit(self.dev, cmd.as_ptr(), cmd.len(), SEND_TIMEOUT_MS)
+        };
+        if rc != 0 {
+            log::error!("send: i2c write err: {}", rc);
+            return false;
+        }
+        true
+    }
+
+    /// Read ONE already-pending frame (any message type) if IRQ is high;
+    /// never waits — returns None immediately on a quiet line.
+    fn poll_frame(&mut self) -> Option<Frame> {
+        if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
+            self.read_frame()
+        } else {
+            None
+        }
+    }
+
     fn transact(&mut self, cmd: &[u8]) -> Option<Frame> {
         let rc = unsafe {
             esp_idf_sys::i2c_master_transmit(self.dev, cmd.as_ptr(), cmd.len(), XFER_TIMEOUT_MS)
