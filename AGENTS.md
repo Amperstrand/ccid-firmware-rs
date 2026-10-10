@@ -345,10 +345,10 @@ a board you don't own**: the bench is shared with micronuts/bolty-rs,
 and the m5stick was re-flashed by a micronuts session within ~30 min of
 a release the same day.
 
-| Board | Identity probe (run this) | State 2026-10-10 ~03:2x |
+| Board | Identity probe (run this) | State 2026-10-10 ~17:3x |
 |---|---|---|
-| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS on main-era firmware; battery clean (27/27 fuzz, 100/100 soak); #88 positive case still needs a card placed |
-| m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @main incl. T=1 endpoint (46cb50c) + #89 inline-poll fix; **pcscd card I/O VERIFIED** (#101): connect + real APDU SWs through `GemPCTwin serial`; battery floor 1/27 @0.65 s; bench cards get moved around — verify coupling before card tests |
+| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @main 13b17c8 (5f702e4 re-arm fix flashed by the parallel session ~17:0x); MY 335a404 run: FWID pass, host 47/47+128/128, but **pcscd retention FAILED at T+95 s** — chip died via `rst:0x15 USB_UART_CHIP_RESET` → `boot:0x5` download latch while pcscd held the port (see "Nucula reader-retirement issue" + PR #107 comment 6098890356). Card gate blocked: P71 sits on the ACR1252 coil |
+| m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @0365936 re-flashed 2026-10-10 16:33 (bl@0x1000+PT@0x8000+app@0x40000+otadata erase): Escape 0x02 + GetSlotStatus + 0xD0 verified, `GemPCTwin serial` enumerates; **#59 CAP install BLOCKED — bench P71 card physically on the ACR1252 coil** (moved for the 09:10 GPG HIL). Ready-to-fire: `/tmp/opencode/gp59_install.sh` (ISD keys inside); earlier T=1/#101/#89 verifications stand |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 (now under the #65 place framework) |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
 
@@ -733,10 +733,35 @@ probe) — commit 60b3fa3, regression test included.
 
 **Nucula reader-retirement issue (open)**: with the #88/#105
 auto-activation + unconditional re-arm firmware, the nucula enumerates
-but pcscd retires it minutes later (status-poll vs re-arm-cycle
-collision — finding posted to PR #107). The clean-wire commit (Off at
-serve time) removes log noise as a variable; #107's battery probes
-are the instrument for the cadence fix.
+but pcscd retires it minutes later. TWO mechanisms are now separated
+(2026-10-10 bench, PR #107 comment 6098890356):
+
+1. **Serve-loop stalls (real, FIXED by 5f702e4)**: ~2 s GetSlotStatus
+   stalls at the ~5.7 s re-arm cadence (1414-probe histogram) — the
+   blocking NCI exchange inside the presence poll. The non-blocking
+   re-arm state machine (5f702e4/335a404) removes them; host tests
+   47/47 + 128/128.
+2. **The chip killer (open)**: on the 5f702e4 bench run the reader
+   still died **T+95 s** into pcscd ownership — `rst:0x15
+   (USB_UART_CHIP_RESET)` → `boot:0x5` download latch while pcscd's
+   libccidtwin held the port (DTR asserted). No panic, no coredump,
+   PC idle in the ROM download loop (JTAG forensics). The classic
+   serial-reader reset idiom (host RTS toggle) is a plain app reboot
+   on the m5stick's FTDI but a download-mode LATCH on the C3's
+   USB-Serial/JTAG when DTR is asserted — the same class as the
+   2026-10-09 "download-latch via DTR-asserted port holder" events,
+   now triggered from *inside* a pcscd session (likely its
+   power-up-failure error recovery). Serve-loop fixes alone cannot
+   keep the reader in pcscd while this exists; candidate mitigations:
+   make IccPowerOn's absent-state answer keep pcscd out of its retry
+   escalation, or disable the USB-Serial/JTAG reset-from-USB path.
+
+Bench hygiene lessons from the same run: JTAG-connected resets
+(openocd `reset run`) boot the C3 into download mode too — the ROM
+sees the JTAG session; shut openocd down BEFORE resetting for a
+normal boot. And the safe CDC opener is `Serial(); port=…; dtr=False;
+rts=False; open()` — pyserial asserts DTR at plain `Serial(port)`
+open time, which is itself a latch hazard on any later reset.
 
 ### Debug-channel matrix (per board)
 
