@@ -269,6 +269,27 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     // GEMPC: dwMaxCCIDMessageLength: 271 bytes
     fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
+        // ISO 7816-3 §11.5.2 (issue #101 design note): S-block requests
+        // (RESYNC/IFS/ABORT/WTX negotiation) are the READER's own
+        // link-layer duty — answer them even without an active card
+        // session, so battery/verification tooling can probe T=1
+        // liveness on an empty slot. pcscd is unaffected (it negotiates
+        // T=1 only after connect). I-blocks still need the card below.
+        if self.t1_armed && self.current_protocol == 1 && t1::is_s_block_request(apdu) {
+            if let t1::FeedResult::Immediate(bytes) = self.t1.feed(apdu) {
+                return write_message(
+                    RDR_TO_PC_DATABLOCK,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    &bytes,
+                    response,
+                );
+            }
+        }
+
         if self.slot_state != SlotState::PresentActive {
             return write_message(
                 RDR_TO_PC_DATABLOCK,
@@ -1205,6 +1226,42 @@ mod tests {
             payload,
             &[0xFF, 0x01, 0xFE],
             "PPS must echo before SetParameters"
+        );
+    }
+
+    #[test]
+    fn s_block_answered_without_active_card() {
+        // Issue #101 design note: S-block negotiation is the reader's own
+        // link-layer duty (ISO 7816-3 s11.5.2) — the T=1 route must answer
+        // an IFS request even when the slot has NO active card session
+        // (battery/verification liveness probes), while I-blocks stay
+        // gated on the card.
+        let mut handler = new_handler(false); // card NOT present
+        handler.t1_armed = true;
+        handler.current_protocol = 1;
+
+        let ifsd = [0x00u8, 0xC1, 0x01, 0xFE, 0x3E];
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 1, &ifsd);
+        let mut resp = [0u8; 512];
+        let n = handler.process_command(&msg, &mut resp);
+        let (header, payload) = parse_response(&resp[..n]);
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(
+            payload,
+            &[0x00, 0xE1, 0x01, 0xFE, 0x1E][..],
+            "S-IFS must answer byte-exact with no card"
+        );
+        // command status OK despite inactive ICC
+        assert_eq!(header.specific[0] & 0xC0, 0x00, "cmd status must be OK");
+
+        // I-blocks still require the card:
+        let iblock = [0x00u8, 0x02, 0x05, 0x00, 0xA4, 0x04, 0x00, 0x00, 0x00];
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 1, &iblock);
+        let n = handler.process_command(&msg, &mut resp);
+        let (header, payload) = parse_response(&resp[..n]);
+        assert!(
+            header.specific[0] & 0xC0 != 0 || payload.is_empty(),
+            "I-block without card must fail"
         );
     }
 

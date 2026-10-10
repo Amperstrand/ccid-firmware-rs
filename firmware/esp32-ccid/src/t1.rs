@@ -532,3 +532,18 @@ pub fn now_us() -> i64 {
 pub fn elapsed_ms_since(_started_us: i64) -> u32 {
     0
 }
+
+/// True for an S-block REQUEST (RESYNC/IFS/ABORT/WTX) — the reader's own
+/// link-layer duty per ISO 7816-3 §11.5.2: negotiation is answered by the
+/// reader itself and does not require an active card session. I-blocks and
+/// R-blocks DO need the card (APDU payload / retransmission of a card-bound
+/// response) and stay gated on PresentActive.
+pub fn is_s_block_request(bytes: &[u8]) -> bool {
+    // Block layout §11.3: NAD(1) | PCB(1) | LEN(1) | INF | LRC.
+    if bytes.len() < 4 {
+        return false;
+    }
+    let pcb = bytes[1];
+    // S-block: 11 b5 0 kind — request has bit 4 clear (response sets it).
+    (pcb & 0xC0) == 0xC0 && (pcb & 0x10) == 0
+}
