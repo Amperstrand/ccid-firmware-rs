@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — PPS baud application now opt-in after hardware regression; hot-path logs demoted, exchange cycle stamps added
+
+The round-2 attempt (PPS Di=8 wire speedup, `f5feb61`, reverted on main as `b11cda6`) broke the
+ComSign eID session through the Cherry on real hardware ("Card is unresponsive") while all host
+tests passed — the mocks model neither the card's actual PPS response shape nor pcscd's
+post-power-on `SetDataRateAndClockFrequency`. Containment and diagnosis tooling:
+
+- **`PPS_APPLY_NEGOTIATED_BAUD = false` (const, opt-in)** — with the const off (default) the
+  build is wire-identical to round 1: minimal PPS request, ATR-default Di forever, identical
+  logs. With it on, PPS carries PPS1 = the card's TA1 and only an exact-echo ACK switches the
+  baud; every other response shape (mute, PPS0 without PPS1, changed PPS1, checksum/echo
+  mismatch) is rejected by the FSM and the wire silently stays at the ATR default — the session
+  is never left desynchronized by PPS.
+- **Experimental-path hardening (dormant with the const off)**: `set_clock_and_rate` holds a
+  PPS-negotiated rate against lower host `SetDataRateAndClockFrequency` values (the suspected
+  regression mechanism: host rewrites BRR while the card runs at the negotiated Di); a failed
+  IFS exchange at the negotiated baud walks a fallback ladder — retry in place (transient),
+  revert reader baud + retry (card never switched), cold re-activation with PPS suppressed —
+  instead of the old single-reader-side revert that could itself desync. `power_on`/`power_off`
+  restore the ATR-default baud (also fixes a latent leak where a PPS session's baud would have
+  corrupted the next cold ATR).
+- **BRR range check**: Di=8 at this clock needs BRR ≈ 465 (≫16) — in range, so the round-2
+  refusal path was NOT the regression cause; the desync hypotheses above stand.
+- **Per-exchange info! logs demoted to debug!** (~8 lines/APDU: USB packet hex dump, XfrBlock
+  in/out, APDU/TX/RX traces; compiled out at the default `DEFMT_LOG=info`, probe-immune) and
+  **DWT cycle stamps** (`xfr: tx=Nc frx=Nc tot=Nc rx=N`, debug level) in `transmit_raw` for
+  decisive bench decomposition of the remaining ~22ms fixed cost above modeled wire+card+host.
+
 ### Fixed — STM32F469 APDU/connect latency: 95.3ms → ~25-30ms APDU, 1507ms → ~0.5s connect
 
 Bench decomposition (`tests/hardware/perf/benchmark_readers.py`, 300 iters, empty

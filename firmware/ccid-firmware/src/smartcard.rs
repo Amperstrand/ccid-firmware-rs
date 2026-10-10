@@ -25,6 +25,17 @@ use stm32f4xx_hal::rcc::Clocks;
 
 const SYSCLK_HZ: u32 = 168_000_000;
 
+/// Opt-in: apply a PPS-negotiated Fi/Di to the wire after a PPS-ACK.
+///
+/// Bench regression (2026-10-10, later reverted on main): enabling this broke
+/// the ComSign eID session through the Cherry ("Card is unresponsive") while
+/// all host tests passed. Suspected reader/card baud desync: pcscd may follow
+/// IccPowerOn with SetDataRateAndClockFrequency (rewriting BRR below the
+/// negotiated rate while the card runs at the higher Di), and the IFS-based
+/// fallback can only observe, not prove, which side switched. `false` keeps
+/// the wire at the ATR-default Di forever — the proven round-1 behavior.
+const PPS_APPLY_NEGOTIATED_BAUD: bool = false;
+
 pub struct SmartcardUart {
     usart: USART2,
     _io_pin: PA2<Alternate<7, OpenDrain>>,
@@ -39,6 +50,15 @@ pub struct SmartcardUart {
     t1_ns: u8,    // T=1 send sequence number (alternates 0/1 across APDUs)
     pclk1_hz: u32,
     card_clk_hz: u32,
+    /// True while the wire runs at a PPS-negotiated baud above the ATR
+    /// default (only ever set with PPS_APPLY_NEGOTIATED_BAUD).
+    pps_speedup_active: bool,
+    /// Wire baud established by the last accepted PPS (see clamp in
+    /// set_clock_and_rate).
+    negotiated_baud: u32,
+    /// One-shot: force the next PPS to the minimal (no PPS1) request —
+    /// used by the IFS fallback ladder to re-activate at the default Di.
+    pps_suppress_once: bool,
     pub(crate) config: SmartcardConfig,
 }
 
@@ -69,6 +89,9 @@ impl SmartcardUart {
             t1_ns: 0,
             pclk1_hz: pclk1,
             card_clk_hz: 0,
+            pps_speedup_active: false,
+            negotiated_baud: 0,
+            pps_suppress_once: false,
             config,
         };
         sc.enable_usart2_clock();
@@ -158,7 +181,16 @@ impl SmartcardUart {
     ) -> Result<(u32, u32), SmartcardError> {
         const MIN_BAUD: u32 = 9600;
         const MAX_BAUD: u32 = 5_000_000;
-        let rate_bps = rate_bps.clamp(MIN_BAUD, MAX_BAUD);
+        // Experimental PPS path only: a host SetDataRateAndClockFrequency
+        // below the PPS-negotiated rate would silently slow the reader side
+        // while the card keeps running at the negotiated Di — the suspected
+        // mechanism behind the f5feb61 bench regression. Hold the negotiated
+        // rate and report the actual value back.
+        let rate_bps = if self.pps_speedup_active {
+            rate_bps.clamp(self.negotiated_baud.max(MIN_BAUD), MAX_BAUD)
+        } else {
+            rate_bps.clamp(MIN_BAUD, MAX_BAUD)
+        };
         if rate_bps == 0 {
             return Err(SmartcardError::ProtocolError);
         }
@@ -174,31 +206,73 @@ impl SmartcardUart {
         Ok((self.card_clk_hz, actual_rate))
     }
 
-    fn set_baud_from_fi_di(&mut self, fi: u16, di: u8) {
+    /// Apply a PPS-negotiated Fi/Di to the wire. Returns true when the baud
+    /// actually changed (caller tracks this for the fallback ladder).
+    fn set_baud_from_fi_di(&mut self, fi: u16, di: u8) -> bool {
         if di == 0 {
-            return;
+            return false;
         }
         let fi = fi as u32;
         let di = di as u32;
         let baudrate = self.card_clk_hz * di / fi;
         let brr_val = self.pclk1_hz / baudrate;
+        if brr_val < 16 {
+            // USART would overrun at this rate; keep the ATR-default baud.
+            defmt::warn!(
+                "PPS: baud {} needs BRR {} (<16) - keeping default baud",
+                baudrate,
+                brr_val
+            );
+            return false;
+        }
         self.usart.brr().write(|w| unsafe {
             w.div_mantissa().bits((brr_val >> 4) as u16);
             w.div_fraction().bits((brr_val & 0x0F) as u8)
         });
+        self.negotiated_baud = baudrate;
         defmt::info!("PPS: baud updated to {} (Fi={}, Di={})", baudrate, fi, di);
+        true
     }
 
-    fn negotiate_pps_fsm(&mut self, params: &AtrParams) -> Result<(), ()> {
+    /// Restore the ATR-default baud (Fi=372/Di=1), the rate every cold ATR
+    /// must be read at. Idempotent when the wire is already at the default.
+    fn reset_baud_default(&mut self) {
+        let baudrate = (self.card_clk_hz + self.config.default_etu / 2) / self.config.default_etu;
+        let brr_val = self.pclk1_hz / baudrate;
+        self.usart.brr().write(|w| unsafe {
+            w.div_mantissa().bits((brr_val >> 4) as u16);
+            w.div_fraction().bits((brr_val & 0x0F) as u8)
+        });
+    }
+
+    /// PPS negotiation (ISO 7816-3 §9). With PPS_APPLY_NEGOTIATED_BAUD the
+    /// request carries PPS1 = the card's TA1 and an exact-echo ACK switches
+    /// the wire to the offered Fi/Di. Any other response shape — mute card,
+    /// PPS0 without the PPS1 bit, a PPS1 the card changed, checksum or echo
+    /// mismatch — is rejected by the FSM and the wire silently stays at the
+    /// ATR default: the session is never left desynchronized by PPS.
+    fn negotiate_pps_fsm(&mut self, params: &AtrParams, suppress_speedup: bool) -> Result<(), ()> {
         if !params.has_ta1 || params.ta1 == DEFAULT_TA1 {
             defmt::debug!("PPS: skipping (no TA1 or default Fi/Di)");
             return Ok(());
         }
 
         let mut fsm = PpsFsm::new();
-        let req = fsm.build_minimal_request(params.protocol);
+        let req = if PPS_APPLY_NEGOTIATED_BAUD && !suppress_speedup {
+            fsm.build_request(params.protocol, params.ta1)
+        } else {
+            fsm.build_minimal_request(params.protocol)
+        };
 
-        defmt::info!("PPS: sending {} bytes (minimal, no PPS1)", req.len());
+        if PPS_APPLY_NEGOTIATED_BAUD && !suppress_speedup {
+            defmt::info!(
+                "PPS: sending {} bytes (TA1=0x{:02X})",
+                req.len(),
+                params.ta1
+            );
+        } else {
+            defmt::info!("PPS: sending {} bytes (minimal, no PPS1)", req.len());
+        }
         for &b in req {
             self.send_byte(b).map_err(|_| ())?;
         }
@@ -236,7 +310,17 @@ impl SmartcardUart {
                 Ok(byte) => {
                     let state = fsm.process_byte(byte);
                     if state == PpsState::Done {
-                        defmt::info!("PPS: success (minimal, protocol confirmed)");
+                        if PPS_APPLY_NEGOTIATED_BAUD && !suppress_speedup {
+                            // The card echoed our exact PPS1; it switches to
+                            // the offered Fi/Di right after this response, so
+                            // the reader may switch now. If applying is
+                            // refused (BRR range) we stay at the default and
+                            // so does the card (it never saw the refusal).
+                            self.pps_speedup_active =
+                                self.set_baud_from_fi_di(params.fi, params.di);
+                        } else {
+                            defmt::info!("PPS: success (minimal, protocol confirmed)");
+                        }
                         return Ok(());
                     } else if state == PpsState::Failed {
                         defmt::warn!("PPS: negotiation failed");
@@ -268,6 +352,12 @@ impl SmartcardUart {
         Self::delay_ms(200); // Long delay for card capacitor discharge
         self.atr = Atr::default();
         self.powered = false;
+        // Every cold ATR is sent at the ATR-default Di; a previous session
+        // may have left the wire at a PPS-negotiated speed.
+        self.pps_speedup_active = false;
+        self.reset_baud_default();
+        let pps_suppress = self.pps_suppress_once;
+        self.pps_suppress_once = false;
 
         // Clear any stale USART data/errors from previous session
         while self.usart.sr().read().rxne().bit_is_set() {
@@ -311,7 +401,7 @@ impl SmartcardUart {
                     return Err(SmartcardError::InvalidATR);
                 }
 
-                let _ = self.negotiate_pps_fsm(&params);
+                let _ = self.negotiate_pps_fsm(&params, pps_suppress);
 
                 if self.protocol == 0 {
                     // T=0: enable NACK (CR3 bit 4) for error signaling
@@ -342,6 +432,48 @@ impl SmartcardUart {
                             self.ifsc = ifsc;
                             defmt::info!("T=1 IFSD OK: card IFSC={}", self.ifsc);
                         }
+                        Err(()) if self.pps_speedup_active => {
+                            // Experimental PPS path only: a failed IFS at the
+                            // negotiated baud means reader and card may
+                            // disagree on the wire speed. Retry once at the
+                            // same baud (transient), then at the ATR-default
+                            // baud (card never switched), then cold
+                            // re-activate with PPS suppressed — the session
+                            // must never be left desynchronized.
+                            defmt::warn!("T=1: IFS failed at PPS baud");
+                            match do_ifs_negotiation_t1(self) {
+                                Ok(ifsc) => {
+                                    self.ifsc = ifsc;
+                                    defmt::info!("T=1 IFSD OK on retry: card IFSC={}", self.ifsc);
+                                }
+                                Err(()) => {
+                                    defmt::warn!("T=1: reverting to ATR-default baud");
+                                    self.pps_speedup_active = false;
+                                    self.reset_baud_default();
+                                    match do_ifs_negotiation_t1(self) {
+                                        Ok(ifsc) => {
+                                            self.ifsc = ifsc;
+                                            defmt::info!(
+                                                "T=1 IFSD OK at default baud: IFSC={}",
+                                                self.ifsc
+                                            );
+                                        }
+                                        Err(()) => {
+                                            defmt::warn!("T=1: cold re-activation at default baud");
+                                            self.pps_suppress_once = true;
+                                            self.power_off();
+                                            if self.power_on().is_err() {
+                                                self.pps_suppress_once = false;
+                                                defmt::warn!(
+                                                    "T=1 IFSD negotiation failed, using ATR IFSC={}",
+                                                    self.ifsc
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Err(()) => {
                             defmt::warn!(
                                 "T=1 IFSD negotiation failed, using ATR IFSC={}",
@@ -369,7 +501,10 @@ impl SmartcardUart {
         self.ifsc = 32;
         self.t1_ns = 0;
         // Restore USART to ATR convention for next cold reset:
-        // 1.5 stop bits (CR2 STOP=11), 16 ETU guard time (GTPR GT=16)
+        // 1.5 stop bits (CR2 STOP=11), 16 ETU guard time (GTPR GT=16),
+        // ATR-default baud (a PPS session may have raised it).
+        self.pps_speedup_active = false;
+        self.reset_baud_default();
         self.usart
             .cr2()
             .modify(|r, w| unsafe { w.bits(r.bits() | 0x3000) });
@@ -471,7 +606,7 @@ impl SmartcardUart {
             return Err(SmartcardError::HardwareError);
         }
         if command.len() >= 2 {
-            defmt::info!(
+            defmt::debug!(
                 "APDU T={} CLA=0x{:02X} INS=0x{:02X} len={}",
                 self.protocol,
                 command[0],
@@ -502,12 +637,19 @@ impl SmartcardUart {
             return Err(SmartcardError::HardwareError);
         }
 
-        defmt::info!("transmit_raw: TX {} bytes", data.len());
+        defmt::debug!("transmit_raw: TX {} bytes", data.len());
+
+        // Cycle stamps (DWT) for bench decomposition: TX pacing, first
+        // response byte (card turnaround), full exchange. debug!-level so
+        // the default info build pays nothing; DEFMT_LOG=debug shows them.
+        let mut stamp = DwtWatchdog::from_ms(60_000, SYSCLK_HZ);
+        stamp.start();
 
         // Send all bytes from input data
         for &byte in data {
             self.send_byte(byte)?;
         }
+        let tx_cyc = stamp.elapsed_cycles();
 
         let mut total_len = 0usize;
 
@@ -518,11 +660,15 @@ impl SmartcardUart {
         // after the last byte (was a flat +50ms on every APDU).
         if self.protocol == 1 && response.len() >= 4 {
             let mut timeout_ms = 500u32; // first byte: card processing time
+            let mut frx_cyc = 0u32;
             while total_len < 3 {
                 match self.receive_byte_timeout(timeout_ms) {
                     Ok(byte) => {
                         response[total_len] = byte;
                         total_len += 1;
+                        if total_len == 1 {
+                            frx_cyc = stamp.elapsed_cycles();
+                        }
                         timeout_ms = 50;
                     }
                     Err(SmartcardError::Timeout) => return Ok(total_len),
@@ -541,7 +687,13 @@ impl SmartcardUart {
                     Err(e) => return Err(e),
                 }
             }
-            defmt::info!("transmit_raw: RX {} bytes (T=1 block)", total_len);
+            defmt::debug!(
+                "xfr: tx={}c frx={}c tot={}c rx={}",
+                tx_cyc,
+                frx_cyc,
+                stamp.elapsed_cycles(),
+                total_len
+            );
             return Ok(total_len);
         }
 
@@ -565,7 +717,7 @@ impl SmartcardUart {
             }
         }
 
-        defmt::info!("transmit_raw: RX {} bytes", total_len);
+        defmt::debug!("transmit_raw: RX {} bytes", total_len);
         Ok(total_len)
     }
 
