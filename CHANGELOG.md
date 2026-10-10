@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — log-shim hardening: timestamps, visible truncation, HIL regression (issue #91)
+
+Follow-up to the #91 fix, shaped by a best-practices pass (ESP-IDF's own
+`I (ms)` line format; drop-oldest rings as the embedded standard):
+
+- **Millisecond stamps on facade lines** — Rust `log` lines in the ring
+  now carry an `esp_timer` stamp: `[WARN] (12345ms) target: message`
+  (host-tested `format_stamped_record`). Sequence-diagnosis value the
+  unstamped BLE-console format lacked; C-side `ESP_LOGx` lines keep
+  IDF's own timestamped header.
+- **Truncation is visible** — lines truncated by the 200-byte cap now
+  end `~\n` (the marker rewrites the last payload byte at newline
+  time, keeping the cap exact). A truncated log that looks whole is
+  worse than one that admits it.
+- **HIL regression test** — `test_log_shim_post_claim_output`
+  (tests/hardware/nucula): DTR-low reset-and-capture asserts the
+  pre-claim FWID, the ring-drained post-claim lines, and an LRC-valid
+  GetSlotStatus answer amid the log text — locking the #91 behavior
+  the way `test_escape_d1_snapshot_roundtrip` locks dump-and-retrieve.
+  ESP32 host tests: 124 → 127.
+
 ### Fixed — USB-CDC log output restored after the driver claim (issue #91)
 
 From the moment `UsbSerialDriver::new` claims the nucula's USB-Serial/JTAG peripheral, every log line logged afterwards was silently dropped — the PN7160 init ladder, `power_on failed: …` diagnostics, all serving-loop output. New `log_shim` module routes logs around the claim:
@@ -15,6 +36,7 @@ From the moment `UsbSerialDriver::new` claims the nucula's USB-Serial/JTAG perip
 - **`log` facade routing for Rust `log::warn!`/`error!`** — necessary addition to the researched design: esp-idf-svc 0.52's `EspLogger` writes via `fwrite` to newlib stdout, NOT through the vprintf sink, so the prescribed mechanism alone would leave the Rust diagnostics (the primary symptom) dead. `log_shim::init` replaces `EspLogger::initialize_default()` in the `pn7160-ccid` main; pre-claim lines still go to stdout (the FWID boot marker keeps landing on the console), post-claim they route into the same ring.
 - **Ring semantics** — drop-oldest under overflow with a dropped-lines counter (drain emits an `=== N lines dropped ===` marker), 200-byte line cap, never blocks, never panics. Extracted as the pure host-tested `LogRing` (9 tests) mirroring the `ble_log_queue` pattern; the esp-idf shell is gated on `pn7160-ccid` + esp targets. ESP32 host tests: 100 → 109.
 - **Drain points** — the serving loop drains the ring onto the claimed driver post-response and in the read-idle path (bounded burst; a failed write stops the pass). Interleaving with GemPC frames is safe: host-side parsers scan for SYNC-anchored LRC-validated frames (conformance-battery-proven; USB-CDC main only — the UART mains' clean-wire rule is untouched).
+- **Bench-verified on the nucula** (rev 3e47a96, 2026-10-09): FWID lands on the console at boot (pre-claim path preserved), the post-claim lines (`USB-CDC ready`, the full PN7160 bring-up ladder) arrive ring-drained on the CDC, and framed GetSlotStatus/IccPowerOn get LRC-valid responses in the same byte stream as the log text.
 
 ### Changed — dump-and-retrieve verified on BOTH chips + hardened (issue #66 direction)
 
