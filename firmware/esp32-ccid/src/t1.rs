@@ -60,15 +60,17 @@ pub enum SKind {
 }
 
 fn parse_pcb(pcb: u8) -> Option<Pcb> {
+    // ISO 7816-3 Table 45: N(S) at b7, M at b6, N(R) at b4 — in BOTH I-
+    // and R-blocks. The b3..b1 positions are 0 (I) / error code (R).
     match pcb & 0x80 {
         0x00 => Some(Pcb::I {
             ns: (pcb >> 6) & 1,
             more: pcb & 0x20 != 0,
-            nr: pcb & 0x07,
+            nr: (pcb >> 4) & 1,
         }),
         0x80 => match pcb & 0xC0 {
             0x80 => Some(Pcb::R {
-                nr: (pcb >> 3) & 0x07,
+                nr: (pcb >> 4) & 1,
                 err: pcb & 0x03,
             }),
             _ => {
@@ -101,11 +103,11 @@ fn block(pcb: u8, inf: &[u8]) -> Vec<u8, 520> {
 }
 
 fn i_pcb(ns: u8, more: bool, nr: u8) -> u8 {
-    (ns << 6) | ((more as u8) << 5) | nr
+    (ns << 6) | ((more as u8) << 5) | (nr << 4)
 }
 
 fn r_pcb(nr: u8, err: u8) -> u8 {
-    0x80 | (nr << 3) | err
+    0x80 | (nr << 4) | err
 }
 
 fn s_pcb(kind: SKind, response: bool) -> u8 {

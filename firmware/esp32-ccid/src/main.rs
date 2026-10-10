@@ -288,6 +288,9 @@ fn main() {
         &uart_config,
     )
     .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
+    // Same RX-TOUT fix as the MFRC522 main: default flush adds ~40 ms per
+    // CCID frame (bench perf_ab 2026-10-10).
+    unsafe { esp_idf_sys::uart_set_rx_timeout(esp_idf_sys::uart_port_t_UART_NUM_0, 1) };
 
     let irq_pin = IrqPin(
         PinDriver::input(peripherals.pins.gpio16, gpio::Pull::Up)
@@ -434,6 +437,11 @@ fn main() {
         &uart_config,
     )
     .expect("UART0 init failed (CCID serial TX/RX)");
+    // Bench (perf_ab, 2026-10-10): the default hardware RX-TOUT left short
+    // CCID frames in the UART FIFO until the periodic flush — a fixed ~40 ms
+    // first-byte (echo) delay dominated every APDU round-trip. A 1-symbol
+    // TOUT flushes as soon as the line goes idle (~90 us at 115200 8N2).
+    unsafe { esp_idf_sys::uart_set_rx_timeout(esp_idf_sys::uart_port_t_UART_NUM_0, 1) };
     log::warn!("bring-up: UART0 ok");
     log::warn!("bring-up: pins chosen, entering 50ms settle");
     #[cfg(target_arch = "riscv32")]
