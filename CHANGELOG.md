@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — STM32F469 APDU/connect latency: 95.3ms → ~25-30ms APDU, 1507ms → ~0.5s connect
+### Changed — STM32F469 APDU latency round 2: 42.84ms → expected ~10-15ms (PPS wire speedup + hot-path log demotion)
+
+Round-1 bench follow-up (42.84ms mean, p99 42.97 — still a fixed per-exchange cost; connect 503.7ms):
+decomposition leaves ~22ms beyond modeled wire (14.9ms at Di=1) + card (~3ms, CardMan-bounded) +
+host (~2.5ms). Two provable fixed costs removed, plus instrumentation for the remainder:
+
+- **PPS now requests the card's own TA1 (PPS1)** instead of a minimal no-PPS1 request —
+  `negotiate_pps_fsm` uses `build_request(proto, TA1)` and applies `set_baud_from_fi_di` on the
+  PPS-ACK (bench card TA1=0x18 → Di=8, wire 12096 → 96774 baud: 15 chars per exchange drop from
+  ~14.9ms to ~1.9ms). Any PPS failure leaves the wire at the ATR default (Di=1) — the pre-round-2
+  behavior. Belt-and-braces: `set_baud_from_fi_di` refuses rates needing BRR<16; `power_on`/
+  `power_off` restore the default baud (a PPS session previously leaked its baud into the next
+  cold ATR — latent bug, now fixed); if the post-PPS IFS S-block exchange fails at the new baud,
+  the firmware reverts to the default baud and retries IFS once.
+- **Per-exchange info! logs demoted to debug!** — the APDU path logged ~8 lines per exchange
+  (USB packet hex dump, XfrBlock in/out, APDU/TX/RX traces). defmt-rtt 0.4 writes each line into
+  the RTT buffer inside a critical section, and with a probe attached (probe-rs sets RTT blocking
+  mode) a full buffer rate-limits the firmware by the probe drain — a constant, razor-tight
+  per-exchange cost. At `DEFMT_LOG=info` (the default build) these lines are now compiled out.
+- **DWT cycle stamps at debug! level** in `transmit_raw` (`xfr: tx=Nc frx=Nc tot=Nc rx=N`):
+  TX pacing / first-response-byte (card turnaround) / total — compiled out at info, decisive for
+  the next bench round if fixed cost remains (separates wire, card wait, and host/USB).
+
+### Fixed — STM32F469 APDU/connect latency: 95.3ms → 42.84ms APDU, 1507ms → 503.7ms connect
 
 Bench decomposition (`tests/hardware/perf/benchmark_readers.py`, 300 iters, empty
 SELECT on the ComSign eID T=1 card; CardMan 3121 reference 10.9ms/39ms) found three
@@ -34,9 +57,7 @@ Blocking architecture unchanged. Expected: APDU p50/p99 ~25-30ms (remaining gap
 to CardMan is wire time at un-negotiated Di=1 — the card's TA1=0x18 offers Di=8;
 real PPS with PPS1 is the follow-up lever), connect ~0.45-0.55s (residual: 267ms
 of blind power-on settle delays + true 50ms ATR inter-byte wait + pcscd
-negotiation exchanges). Not yet bench-verified (no hardware in this session).
-
-### Fixed — PN7160 auto-activated ISO-DEP tags now detected end-to-end (issue #88 positive case, closes #105)
+negotiation exchanges). Not yet bench-verified (no hardware in this session).### Fixed — PN7160 auto-activated ISO-DEP tags now detected end-to-end (issue #88 positive case, closes #105)
 
 Bench root cause (nucula, 2026-10-10): the PN7160 AUTO-ACTIVATES a single ISO-DEP target during discovery — an NCI-sanctioned behavior (Linux kernel `nci_target_auto_activated()`, torvalds `net/nfc/nci/ntf.c`; ESPHome's pn7160 handles the same) — and emits `RF_INTF_ACTIVATED` instead of `RF_DISCOVER`, which the presence path discarded. The bench card was therefore reported absent by every firmware revision while sitting on the coil. Three coordinated changes in `pn7160-nci`:
 
