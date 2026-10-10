@@ -7,8 +7,9 @@
 
 use crate::pps_fsm::{PpsFsm, PpsState};
 use crate::smartcard_common::{
-    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, transmit_apdu_t0, verify_atr_tck,
-    Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo, DEFAULT_TA1, SC_ATR_MAX_LEN,
+    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, t1_block_total_len,
+    transmit_apdu_t0, verify_atr_tck, Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo,
+    DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
 
 use crate::t1_engine::T1Transport;
@@ -413,9 +414,13 @@ impl SmartcardUart {
         // At 168MHz, spinning is fine. NO defmt, NO delay_ms during reception.
         // The USART buffers only 1 byte; we must read DR before the next byte arrives (~1ms).
         let mut len = 0usize;
-        // Timeout counter: ~50ms inter-byte timeout at ~168 cycles per inner iteration
-        let timeout_reload: u32 = 50 * 168_000; // ~50ms worth of spin iterations
-        let mut timeout_counter = timeout_reload;
+        // Inter-byte timeout must be measured in real time (DWT cycle counter).
+        // A raw iteration count is not wall-clock: one loop iteration is a
+        // single volatile APB1 SR read plus branch (~15-25 cycles at 168 MHz),
+        // so a 50*168_000-iteration counter spins for ~0.7-1 s — the dominant
+        // part of the measured 1.5 s connect time.
+        let mut wd = DwtWatchdog::from_ms(50, SYSCLK_HZ);
+        wd.start();
 
         loop {
             let sr = self.usart.sr().read().bits();
@@ -430,13 +435,12 @@ impl SmartcardUart {
                     self.atr.raw[len] = b;
                     len += 1;
                 }
-                timeout_counter = timeout_reload;
+                wd.start(); // reload inter-byte timeout
                 continue;
             }
 
-            // No byte ready — spin and count down
-            timeout_counter -= 1;
-            if timeout_counter == 0 {
+            // No byte ready — spin until the real-time deadline expires
+            if wd.expired() {
                 if len > 0 {
                     break; // inter-byte timeout, ATR complete
                 } else {
@@ -505,10 +509,45 @@ impl SmartcardUart {
             self.send_byte(byte)?;
         }
 
+        let mut total_len = 0usize;
+
+        // T=1: the card answers each exchange with exactly one block
+        // (NAD PCB LEN INF... LRC, ISO 7816-3 §11.3). The block length is
+        // known from the prologue, so the exchange terminates at the LRC
+        // byte instead of waiting out a fixed inter-byte drain timeout
+        // after the last byte (was a flat +50ms on every APDU).
+        if self.protocol == 1 && response.len() >= 4 {
+            let mut timeout_ms = 500u32; // first byte: card processing time
+            while total_len < 3 {
+                match self.receive_byte_timeout(timeout_ms) {
+                    Ok(byte) => {
+                        response[total_len] = byte;
+                        total_len += 1;
+                        timeout_ms = 50;
+                    }
+                    Err(SmartcardError::Timeout) => return Ok(total_len),
+                    Err(e) => return Err(e),
+                }
+            }
+            let expected =
+                t1_block_total_len(&response[..3], response.len()).unwrap_or(response.len());
+            while total_len < expected {
+                match self.receive_byte_timeout(50) {
+                    Ok(byte) => {
+                        response[total_len] = byte;
+                        total_len += 1;
+                    }
+                    Err(SmartcardError::Timeout) => break, // truncated block
+                    Err(e) => return Err(e),
+                }
+            }
+            defmt::info!("transmit_raw: RX {} bytes (T=1 block)", total_len);
+            return Ok(total_len);
+        }
+
         // Read response bytes with inter-byte timeout
         // Use 50ms inter-byte timeout, 500ms initial timeout
         // This works for both PTS negotiation (3 bytes) and T=1 blocks
-        let mut total_len = 0;
         let mut timeout_ms = 500u32; // Initial wait for first byte
 
         while total_len < response.len() {
@@ -564,11 +603,13 @@ impl SmartcardUart {
         self.usart
             .dr()
             .write(|w| unsafe { w.dr().bits(data as u16) });
-        let mut timeout_ms = self.config.byte_timeout_ms;
+        // Tight TC poll bounded by a real-time DWT deadline. A delay_ms(1)
+        // per-iteration poll quantizes every byte to whole milliseconds
+        // (~1ms overshoot per byte at 11229 baud — ~40% of the wire time).
+        let mut wd = DwtWatchdog::from_ms(self.config.byte_timeout_ms, SYSCLK_HZ);
+        wd.start();
         while !self.usart.sr().read().tc().bit_is_set() {
-            Self::delay_ms(1);
-            timeout_ms -= 1;
-            if timeout_ms == 0 {
+            if wd.expired() {
                 defmt::error!("Tx timeout");
                 // Re-enable receiver before returning
                 self.usart

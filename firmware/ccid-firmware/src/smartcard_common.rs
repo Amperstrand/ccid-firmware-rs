@@ -27,6 +27,22 @@ pub struct SmartcardConfig {
     pub max_clk_hz: u32,
 }
 
+/// Total on-wire length of one T=1 block (NAD PCB LEN INF... LRC, ISO 7816-3
+/// §11.3) given its 3-byte prologue, if the block fits into `buf_len`.
+/// Returns `None` when the prologue is short or LEN implies a block that
+/// cannot fit the receive buffer.
+pub fn t1_block_total_len(prologue: &[u8], buf_len: usize) -> Option<usize> {
+    if prologue.len() < 3 {
+        return None;
+    }
+    let inf_len = prologue[2] as usize;
+    let total = inf_len + 4; // NAD + PCB + LEN + INF + LRC
+    if total > buf_len {
+        return None;
+    }
+    Some(total)
+}
+
 pub const SMARTCARD_CONFIG_DEFAULT: SmartcardConfig = SmartcardConfig {
     power_on_delay_ms: 50,
     reset_delay_ms: 25,
@@ -56,6 +72,30 @@ mod tests {
         assert_eq!(SMARTCARD_CONFIG_DEFAULT.procedure_timeout_ms, 5000);
         assert_eq!(SMARTCARD_CONFIG_DEFAULT.default_etu, 372);
         assert_eq!(SMARTCARD_CONFIG_DEFAULT.max_clk_hz, 5_000_000);
+    }
+
+    #[test]
+    fn t1_block_total_len_status_word_block() {
+        // SW-only response: NAD=0, PCB=I-block, LEN=2 -> 6 bytes on the wire
+        assert_eq!(t1_block_total_len(&[0x00, 0x00, 0x02], 261), Some(6));
+    }
+
+    #[test]
+    fn t1_block_total_len_empty_s_block() {
+        // S(RESYNC response) carries no INF: LEN=0 -> 4 bytes
+        assert_eq!(t1_block_total_len(&[0x00, 0xE0, 0x00], 261), Some(4));
+    }
+
+    #[test]
+    fn t1_block_total_len_max_ifsc() {
+        assert_eq!(t1_block_total_len(&[0x00, 0x00, 0xFE], 261), Some(258));
+        assert_eq!(t1_block_total_len(&[0x00, 0x00, 0xFE], 257), None);
+    }
+
+    #[test]
+    fn t1_block_total_len_short_prologue() {
+        assert_eq!(t1_block_total_len(&[], 261), None);
+        assert_eq!(t1_block_total_len(&[0x00, 0x00], 261), None);
     }
 }
 

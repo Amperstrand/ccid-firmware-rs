@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — STM32F469 APDU/connect latency: 95.3ms → ~25-30ms APDU, 1507ms → ~0.5s connect
+
+Bench decomposition (`tests/hardware/perf/benchmark_readers.py`, 300 iters, empty
+SELECT on the ComSign eID T=1 card; CardMan 3121 reference 10.9ms/39ms) found three
+systematic costs in the F469 USART driver (`smartcard.rs`), none of them jitter:
+
+- **T=1 exchanges paid a flat +50ms end-of-block drain** — `transmit_raw` read the
+  card's response with a 50ms inter-byte timeout and had no way to know the block
+  was complete, so every APDU waited out the full timeout after the last LRC byte.
+  The block length is fully determined by its 3-byte prologue (NAD PCB LEN, ISO
+  7816-3 §11.3); `transmit_raw` now reads exactly `LEN+4` bytes for T=1 and
+  terminates at the LRC (`t1_block_total_len` helper, host-tested). Non-T=1 keeps
+  the legacy drain.
+- **`read_atr`'s "50ms" inter-byte timeout was really ~0.7-1s** — it was a raw
+  spin counter (`50 * 168_000` iterations) calibrated on an assumed 168
+  cycles/iteration, but one iteration is a single volatile APB1 SR read plus
+  branch (~15-25 cycles at 168MHz). This silent spin after the last ATR byte was
+  the dominant term of the 1507ms connect. Now a `DwtWatchdog` real-time deadline.
+- **`send_byte` quantized every TX byte to whole milliseconds** — the TC wait
+  polled with `delay_ms(1)` granularity, adding up to ~1ms per byte over the
+  ~0.93ms wire time at 11229 baud (~5-9ms per APDU, ~30ms at power-on). Now a
+  tight poll bounded by a DWT deadline (same `byte_timeout_ms` budget).
+
+Blocking architecture unchanged. Expected: APDU p50/p99 ~25-30ms (remaining gap
+to CardMan is wire time at un-negotiated Di=1 — the card's TA1=0x18 offers Di=8;
+real PPS with PPS1 is the follow-up lever), connect ~0.45-0.55s (residual: 267ms
+of blind power-on settle delays + true 50ms ATR inter-byte wait + pcscd
+negotiation exchanges). Not yet bench-verified (no hardware in this session).
+
 ### Fixed — PN7160 auto-activated ISO-DEP tags now detected end-to-end (issue #88 positive case, closes #105)
 
 Bench root cause (nucula, 2026-10-10): the PN7160 AUTO-ACTIVATES a single ISO-DEP target during discovery — an NCI-sanctioned behavior (Linux kernel `nci_target_auto_activated()`, torvalds `net/nfc/nci/ntf.c`; ESPHome's pn7160 handles the same) — and emits `RF_INTF_ACTIVATED` instead of `RF_DISCOVER`, which the presence path discarded. The bench card was therefore reported absent by every firmware revision while sitting on the coil. Three coordinated changes in `pn7160-nci`:
