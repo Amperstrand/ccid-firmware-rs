@@ -68,3 +68,25 @@ The PIN-parse corrections (#1–#3) change `PinVerifyParams` /
   against real pcscd PIN traffic. Bench verification of a full
   `SCardControl(FEATURE_VERIFY_PIN_DIRECT)` round-trip remains the
   recommended follow-up (mock-only changes don't count until then).
+
+## Docs / CI hygiene findings (second sweep, docs-agent leads verified in-tree)
+
+| # | Sev | Location | Gap | Status |
+|---|-----|----------|-----|--------|
+| 19 | P2 | `docs/ESP32_CCID_SPEC_AUDIT.md` | "open investigation: #89" — #89 is CLOSED (confirmed battery timing false positive via #107 forensics); "#88 positive case pending" — #88 is CLOSED/resolved (auto-activation model, bench-verified 2026-10-10) | **Fixed** (claims annotated with the resolutions) |
+| 20 | P2 | `docs/ESP32_CCID_SPEC_AUDIT.md` | dead path `tests/test_ccid.py` (file exists nowhere in the tree) | **Fixed** (annotated historical; current equivalent named) |
+| 21 | P2 | `docs/MILESTONES.md` | "Next steps" section listed issues #10/#9/#8/#6/#7 — all CLOSED (the crates/ restructuring landed); 8 broken `../src/*` links from the pre-workspace flat layout | **Fixed** (past-tense + links rewritten to `../firmware/ccid-firmware/src/*`, all targets verified to exist; missing historical root docs noted in a header) |
+| 22 | P3 | `docs/MILESTONES-AUDIT.md` | "No `CHANGELOG.md`" — CHANGELOG.md exists at repo root; `profile-gemalto-pinpad` referenced as a live feature | **Fixed** (annotated as snapshot-era) |
+| 23 | P2 | `.github/workflows/release.yml` `reproducibility-report` job | Still echoed the dead profile names after the main matrix fix | **Fixed** |
+| 24 | P3 | `docs/CODEX_PR_FEEDBACK_TRIAGE.md` | References `.omo/pr-triage.md` (untracked scratch dir — absent in fresh checkouts) | **Noted** — cross-session scratch pointer, harmless |
+| 25 | P3 | `docs/nucula-campaign/{RUNBOOK,README}.md` | Closed-issue references framed as active | **Noted** — both files are declared "Archived as-is … campaign log, not maintained documentation" (historical by design) |
+| 26 | P3 | `docs/{DESIGN_DECISIONS,CCID_SPEC_AUDIT_REPORT,LIBCCID_DRIVER_AUDIT_REPORT,C_REFERENCE_AUDIT_REPORT}.md` | Bare `src/...` paths from the pre-workspace layout | **Noted** — all targets resolve under `firmware/ccid-firmware/src/` (verified); `readers/supported_readers.txt` in LIBCCID_DRIVER_AUDIT_REPORT is a libccid-source-layout reference, not a repo file |
+| 27 | P3 | `README.md` | Repository-guide bullet claimed `protocol_unit.rs` carries its own `#[cfg(test)]` module (dropped as a duplicate of the crate suites) | **Fixed** |
+
+Verified-clean in the same sweep: `docs/SPECIFICATIONS.md` reader-spec
+references (valid once `reference/CCID` submodule is initialized — note
+the submodule is NOT initialized in fresh worktrees by default, which
+makes those paths *look* missing locally), CODEX triage table (all 53
+rows ADDRESSED, consistent with closed #113/#114), and
+PERF_AND_DRY_STRATEGY's open-issue citations (#87/#92/#121 all genuinely
+open).

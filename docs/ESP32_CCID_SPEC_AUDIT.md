@@ -64,8 +64,8 @@ cases per reader, each followed by a valid GetSlotStatus resync proof. Run
 against BOTH bench readers (nucula `pn7160-ccid`, m5stick MFRC522): nucula
 87/87; m5stick 86/87 — the one flagged case (truncated header `03 06 65 01`)
 recovers with a valid response under generous probe timing, so it is suspected
-to be a battery timing false positive, not a parser stall (open investigation:
-#89).
+to be a battery timing false positive, not a parser stall (later **confirmed**
+a false positive — issue #89 closed via the #107 reader-retirement forensics).
 
 **Wire-behavior profiles** (`ccid_serial_server.rs::ServeConfig`): UART mains
 NAK malformed frames and emit in-stream `NotifySlotChange` (libccidtwin
@@ -187,7 +187,7 @@ the shared crate only.
 | Wire conformance battery (`conformance_battery.py`, both bench readers, 2026-10-09) | 7-case card-absent command battery, structural nucula↔m5stick agreement | **7/7 both readers, AGREE** |
 | Wire fuzz battery (same script) | 87 cases/reader (7 fixed + 80 seeded-random) + resync proof after each | nucula **87/87**; m5stick **86/87** (one timing-suspect flag, #89) |
 | pcscd restart + GetSlotStatus soaks (same script) | 10 restarts, 1000 status round-trips/reader | clean |
-| On-target CCID tests, nucula `pn7160-ccid` over USB-CDC (`tests/test_ccid.py`, see `docs/nucula-campaign/RUNBOOK.md`) | full protocol battery on hardware | **13/13** (68 s, ai-legion) |
+| On-target CCID tests, nucula `pn7160-ccid` over USB-CDC (historical path `tests/test_ccid.py`, since restructured — today's equivalent is `tests/hardware/nucula/test_nucula.py`; campaign log in `docs/nucula-campaign/RUNBOOK.md`) | full protocol battery on hardware | **13/13** (68 s, ai-legion) |
 | pcscd/libccidtwin interop | readers enumerate (`GemPCTwin serial`, `Nucula CCID`), ATRs served | bench known-good 2026-10-09 (AGENTS.md matrix) |
 
 Battery case list (7): Escape(0x02), Escape(0x01 01 01), GetSlotStatus,
@@ -232,8 +232,9 @@ all-msg-types rounds.
 10. **Bench-known NFC gaps (not CCID-dispatch bugs)**: m5stick marginal-coupling
     activation flakiness — mitigated in `9fd1626` (power_on retries 4× with
     frontend reset, bench-verified 20/20); nucula presence stickiness (#88) —
-    TTL re-arm landed in `9fd1626`, negative case bench-verified, positive case
-    (card placed on coil) pending.
+    **resolved** (closed 2026-10-10): the PN7160 auto-activates a single
+    ISO-DEP target during discovery; presence = live auto-activation, ATR +
+    APDU relay bench-verified with the card on the coil.
 
 ---
 

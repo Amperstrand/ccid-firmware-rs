@@ -89,11 +89,18 @@ This document defines the milestones required to transform the STM32F469-DISCO f
 - FTDI FT232 chip wedged by espflash DTR/RTS toggles — physical USB replug required after flash
 - `esp-idf-svc` requires ESP-IDF 5.2.4+ (pinned via `esp_idf_version = "tag:v5.2.4"`)
 
-**Next steps (refactoring toward shared architecture):**
-- Extract shared CCID protocol constants/types into a shared crate (GitHub issue #10)
-- Split STM32 `ccid.rs` (1270 lines) and `smartcard.rs` (936 lines) into focused modules (issues #9, #8)
-- Unify ATR parsing (issue #6)
-- Add STM32 CCID handler unit tests (issue #7)
+**Completed refactorings (toward shared architecture — issues #10, #9, #8, #6, #7, all closed):**
+- Extracted shared CCID protocol constants/types into `crates/ccid-protocol` (issue #10)
+- Split the STM32 firmware into focused modules (`ccid.rs`, `smartcard.rs`, …) (issues #9, #8)
+- Unified ATR parsing in `crates/ccid-protocol/src/atr.rs` (issue #6)
+- Added STM32 CCID handler unit tests (issue #7)
+
+> Historical note: this document predates the workspace restructuring.
+> Paths of the form `../src/...` below referred to the then-flat layout and
+> now resolve to `firmware/ccid-firmware/src/...`; the documents named as
+> plain root-level files (LEARNINGS.md, PINPAD-IMPLEMENTATION-PLAN.md,
+> PROTOCOL_SEEDKEEPER.md, GEMALTO_KNOWN_GOOD_SUMMARY.md, VERIFICATION.md)
+> no longer exist in the tree.
 
 ---
 
@@ -174,7 +181,7 @@ Offset 12+: abPINApdu             (var)     - APDU template
 ```
 
 **Internal References:**
-- [src/pinpad/mod.rs](../src/pinpad/mod.rs) - `PinVerifyParams::parse()` already implemented
+- [src/pinpad/mod.rs](../firmware/ccid-firmware/src/pinpad/mod.rs) - `PinVerifyParams::parse()` already implemented
 - [docs/PINPAD-ARCHITECTURE.md](PINPAD-ARCHITECTURE.md) §6 - Full structure reference
 - [PINPAD-IMPLEMENTATION-PLAN.md](../PINPAD-IMPLEMENTATION-PLAN.md) - Data structures
 
@@ -212,8 +219,8 @@ Offset 12+: abPINApdu             (var)     - APDU template
 6. Verify secure PIN buffer clearing
 
 **Internal References:**
-- [src/pinpad/ui.rs](../src/pinpad/ui.rs) - Touchscreen UI with embedded-graphics
-- [src/pinpad/state.rs](../src/pinpad/state.rs) - State machine implementation
+- [src/pinpad/ui.rs](../firmware/ccid-firmware/src/pinpad/ui.rs) - Touchscreen UI with embedded-graphics
+- [src/pinpad/state.rs](../firmware/ccid-firmware/src/pinpad/state.rs) - State machine implementation
 - [examples/display_touch.rs](../examples/display_touch.rs) - Display/touch init reference
 
 **External References:**
@@ -259,8 +266,8 @@ CLA=00 INS=20 P1=00 P2=81 Lc=NN [PIN_BYTES]
 ```
 
 **Internal References:**
-- [src/pinpad/apdu.rs](../src/pinpad/apdu.rs) - `VerifyApduBuilder` implementation
-- [src/smartcard.rs](../src/smartcard.rs) - `transmit_apdu()` method
+- [src/pinpad/apdu.rs](../firmware/ccid-firmware/src/pinpad/apdu.rs) - `VerifyApduBuilder` implementation
+- [src/smartcard.rs](../firmware/ccid-firmware/src/smartcard.rs) - `transmit_apdu()` method
 - [PROTOCOL_SEEDKEEPER.md](../PROTOCOL_SEEDKEEPER.md) - SeedKeeper protocol
 
 **External References:**
@@ -301,8 +308,8 @@ CLA=00 INS=20 P1=00 P2=81 Lc=NN [PIN_BYTES]
 | InvalidLength | 0x07 (CMD_ABORTED) |
 
 **Internal References:**
-- [src/ccid.rs](../src/ccid.rs) - Error code constants
-- [src/pinpad/mod.rs](../src/pinpad/mod.rs) - `PinResult` enum
+- [src/ccid.rs](../firmware/ccid-firmware/src/ccid.rs) - Error code constants
+- [src/pinpad/mod.rs](../firmware/ccid-firmware/src/pinpad/mod.rs) - `PinResult` enum
 
 **Dependencies:** M7 (basic flow must work)
 
@@ -491,7 +498,7 @@ CLA=00 INS=24 P1=00 P2=81 Lc=10 [OLD_PIN_8][NEW_PIN_8]
 
 **Internal References:**
 - [docs/SECURITY_AND_BOOTLOADER.md](SECURITY_AND_BOOTLOADER.md) §9 - Secure PIN Entry
-- [src/pinpad/mod.rs](../src/pinpad/mod.rs) - `secure_clear()` function
+- [src/pinpad/mod.rs](../firmware/ccid-firmware/src/pinpad/mod.rs) - `secure_clear()` function
 
 **External References:**
 - [Common Criteria PP-0083](https://www.commoncriteriaportal.org/nfs/ccpfiles/files/ppfiles/pp0083b_pdf.pdf) - eID reader security requirements

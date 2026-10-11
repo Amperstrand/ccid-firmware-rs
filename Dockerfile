@@ -1,16 +1,18 @@
  # Reproducible build environment for STM32 CCID firmware
-#
-# Usage:
-#   docker build -t ccid-firmware-builder .
-#   docker build --build-arg PROFILE=profile-gemalto-plain -t ccid-firmware-builder .
-#   docker create --name extract ccid-firmware-builder
-#   docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
-#   docker rm extract
-
-FROM rust:1.92-slim-bookworm
-
-# Build argument for device profile (default: profile-cherry-st2100)
-ARG PROFILE=profile-cherry-st2100
+ #
+ # Usage:
+ #   docker build -t ccid-firmware-builder .
+ #   docker build --build-arg PROFILE=profile-gemalto-idbridge-k30 -t ccid-firmware-builder .
+ #   docker create --name extract ccid-firmware-builder
+ #   docker cp extract:/app/target/thumbv7em-none-eabihf/release/ccid-firmware ./ccid-firmware.elf
+ #   docker rm extract
+ 
+ FROM rust:1.92-slim-bookworm
+ 
+ # Build argument for device profile (default: profile-cherry-smartterminal-st2xxx;
+ # also valid: profile-gemalto-idbridge-ct30, profile-gemalto-idbridge-k30 —
+ # the feature names in firmware/ccid-firmware/Cargo.toml [features])
+ ARG PROFILE=profile-cherry-smartterminal-st2xxx
 
 # Install ARM cross-compilation toolchain
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,10 +38,10 @@ COPY .cargo ./.cargo
 COPY rust-toolchain.toml ./
 
 # Build firmware with profile-specific features
-RUN if [ "$PROFILE" = "profile-cherry-st2100" ]; then \
+RUN if [ "$PROFILE" = "profile-cherry-smartterminal-st2xxx" ]; then \
       cargo build --release -p ccid-firmware-rs --target thumbv7em-none-eabihf; \
     else \
-      cargo build --release -p ccid-firmware-rs --no-default-features --features "$PROFILE" --target thumbv7em-none-eabihf; \
+      cargo build --release -p ccid-firmware-rs --no-default-features --features "stm32f469,$PROFILE" --target thumbv7em-none-eabihf; \
     fi && \
     mkdir -p /app/output && \
     cp target/thumbv7em-none-eabihf/release/ccid-firmware /app/output/ccid-firmware.elf && \
