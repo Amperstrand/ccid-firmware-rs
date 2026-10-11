@@ -368,9 +368,17 @@ impl<T: Transport> Pn7160Driver<T> {
         Ok(atr_bytes.len())
     }
 
-    /// Deactivate the RF interface back to idle.
+    /// Deactivate the RF interface and return the reader to POLLING.
     pub fn power_off(&mut self) {
-        let _ = reader::deactivate_idle(&mut self.transport);
+        // CCID power-off semantics: the card powers down but the reader
+        // keeps polling — that is how the next insertion is seen. Going
+        // to IDLE instead left no RF_DISCOVER running, so the
+        // auto-activation NTF never re-fired and presence (GSS bStatus)
+        // read absent forever after a host IccPowerOff (bench
+        // 2026-10-11: pcscd "Card removed" after its open-sequence
+        // power-off; bStatus 01 → 02 stuck while the card sat on the
+        // coil).
+        let _ = reader::deactivate_to_discovery(&mut self.transport);
         self.active = false;
         self.uid_len = 0;
         self.last_ntf = None;
@@ -423,13 +431,6 @@ mod tests {
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
         t.push_notification(&[MT_NTF, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_INIT, 0x01, STATUS_OK]);
-        t.push_reply(&[
-            MT_RSP | GID_CORE,
-            OID_CORE_SET_CONFIG,
-            0x02,
-            STATUS_OK,
-            0x00,
-        ]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_MAP, 0x01, STATUS_OK]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
     }
@@ -619,6 +620,38 @@ mod tests {
         t.push_notification(&auto_activation_ntf());
         let mut drv = Pn7160Driver::new(t);
 
+        assert!(drv.is_card_present());
+    }
+
+    // given a powered-on session (bench 2026-10-11: pcscd's open
+    // sequence always sends IccPowerOff), when power_off runs, then the
+    // reader returns to DISCOVERY (RF_DEACTIVATE type=DISCOVERY, not
+    // IDLE) and the next auto-activation NTF re-establishes presence —
+    // from IDLE no discovery was running and presence read absent
+    // forever ("Card removed" in pcscd while the card sat on the coil).
+    #[test]
+    fn power_off_returns_to_discovery_and_presence_re_latches() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        let mut atr = [0u8; 32];
+        let n = drv.power_on(&mut atr).expect("power_on");
+        assert!(n > 0);
+
+        // power_off: deactivate-to-DISCOVERY RSP scripted; the NTF
+        // drain after it consumes nothing (empty queue).
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
+        drv.power_off();
+        assert!(!drv.session_active());
+        let sent = drv.transport_mut();
+        let last_cmd: [u8; 4] = sent.sent.last().map(|f| [f[0], f[1], f[2], f[3]]).unwrap();
+        assert_eq!(last_cmd, [0x21, OID_RF_DEACTIVATE, 0x01, 0x03]);
+
+        // the field re-polls: the next auto-activation re-latches
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
         assert!(drv.is_card_present());
     }
 

@@ -685,9 +685,13 @@ impl Step {
 ///     is tolerated the same way).
 ///  2. Flush up to three stale notifications before CORE_INIT (nci.c:218).
 ///  3. CORE_INIT — RSP status must be OK (nci.c:214-232).
-///  4. CORE_SET_CONFIG(TOTAL_DURATION) — ADVISORY: the bench
-///     NFCC may reject it (num_applied=0) and still run discovery;
-///     non-OK is tolerated (see [`Step::advisory`], actdiag 2026-10-11).
+///  4. NO CORE_SET_CONFIG: UM11495's TOTAL_DURATION example (510 ms)
+///     makes discovery SINGLE-SHOT — polling dies ~510 ms in and
+///     presence never re-arms after a power-off (bench 2026-10-11:
+///     pcscd "Card removed" while the card sat on the coil). The NXP
+///     default (perpetual discovery) is what a reader wants; the bench
+///     ran weeks on it. [`Step::SetConfigTotalDuration`] and the
+///     reference-locked TLV stay for documentation/tests only.
 ///  5. RF_DISCOVER_MAP(ISO-DEP) and RF_DISCOVER(passive A) — status OK.
 pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     // 1. CORE_RESET + notification drain.
@@ -700,12 +704,7 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     let _ = t.drain(); // CORE_RESET_NTF (NCI 2.0 always follows; tolerate absence)
 
     // 3-5. Straight command/response ladder with status checks.
-    for step in [
-        Step::CoreInit,
-        Step::SetConfigTotalDuration,
-        Step::RfDiscoverMap,
-        Step::RfDiscover,
-    ] {
+    for step in [Step::CoreInit, Step::RfDiscoverMap, Step::RfDiscover] {
         let rsp = t.transact(step.tx_bytes()).ok_or("transport ran dry")?;
         if !rsp.is_rsp_to(step.tx_bytes()) {
             return Err("response does not match command");
@@ -904,12 +903,11 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass");
-        assert_eq!(t.sent.len(), 5);
+        assert_eq!(t.sent.len(), 4);
         assert_eq!(t.drained, 1);
     }
 
@@ -919,12 +917,11 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass with reset NTF");
-        assert_eq!(t.sent.len(), 5);
+        assert_eq!(t.sent.len(), 4);
         assert_eq!(t.drained, 1);
     }
 
@@ -946,12 +943,11 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("SET_CONFIG rejection must not abort");
-        assert_eq!(t.sent.len(), 5);
+        assert_eq!(t.sent.len(), 4);
         assert_eq!(t.drained, 1);
     }
 
