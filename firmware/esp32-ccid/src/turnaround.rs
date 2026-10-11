@@ -220,10 +220,7 @@ mod tests {
         assert_eq!(u32::from_le_bytes(buf[16..20].try_into().unwrap()), 3);
         assert_eq!(u32::from_le_bytes(buf[20..24].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(buf[24..28].try_into().unwrap()), 1);
-        assert_eq!(
-            u32::from_le_bytes(buf[28..32].try_into().unwrap()),
-            12_345
-        );
+        assert_eq!(u32::from_le_bytes(buf[28..32].try_into().unwrap()), 12_345);
     }
 
     #[test]
@@ -248,13 +245,34 @@ mod tests {
     /// §7.4 Table 3).
     #[test]
     fn outgoing_block_kind_from_pcb() {
-        assert_eq!(OutgoingBlockKind::from_pcb(0x02), Some(OutgoingBlockKind::IBlock));
-        assert_eq!(OutgoingBlockKind::from_pcb(0x03), Some(OutgoingBlockKind::IBlock));
-        assert_eq!(OutgoingBlockKind::from_pcb(0xA2), Some(OutgoingBlockKind::RBlock));
-        assert_eq!(OutgoingBlockKind::from_pcb(0xB2), Some(OutgoingBlockKind::RBlock));
-        assert_eq!(OutgoingBlockKind::from_pcb(0xF2), Some(OutgoingBlockKind::SBlock));
-        assert_eq!(OutgoingBlockKind::from_pcb(0xC2), Some(OutgoingBlockKind::SBlock));
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0x02),
+            Some(OutgoingBlockKind::IBlock)
+        );
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0x03),
+            Some(OutgoingBlockKind::IBlock)
+        );
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0xA2),
+            Some(OutgoingBlockKind::RBlock)
+        );
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0xB2),
+            Some(OutgoingBlockKind::RBlock)
+        );
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0xF2),
+            Some(OutgoingBlockKind::SBlock)
+        );
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0xC2),
+            Some(OutgoingBlockKind::SBlock)
+        );
         assert_eq!(OutgoingBlockKind::from_pcb(0x40), None);
-        assert_eq!(OutgoingBlockKind::from_pcb(0x00), Some(OutgoingBlockKind::IBlock));
+        assert_eq!(
+            OutgoingBlockKind::from_pcb(0x00),
+            Some(OutgoingBlockKind::IBlock)
+        );
     }
 }
