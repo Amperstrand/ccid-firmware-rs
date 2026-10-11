@@ -487,6 +487,90 @@ bug made the conformance battery's GetSlotStatus cases meaningless
 (absent cards passed, active cards failed) — exactly the kind of
 test-infrastructure rot that wastes bench sessions.
 
+### Review-quality protocol (how to review + be reviewed)
+
+**Reviewing others' work:**
+1. **Read the diff, not the description** — verify every claim the
+   PR/commit makes against the actual code. A commit message saying
+   "fixes X" is a lead, not evidence.
+2. **Run the tests yourself** — `cargo test --workspace --target
+   x86_64-unknown-linux-gnu` from the repo root, plus the esp32 crate.
+   A green CI badge is the floor, not the ceiling.
+3. **Check the spec** — if the change touches protocol behavior (CCID,
+   NCI, ISO 7816, ISO 14443), cite the section. The `// CCID_SPEC:`
+   markers + specquotes.toml enforce this for comments; apply the same
+   standard to code.
+4. **Look for the second-order effects**: does this change break the
+   conformance battery? The perf baseline? The clean-wire rule? Check
+   `docs/PERF_AND_DRY_STRATEGY.md` for cross-cutting invariants.
+5. **Review the tests too** — a new feature without a regression test
+   is half-done; a test that asserts the bug (not the fix) is worse
+   than no test.
+6. **Size matters**: >300-line diffs get a second pass. If you can't
+   hold the whole change in your head, split the review.
+
+**Being reviewed (Codex or human):**
+- Every finding gets a REPLY — done (commit hash) or skipped (reason).
+  The reply IS the audit trail; silence = the finding compounds.
+- P1 findings get fixed before merge when possible; if deferred, a
+  tracking issue MUST be created in the same session.
+- Mock-only fixes don't count until verified against the hardware —
+  the "mock/hardware divergence" class is this repo's #1 bug source
+  (see the Session Lessons section).
+
+### Testing through labgrid (how hardware verification works)
+
+**The five places own the hardware.** Any test that touches a physical
+device (flashing, pcscd enumeration, ATR capture, APDU relay, GPG
+flows) must acquire the device's labgrid place first:
+
+```bash
+labgrid-client -p stm32-ccid acquire    # or nucula-c3, m5stick, ref-acr1252
+# ... your hardware work ...
+labgrid-client -p stm32-ccid release
+```
+
+**What each place provides:**
+
+| Place | Device | Test path |
+|---|---|---|
+| `stm32-ccid` | F469-DISCO contact DUT | `pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` (7 tests: USB enum, pcscd, ATR, APDU relay ×2, pinpad, escape 0xD0) |
+| `nucula-c3` | ESP32-C3 + PN7160 DUT | `pytest tests/hardware/nucula/test_nucula.py -v --hil` (responsive, wallet boots, I2C scan, fw ACKs, NCI init, sustained) |
+| `m5stick` | M5Stack MFRC522 DUT | via the differential/battery suites |
+| `ref-acr1252` | ACR1252 reference NFC | differential oracle (`tests/hardware/nfc/`) |
+| `ref-cardman` | CardMan 3121 reference contact | perf baseline |
+
+**The test pyramid (bottom to top):**
+1. **Host tests** (no hardware): `cargo test --workspace --target
+   x86_64-unknown-linux-gnu` — run from repo root, every commit.
+2. **Conformance battery** (no card): `python3
+   tests/hardware/nfc/conformance_battery.py` — framing fuzz, GetSlotStatus
+   soak, pcscd restart resilience. Run per firmware flash.
+3. **Card-level differential** (card on coil): `pytest
+   tests/hardware/nfc/test_differential.py -v --hil` — same card through
+   every reader, ATR + AID + read-only APDU agreement.
+4. **GPG HIL** (OpenPGP card on coil): `pytest
+   tests/hardware/nfc/test_gpg.py -v --hil` — enumerate → AID SELECT →
+   `gpg --card-status` per reader.
+5. **Performance benchmark**: `python3
+   tests/hardware/perf/benchmark_readers.py -n 300` — percentile latency
+   per reader; run before/after any perf-touching change.
+
+**Bench coordination rules:**
+- **One hardware holder at a time** — acquire the place or don't touch
+  the device. Concurrent sessions race ports and corrupt each other's
+  results (paid for repeatedly, see Session Lessons).
+- **pcscd serialization** — any pcscd stop/start must go through
+  `flock /run/lock/bench-pcscd.lock`; the conformance battery stops
+  pcscd, so no other test can hold it during a battery run.
+- **Cards move** — verify coupling (`present` flag via Escape 0xD0)
+  before any card-level conclusion; a cardless reader on a known-good
+  build after a hard reset is a PHYSICAL issue, not firmware.
+- **Clean-wire is inviolable** — no unsolicited log output on the CCID
+  wire; diagnostics go through Escape 0xD0/0xD1 or a `ble` build.
+- **Verify what booted** — every flash must be proven via FWID marker
+  or boot behavior, never trusted from the flash log alone.
+
 ### Working-tree coordination
 
 Sessions share this checkout — check `git status` before building.
