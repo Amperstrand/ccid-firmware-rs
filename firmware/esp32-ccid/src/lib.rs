@@ -98,6 +98,11 @@ pub mod log_shim;
 /// Host-testable log ring shared by the BLE debug logger shells.
 pub mod ble_log_queue;
 
+/// pcscd-over-Bluetooth-SPP transport: pure serving glue (host-tested,
+/// always compiled — `ble_log_queue` pattern) + a target shell gated on
+/// the `spp` feature inside the module.
+pub mod spp_server;
+
 #[cfg(feature = "ble")]
 pub mod ble_debug;
 
