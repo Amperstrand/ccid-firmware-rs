@@ -1,0 +1,15 @@
+[Unit]
+Description=nucula CCID broker (PTY relay for pcscd, issue #117)
+# The broker must be serving before pcscd opens the PTY: the symlink
+# /dev/nucula-ccid only appears once the reader answered a framed
+# GetSlotStatus (CDC-burst rule #1, issue #119).
+Before=pcscd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /root/src/ccid-firmware-rs/host-tools/nucula-ccid-broker.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

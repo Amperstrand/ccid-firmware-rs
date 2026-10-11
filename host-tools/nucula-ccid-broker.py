@@ -8,10 +8,13 @@ session therefore boot-loops the reader.
 
 HOW: this broker is the ONLY process that ever opens the CDC. It uses
 the safe opener (dtr/rts deasserted BEFORE open — one rst per fresh
-open is still expected on C3), settles through the boot, purges the
-banner, and then holds the port open forever. pcscd's libccidtwin opens
-the PTY symlink instead, where termios/TIOCMSET line control is a
-harmless no-op. CCID bytes flow byte-transparent in both directions.
+open is still expected on C3), settles through the boot, PROVES the
+reader is serving (framed GetSlotStatus until an LRC-valid answer, the
+issue #119 first-response ~1.3 s window), and only then exposes the PTY
+symlink — pcscd's first handshake always lands on a serving reader.
+It then holds the port open forever. pcscd's libccidtwin opens the PTY
+symlink instead, where termios/TIOCMSET line control is a harmless
+no-op. CCID bytes flow byte-transparent in both directions.
 
 USAGE:
   python3 nucula-ccid-broker.py            # foreground
@@ -33,7 +36,43 @@ import time
 BY_ID = ("/dev/serial/by-id/"
          "usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00")
 LINK = "/dev/nucula-ccid"
-SETTLE_S = 6.0  # one rst:0x15 boot cycle per fresh open (C3 behavior)
+
+# GemPC Twin framing (ccid-transport-serial wire format) — only what the
+# serving probe needs: LRC-validated GetSlotStatus request/response.
+SYNC = 0x03
+CTRL_ACK = 0x06
+MSG_GET_SLOT_STATUS = 0x65
+
+
+def lrc(data: bytes) -> int:
+    x = 0
+    for b in data:
+        x ^= b
+    return x
+
+
+def gss_frame(seq: int) -> bytes:
+    header = bytes([MSG_GET_SLOT_STATUS, 0, 0, 0, 0, 0, seq, 0, 0, 0])
+    body = bytes([SYNC, CTRL_ACK]) + header
+    return body + bytes([lrc(body)])
+
+
+def first_rdr_frame(buf: bytes):
+    """First structurally-valid RDR frame (mt >= 0x80) in `buf`, or None."""
+    i = 0
+    while i + 13 <= len(buf):
+        if buf[i] != SYNC:
+            i += 1
+            continue
+        dlen = int.from_bytes(buf[i + 3:i + 7], "little")
+        total = 13 + dlen
+        if total > len(buf) - i:
+            i += 1
+            continue
+        if buf[i + 2] & 0x80 and lrc(buf[i:i + total - 1]) == buf[i + total - 1]:
+            return buf[i:i + total]
+        i += 1
+    return None
 
 
 def open_cdc() -> serial.Serial:
@@ -46,6 +85,47 @@ def open_cdc() -> serial.Serial:
     s.rts = False
     s.open()
     return s
+
+
+def boot_settle(s: serial.Serial, cap_s: float = 6.0) -> None:
+    """Drain the rst:0x15 boot cycle until the line goes idle (two empty
+    reads, 1.5 s cap per the bench reader-timing rule), hard-capped at
+    `cap_s`. Never fixed-size reads: inWaiting()-sized chunks only."""
+    deadline = time.monotonic() + cap_s
+    idle_deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        n = s.inWaiting()
+        if n:
+            s.read(n)
+            idle_deadline = time.monotonic() + 1.5
+        elif time.monotonic() > idle_deadline:
+            return
+        else:
+            time.sleep(0.02)
+    s.reset_input_buffer()  # cap hit: drop whatever is left
+
+
+def wait_serving(s: serial.Serial, budget_s: float = 2.5) -> bool:
+    """CDC-burst rule (issue #119): the first valid CCID response lands
+    ~1.3 s after open. Poll framed GetSlotStatus until an LRC-valid RDR
+    frame answers — the reader is provably serving BEFORE any pcscd
+    byte is forwarded. Bonus: the probe GSS is the firmware's first
+    CCID frame, which arms its clean-wire log ceiling."""
+    seq = 0
+    deadline = time.monotonic() + budget_s
+    while time.monotonic() < deadline:
+        seq = (seq % 255) + 1
+        s.write(gss_frame(seq))
+        t0 = time.monotonic()
+        buf = b""
+        while time.monotonic() - t0 < 0.3:
+            n = s.inWaiting()
+            if n:
+                buf += s.read(n)
+                if first_rdr_frame(buf):
+                    return True
+            time.sleep(0.01)
+    return False
 
 
 def pty_raw(fd: int) -> None:
@@ -80,7 +160,130 @@ def purge_stale(master: int, slave_path: str) -> None:
     t.tcflush(master, t.TCIOFLUSH)
 
 
+def bring_up_cdc():
+    """Open the CDC safely, settle the boot, prove serving. Returns the
+    Serial or None (caller retries)."""
+    try:
+        s = open_cdc()
+    except serial.SerialException as e:
+        print(f"broker: CDC open failed ({e}) — retrying", flush=True)
+        return None
+    boot_settle(s)
+    s.reset_input_buffer()  # boot banner must never reach pcscd
+    if not wait_serving(s):
+        print("broker: CDC opened but reader never served a framed GSS "
+              "— dropping and retrying", flush=True)
+        try:
+            s.close()
+        except Exception:
+            pass
+        return None
+    return s
+
+
+MSG_ICC_POWER_OFF = 0x63
+
+
+def synth_power_off_response(host_frame: bytes) -> bytes:
+    """Echo + SlotStatus ack for a suppressed IccPowerOff (issue #125
+    shim): byte-identical to what the firmware answered for the real
+    power-off on the bench (RDR_to_PC_SlotStatus, bStatus=0x01
+    present+inactive)."""
+    echo = host_frame
+    seq = host_frame[8]
+    body = bytes([SYNC, CTRL_ACK, 0x81, 0, 0, 0, 0, 0, seq, 0x01, 0x00, 0x00])
+    return echo + body + bytes([lrc(body)])
+
+
+def split_frames(buf: bytes):
+    """Yield (start, end, type) for each complete GemPC frame in buf."""
+    i = 0
+    while i + 13 <= len(buf):
+        if buf[i] != SYNC:
+            i += 1
+            continue
+        dlen = int.from_bytes(buf[i + 3:i + 7], "little")
+        total = 13 + dlen
+        if total > len(buf) - i:
+            break
+        yield i, i + total, buf[i + 2]
+        i += total
+
+
+class PowerOffShim:
+    """IccPowerOff suppression (TEMPORARY firmware bridge, issue #125).
+
+    The bench PN7160 firmware wedges presence permanently after a host
+    IccPowerOff: the re-arm probe's RF_DISCOVER is rejected with NCI
+    status 0xA0 (DISCOVERY_ALREADY_STARTED) and the deactivated ISO-DEP
+    card sits in HALT, never re-activating — so pcscd's init sequence
+    (power-on -> read ATR -> power-off) makes the card 'disappear' and
+    EHStatusHandlerThread reports it removed forever (bench
+    2026-10-11, wire-logged via this broker).
+
+    Until the firmware fix lands, the broker answers IccPowerOff
+    locally: the card physically stays powered, presence stays up, and
+    the next session's IccPowerOn reuses the live activation. Deviation
+    from CCID semantics: the card is not actually powered down between
+    sessions (documented; remove with POWER_OFF_SHIM=0).
+    """
+
+    def __init__(self) -> None:
+        self.enabled = os.environ.get("POWER_OFF_SHIM", "1") == "1"
+        self.buf = bytearray()
+        if self.enabled:
+            print("broker: power-off shim ACTIVE (#125 bridge)", flush=True)
+
+    def process(self, data: bytes) -> tuple[bytes, bytes]:
+        """Buffer host bytes until frames complete. Returns
+        (bytes_to_forward, bytes_to_answer_locally)."""
+        self.buf += data
+        if not self.enabled:
+            out, self.buf = bytes(self.buf), bytearray()
+            return out, b""
+        # Junk without a SYNC anchor would buffer forever: past one max
+        # CCID frame of bytes with no complete frame, pass it through.
+        if len(self.buf) > 13 + 65535:
+            out, self.buf = bytes(self.buf), bytearray()
+            return out, b""
+        frames = list(split_frames(bytes(self.buf)))
+        if not frames:
+            return b"", b""
+        end = frames[-1][1]
+        chunk, self.buf = bytes(self.buf[:end]), bytearray(self.buf[end:])
+        forward = bytearray()
+        synth = bytearray()
+        pos = 0
+        for a, b, ftype in frames:
+            forward += chunk[pos:a]
+            if ftype == MSG_ICC_POWER_OFF:
+                synth += synth_power_off_response(chunk[a:b])
+                print("broker: power-off suppressed (shim)", flush=True)
+            else:
+                forward += chunk[a:b]
+            pos = b
+        forward += chunk[pos:]
+        return bytes(forward), bytes(synth)
+
+
+def tap(direction: str, data: bytes) -> None:
+    """Journal wire traffic (both directions) for bench diagnostics —
+    the broker is the single point where the whole pcscd exchange is
+    visible."""
+    if data:
+        print(f"wire {direction}: {data.hex(' ')}", flush=True)
+
+
 def main() -> int:
+    # CDC comes up FIRST: the symlink is only created once the reader
+    # has PROVEN it is serving, so a pcscd start can never race a
+    # booting reader (CDC-burst rule #1, issue #119).
+    s = None
+    while s is None:
+        s = bring_up_cdc()
+        if s is None:
+            time.sleep(2.0)
+
     master, slave = pty.openpty()
     pty_raw(slave)
     import termios as t
@@ -95,19 +298,10 @@ def main() -> int:
     # for purge_stale(). Keeping it open would let stale bytes survive
     # pcscd restarts.
     os.close(slave)
+    print(f"broker: {s.port} <-> {LINK} -> {slave_path}", flush=True)
+    shim = PowerOffShim()
 
     while True:  # CDC recovery loop: re-open, keep the SAME PTY alive
-        try:
-            s = open_cdc()
-        except serial.SerialException as e:
-            print(f"broker: CDC open failed ({e}) — retrying", flush=True)
-            time.sleep(2.0)
-            continue
-        time.sleep(SETTLE_S)
-        s.reset_input_buffer()  # boot banner must never reach pcscd
-        import termios as t
-        t.tcflush(master, t.TCIOFLUSH)  # stale bytes must not reach pcscd
-        print(f"broker: {s.port} <-> {LINK} -> {slave_path}", flush=True)
         fds = [s.fd, master]
         while True:
             try:
@@ -121,6 +315,7 @@ def main() -> int:
                     break
                 if not data:
                     break  # CDC gone (reset by another process / unplug)
+                tap("cdc->pty", data)
                 os.write(master, data)
             if master in r:
                 try:
@@ -132,16 +327,26 @@ def main() -> int:
                     time.sleep(0.2)
                     continue
                 if data:
-                    try:
-                        os.write(s.fd, data)
-                    except OSError:
-                        break
+                    tap("pty->cdc", data)
+                    forward, synth = shim.process(data)
+                    if forward:
+                        try:
+                            os.write(s.fd, forward)
+                        except OSError:
+                            break
+                    if synth:
+                        os.write(master, synth)
         try:
             s.close()
         except Exception:
             pass
         print("broker: CDC dropped — recovering (PTY stays up)", flush=True)
-        time.sleep(2.0)
+        s = None
+        while s is None:
+            time.sleep(2.0)
+            s = bring_up_cdc()
+        import termios as t2
+        t2.tcflush(master, t2.TCIOFLUSH)  # stale bytes must not reach pcscd
 
 
 if __name__ == "__main__":
@@ -151,7 +356,3 @@ if __name__ == "__main__":
         if os.path.islink(LINK):
             os.unlink(LINK)
         sys.exit(0)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
