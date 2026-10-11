@@ -58,7 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gates: `cargo test --workspace` 549 passed / 0 failed (ccid-core
   suite 65 → 90; firmware lib 88 → 90; four resurrected suites +106);
   both STM32 MCU builds and both clippy passes clean; fmt clean;
-  spec-quote drift check clean.
+  spec-quote drift check clean. Bench-verified the same day: labgrid
+  HIL 7/7 on the F469 (USB enum, pcscd + ComSign ATR, APDU relay,
+  PIN-pad features, Escape 0xD0).
 
 ### Fixed — PN7160 SET_CONFIG TLV corrected per reference implementations (Reference-First founding incident)
 

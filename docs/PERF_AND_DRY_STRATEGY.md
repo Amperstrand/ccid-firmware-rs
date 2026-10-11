@@ -81,9 +81,10 @@ PIN processing); SetParameters acceptance reaches the USART via the
 `take_parameters_accepted` event. Both wire behaviors are pinned by
 tests on both sides (esp32 137/137 byte-identical; firmware suites +
 the resurrected root characterization suites over the wrapper;
-ccid-core contact-profile tests). HIL re-verification pending — run
-`pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` on the next
-bench session before shipping a release binary.
+ccid-core contact-profile tests). **HIL verified 7/7 on the bench
+(2026-10-11, dry-phase2 build sha256 8393464e…)**: USB enum, pcscd
+detection + ComSign ATR, APDU relay, PIN-pad feature advertisement,
+Escape 0xD0 counters — the port is hardware-proven end-to-end.
 
 ### 3.2 What osmo-ccid-firmware teaches (reference study)
 
@@ -124,7 +125,7 @@ block↔APDU logic) and moves to ccid-core unchanged.
 | 2 | STM32 95 ms root-cause | **round 1 landed** (a8fef3b): 95.3→42.8 ms; round 2 running | STM32 on-par |
 | 3 | card placement (m5stick + nucula coils) | **human** — both verified cardless via known-good + power-cycle | #87 differential, GPG-through-our-readers |
 | 4 | differential rerun (#87 close) | blocked on 3 | card-level correctness across readers |
-| 5 | handler unification (3.1) | **DONE**: phase 1 ESP32 extraction + phase 2 STM32 port onto the core (issue #121); HIL re-run pending | STM32 HIL 7/7 re-verification |
+| 5 | handler unification (3.1) | **DONE**: phase 1 ESP32 extraction + phase 2 STM32 port onto the core (issue #121); HIL 7/7 on the bench | — |
 | 6 | m5stick CAP-upload perf | blocked on 3 (need a card to test) | install-through-our-reader |
 
 ## 5. Card-safety rules (standing)
