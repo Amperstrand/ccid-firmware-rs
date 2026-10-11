@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-PROFILE="${1:-profile-cherry-smartterminal-st2xxx}"
+PROFILE="${1:-default}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 WORK_DIR="${PROJECT_ROOT}/.reproducibility-test"

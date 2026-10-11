@@ -29,9 +29,9 @@ jobs:
           # exchange level — see reference/CCID/readers/ (authoritative).
           - features: ""
             suffix: cherry-smartterminal-st2xxx
-          - features: "profile-gemalto-idbridge-ct30"
+          - features: "stm32f469,profile-gemalto-idbridge-ct30"
             suffix: gemalto-idbridge-ct30
-          - features: "profile-gemalto-idbridge-k30"
+          - features: "stm32f469,profile-gemalto-idbridge-k30"
             suffix: gemalto-idbridge-k30
           - features: "stm32f746,profile-cherry-smartterminal-st2xxx"
             suffix: cherry-smartterminal-st2xxx-f746

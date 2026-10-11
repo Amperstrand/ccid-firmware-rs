@@ -36,10 +36,12 @@ ok "manifest features: $(echo "$valid" | tr '\n' ' ')"
 is_valid_feature() { echo "$valid" | grep -qxF "$1"; }
 
 check_feature_list() { # <label> <comma-list or "default" or "">
-    local label="$1" list="$2"
+    local label="$1" list
+    list="$(echo "$2" | tr -d '"')" # workflow YAML quotes empty lists as ""
     [ -z "$list" ] && { ok "$label: (default features)"; return; }
     [ "$list" = "default" ] && { ok "$label: default"; return; }
     IFS=',' read -ra toks <<< "$list"
+    local mcu=0 prof=0
     for tok in "${toks[@]}"; do
         tok="$(echo "$tok" | tr -d ' "')"
         [ -z "$tok" ] && continue
@@ -48,7 +50,18 @@ check_feature_list() { # <label> <comma-list or "default" or "">
         else
             err "$label references unknown feature '$tok' (not in $MANIFEST)"
         fi
+        case "$tok" in
+            stm32f469|stm32f746) mcu=$((mcu + 1)) ;;
+            profile-*)           prof=$((prof + 1)) ;;
+        esac
     done
+    # Issue #25 pairing rule for every explicit (non-default) build path:
+    # the Dockerfile builds these with --no-default-features, so a missing
+    # MCU feature means no HAL/PAC (compile failure) and a missing profile
+    # means no device profile — the regression Codex flagged on the
+    # CT30/K30 release legs.
+    [ "$mcu" -eq 1 ] || err "$label: explicit feature list must include exactly one MCU feature (stm32f469|stm32f746), got $mcu: $list"
+    [ "$prof" -eq 1 ] || err "$label: explicit feature list must include exactly one profile feature, got $prof: $list"
 }
 
 # --- 2. release.yml references ------------------------------------------
@@ -100,9 +113,13 @@ fi
 # --- 5. scripts/verify-reproducibility.sh default profile ---------------
 VR="$ROOT/scripts/verify-reproducibility.sh"
 if [ -f "$VR" ]; then
-    vr_def=$(sed -nE 's/^PROFILE="\$\{1:-(profile-[a-z0-9-]+)\}".*/\1/p' "$VR" | head -1)
+    vr_def=$(sed -nE 's/^PROFILE="\$\{1:-([A-Za-z0-9_,.-]+)\}".*/\1/p' "$VR" | head -1)
     if [ -n "$vr_def" ]; then
-        if is_valid_feature "$vr_def"; then ok "verify-reproducibility.sh default '$vr_def'"; else
+        if [ "$vr_def" = "default" ]; then
+            ok "verify-reproducibility.sh default 'default'"
+        elif is_valid_feature "$vr_def"; then
+            err "verify-reproducibility.sh default '$vr_def' is profile-only — the Dockerfile builds non-default PROFILEs with --no-default-features and loses the MCU feature (issue #25); use 'default' or a full MCU,profile list"
+        else
             err "verify-reproducibility.sh defaults to unknown feature '$vr_def'"
         fi
     fi
