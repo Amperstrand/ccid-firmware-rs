@@ -4,7 +4,7 @@ Scope: 13 review-comment dumps in `/tmp/opencode/pr-sweep/` (PRs 77–107, Amper
 Every item below was verified against the working tree at `15f5c34` by reading the flagged code —
 not keyword-grep. `77.txt` is empty (no badged findings).
 
-**Totals: 53 items — 51 ADDRESSED, 2 UNADDRESSED.**
+**Totals: 53 items — 53 ADDRESSED, 0 UNADDRESSED.**
 
 *Refreshed 2026-10-11 (tree at `6f3d61c`)*: 26 rows total re-verified against the tree and moved to
 ADDRESSED across two passes — the PR-85 cluster (`0dabde5`, `ed0ed5e`, `3effa7f`, `34ac464`),
@@ -18,10 +18,11 @@ UNADDRESSED were re-checked and are still live in the tree.
 issue #113: full=True bootloader flash, otadata erase, unknown-firmware backup gate,
 capture-before-reset ladder, responsiveness probe, sustained-ACK cadence, `--flash-binary`,
 `--vid/--pid`) and the two PR-107 battery rows in `510b797` (codex-battery, issue #114: seq-keyed
-pending-response accumulation, labgrid acquire-before-pcscd). Two PR-86 P2 rows did NOT verify and
-remain UNADDRESSED — the sub-agent commits never touched them (diff-hunk audit): the one-shot
-NCI-INIT marker buffer handling and the session `console`-fixture-vs-`fuser -k` self-kill
-(empirically re-confirmed: `fuser -k <tty>` SIGKILLs the parent holder, rc 137).
+pending-response accumulation, labgrid acquire-before-pcscd). Two PR-86 P2 rows did not verify at `c4c232a` — the sub-agent commits never touched them
+(diff-hunk audit): the one-shot NCI-INIT marker buffer handling and the session
+`console`-fixture-vs-`fuser -k` self-kill (empirically re-confirmed: `fuser -k <tty>` SIGKILLs the
+parent holder, rc 137). Both fixed in `5047291` (cumulative console `_history` + capture registry
+suspended by `_free_port` before fuser, with a pty-simulation proof) — sweep closed at 53/53.
 
 Note: `.omo/pr-triage.md` (2026-10-10) was used only as a cross-check. Where it over-claims
 "(a) resolved" versus what is actually in the tree, this table's verdict wins — disagreements are
@@ -29,16 +30,13 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 
 ---
 
-## UNADDRESSED (2)
+## UNADDRESSED (0)
 
-| PR | Priority | Feedback summary | Status | Suggested action |
-|----|----------|------------------|--------|------------------|
-| 86 | P2 | Preserve the one-shot `NCI INIT LADDER OK` marker (buffer.clear() can consume it in the ACK test) | **UNADDRESSED** | Third refresh (`c4c232a`): still live — `aaa4076`'s test_nucula.py diff touches only `test_board_responsive` and `sustained_acks` (2 hunks), NOT this pair. `test_nucula.py:78/:94` still `console._buffer.clear()` per test and `capture_for` clears on entry (`console.py:73`); the marker is emitted once per ladder run (`pn7160_bringup.rs:242`) — one landing in the ACK test's earlier 60 s window is consumed before `test_our_firmware_nci_init` asserts. Fix: cumulative buffer history or assert ACK + NCI_INIT from one capture |
-| 86 | P2 | Close/suspend the session ConsoleCapture before `fuser -k` (kills the pytest process itself) | **UNADDRESSED** | Partial only: `aaa4076` closes flash_and_boot's OWN captures before each esptool rung and deasserts DTR/RTS on connect (`console.py:38-47`) — but the flagged session `console` fixture (`conftest.py:68-73`) is untouched by any catch-up commit: opens lazily, never closed between tests. Empirical check (2026-10-11): `fuser -k <tty>` run as a child SIGKILLs the parent holding the fd (rc 137) — a mixed wallet→firmware session still kills pytest at `flashed_firmware`'s first esptool rung. Fix: close the session capture around flash fixtures (or make it fd-drop/reconnect-safe between tests) |
+_None — all 53 rows verified against the tree and closed with commit-hash evidence._
 
 ---
 
-## ADDRESSED (51)
+## ADDRESSED (53)
 
 | PR | Priority | Feedback summary | Status | Suggested action |
 |----|----------|------------------|--------|------------------|
@@ -77,6 +75,8 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 | 86 | P2 | Sustained-ACK test demands 5×`ACK @0x28` in 30 s; healthy fw emits it once, then heartbeats per 60 s | **ADDRESSED** | `aaa4076` — `test_nucula.py:106-125`: counts `ACK @0x28` + `PN7160 still ACKing` heartbeats over 130 s (two 60 s intervals), asserts ≥2; failure twin `stopped ACKing` added (`console.py:126-129`) |
 | 86 | P2 | `--flash-binary` registered but never read — fixture always rebuilds | **ADDRESSED** | `aaa4076` — `conftest.py:90-97`: read via `request.config.getoption("--flash-binary")`, flashed without a rebuild |
 | 86 | P2 | `--vid/--pid` parsed but never passed to device discovery (hard-coded VID list wins) | **ADDRESSED** | `aaa4076` — `read_diag.py:27-41` `find_ccid_device(vid, pid, bus, addr)`; `:151-152` threads the parsed args through |
+| 86 | P2 | Preserve the one-shot `NCI INIT LADDER OK` marker (buffer.clear() can consume it in the ACK test) | **ADDRESSED** | `5047291` — `console.py` keeps a cumulative `_history` (never cleared, `history_text()`); `test_our_firmware_nci_init` asserts the marker against history, so one landing in an earlier test's window is retained |
+| 86 | P2 | Close/suspend the session ConsoleCapture before `fuser -k` (kills the pytest process itself) | **ADDRESSED** | `5047291` — `console.py` registers live captures (`suspend_all_captures()`); `board.py::_free_port` suspends them before fuser; captures reconnect lazily. pty-sim proof: open capture fd → holder SIGKILLed (rc 137); suspended → parent survives (fuser rc 1, no holders) and the reconnect captures |
 | 86 | P2 | `--hil` must be registered once (combined-suite runs raise ValueError) | **ADDRESSED** | `ed0ed5e` — registered once in `tests/hardware/labgrid/conftest.py:131` only (verified: no other addoption matches) |
 | 93 | P2 | Audit headline cites `dwFeatures=0x00010270` as reader identity; serial hosts actually get libccidtwin's `0x00010230` | **ADDRESSED** | `6f3d61c` — audit header now separates the internal constant from the host-visible libccidtwin value (evidence: `reference/CCID/src/ccid_serial.c:622`) |
 | 93 | P2 | Distinguish truncated **wire** frames (never reach the handler) from direct handler input in the error_count story | **ADDRESSED** | `6f3d61c` — audit divergence item + `ccid_handler.rs` guard comment now split framing-level (NAK-counted, never dispatched) from CCID-level dwLength overclaim (error-counted) |
