@@ -28,6 +28,19 @@ static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
+    // Silence C-level ESP_LOGx IMMEDIATELY (before any PN7160 I2C
+    // activity): the driver's persistent-retry NACK messages from
+    // ESP-IDF's i2c.master bypass the Rust `log` crate and pollute
+    // the CCID wire before the serve loop's own Off ceiling takes
+    // effect. pcscd's serial handshake reads them as garbage and the
+    // reader never enumerates. The FWID below still prints (it's
+    // the first line, before the PN7160 bring-up runs).
+    #[cfg(not(feature = "ble"))]
+    {
+        use esp_idf_sys::{esp_log_level_set, esp_log_level_t_ESP_LOG_NONE};
+        unsafe { esp_log_level_set(b"*\0".as_ptr().cast(), esp_log_level_t_ESP_LOG_NONE) };
+    }
+
     // Issue #91: the shim logger replaces EspLogger (the log crate takes
     // exactly one global sink, first installer wins). Pre-claim lines go
     // to the console exactly as EspLogger's did; after log_shim::install()
