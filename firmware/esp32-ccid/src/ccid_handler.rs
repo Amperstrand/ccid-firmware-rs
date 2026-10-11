@@ -91,9 +91,15 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let payload_len = header.length as usize;
         if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
-            // Truncated transport frame — a protocol error worth counting
-            // (Codex reviews on #40/#38); this early return bypasses the
-            // post-dispatch status accounting below.
+            // Input shorter than its declared dwLength. WIRE frames can
+            // never arrive here truncated: the serial server's frame
+            // parser only emits complete frames and its inter-byte
+            // stall guard abandons partial ones before dispatch (issue
+            // #114, Codex on #93). This path guards DIRECT
+            // process_command input (host tests, the handler fuzz
+            // suite) and counts a protocol error (Codex reviews on
+            // #40/#38); the early return bypasses the post-dispatch
+            // status accounting below.
             self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
             return write_slot_status(
                 header.slot,
@@ -402,6 +408,22 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     fn handle_set_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
+        // CCID Rev 1.1 §6.1.7: bProtocolNum 0 = T=0, 1 = T=1; any other
+        // value is invalid. Reject with CMD_NOT_SUPPORTED (SlotStatus
+        // failed) instead of storing/echoing a bogus protocol that the
+        // T=1 endpoint would then silently fall back from (issue #114,
+        // Codex on #93).
+        if header.specific[0] > 1 {
+            return write_slot_status(
+                header.slot,
+                header.seq,
+                self.current_icc_status(),
+                COMMAND_STATUS_FAILED,
+                CMD_NOT_SUPPORTED,
+                0,
+                response,
+            );
+        }
         self.current_protocol = header.specific[0];
         self.t1_armed = true;
         self.write_parameters(header, response)
@@ -1009,6 +1031,29 @@ mod tests {
         assert_eq!(header.specific[2], 0);
         assert_eq!(payload, DEFAULT_T0_PARAMS);
         assert_eq!(handler.current_protocol, 0);
+    }
+
+    #[test]
+    fn test_set_parameters_rejects_invalid_protocol_num() {
+        // CCID Rev 1.1 §6.1.7: bProtocolNum is 0 (T=0) or 1 (T=1);
+        // anything else must be rejected, not stored and echoed.
+        let mut handler = new_handler(true);
+        let cmd = build_set_parameters_cmd(0, 21, 2, &DEFAULT_T1_PARAMS);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_SLOTSTATUS);
+        assert_eq!(header.seq, 21);
+        assert!(payload.is_empty());
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
+        );
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+        assert_eq!(handler.current_protocol, 1);
+        assert!(!handler.t1_armed);
     }
 
     #[test]

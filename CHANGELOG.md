@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — Codex review backlog (issue #114, from PRs 93/96/98/100/107)
+
+- **`conformance_battery.py` fuzz path**: a dead DUT port now FAILs the case
+  (AssertionError) instead of silently skipping it when `reopen()` fails, and a
+  successful reopen is followed by a GetSlotStatus resync proof (disarm-then-
+  probe, issue #101 discipline) before the battery continues.
+- **`conformance_battery.py` late responses**: `Reader.exchange` now keeps a
+  pending-response buffer keyed by seq — responses arriving after the read
+  window are read before `reset_input_buffer` can discard them and are found
+  by the next exchange, so in-budget recoveries no longer read as
+  "NO RECOVERY".
+- **`conformance_battery.py` labgrid doctrine**: the battery acquires the
+  `nucula-c3` and `m5stick` places before stopping pcscd or opening any port,
+  and releases them in teardown (failed acquire aborts with exit code 2
+  before pcscd is touched).
+- **UART mains presence starvation**: `serve_uart` polls card presence
+  (`poll_if_due`) after every response flush — with `inline_poll=false`,
+  hosts sending commands <500 ms apart previously starved the read-idle poll
+  entirely, so presence never refreshed under continuous traffic.
+- **SetParameters `bProtocolNum` validation (CCID Rev 1.1 §6.1.7)**: values >1
+  are now rejected with SlotStatus failed + `CMD_NOT_SUPPORTED` instead of
+  being stored, echoed, and silently fallen back from to T=1. Host test added.
+- **`log_shim` timestamp wrap**: facade stamp is u64 milliseconds (was u32 —
+  wrapped at 49.7 days of uptime).
+- **Doc accuracy**: `ESP32_CCID_SPEC_AUDIT.md` now states serial hosts get
+  libccidtwin's hardcoded `dwFeatures = 0x00010230` (the `0x00010270` USB
+  descriptor value is internal-only on the serial transport); the truncated-
+  input comment in `ccid_handler.rs` corrected (wire frames are never
+  truncated — the serial server's stall guard resets the parser before
+  dispatch; the check guards direct handler input).
+
 ### Changed — PPS baud application now opt-in after hardware regression; hot-path logs demoted, exchange cycle stamps added
 
 The round-2 attempt (PPS Di=8 wire speedup, `f5feb61`, reverted on main as `b11cda6`) broke the

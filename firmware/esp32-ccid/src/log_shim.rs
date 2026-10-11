@@ -218,7 +218,10 @@ impl LogRing {
 /// the millisecond stamp (esp_timer on target) keeps sequence-diagnosis
 /// value the BLE/console unstamped format lacks. Truncated to
 /// `MAX_LINE_LEN` while always keeping the trailing newline.
-pub fn format_stamped_record(level: &str, stamp_ms: u32, target: &str, message: &str) -> Vec<u8> {
+/// `stamp_ms` is u64: esp_timer_get_time() is an i64 microsecond
+/// monotonic — a u32 millisecond cast would wrap at 49.7 days of
+/// uptime (issue #114, Codex on #100).
+pub fn format_stamped_record(level: &str, stamp_ms: u64, target: &str, message: &str) -> Vec<u8> {
     let mut rendered = format!("[{level}] ({stamp_ms}ms) {target}: {message}\n").into_bytes();
     if rendered.len() > MAX_LINE_LEN {
         rendered.truncate(MAX_LINE_LEN.saturating_sub(2));
@@ -510,7 +513,7 @@ mod imp {
         }
 
         fn log(&self, record: &log::Record) {
-            let stamp_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1000) as u32;
+            let stamp_ms = (unsafe { esp_idf_sys::esp_timer_get_time() } / 1000) as u64;
             let line = format_stamped_record(
                 &record.level().to_string(),
                 stamp_ms,
