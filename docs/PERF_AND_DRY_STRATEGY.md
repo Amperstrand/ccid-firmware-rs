@@ -11,7 +11,7 @@ handling into one shared core. Update it as lanes land.
 |---|---|---|---|---|---|
 | ACR1252 (reference) | full GPG | 8.8 ms | 8.9 | 39 ms | — |
 | CardMan 3121 (reference) | full | 10.9 ms | 11.0 | 39 ms | — |
-| **Cherry/STM32F469 (ours)** | works | 95.3 → **42.8 ms** (round 2 running) | 43.0 | 1507 → **504 ms** | fixed per-exchange cost, agent iterating (a8fef3b) |
+| **Cherry/STM32F469 (ours)** | works | **42.9 ms** (42.8 pre-port; dry-phase2 shared-core build re-measured 2026-10-11, n=300: non-regressing) | 45.9 | 503 ms | fixed per-exchange cost, agent iterating (a8fef3b) |
 | **GemPCTwin/m5stick (ours)** | works, cardless | ~10–30 ms (T=1 relay) | — | ~300 ms | card off coil (physical); CAP-upload relay latency |
 | **Nucula (ours)** | **fixed 2026-10-10** | **5.1 ms** p50, max 8.3 | — | — | ~~2.0 s stalls~~ ELIMINATED (5f702e4); 10-min pcscd soak 20/20 clean; cardless (physical) |
 
@@ -84,7 +84,12 @@ the resurrected root characterization suites over the wrapper;
 ccid-core contact-profile tests). **HIL verified 7/7 on the bench
 (2026-10-11, dry-phase2 build sha256 8393464e…)**: USB enum, pcscd
 detection + ComSign ATR, APDU relay, PIN-pad feature advertisement,
-Escape 0xD0 counters — the port is hardware-proven end-to-end.
+Escape 0xD0 counters — and the §2 refactor gate closed: perf
+non-regressing (42.89 ms mean n=300 vs 42.8 baseline, connect 503 vs
+504 ms). ESP32 byte-identity is pinned by the 137/137 host suite
+(phase-1 precedent — the serial profile branches are compile-time
+const-off there; the serial conformance battery additionally needs the
+m5stick/nucula places, held by sibling lanes at measurement time).
 
 ### 3.2 What osmo-ccid-firmware teaches (reference study)
 
