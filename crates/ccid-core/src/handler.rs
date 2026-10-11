@@ -2446,21 +2446,32 @@ mod contact_profile_tests {
         assert_eq!(params.min_len, 4);
     }
 
-    fn pin_verify_probe() -> [u8; 16] {
+    /// §6.1.11 probe in the pcscd wire shape (reference-locked in
+    /// `secure.rs` tests): wPINMaxExtraDigit wire bytes `[max, min]`,
+    /// bTeoPrologue[3], APDU head at offset 14.
+    fn pin_verify_probe() -> [u8; 18] {
         [
-            30, 0x00, 0x00, 0x00, 4, 8, 0x02, 1, 0x09, 0x04, 0, 0, 0x00, 0x20, 0x00, 0x00,
+            30, 0x00, 0x00, 0x00, 8, 4, 0x02, 1, 0x09, 0x04, 0, 0, 0, 0, 0x00, 0x20, 0x00, 0x81,
         ]
     }
 
-    fn pin_modify_probe() -> [u8; 20] {
-        let mut d = [0u8; 20];
+    /// §6.1.12 probe in the pcscd wire shape (full form, bNumberMessage=3):
+    /// wPINMaxExtraDigit `[8, 4]`, bConfirmPIN=3, msg1/2/3, prologue[3],
+    /// APDU head `00 24 00 81` at offset 19.
+    fn pin_modify_probe() -> [u8; 23] {
+        let mut d = [0u8; 23];
         d[0] = 30;
         d[4] = 5;
         d[5] = 13;
-        d[6] = 4;
-        d[7] = 8;
-        d[8] = 0x02;
-        d[16..20].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
+        d[6] = 8;
+        d[7] = 4;
+        d[8] = 3;
+        d[9] = 0x02;
+        d[10] = 3;
+        d[13] = 0;
+        d[14] = 1;
+        d[15] = 2;
+        d[19..23].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
         d
     }
 }
