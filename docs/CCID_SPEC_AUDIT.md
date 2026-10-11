@@ -218,26 +218,42 @@ fn handle_xfr_block(&mut self, seq: u8) {
 
 **Response**: RDR_to_PC_Parameters (0x82)
 
-**Our Implementation** (`src/ccid.rs:808-849`):
+**Our Implementation** (historical snapshot — superseded by
+`crates/ccid-core/src/handler.rs::parameter_payload`, the DRY-phase-2
+single source; the packing of byte 3 differs from the snippet below):
+
+Current authoritative T=1 packing (`handler.rs parameter_payload`):
 ```rust
-fn handle_get_parameters(&mut self, seq: u8) {
-    let p = &self.atr_params;
-    if self.current_protocol == 1 {
-        // T=1 parameters: 7 bytes
-        let params: [u8; 7] = [
-            if p.has_ta1 { p.ta1 } else { 0x11 },  // bmFindexDindex
-            (p.edc_type & 1) << 4,                  // bmTCCKST1
-            p.guard_time_n,                         // bGuardTimeT1
-            p.bwi.wrapping_sub(1).min(0x0A),        // bWaitingIntegersT1
-            0x00,                                   // bClockStop
-            p.ifsc.min(254),                        // bIFSC
-            0x00,                                   // bNadValue
-        ];
-        ...
-    } else {
-        // T=0 parameters: 5 bytes
-        let params: [u8; 5] = [...];
-    }
+let params: [u8; 7] = [
+    if p.has_ta1 { p.ta1 } else { 0x11 },  // bmFindexDindex
+    (p.edc_type & 1) << 4,                 // bmTCCKST1
+    p.guard_time_n,                        // bGuardTimeT1
+    (p.bwi << 4) | (p.cwi & 0x0F),         // bWaitingIntegersT1 (BWI/CWI nibbles)
+    0x00,                                  // bClockStop
+    p.ifsc.min(254),                       // bIFSC
+    0x00,                                  // bNadValue
+];
+```
+
+The pre-port code this section originally quoted (kept for the audit
+trail — it is no longer in the tree):
+```rust
+let p = &self.atr_params;
+if self.current_protocol == 1 {
+    // T=1 parameters: 7 bytes
+    let params: [u8; 7] = [
+        if p.has_ta1 { p.ta1 } else { 0x11 },  // bmFindexDindex
+        (p.edc_type & 1) << 4,                  // bmTCCKST1
+        p.guard_time_n,                         // bGuardTimeT1
+        p.bwi.wrapping_sub(1).min(0x0A),        // bWaitingIntegersT1
+        0x00,                                   // bClockStop
+        p.ifsc.min(254),                        // bIFSC
+        0x00,                                   // bNadValue
+    ];
+    ...
+} else {
+    // T=0 parameters: 5 bytes
+    let params: [u8; 5] = [...];
 }
 ```
 

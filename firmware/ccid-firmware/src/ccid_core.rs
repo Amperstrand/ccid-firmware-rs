@@ -29,6 +29,8 @@ pub use ccid_protocol::types::*;
 /// PIN pad (bPINSupport != 0). device_profile is ARM-only, so the handler
 /// gates PC_to_RDR_Secure on the wired vendor id, mirroring the
 /// is_gemalto Escape check.
+///
+/// 046A = Cherry GmbH (reference/CCID/readers/CherrySmartTerminalST2XXX.txt).
 const PIN_PAD_VENDOR_ID: u16 = 0x046A;
 
 /// CardBackend/SlotDriver adapter over the firmware's SmartcardDriver:
@@ -276,6 +278,10 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.core.slot_state().icc_status()
     }
 
+    /// bmSlotCCState per CCID Rev 1.1 §6.3.1: bit 2n = slot n card present,
+    /// bit 2n+1 = change since last notification (single slot: bits 0/1).
+    /// The serial twin of this encoding is CARD_PRESENT=0x03 /
+    /// CARD_ABSENT=0x02 (present/absent + changed) in ccid-transport-serial.
     pub fn notify_slot_change_bytes(&self, card_present: bool, changed: bool) -> [u8; 2] {
         let mut bits: u8 = 0;
         if card_present {
@@ -434,6 +440,9 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
+            // Gemalto IDBridge firmware-features convention (b0 = 'vendor
+            // feature support'; readers/Gemalto_IDBridge_CT30.txt family):
+            // a 15-byte TLV-style capability bitmap, all other bits clear.
             let firmware_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             self.tx_len = write_message(
                 RDR_TO_PC_ESCAPE,

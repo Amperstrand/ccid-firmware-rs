@@ -199,7 +199,7 @@ This audit examines the actual implementation status of milestones M4-M15 based 
   - `README.md` exists (project overview)
   - No `USER_GUIDE.md`
   - No `API.md`
-  - No `CHANGELOG.md`
+  - `CHANGELOG.md` exists at the repo root (added after this audit snapshot was written)
   - No `KNOWN_ISSUES.md`
 - **Notes:**
   - Documentation infrastructure not in place
@@ -218,6 +218,9 @@ This audit examines the actual implementation status of milestones M4-M15 based 
 2. **M4 Fix:** Enable PIN support in default profile or document profile selection requirement
    - Default Cherry profile has `pin_support: 0x00`
    - Users must use `--no-default-features --features profile-gemalto-pinpad` for PIN functionality
+     *(historical snapshot: the `profile-gemalto-pinpad` feature no longer
+     exists — today PIN pad is the default `profile-cherry-smartterminal-st2xxx`
+     profile; the K30 profile was corrected to `bPINSupport=0x00`)*
 
 3. **M9:** Create PIN pad integration test script
    - Test `pcsc_scan` shows PIN capabilities

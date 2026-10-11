@@ -244,6 +244,5 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
 - Firmware entrypoint: `firmware/ccid-firmware/src/main.rs`
 - Smartcard transport: `firmware/ccid-firmware/src/smartcard.rs`
 - CCID protocol handling: `firmware/ccid-firmware/src/ccid.rs`
-- Unit-testable protocol helpers: `firmware/ccid-firmware/src/protocol_unit.rs`
-- Unit tests inspired by osmo test files: `firmware/ccid-firmware/src/protocol_unit.rs` (`#[cfg(test)]` module)
+- Unit-testable protocol helpers: `firmware/ccid-firmware/src/protocol_unit.rs` (re-exports the shared `ccid-protocol` crate; the crate's own test suites are the authoritative ones)
 - Pinout: `PINOUT.md`

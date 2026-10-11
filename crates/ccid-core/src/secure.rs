@@ -44,6 +44,35 @@ pub enum SecureState {
 }
 
 /// PIN verification parameters extracted from CCID message (§6.1.11)
+///
+/// Wire layout of `abPINDataStructure` — the bytes pcscd actually puts on
+/// the wire. The host-side source structure (pcsc-lite `reader.h`
+/// `PIN_VERIFY_STRUCTURE`) is copied into the CCID payload **verbatim and
+/// little-endian** by libccid's `SecurePINVerify` (only `bTimerOut2` and
+/// `ulDataLength` are dropped), so the PC/SC field order IS the CCID field
+/// order:
+///
+/// | Offset | Field | Description |
+/// |--------|-------|-------------|
+/// | 0 | bTimeOut | Timeout in seconds (0 = no timeout) |
+/// | 1 | bmFormatString | PIN format and justification |
+/// | 2 | bmPINBlockString | PIN block length |
+/// | 3 | bmPINLengthFormat | PIN length format |
+/// | 4 | wPINMaxExtraDigit LSB | **max** PIN length (see citation below) |
+/// | 5 | wPINMaxExtraDigit MSB | **min** PIN length |
+/// | 6 | bEntryValidationCondition | Validation trigger |
+/// | 7 | bNumberMessage | Number of messages |
+/// | 8-9 | wLangId | Language ID (LE) |
+/// | 10 | bMsgIndex | Message index |
+/// | 11-13 | bTeoPrologue[3] | TPDU prologue (3 bytes!) |
+/// | 14+ | abPINApdu | APDU template |
+///
+/// `wPINMaxExtraDigit` is a little-endian u16 whose value hosts build as
+/// `(min << 8) + max` — hence wire byte 4 = max, byte 5 = min.
+// PCSC: uint16_t wPINMaxExtraDigit;
+// PCSC: /**< 0xXXYY where XX is minimum PIN size in digits,
+// PCSC: and YY is maximum PIN size in digits */
+// PCSC: uint8_t bTeoPrologue[3]; /**< T=1 block prologue field to use (fill with 00) */
 #[derive(Debug, Clone, Copy)]
 pub struct PinVerifyParams {
     /// Timeout in seconds (0 = no timeout)
@@ -117,7 +146,10 @@ impl PinVerifyParams {
     /// | 11 | bTeoPrologue | TPDU prologue |
     /// | 12+ | abPINApdu | APDU template |
     pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < 16 {
+        // APDU template starts after the 3-byte bTeoPrologue (offset 14).
+        const FIXED_LEN: usize = 14;
+        const APDU_LEN: usize = 4;
+        if data.len() < FIXED_LEN + APDU_LEN {
             return None;
         }
 
@@ -126,22 +158,18 @@ impl PinVerifyParams {
         let pin_block_string = data[2];
         let pin_length_format = data[3];
 
-        let min_len = data[4];
-        let max_len = data[5];
+        // wPINMaxExtraDigit: LE u16, value (min << 8) | max — LSB (wire
+        // byte 4) is max, MSB (byte 5) is min.
+        let max_len = data[4];
+        let min_len = data[5];
 
         let validation = data[6];
-        let number_message = data.get(7).copied().unwrap_or(1);
-        let lang_id = u16::from_le_bytes([
-            data.get(8).copied().unwrap_or(0x09),
-            data.get(9).copied().unwrap_or(0x04),
-        ]);
-        let teo_prologue = data.get(11).copied().unwrap_or(0);
+        let number_message = data[7];
+        let lang_id = u16::from_le_bytes([data[8], data[9]]);
+        let message_index = data[10];
+        let teo_prologue = data[11];
 
-        let apdu_start = 12;
-
-        if data.len() < apdu_start + 4 {
-            return None;
-        }
+        let apdu_start = 14;
 
         let cla = data[apdu_start];
         let ins = data[apdu_start + 1];
@@ -160,7 +188,7 @@ impl PinVerifyParams {
             template_len: 5,
             pin_type: p2,
             time_slot: 100,
-            message_index: data.get(10).copied().unwrap_or(0),
+            message_index,
             pin_block_string,
             pin_length_format,
             number_message,
@@ -182,23 +210,45 @@ impl PinVerifyParams {
 
 /// PIN modification parameters extracted from CCID message (CCID Rev 1.1 §6.1.12)
 ///
+/// Wire layout of `abPINDataStructure` — same derivation as verify
+/// (pcsc-lite `PIN_MODIFY_STRUCTURE` copied verbatim LE by libccid's
+/// `SecurePINModify`), with one variable-length twist: **libccid omits
+/// `bMsgIndex2` when `bNumberMessage == 0` and `bMsgIndex3` when
+/// `bNumberMessage < 3`** — everything after those fields shifts left
+/// accordingly (bTeoPrologue and the APDU template included).
+///
 /// | Offset | Field | Description |
 /// |--------|-------|-------------|
-/// | 0 | bTimerOut | Timeout in seconds (0 = no timeout) |
+/// | 0 | bTimeOut | Timeout in seconds (0 = no timeout) |
 /// | 1 | bmFormatString | PIN format and justification |
 /// | 2 | bmPINBlockString | PIN block length |
 /// | 3 | bmPINLengthFormat | PIN length format |
 /// | 4 | bInsertionOffsetOld | Offset for old PIN in APDU |
 /// | 5 | bInsertionOffsetNew | Offset for new PIN in APDU |
-/// | 6-7 | wPINMaxExtraDigit | Max (high), Min (low) |
-/// | 8 | bEntryValidationCondition | Validation trigger |
-/// | 9 | bNumberMessage | Number of messages |
-/// | 10-11 | wLangId | Language ID |
-/// | 12 | bMsgIndex1 | Message index for old PIN prompt |
-/// | 13 | bMsgIndex2 | Message index for new PIN prompt |
-/// | 14 | bMsgIndex3 | Message index for confirm PIN prompt |
-/// | 15 | bTeoPrologue | TPDU prologue |
-/// | 16+ | abPINApdu | APDU template |
+/// | 6 | wPINMaxExtraDigit LSB | **max** PIN length |
+/// | 7 | wPINMaxExtraDigit MSB | **min** PIN length |
+/// | 8 | bConfirmPIN | Confirmation flags |
+/// | 9 | bEntryValidationCondition | Validation trigger |
+/// | 10 | bNumberMessage | Number of messages (governs msg2/msg3 presence) |
+/// | 11-12 | wLangId | Language ID (LE) |
+/// | 13 | bMsgIndex1 | Message index for old PIN prompt |
+/// | 14 | bMsgIndex2 | present only if bNumberMessage != 0 |
+/// | 15 | bMsgIndex3 | present only if bNumberMessage == 3 |
+/// | var | bTeoPrologue[3] | TPDU prologue |
+/// | var+3+ | abPINApdu | APDU template |
+// PCSC: uint8_t bConfirmPIN; /**< Flags governing need for confirmation of new PIN */
+// PCSC: uint8_t bMsgIndex1; /**< index of 1st prompting message */
+// PCSC: uint8_t bMsgIndex2; /**< index of 2d prompting message */
+// PCSC: uint8_t bMsgIndex3; /**< index of 3d prompting message */
+// PCSC: uint8_t bTeoPrologue[3]; /**< T=1 block prologue field to use (fill with 00) */
+// PCSC: uint32_t ulDataLength; /**< length of Data to be sent to the ICC */
+// LIBCCID: /* Build a CCID block from a PC/SC V2.02.05 Part 10 block */
+// LIBCCID: if (15 == b) /* bMsgIndex2 */
+// LIBCCID: {
+// LIBCCID: /* in CCID the bMsgIndex2 is present only if bNumberMessage != 0 */
+// LIBCCID: if (0 == TxBuffer[11])
+// LIBCCID: continue;
+// LIBCCID: }
 #[derive(Debug, Clone, Copy)]
 pub struct PinModifyParams {
     /// Timeout in seconds (0 = no timeout)
@@ -255,7 +305,7 @@ impl Default for PinModifyParams {
 impl PinModifyParams {
     /// Parse PIN modification data structure from CCID Rev 1.1 §6.1.12
     pub fn parse(data: &[u8]) -> Option<Self> {
-        if data.len() < 20 {
+        if data.len() < 11 {
             return None;
         }
 
@@ -266,21 +316,44 @@ impl PinModifyParams {
         let old_pin_offset = data[4];
         let new_pin_offset = data[5];
 
-        let min_len = data[6];
-        let max_len = data[7];
+        // wPINMaxExtraDigit: LE u16, value (min << 8) | max.
+        let max_len = data[6];
+        let min_len = data[7];
 
-        let validation = data[8];
+        let _confirm_pin = data[8];
+        let validation = data[9];
+        let number_message = data[10];
 
-        let apdu_start = 16; // Offset 16 per CCID spec
+        // wLangId then bMsgIndex1 at fixed offsets 11-13.
+        let msg_index_old = data[13];
+        let mut idx = 14usize;
 
-        if data.len() < apdu_start + 4 {
-            return None;
-        }
+        // Variant tail: msg2 only when number != 0, msg3 only when
+        // number >= 3; then the 3-byte prologue, then the APDU.
+        let msg_index_new = if number_message != 0 {
+            let v = *data.get(idx)?;
+            idx += 1;
+            v
+        } else {
+            1
+        };
+        let msg_index_confirm = if number_message >= 3 {
+            let v = *data.get(idx)?;
+            idx += 1;
+            v
+        } else {
+            2
+        };
 
-        let cla = data[apdu_start];
-        let ins = data[apdu_start + 1];
-        let p1 = data[apdu_start + 2];
-        let p2 = data[apdu_start + 3];
+        // bTeoPrologue[3]: first byte read doubles as the bounds check
+        // (PinModifyParams has no prologue field — Short-APDU reader).
+        let _teo_prologue = *data.get(idx)?;
+        idx += 3;
+
+        let cla = *data.get(idx)?;
+        let ins = *data.get(idx + 1)?;
+        let p1 = *data.get(idx + 2)?;
+        let p2 = *data.get(idx + 3)?;
 
         let apdu_template = [cla, ins, p1, p2, max_len * 2]; // Lc = old + new
 
@@ -296,9 +369,9 @@ impl PinModifyParams {
             template_len: 5,
             pin_type: p2,
             time_slot: 100,
-            msg_index_old: data.get(12).copied().unwrap_or(0),
-            msg_index_new: data.get(13).copied().unwrap_or(1),
-            msg_index_confirm: data.get(14).copied().unwrap_or(2),
+            msg_index_old,
+            msg_index_new,
+            msg_index_confirm,
         })
     }
 
@@ -412,23 +485,32 @@ impl Drop for PinBuffer {
 mod tests {
     use super::*;
 
-    /// The SeedKeeper-style §6.1.11 probe from the firmware suite — pins
-    /// the wire offsets the shared core now owns.
-    fn verify_data() -> [u8; 17] {
+    /// Reference-locked §6.1.11 probe: the exact byte shape pcscd puts on
+    /// the wire for a 4..8-digit user-PIN VERIFY.
+    ///
+    /// wPINMaxExtraDigit = (min 4 << 8) + max 8 = 0x0408, stored
+    /// little-endian → wire bytes `[0x08, 0x04]` (max FIRST).
+    /// bTeoPrologue[3] = 00 00 00, APDU head `00 20 00 81` (VERIFY).
+    ///
+    /// Citations: pcsc-lite `examples/scardcontrol.c`
+    /// (`wPINMaxExtraDigit = (PIN_min_size << 8) + PIN_max_size;`),
+    /// `reference/CCID/MacOSX/reader.h` PIN_VERIFY_STRUCTURE, and the
+    /// libccid `SecurePINVerify` verbatim-copy loop
+    /// (reference/CCID/src/commands.c).
+    fn verify_data() -> [u8; 18] {
         [
-            30,   // bTimerOut
+            30,   // bTimeOut
             0x82, // bmFormatString
             0x00, // bmPINBlockString
             0x00, // bmPINLengthFormat
-            6,    // wPINMaxExtraDigit lo = min
-            8,    // wPINMaxExtraDigit hi = max
+            0x08, // wPINMaxExtraDigit LSB = max = 8
+            0x04, // wPINMaxExtraDigit MSB = min = 4
             0x02, // bEntryValidationCondition
-            1,    // bNumberMessage
-            0x09, 0x04, // wLangId
-            0,    // bMsgIndex
-            0,    // bTeoPrologue
-            0x00, 0x20, 0x00, 0x81, // APDU head
-            0x08, // Lc
+            0x01, // bNumberMessage
+            0x09, 0x04, // wLangId = 0x0409 (LE)
+            0x00, // bMsgIndex
+            0x00, 0x00, 0x00, // bTeoPrologue[3]
+            0x00, 0x20, 0x00, 0x81, // abPINApdu head (VERIFY, P2=0x81 user)
         ]
     }
 
@@ -436,42 +518,104 @@ mod tests {
     fn parse_pin_verify_extracts_wire_fields() {
         let p = PinVerifyParams::parse(&verify_data()).expect("parse");
         assert_eq!(p.timeout_secs, 30);
-        assert_eq!(p.min_len, 6);
+        // min/max MUST come from the max-first wire order — a swap here
+        // sends inverted length constraints to the pin-pad UI and a wrong
+        // Lc in the reader-built VERIFY APDU.
+        assert_eq!(p.min_len, 4);
         assert_eq!(p.max_len, 8);
         assert_eq!(p.pin_type, 0x81);
         assert!(p.is_user_pin());
         assert!(!p.is_admin_pin());
+        // APDU head lives after the 3-byte bTeoPrologue (offset 14).
         assert_eq!(p.apdu_template[..4], [0x00, 0x20, 0x00, 0x81]);
         assert_eq!(p.lang_id, 0x0409);
+        assert_eq!(p.message_index, 0x00);
+        assert_eq!(p.number_message, 0x01);
+        assert_eq!(p.validation, 0x02);
     }
 
     #[test]
     fn parse_pin_verify_rejects_short_data() {
-        assert!(PinVerifyParams::parse(&[0u8; 15]).is_none());
-        // header fits but the APDU head is cut
-        let mut d = [0u8; 16];
-        d[12..16].copy_from_slice(&[0x00, 0x20, 0x00, 0x81]);
+        assert!(PinVerifyParams::parse(&[0u8; 17]).is_none());
+        // fixed fields + 3-byte prologue + 4-byte APDU head exactly fits
+        let mut d = [0u8; 18];
+        d[14..18].copy_from_slice(&[0x00, 0x20, 0x00, 0x81]);
         assert!(PinVerifyParams::parse(&d).is_some());
     }
 
+    /// Reference-locked §6.1.12 probe (full form, bNumberMessage = 3):
+    /// wPINMaxExtraDigit wire `[max=8, min=4]`, bConfirmPIN = 0x03,
+    /// all three bMsgIndex bytes present, bTeoPrologue[3], APDU at 19.
+    /// Same citation chain as `verify_data`.
+    fn modify_data_full() -> [u8; 23] {
+        let mut d = [0u8; 23];
+        d[0] = 30; // bTimeOut
+        d[1] = 0x82; // bmFormatString
+        d[4] = 0x00; // bInsertionOffsetOld
+        d[5] = 0x04; // bInsertionOffsetNew
+        d[6] = 0x08; // wPINMaxExtraDigit LSB = max
+        d[7] = 0x04; // wPINMaxExtraDigit MSB = min
+        d[8] = 0x03; // bConfirmPIN (confirm + current-PIN entry)
+        d[9] = 0x02; // bEntryValidationCondition
+        d[10] = 3; // bNumberMessage = 3 → msg2 AND msg3 present
+        d[11] = 0x09;
+        d[12] = 0x04; // wLangId = 0x0409 (LE)
+        d[13] = 0x00; // bMsgIndex1
+        d[14] = 0x01; // bMsgIndex2
+        d[15] = 0x02; // bMsgIndex3
+                      // d[16..19] = bTeoPrologue[3] (zero)
+        d[19..23].copy_from_slice(&[0x00, 0x24, 0x00, 0x83]); // CHANGE, P2=0x83
+        d
+    }
+
     #[test]
-    fn parse_pin_modify_extracts_wire_fields() {
-        let mut d = [0u8; 21];
-        d[0] = 30;
-        d[4] = 5; // old offset
-        d[5] = 13; // new offset
-        d[6] = 6;
-        d[7] = 8;
-        d[8] = 0x02;
-        d[16..20].copy_from_slice(&[0x00, 0x24, 0x00, 0x83]);
-        let p = PinModifyParams::parse(&d).expect("parse");
-        assert_eq!(p.min_len, 6);
+    fn parse_pin_modify_full_form() {
+        let p = PinModifyParams::parse(&modify_data_full()).expect("parse");
+        assert_eq!(p.min_len, 4);
         assert_eq!(p.max_len, 8);
-        assert_eq!(p.old_pin_offset, 5);
-        assert_eq!(p.new_pin_offset, 13);
+        assert_eq!(p.old_pin_offset, 0x00);
+        assert_eq!(p.new_pin_offset, 0x04);
+        assert_eq!(p.validation, 0x02);
+        assert_eq!(p.msg_index_old, 0x00);
+        assert_eq!(p.msg_index_new, 0x01);
+        assert_eq!(p.msg_index_confirm, 0x02);
         assert_eq!(p.pin_type, 0x83);
         assert!(p.is_admin_pin());
         assert_eq!(p.apdu_template, [0x00, 0x24, 0x00, 0x83, 16]);
+    }
+
+    /// bNumberMessage = 1: libccid omits bMsgIndex3 — the prologue and
+    /// APDU shift one byte left (APDU at 18).
+    #[test]
+    fn parse_pin_modify_number_one_drops_msg3() {
+        let mut d = modify_data_full();
+        d[10] = 1;
+        // bMsgIndex2 kept, bMsgIndex3 dropped: prologue lands at 15, APDU at 18
+        let mut compact = [0u8; 22];
+        compact[..15].copy_from_slice(&d[..15]);
+        compact[15..18].copy_from_slice(&[0x00, 0x00, 0x00]); // prologue
+        compact[18..22].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
+        let p = PinModifyParams::parse(&compact).expect("parse");
+        assert_eq!(p.pin_type, 0x81);
+        assert_eq!(p.apdu_template[..4], [0x00, 0x24, 0x00, 0x81]);
+        assert_eq!(p.msg_index_old, 0x00);
+        assert_eq!(p.msg_index_new, 0x01);
+    }
+
+    /// bNumberMessage = 0: libccid omits bMsgIndex2 AND bMsgIndex3 —
+    /// APDU lands at 17.
+    #[test]
+    fn parse_pin_modify_number_zero_drops_msg2_and_msg3() {
+        let mut d = modify_data_full();
+        d[10] = 0;
+        let mut compact = [0u8; 21];
+        compact[..14].copy_from_slice(&d[..14]);
+        compact[14..17].copy_from_slice(&[0x00, 0x00, 0x00]); // prologue
+        compact[17..21].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
+        let p = PinModifyParams::parse(&compact).expect("parse");
+        assert_eq!(p.apdu_template[..4], [0x00, 0x24, 0x00, 0x81]);
+        assert_eq!(p.min_len, 4);
+        assert_eq!(p.max_len, 8);
     }
 
     #[test]

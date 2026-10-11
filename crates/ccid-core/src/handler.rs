@@ -387,7 +387,11 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             ),
         };
 
-        if len > 7 && response[7] & 0x40 != 0 {
+        // bmCommandStatus FAILED lives in bStatus bits [7:6]: osmo
+        // ccid_proto.h has CCID_CMD_STATUS_FAILED 0x40 (pre-shifted) and
+        // CCID_CMD_STATUS_MASK 0xC0; our constants are the raw 2-bit
+        // values, so the bit is (COMMAND_STATUS_FAILED << 6).
+        if len > 7 && response[7] & (COMMAND_STATUS_FAILED << 6) != 0 {
             self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
         }
 
@@ -652,7 +656,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 header.seq,
                 self.current_icc_status(),
                 COMMAND_STATUS_FAILED,
-                0xFE,
+                CCID_ERR_ICC_MUTE,
                 0,
                 response,
             );
@@ -664,6 +668,8 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 header.seq,
                 ICC_STATUS_PRESENT_ACTIVE,
                 COMMAND_STATUS_FAILED,
+                // bError 0x07 (bad DWLength) has no constant in
+                // ccid_proto.h — asserted as a literal (quote gap).
                 0x07,
                 0,
                 response,
@@ -707,7 +713,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                     header.seq,
                     ICC_STATUS_PRESENT_ACTIVE,
                     COMMAND_STATUS_FAILED,
-                    0xFF,
+                    CCID_ERR_CMD_ABORTED,
                     0,
                     response,
                 )
@@ -2446,21 +2452,32 @@ mod contact_profile_tests {
         assert_eq!(params.min_len, 4);
     }
 
-    fn pin_verify_probe() -> [u8; 16] {
+    /// §6.1.11 probe in the pcscd wire shape (reference-locked in
+    /// `secure.rs` tests): wPINMaxExtraDigit wire bytes `[max, min]`,
+    /// bTeoPrologue[3], APDU head at offset 14.
+    fn pin_verify_probe() -> [u8; 18] {
         [
-            30, 0x00, 0x00, 0x00, 4, 8, 0x02, 1, 0x09, 0x04, 0, 0, 0x00, 0x20, 0x00, 0x00,
+            30, 0x00, 0x00, 0x00, 8, 4, 0x02, 1, 0x09, 0x04, 0, 0, 0, 0, 0x00, 0x20, 0x00, 0x81,
         ]
     }
 
-    fn pin_modify_probe() -> [u8; 20] {
-        let mut d = [0u8; 20];
+    /// §6.1.12 probe in the pcscd wire shape (full form, bNumberMessage=3):
+    /// wPINMaxExtraDigit `[8, 4]`, bConfirmPIN=3, msg1/2/3, prologue[3],
+    /// APDU head `00 24 00 81` at offset 19.
+    fn pin_modify_probe() -> [u8; 23] {
+        let mut d = [0u8; 23];
         d[0] = 30;
         d[4] = 5;
         d[5] = 13;
-        d[6] = 4;
-        d[7] = 8;
-        d[8] = 0x02;
-        d[16..20].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
+        d[6] = 8;
+        d[7] = 4;
+        d[8] = 3;
+        d[9] = 0x02;
+        d[10] = 3;
+        d[13] = 0;
+        d[14] = 1;
+        d[15] = 2;
+        d[19..23].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
         d
     }
 }
