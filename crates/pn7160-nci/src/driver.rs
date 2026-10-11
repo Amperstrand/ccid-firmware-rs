@@ -430,13 +430,6 @@ mod tests {
             STATUS_OK,
             0x00,
         ]);
-        t.push_reply(&[
-            MT_RSP | GID_CORE,
-            OID_CORE_SET_CONFIG,
-            0x02,
-            STATUS_OK,
-            0x00,
-        ]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_MAP, 0x01, STATUS_OK]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
     }

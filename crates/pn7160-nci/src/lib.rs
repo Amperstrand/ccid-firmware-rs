@@ -183,26 +183,25 @@ pub mod tx {
     /// CORE_INIT (NCI 2.0 §5.1.2: two parameter octets) — nci.c:214.
     pub const CORE_INIT: [u8; 5] = [MT_CMD, OID_CORE_INIT, 0x02, 0x00, 0x00];
 
-    /// CORE_SET_CONFIG setting TC1 = 0x00 (plain ISO-DEP: no DID, no NAD).
-    /// Payload [num_params=1, id=0x52(TC1), len=1, value=0] — NCI §5.1.3 and
-    /// Annex F (TC1 definition); nci.c:240.
-    pub const SET_CONFIG_TC1: [u8; 7] = [MT_CMD, OID_CORE_SET_CONFIG, 0x04, 0x01, 0x52, 0x01, 0x00];
-
-    /// CORE_SET_CONFIG TOTAL_DURATION (param id 0x0200) = 0x01FE — NCI
-    /// §5.1.3 / Table 90. Without it the PN7160 completes ONE discovery
-    /// cycle and stops emitting RF_DISCOVER_NTFs: the card is reported a
-    /// single time, then presence flaps and activation starves (bench
-    /// 2026-10-08). NOTE: the wallet's nci.c sends this MALFORMED (plen=5,
-    /// param TLV missing the LEN octet) — the NFCC answers num_applied=0;
-    /// harmless for its LISTEN mode, fatal for reader mode. Correct TLV:
-    /// [num=1][id=0x0200 LE][len=2][value=0x01FE].
-    pub const SET_CONFIG_TOTAL_DURATION: [u8; 9] = [
+    /// CORE_SET_CONFIG TOTAL_DURATION = 0x01FE ms. TLV per the NCI
+    /// configuration-parameter format [num_params][id][len][value] with
+    /// a ONE-octet param id — verified against the Linux kernel
+    /// (`struct set_config_param { __u8 id; __u8 len; ... }`,
+    /// include/net/nfc/nci.h), NXP's own stacks
+    /// (`NCI_PARAM_ID_TOTAL_DURATION 0x00` / `NCI_PARAM_LEN_TOTAL_DURATION 2`,
+    /// nci_defs.h in both linux_libnfc-nci and NFC_NCIHAL_libnfc-nci) and
+    /// UM11495 §6.2. The bytes are the wallet's proven TLV verbatim
+    /// (value 0x01FE LE). An earlier session misread this plen=5 form
+    /// as "missing the LEN octet" under a two-octet-id assumption and
+    /// rewrote it into a rejected 6-byte TLV with a trailing garbage
+    /// octet; with the true status octet parsed (ed0ed5e) the ladder
+    /// aborted at SET_CONFIG (actdiag 2026-10-11).
+    pub const SET_CONFIG_TOTAL_DURATION: [u8; 8] = [
         MT_CMD,
         OID_CORE_SET_CONFIG,
-        0x06,
+        0x05,
         0x01,
         0x00,
-        0x02,
         0x02,
         0xFE,
         0x01,
@@ -638,7 +637,6 @@ pub mod reader {
 pub enum Step {
     CoreReset,
     CoreInit,
-    SetConfigTc1,
     SetConfigTotalDuration,
     RfDiscoverMap,
     RfDiscover,
@@ -649,7 +647,6 @@ impl Step {
         match self {
             Step::CoreReset => &tx::CORE_RESET,
             Step::CoreInit => &tx::CORE_INIT,
-            Step::SetConfigTc1 => &tx::SET_CONFIG_TC1,
             Step::SetConfigTotalDuration => &tx::SET_CONFIG_TOTAL_DURATION,
             Step::RfDiscoverMap => &tx::RF_DISCOVER_MAP_ISO_DEP,
             Step::RfDiscover => &tx::RF_DISCOVER_PASSIVE_A,
@@ -657,7 +654,7 @@ impl Step {
     }
 
     /// Advisory steps set optional NFCC parameters. The bench PN7160
-    /// answers BOTH SET_CONFIGs with status=REJECTED / num_applied=0
+    /// answers SET_CONFIG with status=REJECTED / num_applied=0
     /// (actdiag 2026-10-11: I2C alive, ladder aborts at the first
     /// SET_CONFIG once the status octet is read correctly — ed0ed5e)
     /// and STILL runs ISO-DEP discovery; the reader worked for weeks
@@ -665,7 +662,7 @@ impl Step {
     /// cadence is owned by the firmware re-arm state machine (5f702e4),
     /// not TOTAL_DURATION, so a rejected config is survivable.
     pub const fn advisory(self) -> bool {
-        matches!(self, Step::SetConfigTc1 | Step::SetConfigTotalDuration)
+        matches!(self, Step::SetConfigTotalDuration)
     }
 
     /// Static error string for a failed load-bearing step — the generic
@@ -688,8 +685,8 @@ impl Step {
 ///     is tolerated the same way).
 ///  2. Flush up to three stale notifications before CORE_INIT (nci.c:218).
 ///  3. CORE_INIT — RSP status must be OK (nci.c:214-232).
-///  4. CORE_SET_CONFIG(TC1=0, TOTAL_DURATION) — ADVISORY: the bench
-///     NFCC rejects both (num_applied=0) and still runs discovery;
+///  4. CORE_SET_CONFIG(TOTAL_DURATION) — ADVISORY: the bench
+///     NFCC may reject it (num_applied=0) and still run discovery;
 ///     non-OK is tolerated (see [`Step::advisory`], actdiag 2026-10-11).
 ///  5. RF_DISCOVER_MAP(ISO-DEP) and RF_DISCOVER(passive A) — status OK.
 pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
@@ -705,7 +702,6 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     // 3-5. Straight command/response ladder with status checks.
     for step in [
         Step::CoreInit,
-        Step::SetConfigTc1,
         Step::SetConfigTotalDuration,
         Step::RfDiscoverMap,
         Step::RfDiscover,
@@ -854,9 +850,12 @@ mod tests {
     fn tx_frames_match_c_driver_bytes() {
         assert_eq!(&tx::CORE_RESET, &[0x20, 0x00, 0x01, 0x01]);
         assert_eq!(&tx::CORE_INIT, &[0x20, 0x01, 0x02, 0x00, 0x00]);
+        // Reference: one-octet param id 0x00 (TOTAL_DURATION), len 2,
+        // value 0x01FE LE — wallet bytes, kernel struct + NXP nci_defs.h
+        // format (include/net/nfc/nci.h, NCI_PARAM_ID_TOTAL_DURATION).
         assert_eq!(
-            &tx::SET_CONFIG_TC1,
-            &[0x20, 0x02, 0x04, 0x01, 0x52, 0x01, 0x00]
+            &tx::SET_CONFIG_TOTAL_DURATION,
+            &[0x20, 0x02, 0x05, 0x01, 0x00, 0x02, 0xFE, 0x01]
         );
     }
 
@@ -891,12 +890,11 @@ mod tests {
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
         t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass");
-        assert_eq!(t.sent.len(), 6);
+        assert_eq!(t.sent.len(), 5);
         assert_eq!(t.drained, 1);
     }
 
@@ -907,12 +905,11 @@ mod tests {
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
         t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass with reset NTF");
-        assert_eq!(t.sent.len(), 6);
+        assert_eq!(t.sent.len(), 5);
         assert_eq!(t.drained, 1);
     }
 
@@ -935,12 +932,11 @@ mod tests {
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
         t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("SET_CONFIG rejection must not abort");
-        assert_eq!(t.sent.len(), 6);
+        assert_eq!(t.sent.len(), 5);
         assert_eq!(t.drained, 1);
     }
 
