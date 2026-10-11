@@ -22,6 +22,12 @@ pub type EspPn7160NfcDriver = Pn7160NfcDriver<EspPn7160Transport>;
 
 const XFER_TIMEOUT_MS: i32 = 500;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
+/// One FreeRtos tick in µs — `CONFIG_FREERTOS_HZ=100` (sdkconfig.full), so
+/// `FreeRtos::delay_ms(1)` rounds UP to one full 10 ms tick. The wait budget
+/// must count what actually elapses, not what was requested (Codex #85,
+/// issue #112): counting 1000 µs/iteration silently stretched the 200 ms
+/// RSP budget to ~2 s of wall time.
+const RTOS_TICK_US: u32 = 10_000;
 const NTF_SLOTS: usize = 4;
 /// Fire-and-forget write bound for the non-blocking presence re-arm
 /// (2026-10-10 serve-loop stall fix): a 4-byte NCI command is ~0.5 ms on
@@ -368,7 +374,7 @@ impl Transport for EspPn7160Transport {
             // console task for the whole ladder: console output dies
             // while the app + chip keep working (AGENTS.md hazard).
             FreeRtos::delay_ms(1);
-            waited += 1000;
+            waited += RTOS_TICK_US;
         }
     }
 

@@ -213,7 +213,23 @@ fi
 # c3-ccid vs c3-ccid-ble, m5stick vs m5atom) share one esp-idf-sys cmake
 # cache; a per-board stamp would let e.g. a non-BT cache silently serve a
 # `-ble` build after switching boards (issue #66 pairing rule).
+#
+# The stamp ALSO records the manifest's esp_idf_version (Codex #85 P1,
+# issue #112): cmake caches the IDF checkout identity too, so bumping
+# [package.metadata.esp-idf-sys] esp_idf_version in Cargo.toml with an
+# unchanged sdkconfig needs the same cache drop — previously that case
+# silently kept building the OLD ESP-IDF until a manual cargo clean.
+IDF_VER="$(sed -n 's/^[[:space:]]*esp_idf_version[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' "${SCRIPT_DIR}/Cargo.toml" | head -n1)"
+if [ -z "${IDF_VER}" ]; then
+    warn "could not parse esp_idf_version from Cargo.toml — stamping as 'unknown'"
+    IDF_VER="unknown"
+fi
 STAMP="${TARGET_DIR}/sdkconfig.${TRIPLE}.${PROFILE}.stamp"
+# Stamp body = IDF version header + the applied sdkconfig content.
+stamp_body() {
+    printf '# esp_idf_version: %s\n' "${IDF_VER}"
+    cat "${SDKCONFIG}"
+}
 if [ "${DRY_RUN}" -eq 0 ]; then
     STALE=0
     if [ ! -f "${STAMP}" ]; then
@@ -221,7 +237,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
         for cache in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out/build/CMakeCache.txt; do
             [ -f "${cache}" ] && STALE=1
         done
-    elif ! cmp -s "${SDKCONFIG}" "${STAMP}"; then
+    elif ! stamp_body | cmp -s - "${STAMP}"; then
         STALE=1
     fi
     if [ "${STALE}" -eq 1 ]; then
@@ -281,7 +297,7 @@ run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
 # provenance is not known to match this sdkconfig.
 if [ "${DRY_RUN}" -eq 0 ]; then
     mkdir -p "${TARGET_DIR}"
-    cp "${SDKCONFIG}" "${STAMP}"
+    stamp_body > "${STAMP}"
 fi
 
 # esptool cannot flash a raw cargo ELF ("will not fit in flash") — convert first.

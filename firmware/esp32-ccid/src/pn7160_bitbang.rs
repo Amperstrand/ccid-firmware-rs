@@ -27,10 +27,12 @@ fn gpio_output_od(pin: i32) {
     }
 }
 
-fn sda(v: i32) {
+// esp_idf_sys: gpio_set_level(gpio_num_t = c_int, level: u32) — pin ids
+// are i32 (matches gpio_num_t), drive levels are u32.
+fn sda(v: u32) {
     unsafe { esp_idf_sys::gpio_set_level(SDA, v) };
 }
-fn scl(v: i32) {
+fn scl(v: u32) {
     unsafe { esp_idf_sys::gpio_set_level(SCL, v) };
 }
 fn read_sda() -> i32 {
@@ -57,7 +59,7 @@ fn bitbang_probe(addr7: u8) -> bool {
     // 8 address bits, MSB first (write = R/W 0)
     let byte = (addr7 as u8) << 1;
     for i in (0..8).rev() {
-        sda(((byte >> i) & 1) as i32);
+        sda(((byte >> i) & 1) as u32);
         half();
         scl(1);
         half();
@@ -84,6 +86,11 @@ fn bitbang_probe(addr7: u8) -> bool {
 
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
+    // The log facade is a no-op until a sink is installed — without this
+    // the probe's findings never print (Codex #85, issue #112). Same
+    // pattern as pn7160_v10raw; safe here because this diagnostic main
+    // never pairs with the `ble` feature's logger.
+    esp_idf_svc::log::EspLogger::initialize_default();
     log::warn!("bitbang: wire-level probe — no I2C peripheral involved");
 
     let _peripherals = Peripherals::take().expect("peripherals");
