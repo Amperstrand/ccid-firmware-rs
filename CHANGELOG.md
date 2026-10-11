@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — CCID handler unification, phase 1 (PERF_AND_DRY_STRATEGY §3.1)
+
+- **Extracted the ESP32 CCID message handler into `crates/ccid-core`**
+  (`ccid-core/src/handler.rs`, `CcidHandlerCore`): slot lifecycle,
+  bStatus assembly, Get/Set/ResetParameters, Escape (0xD0 diagnostics,
+  0xD1 snapshot arm, 0x02 firmware id, GemPC sync-mode), the APDU-level
+  pipeline (PPS echo, PC/SC pseudo-APDUs, CLA-rewrite relay semantics
+  #50) and the truncation/error accounting — transport-agnostic,
+  `no_std`, generic over the card-interface traits. Firmware identity
+  string (Escape 0x02) is injected per firmware.
+- **`firmware/esp32-ccid/src/ccid_handler.rs` is now a thin wrapper**:
+  delegates dispatch to the core, keeps the T=1 endpoint routing
+  (`t1.rs`) local, wired via two core events — `take_card_reset`
+  (disarm after successful IccPowerOn, #101) and
+  `take_parameters_accepted` (arm on accepted Set/ResetParameters).
+  New `CardDriverAdapter` in `nfc.rs` bridges the firmware-local
+  `NfcDriver` trait to the shared card-interface traits without
+  touching driver impls.
+- `card-interface`: `CardBackend::reinit_count` and
+  `NfcCardExt::card_uid` default methods (the shared handler's driver
+  contract; existing implementors unaffected).
+- Wire behavior is byte-identical (ESP32 host tests 137/137 unchanged
+  in content; ccid-core grows its own standalone suite, 37→65 tests).
+  STM32 port (PIN/Secure surface onto the shared core) is the phase-2
+  lane — the STM32 handler is untouched and still builds.
+
 ### Fixed — pn7160 correctness cluster (issue #109)
 
 - **`RF_DEACTIVATE_NTF` reason decode**: the presence decode treated reason

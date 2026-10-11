@@ -7,6 +7,8 @@ pub use ccid_protocol::*;
 pub mod diagnostics;
 pub use diagnostics::Diagnostics;
 
+pub mod handler;
+
 use ccid_protocol::status::build_bstatus;
 use ccid_protocol::types::{
     CcidHeader, COMMAND_STATUS_NO_ERROR, DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS,

@@ -34,7 +34,7 @@ ccid-firmware-rs/
 ├── crates/                     # shared, host-buildable libraries
 │   ├── ccid-protocol/          # CCID protocol types, constants, ATR parsing
 │   ├── card-interface/         # card frontend trait + PresenceState (no_std)
-│   ├── ccid-core/              # CCID response builders, PPS validation (21 tests)
+│   ├── ccid-core/              # CCID response builders, PPS validation, shared handler (65 tests)
 │   └── ccid-transport-serial/  # GemPC Twin serial framing (25 tests)
 ├── firmware/
 │   ├── ccid-firmware/          # STM32 USB CCID firmware (default-members)
@@ -1807,7 +1807,7 @@ same HAL fork) and the wider Amperstrand STM32 ecosystem.
 | Diagnostics | `crates/ccid-core/src/diagnostics.rs` | Runtime counter struct (apdu_tx/rx, nak, error, reinit, card_present, uptime). 28-byte LE serialization. 12 tests (incl. byte-exact golden ported from amp-diagnostics before archival). |
 | SmartcardConfig | `firmware/ccid-firmware/src/smartcard_common.rs` | Replaces 10 hardcoded `const SC_*` with a configurable struct. Values unchanged. |
 | Self-Healing | `firmware/ccid-firmware/src/main.rs` (SmartcardWrapper), `firmware/esp32-ccid/src/mfrc522_driver.rs` | Re-init peripheral after 3 consecutive failures. `reinit_count` tracked. |
-| Escape 0xD0 | `firmware/ccid-firmware/src/ccid_core.rs`, `firmware/esp32-ccid/src/ccid_handler.rs` | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |
+| Escape 0xD0 | `crates/ccid-core/src/handler.rs` (shared dispatch), fed by `firmware/ccid-firmware/src/ccid_core.rs` + `firmware/esp32-ccid/src/ccid_handler.rs` (thin wrapper) | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |
 | HIL Harness | `tests/hardware/labgrid/` | Pytest SSH-based HIL tests. 6 tests: USB enum, pcscd, ATR, APDU relay, pinpad. |
 
 ### SmartcardDriver Trait

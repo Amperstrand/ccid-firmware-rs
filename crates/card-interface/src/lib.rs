@@ -16,6 +16,13 @@ pub trait CardBackend {
         command: &[u8],
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error>;
+
+    /// Count of driver-level reinitializations since boot (self-healing
+    /// after consecutive failures), surfaced through diagnostics
+    /// (CCID Escape 0xD0). Drivers without self-healing keep the 0.
+    fn reinit_count(&self) -> u32 {
+        0
+    }
 }
 
 pub trait ContactCardExt: CardBackend {
@@ -38,6 +45,13 @@ pub trait NfcCardExt: CardBackend {
     fn init(&mut self) -> core::result::Result<(), Self::Error>;
     fn poll_card_presence(&mut self) -> PresenceState;
     fn session_active(&self) -> bool;
+
+    /// Cached UID of the present card, read during activation
+    /// (anticollision). Serves reader-level pseudo-APDUs (PC/SC GET UID)
+    /// without card communication. `None` when no UID is known.
+    fn card_uid(&self) -> Option<&[u8]> {
+        None
+    }
 }
 
 #[cfg(test)]

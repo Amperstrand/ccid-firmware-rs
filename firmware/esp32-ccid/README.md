@@ -319,7 +319,7 @@ The included `setup.sh` automates the host setup:
 |--------|---------------|
 | `main.rs` | Entry point, UART0 (115200 8N2) and peripheral initialization, main loop |
 | `serial_framing.rs` | GemPC Twin serial framing: SYNC/CTRL/CCID/LRC, echo handling |
-| `ccid_handler.rs` | CCID command dispatch (IccPowerOn, XfrBlock, etc.), init handshake |
+| `ccid_handler.rs` | Thin wrapper: delegates CCID dispatch to the shared `ccid-core` handler, keeps the T=1 endpoint routing (t1.rs) local (PERF_AND_DRY_STRATEGY §3.1) |
 | `ccid_types.rs` | CCID message structs, RDR_to_PC slot status, data rates |
 | `pn532_driver.rs` | PN532 SPI driver: SAM configuration, InListPassiveTarget, InDataExchange (PN532 backend) |
 | `mfrc522_driver.rs` | MFRC522 NFC driver: ISO 14443-4 APDU via iso14443 crate (MFRC522 backend) |

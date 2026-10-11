@@ -6,7 +6,7 @@
 pub use ccid_protocol::status::*;
 pub use ccid_protocol::types::*;
 
-pub const ICC_NOT_ACTIVE: u8 = 0x05;
+pub use ccid_core::handler::ICC_NOT_ACTIVE;
 pub const MAX_IFSD: usize = 254;
 
 pub const CMD_NOT_SUPPORTED: u8 = CCID_ERR_CMD_NOT_SUPPORTED;

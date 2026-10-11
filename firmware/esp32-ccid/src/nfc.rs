@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub use card_interface::PresenceState;
+use card_interface::{CardBackend, NfcCardExt};
 
 /// NFC driver error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +79,54 @@ pub trait NfcDriver {
 
     fn reinit_count(&self) -> u32 {
         0
+    }
+}
+
+/// Bridges firmware-local [`NfcDriver`] implementations to the shared
+/// CCID handler core (ccid-core, PERF_AND_DRY_STRATEGY §3.1), which is
+/// generic over the card-interface traits — one adapter instead of
+/// touching every driver impl.
+pub struct CardDriverAdapter<D>(pub D);
+
+impl<D: NfcDriver> CardBackend for CardDriverAdapter<D> {
+    type Error = D::Error;
+
+    fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0.power_on(atr_buf)
+    }
+
+    fn power_off(&mut self) {
+        self.0.power_off()
+    }
+
+    fn is_card_present(&mut self) -> bool {
+        self.0.is_card_present()
+    }
+
+    fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0.transmit_apdu(command, response)
+    }
+
+    fn reinit_count(&self) -> u32 {
+        self.0.reinit_count()
+    }
+}
+
+impl<D: NfcDriver> NfcCardExt for CardDriverAdapter<D> {
+    fn init(&mut self) -> Result<(), Self::Error> {
+        self.0.init()
+    }
+
+    fn poll_card_presence(&mut self) -> PresenceState {
+        self.0.poll_card_presence()
+    }
+
+    fn session_active(&self) -> bool {
+        self.0.session_active()
+    }
+
+    fn card_uid(&self) -> Option<&[u8]> {
+        self.0.card_uid()
     }
 }
 

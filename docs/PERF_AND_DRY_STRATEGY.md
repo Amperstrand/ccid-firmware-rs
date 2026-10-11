@@ -56,6 +56,17 @@ Port order: move the ESP32 handler (younger, fuzz-hardened) → teach it
 the STM32's PIN/secure surface → point the STM32 USB transport at it.
 Gate: battery byte-identical + perf non-regressing + HIL 7/7.
 
+**Phase 1 DONE (2026-10-11, `handler-unify` branch)**: the ESP32
+dispatch lives in `crates/ccid-core/src/handler.rs`
+(`CcidHandlerCore`, no_std, generic over card-interface's
+`CardBackend`+`NfcCardExt`). `esp32-ccid/src/ccid_handler.rs` is a
+thin wrapper keeping the T=1 endpoint routing (`t1.rs`) local, wired
+via two core events (`take_card_reset` disarm / `take_parameters_
+accepted` arm) plus the pub `apdu_pipeline` for the T=1 relay path.
+ESP32 wrapper tests byte-identical (137/137); ccid-core carries its
+own standalone suite. Remaining: teach the core the STM32's
+PIN/Secure surface + point the STM32 USB transport at it (phase 2).
+
 ### 3.2 What osmo-ccid-firmware teaches (reference study)
 
 Their layout: one `ccid_common/` — `iso7816_3.c` (the single ETU/guard/
@@ -95,7 +106,7 @@ block↔APDU logic) and moves to ccid-core unchanged.
 | 2 | STM32 95 ms root-cause | **round 1 landed** (a8fef3b): 95.3→42.8 ms; round 2 running | STM32 on-par |
 | 3 | card placement (m5stick + nucula coils) | **human** — both verified cardless via known-good + power-cycle | #87 differential, GPG-through-our-readers |
 | 4 | differential rerun (#87 close) | blocked on 3 | card-level correctness across readers |
-| 5 | handler unification (3.1) | blocked on 1+2 landing + battery gate | the big DRY |
+| 5 | handler unification (3.1) | **phase 1 landed**: ESP32 core extracted to ccid-core, wrapper thin, tests green | phase 2: STM32 PIN/Secure port onto the core |
 | 6 | m5stick CAP-upload perf | blocked on 3 (need a card to test) | install-through-our-reader |
 
 ## 5. Card-safety rules (standing)
