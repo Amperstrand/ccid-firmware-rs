@@ -556,11 +556,25 @@ mod imp {
         ROUTED.store(true, Ordering::Release);
     }
 
+    /// Empty the ring and reset the dropped counter without writing
+    /// anything to the wire. Called when a main applies the clean-wire
+    /// ceiling (`set_max_level(Off)`): lines queued before the ceiling
+    /// must NOT ride out later — libccidtwin's parser is a strict byte
+    /// stream with no SYNC resync, so ASCII leaking between frames
+    /// desyncs pcscd permanently (bench 2026-10-11: `ReadSerial() Got
+    /// 0x76/0x65/0x64…` = boot-log text mid-session).
+    pub fn purge() {
+        let mut line = [0u8; MAX_LINE_LEN];
+        while with_ring(|ring| ring.pop_line_into(&mut line)).is_some() {}
+        let _ = with_ring(LogRing::take_dropped);
+    }
+
     /// Write pending complete lines to the claimed USB-CDC driver.
     /// Called from the serving loop (read-idle, post-response). A line
     /// whose write fails (no host consuming) is dropped — diagnostics,
-    /// not protocol state. Intermixing with CCID frames is safe: the
-    /// host-side parsers scan for SYNC-anchored LRC-validated frames.
+    /// not protocol state. Intermixing with CCID frames is safe ONLY
+    /// for bench parsers that scan for SYNC-anchored LRC-validated
+    /// frames — NOT for libccidtwin (see [`purge`]).
     pub fn drain_into(usb: &mut UsbSerialDriver) {
         let timeout = TickType::new_millis(LOG_WRITE_TIMEOUT_MS).ticks();
         let dropped = with_ring(LogRing::take_dropped);
@@ -594,6 +608,8 @@ mod imp {
     }
 
     pub fn install() {}
+
+    pub fn purge() {}
 
     pub fn drain_into<T>(sink: &mut T) {
         let _ = sink;

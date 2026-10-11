@@ -152,7 +152,14 @@ pub fn run() -> ! {
     // the CDC carries CCID frames only. Diagnostics: Escape 0xD0/0xD1
     // or a `ble` build.
     #[cfg(not(feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Off);
+    {
+        log::set_max_level(log::LevelFilter::Off);
+        // Clean-wire, part 2: lines queued in the shim ring BEFORE the
+        // ceiling (FWID, bring-up, presence events) must not ride out
+        // after later responses — libccidtwin desyncs on any ASCII
+        // between frames (bench 2026-10-11).
+        crate::log_shim::purge();
+    }
 
     loop {
         match usb.read(&mut byte_buf, timeout_ticks) {
