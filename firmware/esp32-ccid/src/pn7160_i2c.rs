@@ -378,6 +378,10 @@ impl Transport for EspPn7160Transport {
         }
     }
 
+    fn wait_ms(&mut self, ms: u64) {
+        esp_idf_hal::delay::Ets::delay_ms(ms as u32);
+    }
+
     fn drain(&mut self) -> Option<Frame> {
         if let Some(f) = self.pop_ntf() {
             return Some(f);

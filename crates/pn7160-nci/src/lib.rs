@@ -259,6 +259,9 @@ pub trait Transport {
     fn transact(&mut self, cmd: &[u8]) -> Option<Frame>;
     /// Read one already-pending notification (no command sent).
     fn drain(&mut self) -> Option<Frame>;
+    /// Collect-wait hook (#125): no-op in host mocks; the ESP32 I2C
+    /// transport delays for real between power_on activation waits.
+    fn wait_ms(&mut self, _ms: u64) {}
 }
 
 /// NCI DATA packet framing — NCI §5.4.1: octet 0 = PBF(bit 4) | CONN_ID(bits

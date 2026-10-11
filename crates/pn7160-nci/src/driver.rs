@@ -56,6 +56,7 @@ pub struct Pn7160Driver<T: Transport> {
     /// 2026-10-10). `None` for plain DISCOVER-NTF tags (ATS arrives
     /// with the select response there).
     last_auto_ats: Option<heapless::Vec<u8, 32>>,
+    collect_rounds: u8,
     /// #88 TTL re-arm bookkeeping: polls since the last discovery
     /// notification, and consecutive re-arm cycles that saw no tag.
     polls_since_ntf: u32,
@@ -102,6 +103,7 @@ impl<T: Transport> Pn7160Driver<T> {
             uid_len: 0,
             last_ntf: None,
             last_auto_ats: None,
+            collect_rounds: 0,
             polls_since_ntf: 0,
             absent_rearms: 0,
             rearm: None,
@@ -365,20 +367,32 @@ impl<T: Transport> Pn7160Driver<T> {
     /// comes from the activation NTF itself (its tail TLV) and the
     /// established connection serves APDUs directly.
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
-        let (fresh_ntf, fresh_ats) = match reader::wait_for_event(&mut self.transport) {
-            Some(reader::TagEvent::Tag(n, ats)) => {
-                self.last_ntf = Some(n);
-                self.last_auto_ats = ats.clone();
-                (Some(n), ats)
+        // #125 collect-wait: after a power_off the re-issued discovery
+        // auto-activates the tag within ~1 s — a single non-blocking
+        // drain returned NoCard immediately and pcscd's connect (which
+        // power-offs at open) always failed. Bounded wait: 8 x 150 ms
+        // via Transport::wait_ms (no-op in host mocks).
+        let (fresh_ntf, fresh_ats) = loop {
+            match reader::wait_for_event(&mut self.transport) {
+                Some(reader::TagEvent::Tag(n, ats)) => {
+                    self.last_ntf = Some(n);
+                    self.last_auto_ats = ats.clone();
+                    break (Some(n), ats);
+                }
+                // The tag left the field since the last presence poll:
+                // the cached NTF/ATS is stale and must NOT be
+                // resurrected into a phantom ATR (issue #109 item 2).
+                Some(reader::TagEvent::LinkLost) => {
+                    self.clear_tag();
+                    return Err(Error::NoCard);
+                }
+                None => {}
             }
-            // The tag left the field since the last presence poll: the
-            // cached NTF/ATS is stale and must NOT be resurrected into a
-            // phantom ATR (issue #109 item 2).
-            Some(reader::TagEvent::LinkLost) => {
-                self.clear_tag();
-                return Err(Error::NoCard);
+            if self.collect_rounds >= 8 {
+                break (None, None);
             }
-            None => (None, None),
+            self.collect_rounds += 1;
+            self.transport.wait_ms(150);
         };
         let ntf = fresh_ntf.or(self.last_ntf).ok_or(Error::NoCard)?;
         let auto_ats = fresh_ats.or_else(|| self.last_auto_ats.clone());
