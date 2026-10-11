@@ -50,6 +50,13 @@ jobs:
             --coverage .coverage \
             $(git ls-files 'crates/*/src/*.rs' 'firmware/*/src/*.rs')
       - name: Spec-quote coverage report
+        # Strict (exit 1 on uncovered lines) for the ORIGINAL three
+        # sources, which are fully quoted. PCSC/LIBCCID/ISO7816 were
+        # added by the 2026-10-11 audit with citation coverage still
+        # growing — they are drift-CHECKED above but excluded from the
+        # coverage gate until their quotes cover the cited sections
+        # (then move them into the strict set).
         run: |
           python -m greatspectations coverage --config specquotes.toml \
-            --coverage .coverage
+            --coverage .coverage \
+            --source CCID_SPEC --source CCID_SERIAL --source GEMPC
