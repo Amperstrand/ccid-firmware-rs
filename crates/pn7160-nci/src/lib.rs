@@ -857,6 +857,21 @@ mod tests {
             &tx::SET_CONFIG_TOTAL_DURATION,
             &[0x20, 0x02, 0x05, 0x01, 0x00, 0x02, 0xFE, 0x01]
         );
+        // GREAT EXPECTATION (reference-locked bytes — do not "fix"
+        // without re-verifying against the cited references):
+        // bench-validated 2026-10-11 on the PN7160 (actdiag ladder OK,
+        // SET_CONFIG RSP [status=OK, 0 failed], RF_INTF_ACTIVATED at
+        // +943 ms with the card on coil). DISCOVER_MAP entry order is
+        // NCI 2.0 [protocol, interface, mode] — NOT the NCI 1.x / NXP
+        // legacy [protocol, mode, interface] order.
+        assert_eq!(
+            &tx::RF_DISCOVER_MAP_ISO_DEP,
+            &[0x21, 0x00, 0x04, 0x01, 0x04, 0x02, 0x01]
+        );
+        assert_eq!(
+            &tx::RF_DISCOVER_PASSIVE_A,
+            &[0x21, 0x03, 0x03, 0x01, 0x00, 0x01]
+        );
     }
 
     #[test]

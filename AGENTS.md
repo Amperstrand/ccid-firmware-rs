@@ -134,7 +134,92 @@ ESP32 firmware lives in `firmware/esp32-ccid/` and has its own feature set:
 | `backend-mfrc522` | MFRC522 | I2C (M5Stack Atom Matrix) | ✓ |
 | `backend-pn532` | PN532 | SPI | (secondary, still supported) |
 
+## Reference-First Doctrine (owner directive 2026-10-11)
+
+**We do not reinvent wire formats, timings, or protocol bytes by trial
+and error. Before writing or "fixing" any protocol-facing constant:
+find the reference, verify against it, and lock it with a unit test.**
+
+The founding incident: our PN7160 CORE_SET_CONFIG TLV was wrong for
+WEEKS (trailing garbage octet the chip rejected) because a session
+guessed the TLV format instead of checking the kernel/NXP references —
+and wrote the wrong story into this file, which later sessions trusted
+(the #110 lesson again: docs lie until re-verified against the tree).
+
+### The rules
+
+1. **No assumptions on wire formats.** Every protocol byte we emit or
+   parse must trace to a citation: spec section, kernel struct, NXP
+   header, or bench-proven reference bytes. "I think it's 2 octets" is
+   a bug, not a fact.
+2. **Check references BEFORE bench iterations.** Tools: z.ai zread
+   (`zread_read_file`/`zread_search_doc` on GitHub repos), grep.app
+   (literal code search across public repos), web search, and the
+   in-repo `reference/` + `docs/nfc_citation_map.md`. One reference
+   lookup beats ten flash-and-probe cycles.
+3. **GREAT EXPECTATION annotations.** Reference-derived byte sequences
+   carry an inline annotation near the constant AND a unit test that
+   locks the bytes (`tx_frames_match_c_driver_bytes` style). If the
+   test breaks, the breaker must re-verify against the citation —
+   never "fix" the test to match new unverified bytes.
+4. **Mocks must model the reference, not our bug** (mock/hardware
+   divergence is this repo's #1 bug class).
+5. **DRY = single place to be right.** Shared logic lives in
+   `crates/` (ccid-core handler, pn7160-nci, transport-serial). A wire-
+   format fact must exist in ONE place — where it is already
+   reference-locked and tested.
+6. **Known-good states + known unknowns are tracked as GitHub issues**
+   (checklists, `- [ ]`, with commit hashes). When hardware misbehaves,
+   check the issue tracker + the bench table below BEFORE assuming a
+   hardware defect — and use the documented full-reflash ladder to get
+   back to a known good state.
+
+### The reference library (verified useful)
+
+| Topic | Reference | Where |
+|---|---|---|
+| NCI core (SET/GET_CONFIG, INIT, DISCOVER) | `include/net/nfc/nci.h`, `net/nfc/nci/core.c` | torvalds/linux (grep.app or zread) |
+| NCI param IDs, status codes, TLV walker | `nci_defs.h` (1-octet param IDs!) | NXPNFCLinux/linux_libnfc-nci, NXPNFCProject/NFC_NCIHAL_libnfc-nci |
+| PN7160 specifics, TOTAL_DURATION example | UM11495 §6.2 | docs/nucula-campaign/nfc_citation_map.md |
+| C3 USB-Serial/JTAG registers (no RST_DIS on C3) | `usb_serial_jtag_reg.h` | espressif/esp-idf, components/soc/esp32c3 |
+| CCID Rev 1.1 | DWG_Smart-Card_CCID_ReV110 | docs/CCID_SPEC_AUDIT.md + `// CCID_SPEC:` markers |
+| T=1 (ISO 7816-3 §11) | Table 45 PCB bits | firmware/esp32-ccid/src/t1.rs citations |
+| Reader identities | reference/CCID/readers/*.txt | authoritative device specs |
+
+### Clean-wire doctrine (inviolable)
+
+The CCID wire carries CCID frames ONLY. libccidtwin's parser is a
+strict byte stream with NO resync — any ASCII between frames desyncs
+pcscd for the whole session. This includes logs queued BEFORE the
+`set_max_level(Off)` ceiling: the log-shim ring must be PURGED at
+ceiling time (`log_shim::purge()`, bench 2026-10-11: `ReadSerial() Got
+0x76/0x65/0x64…` = boot-log text mid-session). Debug output goes to:
+Escape 0xD0 counters, Escape 0xD1 coredumps (dump-and-retrieve), a
+`ble` build, or WiFi netlog — never unsolicited on the CCID wire.
+
+### Nucula C3 hardware wall (register-verified 2026-10-11)
+
+The ESP32-C3 USB-Serial/JTAG peripheral chip-resets (`rst:0x15
+USB_UART_CHIP_RESET`) on the host DTR/RTS patterns that pcscd's
+libccidtwin uses on every serial-reader open/handshake. The C3
+register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
+`CHIP_RST_DIS` — that bit exists only on C6/C61 silicon). Therefore:
+
+- **The nucula CANNOT serve as a pcscd/libccidtwin serial reader.**
+  Every pcscd port-open resets the chip; the boot banner races the
+  handshake; the reader error-loops (bench-verified end-to-end
+  2026-10-11). The bench reader.conf is disabled
+  (`/etc/reader.conf.d/nucula-ccid.disabled`) to stop the reset vortex.
+- **Direct-serial CCID WORKS and is the nucula's test surface**: GemPC
+  framing over the CDC with the safe opener (construct `Serial()`,
+  set `dtr=False; rts=False` BEFORE `open()`), ~300 ms/command CDC
+  latency floor. ATR + APDU relay bench-verified.
+- Paths to a pcscd-capable nucula-class device: C6/S3 silicon (has
+  `USB_UART_CHIP_RST_DIS`), an external USB-UART bridge (FTDI, like
+  the m5stick), or USB-OTG class CCID (S2/S3 only).
+
 ## CI Testing Protocol
+
 
 CI lives in `.github/workflows/ci.yml`. Toolchain is pinned to **Rust 1.92**.
 All jobs check out with `submodules: true` (required — see Gotchas).
@@ -362,7 +447,7 @@ a release the same day.
 
 | Board | Identity probe (run this) | State 2026-10-10 ~17:3x |
 |---|---|---|
-| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @7f136a0-era flashed 2026-10-11 ~00:1x (app@0x40000): #107 merged, `Nucula CCID` enumerates in pcscd again (reader.conf restored after the gp-scan park). **#101 S-block fix bench-validated**: S-IFS with NO card session answers `00 E1 01 FE 1E` byte-exact. Card on coil; card-level session gated on #109 (link-loss reason inversion + session-removal announcement) |
+| nucula | Direct-serial GemPC probe with the SAFE opener (`dtr=False; rts=False` before `open()`): FWID `pn7160-ccid rev=<git>`, GSS present=1, IccPowerOn → P71 ATR `3B 78 77 91 02 80 73 C8 21…` | OURS @d8b8749-era flashed 2026-10-11 ~17:0x (PT@0x8000 + app@0x40000): **SET_CONFIG TLV reference-fixed** (wallet-verbatim, RSP [OK, 0 failed]), ladder 5 steps, card auto-activates at ~+943 ms, ATR + APDU relay direct-serial PASS. **pcscd enumeration is HARDWARE-IMPOSSIBLE on C3** (rst:0x15 on every port-open, no RST_DIS bit — see Reference-First Doctrine); reader.conf DISABLED on the bench. Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
 | m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @7f136a0 flashed 2026-10-11 ~23:5x (bl@0x1000+PT@0x8000+app@0x40000): **T=1 PCB fix live** (I-blocks N(R) at bit 4 per Table 45 — `0x10`/`0x40` verified on wire, 10/10 pcscd APDUs SW=9000), card on coil. **#59 CAP install STALLS >15 min** — root cause = the ~42 ms/APDU class (see #59 comment 6102381790 + `perf_ab.py`); possible partial D276 on the card (run `gp --uninstall` if the next install says already-present) |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 (now under the #65 place framework) |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
@@ -1067,12 +1152,20 @@ hardware starved. **Rule: mocks must model the transport's filtering
 semantics, not just the happy reply queue.** When hardware fails where
 the mock passes, diff the transport contract first.
 
-### The wallet firmware is a reference, not a gospel
-Its TOTAL_DURATION SET_CONFIG TLV is malformed (missing LEN octet,
-plen=5 for a 4-byte param body → NFCC answers num_applied=0). Harmless
-for its LISTEN mode, fatal for reader mode (single-shot discovery).
-Byte-copying wallet sequences requires validating the RSP payload, not
-just the transport status: check `num_applied` on every SET_CONFIG.
+### The wallet firmware's TLVs were RIGHT; our "fix" was wrong (corrected 2026-10-11)
+> **This lesson previously said the wallet's TOTAL_DURATION TLV was
+> malformed (missing LEN octet). That was OUR misreading, not the
+> wallet's bug — kept here because the correction is the doctrine's
+> founding incident (see "Reference-First Doctrine").**
+The wallet's plen=5 payload `[num=1][id=0x00][len=2][val=FE 01]` is a
+VALID NCI CORE_SET_CONFIG TLV: param IDs are ONE octet (kernel
+`struct set_config_param { __u8 id; __u8 len; ... }`,
+NXP `NCI_PARAM_ID_TOTAL_DURATION 0x00`). An earlier session read it
+under a two-octet-id assumption, called it malformed, and "fixed" it
+into a 6-byte TLV with a trailing garbage octet — the chip rejected
+it (num_applied=0) for weeks while the pre-ed0ed5e parser masked the
+rejection. The corrected bytes (wallet-verbatim) apply cleanly:
+RSP `[status=OK, 0 failed params]`, bench-validated 2026-10-11.
 
 ### Edge-triggered discovery NTFs — SUPERSEDED by the auto-activation model (2026-10-10, #88)
 The "one RF_DISCOVER_NTF per ARRIVAL" model was wrong for the bench card
