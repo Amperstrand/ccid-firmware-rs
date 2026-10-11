@@ -205,7 +205,14 @@ libccidtwin uses on every serial-reader open/handshake. The C3
 register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
 `CHIP_RST_DIS` — that bit exists only on C6/C61 silicon). Therefore:
 
-- **The nucula CANNOT serve as a pcscd/libccidtwin serial reader.**
+- **The nucula cannot serve as a pcscd/libccidtwin serial reader by
+  DIRECT CDC opens** — but since 2026-10-11 it DOES serve pcscd through
+  the PTY broker (`host-tools/nucula-ccid-broker.py`, systemd service
+  `nucula-ccid-broker`, reader.conf entry `nucula-broker`): the broker
+  is the only CDC opener (safe opener, serving-gated symlink), pcscd
+  talks to the PTY where DTR/RTS is a no-op. Bench-verified: enumerate,
+  connect+ATR+SELECT sessions, >5.5 min stability, ~0.5 ms broker
+  overhead (#117).
   Every pcscd port-open resets the chip; the boot banner races the
   handshake; the reader error-loops (bench-verified end-to-end
   2026-10-11). The bench reader.conf is disabled
@@ -447,7 +454,7 @@ a release the same day.
 
 | Board | Identity probe (run this) | State 2026-10-11 ~22:3x |
 |---|---|---|
-| nucula | Direct-serial GemPC probe with the SAFE opener (`dtr=False; rts=False` before `open()`): FWID `pn7160-ccid rev=<git>`, GSS present=1, IccPowerOn → P71 ATR `3B 78 77 91 02 80 73 C8 21…` | OURS @d8b8749-era flashed 2026-10-11 ~17:0x (PT@0x8000 + app@0x40000): **SET_CONFIG TLV reference-fixed** (wallet-verbatim, RSP [OK, 0 failed]), ladder 5 steps, card auto-activates at ~+943 ms, ATR + APDU relay direct-serial PASS. **pcscd enumeration is HARDWARE-IMPOSSIBLE on C3** (rst:0x15 on every port-open, no RST_DIS bit — see Reference-First Doctrine); reader.conf DISABLED on the bench. Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
+| nucula | pcscd: `Nucula CCID 00 00/01 00` via the PTY broker (`systemctl status nucula-ccid-broker`, journal = wire tap); identity probe: connect → ATR `3B 85 80 01 80 73 C8 21 10 0E` → SELECT ISD `9000` | OURS @3c74d74-era flashed 2026-10-11 ~23:0x (PT@0x8000 + app@0x40000): **pcscd WORKS through `host-tools/nucula-ccid-broker.py`** (PTY relay defeats the rst:0x15 wall — direct CDC opens still chip-reset, safe opener only). Broker = systemd service, symlink `/dev/nucula-ccid` gated on serving. Bench-verified 2026-10-11: 8/8 connect+ATR+SELECT sessions, >5.5 min stable enumeration, PTY GSS RTT 0.72 ms p50 (direct floor 0.20 ms). **Known gaps**: (1) after a host IccPowerOff the re-arm probe is rejected NCI `DISCOVERY_ALREADY_STARTED` (0xA0) and the HALTed card never re-activates (#125 hardware gap) — the broker's `POWER_OFF_SHIM=1` answers power-offs locally until fixed; (2) GP CAP installs fail at the first T=1 INSTALL (card answers `9100`, gp retries into comm error — m5stick-class T=1/CAP limitation). reader.conf `nucula-broker` DISABLED when idle (`mv` to re-enable + `flock /run/lock/bench-pcscd.lock systemctl restart pcscd`). Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
 | m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters; Escape 0xD2 → turnaround split (issue #120, 16-byte LE: last/max turnaround µs + last/max card-exchange µs — probe: `tests/hardware/nfc/turnaround_probe.py`) | OURS @89382e6 flashed 2026-10-11 ~19:0x (bl@0x1000+PT@0x8000+app@0x40000): **0xD2 instrumentation live + MFRC522 field-cycle** (bolty parity). **CARD NOT ON COIL** — the P71 was moved to the ACR1252 sometime between 23:5x and ~18:45 (reader sees absent; `gp --list` via ACR: ISD OP_READY, SmartPGP D276 applet still SELECTABLE — the stalled install left NO damage; `gp --uninstall` before a fresh install). Latency split (bench 2026-10-11, card-less GetSlotStatus): firmware turnaround 2.5 ms, raw host RTT 5.4 ms, pcscd round-trip 4.9 ms (strace) → the serial serve path is NOT the 42 ms term; the remaining ~38 ms lives in the card-exchange half (0xD2 card counter decomposes it the moment a card returns). #59/#120 blocked on card placement |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7 |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
