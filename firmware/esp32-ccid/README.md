@@ -249,6 +249,91 @@ Notes:
   standard builds (FWID lands on the console there; in ble builds it
   goes to the BLE ring). See AGENTS.md "BLE Debug Console".
 
+## pcscd over Bluetooth Classic SPP (`spp` feature)
+
+The `spp` build swaps the transport: instead of UART0/FTDI, the GemPC
+serial CCID server rides a **Bluetooth Classic SPP** (RFCOMM) connection.
+SPP is a real serial line to libccidtwin — on the host, BlueZ's `rfcomm`
+exposes the connection as `/dev/rfcomm0`, pcscd opens it with the stock
+`libccidtwin.so`, and **no daemon and no custom host code** is needed.
+The serving core (`ccid_serial_server` + `ccid_handler`) is reused
+verbatim; only the byte pipe changes (`src/spp_server.rs`, REFERENCE:
+esp-idf-svc `examples/bt_spp_acceptor.rs`).
+
+```
+Host (Linux)                       ESP32 (m5stick)                NFC Card
+─────────────                 ────────────────────                ──────────
+pcscd/libccidtwin.so           spp_server (GemPC Twin             MFRC522
+  ↕ /dev/rfcomm0  ←rfcomm←    protocol over RFCOMM,   ──I2C──>   (ISO 14443A)
+  (BlueZ SPP)                   BT Classic acceptor)
+```
+
+Firmware differences from the UART build:
+
+- **UART0 is free** — console and Rust logs stay enabled there (the CCID
+  wire is RFCOMM; console output cannot reach it).
+- WiFi/OTA and the `ble` console are compiled out (one Bluetooth modem —
+  `ble` + `spp` is a compile error).
+- ESP32 silicon only (BR/EDR); requires `sdkconfig-xtensa-spp.full`
+  (classic-only Bluedroid + SPP). A mismatched sdkconfig/feature pair
+  fails to compile, same loud-pairing rule as `ble`.
+
+Build + flash:
+
+```bash
+./build.sh m5stick-spp --flash /dev/serial/by-id/<m5stick-port>
+# boot proof on the UART0 console (115200):
+#   FWID esp32-ccid rev=<git> build=<ts> transport=spp device="GemPC Twin ESP32"
+#   spp: server started (scn 1) — discoverable
+```
+
+### Host setup (bluez + pcscd)
+
+```bash
+sudo apt install pcscd libccid pcsc-tools bluez
+
+# 1. Bring the host adapter up
+sudo rfkill unblock bluetooth && sudo hciconfig hci0 up
+
+# 2. Pair (SSP numeric compare — accept on the host; the firmware
+#    auto-accepts its side; legacy fallback PIN is 1234)
+bluetoothctl
+  [bluetooth]# scan on
+  ... "GemPC Twin ESP32" appears ...
+  [bluetooth]# pair <BD_ADDR>        # accept the numeric compare
+  [bluetooth]# trust <BD_ADDR>       # auto-reconnect without re-prompting
+  [bluetooth]# exit
+
+# 3. Expose the SPP service as /dev/rfcomm0
+#    Channel 1 is the ESP32 SPP default; confirm via `sdptool browse <BD_ADDR>`
+#    (look for the "Serial Port" service SCN).
+sudo rfcomm watch hci0 1
+#   (on connect: "Connection from <BD_ADDR> to /dev/rfcomm0")
+
+# 4. Point pcscd at it
+sudo cp firmware/esp32-ccid/reader.conf.rfcomm /etc/reader.conf.d/GemPCTwin-rfcomm.conf
+sudo systemctl restart pcscd
+
+# 5. Verify
+pcsc_scan        # "GemPCTwin rfcomm" + ATR once a card is on the coil
+```
+
+Cleanup: `sudo rfcomm release hci0 1` (and stop the `rfcomm watch` process).
+
+### Notes + limitations
+
+- **Latency**: expect RFCOMM scheduling latency on top of the serial path
+  (Escape 0xD2 decomposes it — firmware turnaround vs link turnaround —
+  once a card is back on the coil). The 0xD2/0xD0/0xD1 escapes work over
+  SPP exactly as over UART; 0xD1 coredumps settle 100 ms before the panic
+  so the ack drains (Cb-mode writes are queued, not flushed).
+- **Single client** — one RFCOMM connection at a time (a second client is
+  refused by the profile); pcscd is the only intended consumer.
+- **Congestion** is handled: responses park and retry on
+  `ESP_SPP_CONG_EVT`, order-preserving (see `spp_server::SppLink`).
+- **m5stick-ble is unaffected** — `ble` and `spp` remain mutually
+  exclusive builds.
+
 ## Host setup
 
 ### 1. Install pcscd and drivers
