@@ -67,6 +67,24 @@ ESP32 wrapper tests byte-identical (137/137); ccid-core carries its
 own standalone suite. Remaining: teach the core the STM32's
 PIN/Secure surface + point the STM32 USB transport at it (phase 2).
 
+**Phase 2 DONE (2026-10-11, issue #121)**: `CcidHandlerCore` is
+generic over a `ReaderProfile` (`SerialNfcProfile` default = the
+esp32 bytes; `ContactProfile` = the STM32 bytes) and the core's
+driver bound is the new `card_interface::SlotDriver` (blanket-implied
+by `NfcCardExt`). The PIN/Secure surface (§6.1.11/12 wire structs in
+`ccid-core/src/secure.rs`, secure-state arm/complete/cancel events,
+runtime `pin_pad` knob) and the contact parameter model (ATR-derived
+params, host-set echo + validation, contact error shapes) live in the
+core. `firmware/ccid-firmware`'s `CcidMessageHandler` is a thin
+wrapper (USB framing, vendor escapes, IccClock/SetDataRate, display
+PIN processing); SetParameters acceptance reaches the USART via the
+`take_parameters_accepted` event. Both wire behaviors are pinned by
+tests on both sides (esp32 137/137 byte-identical; firmware suites +
+the resurrected root characterization suites over the wrapper;
+ccid-core contact-profile tests). HIL re-verification pending — run
+`pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` on the next
+bench session before shipping a release binary.
+
 ### 3.2 What osmo-ccid-firmware teaches (reference study)
 
 Their layout: one `ccid_common/` — `iso7816_3.c` (the single ETU/guard/
@@ -106,7 +124,7 @@ block↔APDU logic) and moves to ccid-core unchanged.
 | 2 | STM32 95 ms root-cause | **round 1 landed** (a8fef3b): 95.3→42.8 ms; round 2 running | STM32 on-par |
 | 3 | card placement (m5stick + nucula coils) | **human** — both verified cardless via known-good + power-cycle | #87 differential, GPG-through-our-readers |
 | 4 | differential rerun (#87 close) | blocked on 3 | card-level correctness across readers |
-| 5 | handler unification (3.1) | **phase 1 landed**: ESP32 core extracted to ccid-core, wrapper thin, tests green | phase 2: STM32 PIN/Secure port onto the core |
+| 5 | handler unification (3.1) | **DONE**: phase 1 ESP32 extraction + phase 2 STM32 port onto the core (issue #121); HIL re-run pending | STM32 HIL 7/7 re-verification |
 | 6 | m5stick CAP-upload perf | blocked on 3 (need a card to test) | install-through-our-reader |
 
 ## 5. Card-safety rules (standing)
