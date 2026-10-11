@@ -633,7 +633,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
-        self.apdu_pipeline(apdu, response)
+        self.apdu_pipeline(header, apdu, response)
     }
 
     /// Contact-profile XfrBlock, ported byte-for-byte from the STM32
@@ -894,14 +894,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
     /// pseudo-APDUs (0xFF), PPS echo, card relay. Writes CCID DataBlock
     /// bytes into `out` (10-byte header + payload) and returns the total
     /// length; T=1 callers extract the payload for block framing.
-    pub fn apdu_pipeline(&mut self, apdu: &[u8], out: &mut [u8]) -> usize {
-        let header = &CcidHeader {
-            message_type: 0,
-            length: 0,
-            slot: 0,
-            seq: 0,
-            specific: [0; 3],
-        };
+    pub fn apdu_pipeline(&mut self, header: &CcidHeader, apdu: &[u8], out: &mut [u8]) -> usize {
         let response = out;
         if is_pps_request(apdu) {
             log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
@@ -1533,6 +1526,11 @@ mod tests {
         let (header, payload) = parse_response(&response[..len]);
 
         assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        // CCID Rev 1.1 §6.2-1: the device shall echo bSeq of the
+        // corresponding PC_to_RDR command. The pipeline once fabricated a
+        // zeroed header here — every card-bound XfrBlock answered bSeq=0
+        // (invisible to pcscd, fatal to strict parsers; bench 2026-10-11).
+        assert_eq!(header.seq, 7);
         assert_eq!(
             header.specific[0],
             build_bstatus(

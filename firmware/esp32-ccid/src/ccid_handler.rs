@@ -228,7 +228,7 @@ impl<D: NfcDriver> CcidHandler<D> {
                 apdu_buf[..an].copy_from_slice(&card_apdu[..an]);
                 let mut scratch = [0u8; 271];
                 let started_us = now_us();
-                let n = self.core.apdu_pipeline(&apdu_buf[..an], &mut scratch);
+                let n = self.core.apdu_pipeline(header, &apdu_buf[..an], &mut scratch);
                 let took = elapsed_ms_since(started_us);
                 // The pipeline returns a full DataBlock message; T=1
                 // INF carries only the APDU-level payload — strip the
