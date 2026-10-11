@@ -655,6 +655,30 @@ impl Step {
             Step::RfDiscover => &tx::RF_DISCOVER_PASSIVE_A,
         }
     }
+
+    /// Advisory steps set optional NFCC parameters. The bench PN7160
+    /// answers BOTH SET_CONFIGs with status=REJECTED / num_applied=0
+    /// (actdiag 2026-10-11: I2C alive, ladder aborts at the first
+    /// SET_CONFIG once the status octet is read correctly — ed0ed5e)
+    /// and STILL runs ISO-DEP discovery; the reader worked for weeks
+    /// with the pre-ed0ed5e parser masking the rejection. Re-discovery
+    /// cadence is owned by the firmware re-arm state machine (5f702e4),
+    /// not TOTAL_DURATION, so a rejected config is survivable.
+    pub const fn advisory(self) -> bool {
+        matches!(self, Step::SetConfigTc1 | Step::SetConfigTotalDuration)
+    }
+
+    /// Static error string for a failed load-bearing step — the generic
+    /// "step status != OK" hid WHICH step failed and cost a bench
+    /// session to find (actdiag 2026-10-11).
+    pub const fn status_err(self) -> &'static str {
+        match self {
+            Step::CoreInit => "CoreInit status != OK",
+            Step::RfDiscoverMap => "RfDiscoverMap status != OK",
+            Step::RfDiscover => "RfDiscover status != OK",
+            _ => "step status != OK",
+        }
+    }
 }
 
 /// Run the full reader-mode bring-up ladder over `t`, mirroring the C
@@ -664,7 +688,9 @@ impl Step {
 ///     is tolerated the same way).
 ///  2. Flush up to three stale notifications before CORE_INIT (nci.c:218).
 ///  3. CORE_INIT — RSP status must be OK (nci.c:214-232).
-///  4. CORE_SET_CONFIG(TC1=0) — status OK (nci.c:240).
+///  4. CORE_SET_CONFIG(TC1=0, TOTAL_DURATION) — ADVISORY: the bench
+///     NFCC rejects both (num_applied=0) and still runs discovery;
+///     non-OK is tolerated (see [`Step::advisory`], actdiag 2026-10-11).
 ///  5. RF_DISCOVER_MAP(ISO-DEP) and RF_DISCOVER(passive A) — status OK.
 pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     // 1. CORE_RESET + notification drain.
@@ -697,7 +723,10 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         // file's own doc (Frame::status, "SET_CONFIG_RSP … lead with
         // status") contradicted the special case.
         if rsp.status() != Some(STATUS_OK) {
-            return Err("step status != OK");
+            if step.advisory() {
+                continue;
+            }
+            return Err(step.status_err());
         }
     }
     Ok(())
@@ -893,7 +922,26 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x02]));
-        assert_eq!(run_ladder(&mut t), Err("step status != OK"));
+        assert_eq!(run_ladder(&mut t), Err("CoreInit status != OK"));
+    }
+
+    #[test]
+    fn ladder_tolerates_set_config_rejection() {
+        // Chip reality (actdiag 2026-10-11): the PN7160 answers both
+        // SET_CONFIGs with status=REJECTED / num_applied=0 and still
+        // runs discovery. Advisory steps must not abort the ladder.
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
+        t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
+        t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
+        t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
+        t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
+
+        run_ladder(&mut t).expect("SET_CONFIG rejection must not abort");
+        assert_eq!(t.sent.len(), 6);
+        assert_eq!(t.drained, 1);
     }
 
     #[test]
