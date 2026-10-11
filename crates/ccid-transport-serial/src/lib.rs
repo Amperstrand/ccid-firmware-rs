@@ -152,8 +152,8 @@ impl FrameParser {
                 }
             }
             ParserState::ReadHeader(read) => {
-                // CCID_SERIAL: the 10-byte CCID header follows CTRL
-                // (type, dwLength LE, slot, seq, bSpecific[3]) — the
+                // The 10-byte CCID header follows CTRL (type, dwLength
+                // LE, slot, seq, bSpecific[3]) — the
                 // USB CCID Rev 1.1 §6 header carried verbatim over the
                 // serial framing. dwLength (bytes 1..=4, LE) bounds the
                 // payload; GemPC Twin caps at 271 bytes (short-APDU
@@ -194,8 +194,8 @@ impl FrameParser {
                 None
             }
             ParserState::CheckLrc => {
-                // CCID_SERIAL: LRC = XOR of all preceding frame bytes
-                // (SYNC, CTRL, CCID header, payload). A mismatch is a
+                // LRC = XOR of all preceding frame bytes (SYNC, CTRL,
+                // CCID header, payload). A mismatch is a
                 // frame error — the caller either NAKs (UART profiles)
                 // or silently resyncs on the next SYNC (USB-CDC profile,
                 // matching the on-device verified behavior).
