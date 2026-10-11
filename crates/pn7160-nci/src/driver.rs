@@ -379,6 +379,11 @@ impl<T: Transport> Pn7160Driver<T> {
         // power-off; bStatus 01 → 02 stuck while the card sat on the
         // coil).
         let _ = reader::deactivate_to_discovery(&mut self.transport);
+        // Kernel nci model (nci_start_poll after deactivate): polling
+        // must be RE-ISSUED — the bench chip does not restart it on
+        // deactivate alone (#125: presence stuck absent after a host
+        // IccPowerOff; pcscd's open sequence always power-offs first).
+        let _ = self.transport.transact(&crate::tx::RF_DISCOVER_PASSIVE_A);
         self.active = false;
         self.uid_len = 0;
         self.last_ntf = None;
@@ -643,11 +648,16 @@ mod tests {
         // drain after it consumes nothing (empty queue).
         drv.transport_mut()
             .push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
         drv.power_off();
         assert!(!drv.session_active());
         let sent = drv.transport_mut();
-        let last_cmd: [u8; 4] = sent.sent.last().map(|f| [f[0], f[1], f[2], f[3]]).unwrap();
-        assert_eq!(last_cmd, [0x21, OID_RF_DEACTIVATE, 0x01, 0x03]);
+        let last_cmd: Vec<u8> = sent.sent.last().map(|f| f[..6].to_vec()).unwrap();
+        assert_eq!(
+            last_cmd,
+            vec![0x21, OID_RF_DISCOVER, 0x03, 0x01, 0x00, 0x01]
+        );
 
         // the field re-polls: the next auto-activation re-latches
         drv.transport_mut()
