@@ -23,6 +23,10 @@ READER_MATCHES = {
 
 # Read-only AID probes (SELECT only — no app commands that mutate state)
 AID_PROBES = {
+    # GlobalPlatform 2.1.1 ISD RID prefix — the P71 JCOP twins on the
+    # bench answer this with 9000 (bench 2026-10-12: m5stick + nucula
+    # both; the ISO A000000003000000 prefix is 6A82 on these cards).
+    "GP ISD": "A000000151000000",
     "OpenPGP": "D27600012401",
     "Satochip": "5361746F43686970",
     "SeedKeeper": "5361746F43686970417070",

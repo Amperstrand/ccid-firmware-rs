@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — PIN verify/modify wire shape (audit P1, spec-verified)
+
+`wPINMaxExtraDigit` is a LE u16 hosts build as (min<<8)+max with wire
+bytes [max, min] (pcsc-lite scardcontrol.c) — we parsed min/max
+swapped. §6.1.11 APDU template starts after the 3-byte bTeoPrologue
+(offset 14, not 12). §6.1.12: libccid omits bMsgIndex2/3 per
+bNumberMessage, shifting prologue+APDU left — parse is now
+variant-aware (commands.c SecurePINModify). Reference-locked tests for
+verify + all three modify forms. Recommended follow-up: full
+SCardControl(FEATURE_VERIFY_PIN_DIRECT) HIL round-trip.
+
+### Added — pcscd over Bluetooth Classic SPP (m5stick)
+
+New `m5stick-spp` board: BT SPP acceptor (esp-idf-svc bt_spp_acceptor
+reference) wired to the SAME CcidSerialServer+CcidHandler as UART0 —
+zero protocol duplication. Host: `rfcomm bind 0 <bdaddr> 1` +
+reader.conf `/dev/rfcomm0:GemPCTwin`. Bench-verified end-to-end:
+pcscd enumerates `GemPC Twin BT (m5stick)`, card ATR + APDU relay
+over the air, 30/30 soak, p50 48ms/APDU. ota_0 slot @0x40000.
+
+### Fixed — differential AID probe + CI gates
+
+tests/hardware/nfc conftest gains the GP 2.1.1 ISD RID
+(`A000000151000000`) — the P71 JCOP twins answer it 9000 (the ISO
+prefix is 6A82 on these cards); the m5stick/nucula differential legs
+were selection-starved without it. Differential now 16/16. CI: lazy
+pyserial imports in the nucula conftest (python-collect minimal env),
+strict spec-quote coverage scoped to the fully-covered sources,
+cargo-target resolver OSError-guarded, fmt drift fixed.
+
+
 ### Fixed — pn7160 pcscd ATR synthesis + PTY broker bring-up (#117, bench 2026-10-11)
 
 - **`ats_to_atr` produced a malformed ATR that pcscd rejects** (bench:
