@@ -52,7 +52,7 @@ advisories: list[dict] = []
 _json_mode = False
 
 
-def say(msg: str) -> None:
+def say(msg: str = "") -> None:
     # Under --json the human report moves to stderr: stdout stays pure JSON.
     print(msg, file=sys.stderr if _json_mode else sys.stdout)
 
