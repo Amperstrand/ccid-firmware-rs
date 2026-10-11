@@ -19,6 +19,14 @@ import pytest
 from .console import ConsoleCapture, BootMarker
 
 
+
+
+def _opt_test_firmware():
+    """PR86 P1: pytest.config was removed — read options via the
+    registered conftest instead of the nonexistent global."""
+    import os
+    return os.environ.get("NUCULA_TEST_FIRMWARE", "").lower() in ("1", "true", "yes")
+
 @pytest.mark.hil
 def test_board_responsive(board):
     """Board USB port exists (doesn't open it — avoids port conflicts)."""
@@ -55,8 +63,7 @@ def test_wallet_i2c_scan(flashed_wallet, console):
 
 @pytest.mark.hil
 @pytest.mark.skipif(
-    not pytest.config.getoption("--test-firmware", default=False)
-    if hasattr(pytest, "config") else True,
+    not _opt_test_firmware(),
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_pn7160_acks(flashed_firmware, console):
@@ -72,8 +79,7 @@ def test_our_firmware_pn7160_acks(flashed_firmware, console):
 
 @pytest.mark.hil
 @pytest.mark.skipif(
-    not pytest.config.getoption("--test-firmware", default=False)
-    if hasattr(pytest, "config") else True,
+    not _opt_test_firmware(),
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_nci_init(flashed_firmware, console):
@@ -87,8 +93,7 @@ def test_our_firmware_nci_init(flashed_firmware, console):
 
 @pytest.mark.hil
 @pytest.mark.skipif(
-    not pytest.config.getoption("--test-firmware", default=False)
-    if hasattr(pytest, "config") else True,
+    not _opt_test_firmware(),
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_sustained_acks(flashed_firmware, console):
