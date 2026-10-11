@@ -123,6 +123,7 @@ class NuculaBoard:
 
     def _free_port(self):
         """Aggressively free the serial port from any process holding it."""
+        self._suspend_consoles()
         tty = os.path.realpath(self.port_path)
         try:
             subprocess.run(["fuser", "-k", tty], capture_output=True, timeout=5)
@@ -141,6 +142,23 @@ class NuculaBoard:
     def _port_exists(self) -> bool:
         """Check if the USB port exists without opening it."""
         return os.path.exists(self.port_path)
+
+    @staticmethod
+    def _suspend_consoles():
+        """Close live ConsoleCapture fds before `fuser -k` (Codex PR-86 P2).
+
+        The session-scoped console fixture holds the port across tests;
+        when this process is the holder, fuser -k kills pytest itself
+        (bench-verified: SIGKILL, rc 137). Captures reconnect lazily on
+        their next use, so suspending is transparent to tests."""
+        try:
+            from .console import suspend_all_captures
+        except ImportError:
+            try:
+                from console import suspend_all_captures  # type: ignore
+            except ImportError:
+                return
+        suspend_all_captures()
 
     def run_esptool(self, *args: str, timeout: int = 240,
                     retries: int = 3) -> subprocess.CompletedProcess:

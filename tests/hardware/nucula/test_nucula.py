@@ -90,11 +90,15 @@ def test_our_firmware_pn7160_acks(flashed_firmware, console):
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_nci_init(flashed_firmware, console):
-    """NCI init ladder completes (full PN7160 bring-up)."""
+    """NCI init ladder completes (full PN7160 bring-up).
+
+    Asserted against cumulative history, not the capture window: the
+    marker is one-shot per ladder run and can land in an earlier
+    test's window (Codex PR-86 P2)."""
     console._buffer.clear()
     text = console.capture_for(60, markers=[BootMarker.NCI_INIT_OK])
-    assert BootMarker.NCI_INIT_OK in text, (
-        f"NCI init ladder did not complete. Console: {text[-500:]}"
+    assert BootMarker.NCI_INIT_OK in console.history_text(), (
+        f"NCI init ladder did not complete. Window tail: {text[-500:]}"
     )
 
 

@@ -23,8 +23,16 @@ class ConsoleCapture:
     def __init__(self, port: str, baud: int = 115200):
         self.port = port
         self.baud = baud
+        # _buffer: the current capture window (cleared at each
+        # capture_for entry). _history: everything drained since this
+        # capture was created, never cleared — one-shot boot markers
+        # (e.g. 'NCI INIT LADDER OK') can land in an earlier test's
+        # window, and per-window asserts never see them again
+        # (Codex PR-86 P2).
         self._buffer = bytearray()
+        self._history = bytearray()
         self._serial: Optional[serial.Serial] = None
+        _ACTIVE_CAPTURES.append(self)
 
     def _connect(self) -> bool:
         """Try to open the serial port. Returns True on success.
@@ -62,6 +70,7 @@ class ConsoleCapture:
             data = self._serial.read(65536)
             if data:
                 self._buffer.extend(data)
+                self._history.extend(data)
         except (serial.SerialException, OSError):
             self._serial = None
 
@@ -94,10 +103,33 @@ class ConsoleCapture:
         text = self._buffer.decode("utf-8", errors="replace")
         return re.search(pattern, text)
 
+    def history_text(self) -> str:
+        """Full console text since capture creation (never cleared).
+
+        One-shot boot markers can land in an earlier test's capture
+        window; asserting against history is immune to per-test buffer
+        clears (Codex PR-86 P2)."""
+        return self._history.decode("utf-8", errors="replace")
+
     def close(self):
         if self._serial and self._serial.is_open:
             self._serial.close()
         self._serial = None
+
+
+# Live captures. board._free_port() suspends all of them before its
+# `fuser -k`: an fd held by THIS process (the session console fixture
+# holds the port across tests) turns the kill into a pytest self-kill —
+# empirically SIGKILL, rc 137 (Codex PR-86 P2). Captures reconnect
+# lazily on their next capture_for/send_line, so suspending is
+# transparent to tests.
+_ACTIVE_CAPTURES: list[ConsoleCapture] = []
+
+
+def suspend_all_captures() -> None:
+    """Close every live capture's fd (they reconnect lazily)."""
+    for cap in _ACTIVE_CAPTURES:
+        cap.close()
 
 
 class BootMarker:
