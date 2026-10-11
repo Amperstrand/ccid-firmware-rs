@@ -105,6 +105,10 @@ class NuculaBoard:
         (feature/config drift); only ones with the partition table count.
         """
         target = Path("/root/.cargo-target/riscv32imc-esp-espidf")
+        # CI guard: the path doesn't exist on hosted runners — glob on a
+        # missing dir raises PermissionError during pytest collection.
+        if not target.exists():
+            return
         candidates = [
             p for p in target.glob("debug/build/esp-idf-sys/*/out")
             if (p / "build" / "partition_table" / "partition-table.bin").exists()
