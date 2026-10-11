@@ -13,7 +13,9 @@ which renumbers on USB re-enumeration. Override with NUCULA_PORT /
 M5STICK_PORT env vars.
 
 Direct serial access: pcscd MUST be stopped (it holds the ports).
-The script stops/starts it itself.
+The script stops/starts it itself. The labgrid places (nucula-c3,
+m5stick) are acquired before any port is touched and released on
+exit — a failed acquire aborts before stopping pcscd.
 
 Usage:
     python3 tests/hardware/nfc/conformance_battery.py [--quick]
@@ -95,6 +97,33 @@ class Reader:
         self.s.setDTR(False)
         self.s.setRTS(False)
         self.seq = 0
+        # Late-response accumulation (issue #114, Codex on #107): a
+        # response arriving after the read window used to sit in the OS
+        # buffer until the NEXT exchange discarded it via
+        # reset_input_buffer — recoveries inside the retry budget read
+        # as "NO RECOVERY". RDR frames parsed from the pre-drain and
+        # the read window are stashed keyed by their seq byte; the
+        # owning exchange (or the next one, for late arrivals) finds
+        # them there.
+        self.pending: dict[int, list] = {}
+
+    def _stash_frames(self, buf: bytes) -> None:
+        for f in parse_frames(buf):
+            if f[0] >= 0x80:
+                self.pending.setdefault(f[1], []).append(f)
+
+    def _collect_response(self, seq: int) -> list:
+        """Pop the response for `seq`; when unanswered, surface late
+        responses stashed for earlier seqs (oldest first) instead of
+        reporting no response — a valid late frame proves the reader
+        recovered within the budget."""
+        own = self.pending.pop(seq, None)
+        if own:
+            return own
+        late: list = []
+        for stale in list(self.pending):
+            late.extend(self.pending.pop(stale))
+        return late
 
     def close(self):
         try:
@@ -152,7 +181,17 @@ class Reader:
     def _exchange_once(self, msg_type: int, data: bytes, raw: bytes | None,
                        settle: float) -> list:
         self.seq = (self.seq % 255) + 1
-        payload = raw if raw is not None else frame(msg_type, self.seq, data)
+        seq = self.seq
+        payload = raw if raw is not None else frame(msg_type, seq, data)
+        # Pre-drain: bytes that arrived after the previous window closed
+        # are the late responses the pending buffer exists for — they
+        # must be read BEFORE reset_input_buffer discards them.
+        try:
+            if self.s.in_waiting():
+                self.s.timeout = 0.02
+                self._stash_frames(self.s.read(max(self.s.in_waiting(), 1)))
+        except serial.SerialException:
+            pass
         try:
             self.s.reset_input_buffer()
             self.s.write(payload)
@@ -181,7 +220,8 @@ class Reader:
                 idle += 1
             if idle >= 2:
                 break
-        return [f for f in parse_frames(buf) if f[0] >= 0x80]
+        self._stash_frames(buf)
+        return self._collect_response(seq)
 
 
 def pcscd_stop():
@@ -195,6 +235,35 @@ def pcscd_start():
     subprocess.run(["systemctl", "start", "pcscd.socket", "pcscd.service"],
                    capture_output=True)
     time.sleep(1.5)
+
+
+# Labgrid bench doctrine (AGENTS.md): every HIL session acquires the
+# DUT places before touching hardware — concurrent sessions cannot
+# race a device. Places from tests/hardware/labgrid/
+# exporter-ai-legion-nfc.yaml.
+LABGRID_PLACES = {"nucula": "nucula-c3", "m5stick": "m5stick"}
+
+
+def labgrid_acquire(places: list[str]) -> list[str]:
+    """Acquire each place; returns the places actually held (partial on
+    failure — the caller must release exactly those)."""
+    acquired = []
+    for place in places:
+        r = subprocess.run(["labgrid-client", "-p", place, "acquire"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            reason = (r.stderr or r.stdout).strip()
+            print(f"labgrid: acquire {place} FAILED: {reason}")
+            return acquired
+        print(f"labgrid: acquired {place}")
+        acquired.append(place)
+    return acquired
+
+
+def labgrid_release(places: list[str]) -> None:
+    for place in places:
+        subprocess.run(["labgrid-client", "-p", place, "release"],
+                       capture_output=True)
 
 
 # ---------------------------------------------------------------- battery
@@ -335,7 +404,28 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
                 r.s.reset_input_buffer()
                 r.s.write(raw)
             except serial.SerialException:
-                r.reopen()
+                # Issue #114 (Codex on #96): a dead port is a bench
+                # fault — it must FAIL, never silently skip the case.
+                if not r.reopen():
+                    raise AssertionError(
+                        f"{rname}: port died during fuzz case {name!r} "
+                        "and reopen failed — bench hardware fault"
+                    ) from None
+                # Port back: prove protocol resync (same disarm-then-
+                # probe discipline as the normal path — T=1 fuzz
+                # payloads can leave the endpoint armed, issue #101).
+                r.exchange(0x6D, settle=0.2)
+                answered = False
+                for _ in range(3):
+                    resp = r.exchange(MSG_GET_SLOT_STATUS, settle=0.6)
+                    if resp and resp[0][0] == 0x81:
+                        answered = True
+                        break
+                if not answered:
+                    wedges[rname] += 1
+                    ok = False
+                    print(f"  WEDGE {rname} after {name}: no GetSlotStatus "
+                          "resync within 3 probes after reopen")
                 continue
             time.sleep(0.05)
             # Resync proof: a valid GetSlotStatus must be answered within a
@@ -453,28 +543,39 @@ def main():
     ap.add_argument("--quick", action="store_true", help="shrink fuzz/soak rounds")
     args = ap.parse_args()
 
-    pcscd_stop()
-    readers: dict[str, Reader] = {}
+    # Acquire the bench places BEFORE stopping pcscd or opening the
+    # DUT ports (Codex on #107): the battery owns the hardware for the
+    # whole run and must not race sibling sessions.
+    places = [LABGRID_PLACES[name] for name in READERS]
+    acquired = labgrid_acquire(places)
+    if len(acquired) != len(places):
+        labgrid_release(acquired)
+        sys.exit(2)
     try:
-        for name in READERS:
-            readers[name] = Reader(name, resolve(name))
-        ok1 = conformance_battery(readers)
-        ok2 = fuzz_battery(readers, 20 if args.quick else 80)
-        ok3 = pcscd_restart_soak(readers, 3 if args.quick else 10)
-        # the restart soak leaves pcscd RUNNING (it holds the ports);
-        # stop it and reopen our direct connections
         pcscd_stop()
-        for name in list(readers):
-            try:
-                readers[name].close()
-            except Exception:
-                pass
-            readers[name] = Reader(name, resolve(name))
-        ok4 = slot_status_soak(readers, 100 if args.quick else 1000)
+        readers: dict[str, Reader] = {}
+        try:
+            for name in READERS:
+                readers[name] = Reader(name, resolve(name))
+            ok1 = conformance_battery(readers)
+            ok2 = fuzz_battery(readers, 20 if args.quick else 80)
+            ok3 = pcscd_restart_soak(readers, 3 if args.quick else 10)
+            # the restart soak leaves pcscd RUNNING (it holds the ports);
+            # stop it and reopen our direct connections
+            pcscd_stop()
+            for name in list(readers):
+                try:
+                    readers[name].close()
+                except Exception:
+                    pass
+                readers[name] = Reader(name, resolve(name))
+            ok4 = slot_status_soak(readers, 100 if args.quick else 1000)
+        finally:
+            for r in readers.values():
+                r.close()
+            pcscd_start()
     finally:
-        for r in readers.values():
-            r.close()
-        pcscd_start()
+        labgrid_release(acquired)
 
     verdict = all([ok1, ok2, ok3, ok4])
     print(f"\nBATTERY VERDICT: {'PASS' if verdict else 'FAIL'}")

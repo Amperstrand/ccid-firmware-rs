@@ -232,6 +232,16 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
                         }
                         write_all_logged(uart, server.response());
                         let _ = uart.flush_write();
+                        // Presence under continuous traffic (issue #114,
+                        // Codex on #98): with inline_poll=false the poll
+                        // on the read-idle path only fired when the host
+                        // paused, so commands arriving <500 ms apart
+                        // starved it entirely. Post-response the wire is
+                        // quiet from our side — poll here too (same
+                        // primitive the USB-CDC main uses) so the presence
+                        // cache stays fresh.
+                        let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                        server.poll_if_due(now);
                         // Dump-and-retrieve: the 0xD1 ack went out — panic
                         // now so the panic handler writes the flash coredump.
                         if server.take_snapshot_request() {
