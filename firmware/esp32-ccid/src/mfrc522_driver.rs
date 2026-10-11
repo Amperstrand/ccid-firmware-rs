@@ -42,6 +42,12 @@ impl InitRecoveryTracker {
 ))]
 const CARD_ABSENT_THRESHOLD: u8 = 3;
 
+/// Field-off dwell for the antenna cycle in `reset_activation_frontend`
+/// (see there for the wedged-PICC rationale).
+const FIELD_OFF_DWELL_MS: u32 = 50;
+/// Field-on settle before the first REQA/WUPA after the cycle.
+const FIELD_ON_SETTLE_MS: u32 = 5;
+
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub struct Mfrc522NfcDriver;
 
@@ -176,6 +182,24 @@ where
     }
 
     fn reset_activation_frontend(&mut self) -> Result<(), NfcError> {
+        // ISO 14443 field reset: a PICC whose ISO-14443-4 layer wedged
+        // mid-chain (e.g. a stalled host transfer) keeps answering
+        // WUPA but ignores RATS until the field de-energizes it. Bolty
+        // cycles the antenna before every activation
+        // (`prepare_for_activation`); this adds the field-off dwell
+        // (50 ms) a charge-pump-powered JavaCard needs to fully reset.
+        // Only ever runs with no response pending (poll idle /
+        // power_on) — never on the latency path.
+        self.transceiver
+            .raw()
+            .rmw_register(mfrc522::Register::TxControlReg, |b| b & !0b11)
+            .map_err(|_| NfcError::CommunicationError)?;
+        FreeRtos::delay_ms(FIELD_OFF_DWELL_MS);
+        self.transceiver
+            .raw()
+            .rmw_register(mfrc522::Register::TxControlReg, |b| b | 0b11)
+            .map_err(|_| NfcError::CommunicationError)?;
+        FreeRtos::delay_ms(FIELD_ON_SETTLE_MS);
         self.transceiver
             .reset_frontend()
             .map_err(|_| NfcError::CommunicationError)?;
