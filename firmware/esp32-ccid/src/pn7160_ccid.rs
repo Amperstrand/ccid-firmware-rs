@@ -131,7 +131,12 @@ pub fn run() -> ! {
     let mut server = CcidSerialServer::new(CcidHandler::new(driver), poll_interval, unsafe {
         esp_idf_sys::xTaskGetTickCount()
     });
-    let mut byte_buf = [0u8; 1];
+    // Issue #119: burst reads. The old 1-byte buffer cost one usb.read
+    // call PER BYTE (13 calls for a 13-byte GetSlotStatus frame, ~23 ms
+    // each → flat ~300 ms/command). 64 bytes = one full-speed CDC bulk
+    // packet; usb.read returns whatever the driver ring holds (up to the
+    // buffer length), so a whole frame lands in one call.
+    let mut burst_buf = [0u8; 64];
     let timeout_ticks = TickType::new_millis(UART_RX_TIMEOUT_MS as u64).ticks();
 
     // Purge boot-log bytes so CCID starts clean
@@ -162,25 +167,33 @@ pub fn run() -> ! {
     }
 
     loop {
-        match usb.read(&mut byte_buf, timeout_ticks) {
-            Ok(1) => {
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if server.feed_byte(byte_buf[0], now) == ServeAction::Respond {
-                    let write_timeout = TickType::new_millis(100).ticks();
-                    // GemPC Twin: echo the received frame, then the response
-                    let _ = usb.write(server.echo(), write_timeout);
-                    let _ = usb.write(server.response(), write_timeout);
-                    // Logs queued since the last drain ride out after the
-                    // response; host parsers scan for SYNC-anchored frames.
-                    crate::log_shim::drain_into(&mut usb);
-                    #[cfg(feature = "ble")]
-                    if let Some(ble) = ble_console.as_ref() {
-                        ble.drain();
-                    }
-                    // Dump-and-retrieve: escape 0xD1 ack went out — panic
-                    // now so the panic handler writes the flash coredump.
-                    if server.take_snapshot_request() {
-                        panic!("escape 0xD1: diagnostic snapshot requested");
+        match usb.read(&mut burst_buf, timeout_ticks) {
+            Ok(n) if n > 0 => {
+                // Feed every byte through the same per-byte path. A
+                // Respond fires only on the LAST byte of a frame (the
+                // parser completes on LRC and the echo holds the whole
+                // received frame), so any bytes after it in this burst
+                // are the START of the next host frame — flush the
+                // response first, then keep feeding.
+                for &byte in &burst_buf[..n] {
+                    let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                    if server.feed_byte(byte, now) == ServeAction::Respond {
+                        let write_timeout = TickType::new_millis(100).ticks();
+                        // GemPC Twin: echo the received frame, then the response
+                        let _ = usb.write(server.echo(), write_timeout);
+                        let _ = usb.write(server.response(), write_timeout);
+                        // Logs queued since the last drain ride out after the
+                        // response; host parsers scan for SYNC-anchored frames.
+                        crate::log_shim::drain_into(&mut usb);
+                        #[cfg(feature = "ble")]
+                        if let Some(ble) = ble_console.as_ref() {
+                            ble.drain();
+                        }
+                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
+                        // now so the panic handler writes the flash coredump.
+                        if server.take_snapshot_request() {
+                            panic!("escape 0xD1: diagnostic snapshot requested");
+                        }
                     }
                 }
             }
