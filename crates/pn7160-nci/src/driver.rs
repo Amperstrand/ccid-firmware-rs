@@ -153,6 +153,25 @@ impl<T: Transport> Pn7160Driver<T> {
     /// first empty re-arm.
     pub fn is_card_present(&mut self) -> bool {
         if self.active {
+            // Issue #109 item 2: a live session must not blind the
+            // driver. The chip announces a mid-session removal as an
+            // RF_DEACTIVATE_NTF (reason RF-link-loss — NCI §5.2.5.2,
+            // Table 81); that frame surfaces via the plain drain (on the
+            // I2C link, `transact` stashes NTFs that arrive mid-exchange),
+            // and this poll turns it into the presence transition the
+            // serve layer announces to the host. Strictly non-blocking
+            // (drain only): no writes, no re-arm — an active RF interface
+            // must not be torn down behind the session's back.
+            match reader::wait_for_event(&mut self.transport) {
+                Some(reader::TagEvent::LinkLost) => {
+                    self.teardown_on_link_loss();
+                    return false;
+                }
+                // A tag-shaped NTF while active (re-emitted activation)
+                // just refreshes the cache; the session continues.
+                Some(reader::TagEvent::Tag(n, ats)) => self.latch_tag(n, ats),
+                None => {}
+            }
             return true;
         }
         self.step_rearm();
@@ -279,6 +298,19 @@ impl<T: Transport> Pn7160Driver<T> {
         self.rearm = None;
     }
 
+    /// Session teardown on mid-session link-loss (issue #109 item 2):
+    /// the tag physically left the field while the CCID session was
+    /// live. Clears EVERYTHING a later `power_on` could resurrect —
+    /// the cached NTF and the auto-activation ATS included — so no
+    /// stale activation answers for a card that is gone, and the
+    /// session ends (`transmit_apdu` → NoCard) without a wire write:
+    /// the chip already tore the RF interface down itself.
+    fn teardown_on_link_loss(&mut self) {
+        self.active = false;
+        self.uid_len = 0;
+        self.clear_tag();
+    }
+
     /// Discover, select, and activate a tag; copies the ATS (from the
     /// activation notification's Initial_Params — NCI §6.3.4) into `atr`.
     ///
@@ -290,11 +322,18 @@ impl<T: Transport> Pn7160Driver<T> {
     /// comes from the activation NTF itself (its tail TLV) and the
     /// established connection serves APDUs directly.
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
-        let (fresh_ntf, fresh_ats) = match reader::wait_for_tag(&mut self.transport) {
-            Some((n, ats)) => {
+        let (fresh_ntf, fresh_ats) = match reader::wait_for_event(&mut self.transport) {
+            Some(reader::TagEvent::Tag(n, ats)) => {
                 self.last_ntf = Some(n);
                 self.last_auto_ats = ats.clone();
                 (Some(n), ats)
+            }
+            // The tag left the field since the last presence poll: the
+            // cached NTF/ATS is stale and must NOT be resurrected into a
+            // phantom ATR (issue #109 item 2).
+            Some(reader::TagEvent::LinkLost) => {
+                self.clear_tag();
+                return Err(Error::NoCard);
             }
             None => (None, None),
         };
@@ -367,10 +406,11 @@ mod tests {
     use super::*;
     use crate::mock::MockTransport;
     use crate::{
-        DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF, MT_RSP, NCI_INTERFACE_ISO_DEP,
-        NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER, NTF_RF_INTF_ACTIVATED,
-        OID_CORE_INIT, OID_CORE_RESET, OID_CORE_SET_CONFIG, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
-        OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
+        DEACTIVATE_REASON_DH_REQ, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+        DEACTIVATE_REASON_RF_LINK_LOSS_NXP, DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF,
+        MT_RSP, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER,
+        NTF_RF_INTF_ACTIVATED, OID_CORE_INIT, OID_CORE_RESET, OID_CORE_SET_CONFIG,
+        OID_RF_DEACTIVATE, OID_RF_DISCOVER, OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
     };
 
     // A realistic ISO-DEP ATS (per ISO 14443-4: TL, T0, TA1, TB1)
@@ -663,36 +703,153 @@ mod tests {
     }
 
     // given an auto-activated tag, when the chip reports RF_DEACTIVATE
-    // with reason RF-link-lost (the tag left the field), then presence
-    // clears immediately; a DH-requested deactivation (our own
-    // teardown) must not be mistaken for removal.
+    // with reason RF-link-lost (the tag left the field — NCI §5.2.5.2
+    // Table 81), then presence clears immediately; a DH-requested
+    // deactivation (our own teardown, reason 0x00) must not be mistaken
+    // for removal. Both disputed link-loss candidates are covered (see
+    // the DEACTIVATE_REASON_* block comment in lib.rs).
     #[test]
     fn rf_link_lost_clears_auto_presence() {
+        for reason in [
+            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
+        ] {
+            let mut t = MockTransport::new();
+            t.push_notification(&auto_activation_ntf());
+            let mut drv = Pn7160Driver::new(t);
+            assert!(
+                drv.is_card_present(),
+                "reason {:#x}: latch activation",
+                reason
+            );
+
+            // reason 0x00 = DH request (e.g. a host power_off in
+            // flight) — not a removal; presence unchanged.
+            drv.transport_mut().push_notification(&[
+                MT_NTF | GID_RF,
+                NTF_RF_DEACTIVATE,
+                0x02,
+                DEACTIVATE_TYPE_IDLE,
+                DEACTIVATE_REASON_DH_REQ,
+            ]);
+            assert!(
+                drv.is_card_present(),
+                "reason {:#x}: DH-requested deactivate ≠ removal",
+                reason
+            );
+
+            // link-loss — the tag is gone.
+            drv.transport_mut().push_notification(&[
+                MT_NTF | GID_RF,
+                NTF_RF_DEACTIVATE,
+                0x02,
+                DEACTIVATE_TYPE_IDLE,
+                reason,
+            ]);
+            assert!(
+                !drv.is_card_present(),
+                "reason {:#x}: link loss = immediate absent",
+                reason
+            );
+        }
+    }
+
+    // --- Issue #109 item 2: active-session removal + stale reuse ---
+
+    // given a LIVE session (power_on done, APDUs answered), when the tag
+    // is removed mid-session (link-loss NTF), then the next presence poll
+    // tears the session down — presence false, session_active false,
+    // transmit rejected — and the teardown writes nothing to the wire
+    // (the chip already dropped the RF interface itself).
+    #[test]
+    fn active_session_link_loss_tears_down_session() {
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        script_apdu(&mut t, &[0x90, 0x00]);
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+        let mut rsp = [0u8; 256];
+        drv.transmit_apdu(&[0x00], &mut rsp).expect("apdu");
+
+        drv.transport_mut().push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
+        ]);
+        let sent_before = drv.transport_mut().sent.len();
+        assert!(!drv.is_card_present(), "mid-session removal flips presence");
+        assert!(!drv.session_active(), "session state cleared");
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            sent_before,
+            "teardown must not write — the chip dropped the interface"
+        );
+        assert_eq!(
+            drv.transmit_apdu(&[0x00], &mut rsp),
+            Err(Error::NoCard),
+            "dead session rejects APDUs"
+        );
+    }
+
+    // given a live session, when a DH-requested deactivate NTF arrives
+    // (echo of our own deactivate paths), then the session stays up.
+    #[test]
+    fn dh_request_deactivate_during_session_is_not_removal() {
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+
+        drv.transport_mut().push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            DEACTIVATE_REASON_DH_REQ,
+        ]);
+        assert!(drv.is_card_present());
+        assert!(drv.session_active(), "DH-request ≠ mid-session removal");
+    }
+
+    // given the tag was removed between presence polls (link-loss NTF
+    // queued while the cache still holds the activation), when the host
+    // calls power_on directly, then the drain consumes the link-loss,
+    // discards the stale cache, and answers NoCard — no phantom ATR from
+    // the stale ATS, no select from the stale discovery (issue #109
+    // item 2: "power_on may also reuse a stale activation NTF").
+    #[test]
+    fn power_on_consumes_link_loss_and_rejects_stale_ntf() {
         let mut t = MockTransport::new();
         t.push_notification(&auto_activation_ntf());
         let mut drv = Pn7160Driver::new(t);
-        assert!(drv.is_card_present());
+        assert!(drv.is_card_present(), "latch the auto-activation");
 
-        // reason 0x01 = DH request (e.g. a host power_off in flight) —
-        // not a removal; presence unchanged.
         drv.transport_mut().push_notification(&[
             MT_NTF | GID_RF,
             NTF_RF_DEACTIVATE,
             0x02,
             DEACTIVATE_TYPE_IDLE,
-            0x01,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
         ]);
-        assert!(drv.is_card_present(), "DH-requested deactivate ≠ removal");
-
-        // reason 0x00 = RF link lost — the tag is gone.
-        drv.transport_mut().push_notification(&[
-            MT_NTF | GID_RF,
-            NTF_RF_DEACTIVATE,
-            0x02,
-            DEACTIVATE_TYPE_IDLE,
-            0x00,
-        ]);
-        assert!(!drv.is_card_present(), "link loss = immediate absent");
+        let mut atr = [0u8; 32];
+        assert_eq!(
+            drv.power_on(&mut atr),
+            Err(Error::NoCard),
+            "stale activation must not be resurrected"
+        );
+        assert!(!drv.is_card_present(), "cache cleared, stays absent");
+        let recovered = drv.into_transport();
+        assert!(
+            !recovered
+                .sent
+                .iter()
+                .any(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER_SELECT),
+            "no select may be attempted from a stale cache"
+        );
     }
 
     #[test]
@@ -923,8 +1080,10 @@ mod tests {
         let mut atr = [0u8; 32];
         drv.power_on(&mut atr).expect("power_on");
 
-        // Many polls must not touch the transport (no re-arm during a
-        // session — it would tear the RF interface down).
+        // Many polls must not WRITE the transport (no re-arm during a
+        // session — it would tear the RF interface down). Since issue
+        // #109 they do drain (read-only) to catch mid-session removal,
+        // which never sends a command.
         let sent_before = drv.transport_mut().sent.len();
         for _ in 0..(PRESENCE_REARM_POLLS * 3) {
             assert!(drv.is_card_present());

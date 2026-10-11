@@ -84,6 +84,33 @@ pub const DEACTIVATE_TYPE_SLEEP_AF: u8 = 0x02;
 /// bench 2026-10-10).
 pub const DEACTIVATE_TYPE_DISCOVERY: u8 = 0x03;
 
+// --- RF_DEACTIVATE_NTF reason codes (NCI v2.x §5.2.5.2, Table 81) ----------
+// NOTE (issue #109 item 1): the reason table is DISPUTED between sources.
+// All sources agree 0x00 = DH-requested deactivation (the answer to our
+// OWN RF_DEACTIVATE — never a removal). For RF-link-loss the candidates
+// diverge: NXP's production NCI 2.x constant header (nci_defs.h, shipped
+// in every Android NXP NFC stack — DH_REQ=0, ENDPOINT_REQ=1,
+// RF_LINK_LOSS=2, NFCB_BAD_AFI=3, DH_REQ_FAILED=4) puts it at 0x02, while
+// NCI 1.x-derived tables put it at 0x01. The PN7160 is NXP silicon, but
+// the bench has not yet captured a hand-verified removal NTF (that
+// exercise is exactly what this decode gates). Until that capture, BOTH
+// candidates decode as removal: on this firmware's NFC-A-only ISO-DEP
+// discovery map an ENDPOINT_REQ (card-emulation/P2P flow) and an
+// NFC-B bad-AFI cannot occur, so the wider accept risks no false
+// removal. Collapse to the captured value when the bench byte lands.
+pub const DEACTIVATE_REASON_DH_REQ: u8 = 0x00;
+/// RF-link-loss per NCI 1.x-derived reason tables.
+pub const DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X: u8 = 0x01;
+/// RF-link-loss per NXP's NCI 2.x nci_defs.h (ENDPOINT_REQ occupies 0x01).
+pub const DEACTIVATE_REASON_RF_LINK_LOSS_NXP: u8 = 0x02;
+
+/// Is this RF_DEACTIVATE_NTF reason a link-loss (physical removal)?
+/// See the block comment above the [`DEACTIVATE_REASON_DH_REQ`] constants
+/// for the disputed-table rationale.
+pub fn reason_is_link_loss(reason: u8) -> bool {
+    reason == DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X || reason == DEACTIVATE_REASON_RF_LINK_LOSS_NXP
+}
+
 /// One decoded NCI frame. GID and OID are kept separate, exactly as they
 /// sit on the wire (GID in octet0, OID as full octet1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -412,11 +439,12 @@ pub mod reader {
     }
 
     /// What a presence drain saw (issue #88). `LinkLost` is the
-    /// RF_DEACTIVATE_NTF with reason RF-link-lost (NCI §5.2.5.2) — the
-    /// removal signal for an AUTO-ACTIVATED tag: while the tag sits in
-    /// the live RF interface, its physical removal tears the link and
-    /// the chip announces it. (Resting-in-discovery tags emit nothing on
-    /// removal — that absence-of-signal was the original #88 bug.)
+    /// RF_DEACTIVATE_NTF with reason RF-link-lost (NCI §5.2.5.2,
+    /// Table 81) — the removal signal for an AUTO-ACTIVATED tag: while
+    /// the tag sits in the live RF interface, its physical removal tears
+    /// the link and the chip announces it. (Resting-in-discovery tags
+    /// emit nothing on removal — that absence-of-signal was the original
+    /// #88 bug.)
     pub enum TagEvent {
         Tag(DiscoverNtf, Option<Vec<u8, 32>>),
         LinkLost,
@@ -424,8 +452,9 @@ pub mod reader {
 
     /// Classify ONE frame as a presence signal: a discovery NTF, an
     /// auto-activation NTF (with its ATS), or the link-loss deactivation
-    /// of an auto-activated tag (NCI §5.2.5.2). `None` = not a presence
-    /// signal (RSP frames, CORE_CONN_CREDITS, DH-requested deactivations).
+    /// of an auto-activated tag (NCI §5.2.5.2, Table 81). `None` = not a
+    /// presence signal (RSP frames, CORE_CONN_CREDITS, DH-requested
+    /// deactivations — reason 0x00, the answer to our own RF_DEACTIVATE).
     pub fn event_of(f: &Frame) -> Option<TagEvent> {
         if let Some(n) = DiscoverNtf::decode(f) {
             return Some(TagEvent::Tag(n, None));
@@ -437,7 +466,7 @@ pub mod reader {
             && f.gid == GID_RF
             && f.oid == NTF_RF_DEACTIVATE
             && f.len >= 2
-            && f.payload[1] == 0x00
+            && reason_is_link_loss(f.payload[1])
         {
             return Some(TagEvent::LinkLost);
         }
@@ -1038,6 +1067,54 @@ mod tests {
             &[0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP],
         );
         assert_eq!(reader::activated_summary(&f), Some((0x01, 0x02, 0x04)));
+    }
+
+    #[test]
+    fn deactivate_ntf_reason_classification() {
+        // Issue #109 item 1: reason 0x00 = DH-requested deactivation (the
+        // answer to our own RF_DEACTIVATE) — neutral, never a removal.
+        // Both link-loss candidates (disputed Table 81, see the
+        // DEACTIVATE_REASON_* block comment) are removals.
+        let dh = ntf_frame(
+            NTF_RF_DEACTIVATE,
+            &[DEACTIVATE_TYPE_DISCOVERY, DEACTIVATE_REASON_DH_REQ],
+        );
+        assert!(reader::event_of(&dh).is_none(), "DH-request ≠ removal");
+
+        let loss_1x = ntf_frame(
+            NTF_RF_DEACTIVATE,
+            &[DEACTIVATE_TYPE_IDLE, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X],
+        );
+        assert!(matches!(
+            reader::event_of(&loss_1x),
+            Some(reader::TagEvent::LinkLost)
+        ));
+
+        let loss_nxp = ntf_frame(
+            NTF_RF_DEACTIVATE,
+            &[DEACTIVATE_TYPE_IDLE, DEACTIVATE_REASON_RF_LINK_LOSS_NXP],
+        );
+        assert!(matches!(
+            reader::event_of(&loss_nxp),
+            Some(reader::TagEvent::LinkLost)
+        ));
+
+        // Truncated NTF (no reason octet): neutral, not a removal.
+        let short = ntf_frame(NTF_RF_DEACTIVATE, &[DEACTIVATE_TYPE_IDLE]);
+        assert!(reader::event_of(&short).is_none());
+    }
+
+    #[test]
+    fn reason_is_link_loss_table() {
+        assert!(!reason_is_link_loss(DEACTIVATE_REASON_DH_REQ));
+        assert!(reason_is_link_loss(DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X));
+        assert!(reason_is_link_loss(DEACTIVATE_REASON_RF_LINK_LOSS_NXP));
+        // NXP tail codes (ENDPOINT_REQ is the 0x01 occupant there, but a
+        // bare 0x03 NFC-B bad-AFI / 0x04 DH-failure never reaches us on
+        // the NFC-A ISO-DEP-only discovery map): neutral today.
+        assert!(!reason_is_link_loss(0x03));
+        assert!(!reason_is_link_loss(0x04));
+        assert_eq!(DEACTIVATE_REASON_DH_REQ, 0x00);
     }
 
     #[test]

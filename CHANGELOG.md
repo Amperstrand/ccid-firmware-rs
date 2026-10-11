@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — pn7160 correctness cluster (issue #109)
+
+- **`RF_DEACTIVATE_NTF` reason decode**: the presence decode treated reason
+  `0x00` as RF-link-loss — but `0x00` is DH-requested deactivation (the
+  answer to our own `RF_DEACTIVATE`, never a removal), so real removals were
+  filtered out and our own teardown echoes could have cleared presence. The
+  NCI v2.x Table 81 reason table is disputed between sources (NXP's
+  production `nci_defs.h`: `RF_LINK_LOSS=0x02` with `ENDPOINT_REQ=0x01`;
+  NCI 1.x-derived tables: `RF_LINK_LOSS=0x01`), so BOTH candidates decode as
+  removal until the pending hand-verified bench card-removal capture picks
+  the final value (see the `DEACTIVATE_REASON_*` block comment in
+  `crates/pn7160-nci/src/lib.rs`). Mock fixtures that encoded the inverted
+  values were regenerated. Host tests added for the classification.
+- **Active-session removal unannounced (from #106 review)**: `is_card_present`
+  short-circuited on a live session without draining, so a mid-session
+  link-loss NTF was never observed and the session answered forever. The
+  session branch now drains (read-only, no writes/re-arm) and on link-loss
+  tears the whole session down (`session_active()=false`, `transmit_apdu`
+  → `NoCard`) — the serve layer's presence-transition detection then
+  announces the removal (NotifySlotChange where the board profile enables
+  it; fresh GetSlotStatus answers on the inline-poll nucula profile).
+- **`power_on` stale-activation reuse**: a link-loss NTF queued between
+  presence polls was consumed and discarded by the discovery drain while
+  the cached NTF/ATS survived, so a later `power_on` resurrected the
+  removed card into a phantom ATR. `power_on` now surfaces link-loss from
+  its drain, clears the cache, and answers `NoCard`. Host tests added.
+- *(item 3, IRQ-wait µs-vs-tick budget — already fixed in 3effa7f, verified
+  on this branch: `waited += RTOS_TICK_US` with `RTOS_TICK_US=10_000`.)*
+
 ### Fixed — Codex review backlog (issue #114, from PRs 93/96/98/100/107)
 
 - **`conformance_battery.py` fuzz path**: a dead DUT port now FAILs the case
