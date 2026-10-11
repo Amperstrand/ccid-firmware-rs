@@ -19,6 +19,7 @@ pub mod nfc;
 pub mod pn532_driver;
 pub mod serial_framing;
 pub mod t1;
+#[cfg(test)]
 pub mod t1_fuzz;
 
 #[cfg(feature = "backend-mfrc522")]

@@ -161,11 +161,11 @@ mod host {
 
     #[inline(always)]
     pub fn advance_cyccnt(by: u32) {
-        HOST_CYCCNT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.wrapping_add(by))
-            })
-            .ok();
+        // fetch_add wraps on overflow — equivalent to the old
+        // fetch_update(|v| Some(v.wrapping_add(by))) CAS loop, without
+        // the since-deprecated fetch_update (renamed try_update in
+        // newer toolchains; fetch_add works on every pinned version).
+        HOST_CYCCNT.fetch_add(by, Ordering::Relaxed);
     }
 
     #[inline(always)]

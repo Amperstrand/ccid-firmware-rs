@@ -899,7 +899,7 @@ mod tests {
     // phase exits) — the re-arm never masks a fresh sighting.
     #[test]
     fn tag_ntf_during_await_rsp_is_absorbed() {
-        let mut t = MockTransport::new();
+        let t = MockTransport::new();
         let mut drv = Pn7160Driver::new(t);
         for _ in 0..PRESENCE_REARM_POLLS - 1 {
             assert!(!drv.is_card_present());

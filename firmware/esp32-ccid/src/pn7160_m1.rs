@@ -65,44 +65,38 @@ pub fn run() -> ! {
     // M2 test: VEN via PinDriver (HAL) instead of raw gpio — A/B whether
     // the HAL's pin configuration differs from raw gpio_config.
     {
+        use esp_idf_hal::delay::FreeRtos;
         use esp_idf_hal::gpio::{Output, PinDriver};
         let peripherals = esp_idf_hal::peripherals::Peripherals::take().unwrap();
         let mut ven: PinDriver<'static, Output> =
             PinDriver::output(peripherals.pins.gpio7).unwrap();
         ven.set_high().unwrap();
-        unsafe {
-            esp_idf_sys::vTaskDelay(2);
-        }
+        FreeRtos::delay_ms(20);
         ven.set_low().unwrap();
-        unsafe {
-            esp_idf_sys::vTaskDelay(5);
-        }
+        FreeRtos::delay_ms(50);
         ven.set_high().unwrap();
-        unsafe {
-            esp_idf_sys::vTaskDelay(5);
-        }
+        FreeRtos::delay_ms(50);
         log::warn!("M2: VEN PinDriver cycle done");
         drop(ven);
-        unsafe {
-            esp_idf_sys::vTaskDelay(50);
-        } // 500ms settling
+        FreeRtos::delay_ms(500); // settling
     }
 
     let mut n: u32 = 0;
     loop {
-        unsafe {
-            esp_idf_sys::vTaskDelay(500 / 10); // 5s at 100Hz tick
-            n += 1;
-            let rc = esp_idf_sys::i2c_master_probe(bus, 0x28, 50);
-            if rc == 0 {
-                log::warn!("M1[{}]: *** PN7160 ACK @0x28 ***", n);
-            } else if n <= 5 {
-                log::warn!("M1v2[{}]: 0x28 no-ack rc={}", n, rc);
-            }
-            let kb = esp_idf_sys::i2c_master_probe(bus, 0x20, 50);
-            if n <= 3 {
-                log::warn!("M1v2[{}]: kb @0x20 rc={}", n, kb);
-            }
+        // FreeRtos::delay_ms is tick-rate safe; the old raw
+        // `vTaskDelay(500 / 10)` hardcoded HZ=100 AND divided wrong —
+        // 50 ticks = 500 ms, not the 5 s its comment claimed.
+        esp_idf_hal::delay::FreeRtos::delay_ms(5000);
+        n += 1;
+        let rc = unsafe { esp_idf_sys::i2c_master_probe(bus, 0x28, 50) };
+        if rc == 0 {
+            log::warn!("M1[{}]: *** PN7160 ACK @0x28 ***", n);
+        } else if n <= 5 {
+            log::warn!("M1v2[{}]: 0x28 no-ack rc={}", n, rc);
+        }
+        let kb = unsafe { esp_idf_sys::i2c_master_probe(bus, 0x20, 50) };
+        if n <= 3 {
+            log::warn!("M1v2[{}]: kb @0x20 rc={}", n, kb);
         }
     }
 }

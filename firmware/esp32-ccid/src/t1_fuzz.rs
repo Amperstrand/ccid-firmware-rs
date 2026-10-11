@@ -39,7 +39,7 @@ fn valid_lrc(block: &[u8]) -> bool {
 fn feed_ok(ep: &mut T1Endpoint, bytes: &[u8]) -> Option<Vec<u8>> {
     match ep.feed(bytes) {
         FeedResult::Immediate(v) => Some(v.to_vec()),
-        FeedResult::Apdu(a) => {
+        FeedResult::Apdu(_a) => {
             // fuzz calls never do card I/O: answer with a canned SW
             let rsp = ep.card_response(&[0x90, 0x00], 0);
             Some(rsp.to_vec())

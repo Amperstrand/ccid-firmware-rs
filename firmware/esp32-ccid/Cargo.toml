@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["backend-mfrc522", "board-m5atom"]
-backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "esp-idf-hal/legacy-i2c"]
+backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "esp-idf-hal/legacy-i2c"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 # Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
 #   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
@@ -54,7 +54,10 @@ log = "0.4"
 nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
 iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "268db79", features = ["alloc"], optional = true }
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9" }
+# Transceiver bridge + bus recovery shared with bolty-rs; only the
+# backend-mfrc522 feature pulls it (dep: wiring keeps PN7160/PN532 builds
+# from compiling — and warning about — an unused git dependency.
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9", optional = true }
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
