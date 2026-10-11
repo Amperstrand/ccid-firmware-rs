@@ -387,7 +387,11 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             ),
         };
 
-        if len > 7 && response[7] & 0x40 != 0 {
+        // bmCommandStatus FAILED lives in bStatus bits [7:6]: osmo
+        // ccid_proto.h has CCID_CMD_STATUS_FAILED 0x40 (pre-shifted) and
+        // CCID_CMD_STATUS_MASK 0xC0; our constants are the raw 2-bit
+        // values, so the bit is (COMMAND_STATUS_FAILED << 6).
+        if len > 7 && response[7] & (COMMAND_STATUS_FAILED << 6) != 0 {
             self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
         }
 
@@ -652,7 +656,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 header.seq,
                 self.current_icc_status(),
                 COMMAND_STATUS_FAILED,
-                0xFE,
+                CCID_ERR_ICC_MUTE,
                 0,
                 response,
             );
@@ -664,6 +668,8 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 header.seq,
                 ICC_STATUS_PRESENT_ACTIVE,
                 COMMAND_STATUS_FAILED,
+                // bError 0x07 (bad DWLength) has no constant in
+                // ccid_proto.h — asserted as a literal (quote gap).
                 0x07,
                 0,
                 response,
@@ -707,7 +713,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                     header.seq,
                     ICC_STATUS_PRESENT_ACTIVE,
                     COMMAND_STATUS_FAILED,
-                    0xFF,
+                    CCID_ERR_CMD_ABORTED,
                     0,
                     response,
                 )

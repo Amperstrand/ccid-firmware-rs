@@ -345,8 +345,9 @@ impl PinModifyParams {
             2
         };
 
-        // bTeoPrologue[3]
-        let teo_prologue = *data.get(idx)?;
+        // bTeoPrologue[3]: first byte read doubles as the bounds check
+        // (PinModifyParams has no prologue field — Short-APDU reader).
+        let _teo_prologue = *data.get(idx)?;
         idx += 3;
 
         let cla = *data.get(idx)?;
