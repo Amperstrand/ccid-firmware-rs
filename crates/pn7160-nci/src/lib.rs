@@ -547,6 +547,13 @@ pub mod reader {
         let mut ats = Vec::new();
         ats.extend_from_slice(&f.payload[ats_len_pos + 1..ats_len_pos + 1 + ats_len])
             .ok()?;
+        // The activation tail is a nested TLV (bench fixture, P71:
+        // [outer=0x0A][inner=0x09][ATS..]) — the inner length byte
+        // rides along in the slice; strip it so the ATS starts at T0.
+        if ats.len() >= 2 && ats[0] as usize + 1 == ats.len() {
+            let stripped = Vec::from_slice(&ats[1..]).ok()?;
+            return Some(stripped);
+        }
         Some(ats)
     }
 

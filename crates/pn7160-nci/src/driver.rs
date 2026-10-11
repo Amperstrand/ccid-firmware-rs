@@ -489,9 +489,9 @@ mod tests {
 
     // A realistic ISO-DEP ATS (per ISO 14443-4: TL, T0, TA1, TB1)
     // Proper ATS: TL=5, T0=0x75, TA1=0x77, TB1=0x81, TC1=0x02
-    const TEST_ATS: [u8; 5] = [0x05, 0x75, 0x77, 0x81, 0x02];
+    const TEST_ATS: [u8; 6] = [0x75, 0x77, 0x81, 0x02, 0x80, 0x73];
     // PC/SC ATR constructed from the ATS: 0x3B replaces TL, body follows
-    const TEST_ATR: [u8; 5] = [0x3B, 0x75, 0x77, 0x81, 0x02];
+    const TEST_ATR: [u8; 7] = [0x3B, 0x82, 0x80, 0x01, 0x80, 0x73, 0xF0];
 
     fn script_ladder(t: &mut MockTransport) {
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
@@ -520,7 +520,7 @@ mod tests {
         t.push_notification(&[
             MT_NTF | GID_RF,
             NTF_RF_INTF_ACTIVATED,
-            0x0B,
+            0x0C,
             0x01,
             NCI_INTERFACE_ISO_DEP,
             NCI_PROTOCOL_ISO_DEP,
@@ -532,6 +532,7 @@ mod tests {
             TEST_ATS[2],
             TEST_ATS[3],
             TEST_ATS[4],
+            TEST_ATS[5],
         ]);
     }
 
@@ -877,7 +878,7 @@ mod tests {
             .expect("power_on via auto-activation");
         assert_eq!(
             &atr[..atr_len],
-            &[0x3B, 0x78, 0x77, 0x91, 0x02, 0x80, 0x73, 0xC8, 0x21],
+            &[0x3B, 0x85, 0x80, 0x01, 0x80, 0x73, 0xC8, 0x21, 0x10, 0x0E],
             "ATR from the cached activation ATS"
         );
         assert_eq!(

@@ -85,19 +85,62 @@ pub fn ven_cycle() {
 /// becomes the ATR's T0 (Y1 mask + historical count), TA1/TB1/TC1
 /// become the ATR's interface group, and the historical bytes pass
 /// through. pcscd parses these to derive Fi/Di and protocol selection.
+/// Build a PC/SC-compatible ATR from an ISO 14443-4 ATS.
+///
+/// The ATS interface bytes (TA1/TB1/TC1: D/F coding, SFGT, IFSC) are NOT
+/// ATR interface bytes — copying them verbatim produced a malformed ATR
+/// (T0's low nibble read as a historical-byte count of the FSCI,
+/// TA1=0x77 is not a valid ATR Fi/Di, no TD1 → T=0 claim, no TCK) that
+/// pcscd's parser rejects outright: bench 2026-10-11, the broker wire
+/// log showed IccPowerOn answered with a fine ATR-shaped frame and
+/// pcscd then sent NO SetParameters/PPS and failed the connect with
+/// "Card is unresponsive".
+///
+/// Per PC/SC Part 3 (contactless ATR synthesis, byte-identical to the
+/// MFRC522 backend's bench-proven builder): TS=3B, T0=0x80|n_hist,
+/// TD1=0x80, TD2=0x01 (final protocol T=1), historical bytes, TCK.
+///
+/// Input contract: the ATS as carried by the NCI RF_INTF_ACTIVATED
+/// notification — [T0, interface bytes..., historical bytes...] with no
+/// TL prefix and no CRC_A (bench fixture `auto_activation_ntf`,
+/// 2026-10-11: the P71's ATS arrives as 78 77 91 02 80 73 C8 21 10).
 pub fn ats_to_atr(ats: &[u8]) -> Option<Vec<u8, 32>> {
-    if ats.len() < 2 {
+    if ats.is_empty() {
         return None;
     }
-    let tl = ats[0] as usize;
-    let body_end = tl.min(ats.len());
-    if body_end < 2 {
-        return None;
+    // ISO 14443-4 §5.1.1 T0: high nibble = interface-byte presence mask
+    // (b8=TA1, b7=TB1, b6=TC1, b5=TD1; each consumed TD's high nibble is
+    // the next mask).
+    let mut i = 1;
+    let mut y = ats[0] & 0xF0;
+    while y != 0 {
+        let mut next = 0;
+        for bit in [0x80u8, 0x40, 0x20, 0x10] {
+            if y & bit != 0 {
+                if i >= ats.len() {
+                    return None;
+                }
+                let b = ats[i];
+                i += 1;
+                if bit == 0x10 {
+                    next = b & 0xF0;
+                }
+            }
+        }
+        y = next;
     }
-    let body = &ats[1..body_end];
+    let hist = &ats[i..];
     let mut atr = Vec::new();
     let _ = atr.push(0x3B);
-    let _ = atr.extend_from_slice(body);
+    let _ = atr.push(0x80 | (hist.len() as u8 & 0x0F));
+    let _ = atr.push(0x80);
+    let _ = atr.push(0x01);
+    atr.extend_from_slice(hist).ok()?;
+    let mut tck = 0u8;
+    for &b in &atr[1..] {
+        tck ^= b;
+    }
+    let _ = atr.push(tck);
     Some(atr)
 }
 
@@ -106,29 +149,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ats_to_atr_ntag424() {
-        let ats = [0x06, 0x75, 0x77, 0x81, 0x02, 0x88];
+    fn ats_to_atr_t1_shape_and_tck() {
+        // P71 ATS as delivered by the nucula activation NTF (bench
+        // fixture, 2026-10-11): T0=0x78 (TB1/TC1/TD1, FSCI=8), then
+        // 77 91 02, historical 80 73 C8 21 10. The built ATR is
+        // byte-identical to the m5stick relay's bench-proven one.
+        let ats = [0x78, 0x77, 0x91, 0x02, 0x80, 0x73, 0xC8, 0x21, 0x10];
         let atr = ats_to_atr(&ats).expect("conversion");
-        assert_eq!(atr[0], 0x3B);
-        assert_eq!(&atr[1..], &ats[1..6]);
+        assert_eq!(atr.as_slice(), &[0x3B, 0x85, 0x80, 0x01, 0x80, 0x73, 0xC8, 0x21, 0x10, 0x0E]);
+    }
+
+    #[test]
+    fn ats_to_atr_td_chaining() {
+        // T0=0x75 (TB1/TC1/TD1 present), TD1=0x82 chains a TA2 round;
+        // two historical bytes.
+        let ats = [0x75, 0x77, 0x81, 0x82, 0x88, 0x31, 0x32];
+        let atr = ats_to_atr(&ats).expect("conversion");
+        assert_eq!(atr.as_slice(), &[0x3B, 0x82, 0x80, 0x01, 0x31, 0x32, 0x00]);
+    }
+
+    #[test]
+    fn ats_to_atr_no_interface_bytes() {
+        // T0=0x10: only TD1 (0x00 → no chain) — historical only.
+        let ats = [0x10, 0x00, 0x31, 0x32, 0x33];
+        let atr = ats_to_atr(&ats).expect("conversion");
+        assert_eq!(atr.as_slice(), &[0x3B, 0x83, 0x80, 0x01, 0x31, 0x32, 0x33, 0x32]);
+    }
+
+    #[test]
+    fn ats_to_atr_empty_history() {
+        let ats = [0x78, 0x77, 0x91, 0x02];
+        let atr = ats_to_atr(&ats).expect("conversion");
+        assert_eq!(atr.as_slice(), &[0x3B, 0x80, 0x80, 0x01, 0x01]);
     }
 
     #[test]
     fn ats_to_atr_minimal() {
-        let atr = ats_to_atr(&[0x02, 0x75]).expect("conversion");
-        assert_eq!(atr.as_slice(), &[0x3B, 0x75]);
+        // T0=0x40 (TB1 only), no historical bytes.
+        let atr = ats_to_atr(&[0x40, 0x77]).expect("conversion");
+        assert_eq!(atr.as_slice(), &[0x3B, 0x80, 0x80, 0x01, 0x01]);
     }
 
     #[test]
     fn ats_to_atr_empty() {
         assert!(ats_to_atr(&[]).is_none());
-        assert!(ats_to_atr(&[0x01]).is_none());
+        // A lone T0 (mask 0x00, no interface bytes, no history) still
+        // synthesizes a valid 5-byte ATR.
+        assert!(ats_to_atr(&[0x01]).is_some());
     }
 
     #[test]
-    fn ats_to_atr_truncated() {
-        let atr = ats_to_atr(&[0x0A, 0x75, 0x77, 0x81]).expect("truncated ok");
-        assert_eq!(atr.as_slice(), &[0x3B, 0x75, 0x77, 0x81]);
+    fn ats_to_atr_garbage_interface_mask_rejected() {
+        // T0 promises interface bytes the buffer cannot hold.
+        assert!(ats_to_atr(&[0x78, 0x77]).is_none());
     }
 
     #[test]

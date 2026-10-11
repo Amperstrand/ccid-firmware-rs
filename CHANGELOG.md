@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — pn7160 pcscd ATR synthesis + PTY broker bring-up (#117, bench 2026-10-11)
+
+- **`ats_to_atr` produced a malformed ATR that pcscd rejects** (bench:
+  the broker wire log showed IccPowerOn answered, then pcscd sent NO
+  SetParameters/PPS and failed every connect with "Card is
+  unresponsive"): the raw ATS bytes were copied verbatim behind a `3B`,
+  so T0's low nibble (the ATS FSCI) was read as a historical-byte
+  count, TA1 carried an invalid ATR Fi/Di, and the absent TD1 claimed
+  T=0 for a T=1 card. The builder now parses the ATS interface-byte
+  mask (ISO 14443-4 §5.1.1, TD-chaining included) and synthesizes the
+  PC/SC Part 3 contactless shape byte-identical to the MFRC522
+  backend's bench-proven builder (`3B 8x 80 01 <hist> TCK` → T=1).
+  Bench-locked: the P71's activation ATS now yields
+  `3B 85 80 01 80 73 C8 21 10 0E` — byte-identical to the m5stick
+  relay's ATR for the same card.
+- **`activation_ats` included the nested TLV length byte** in the ATS
+  (the P71 activation tail is `[outer=0x0A][inner=0x09][ATS…]`), so
+  the parser saw the length as T0. The inner length is now stripped;
+  the delivered contract is the bare `[T0, interface bytes, history]`.
+- **`host-tools/nucula-ccid-broker.py` hardened + productionized**:
+  serving-gate before exposure (the `/dev/nucula-ccid` symlink is only
+  created after a framed GetSlotStatus answered — CDC-burst rule #1,
+  #119), drain-until-idle boot settle instead of a fixed sleep,
+  bidirectional wire tap for bench diagnostics, and a temporary
+  IccPowerOff suppression shim (`POWER_OFF_SHIM=1`, default on) that
+  answers power-offs locally so presence survives pcscd's init
+  power-off — the bench chip's re-arm probe is rejected with NCI
+  `DISCOVERY_ALREADY_STARTED` (0xA0) after a deactivation and the
+  HALTed ISO-DEP card never re-activates (#125 hardware gap, wire
+  evidence on #117). Remove the shim when #125 lands.
+- **`nucula-ccid-broker.service`** systemd unit (referenced by the
+  broker docstring since d7d25e6 but absent): runs the broker under
+  systemd, ordered `Before=pcscd.service`.
+- Bench-verified end-to-end 2026-10-11: `Nucula CCID` enumerates in
+  pcscd, 8/8 connect+ATR+SELECT(9000)+disconnect sessions through the
+  broker, stable enumeration over a 5.5-min watch, PTY-level GSS RTT
+  0.72 ms p50 over the 0.20 ms direct-serial floor (~0.5 ms broker
+  overhead). Remaining nucula gap: GP CAP-class installs (SmartPGP)
+  still fail at the first T=1 INSTALL block (card answers `9100`, gp
+  retries into a comm error) — same T=1/CAP-upload limitation class
+  as the m5stick, firmware lane.
+
 ### Fixed — PN7160 presence recovery: RF_DISCOVER re-issue (#125, on top of af8641f)
 
 - **One-shot RF_DISCOVER probe in the presence re-arm** (#125 item 2):
