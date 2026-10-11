@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — DRY phase 2 (issue #121): STM32 firmware runs on the shared ccid-core handler
+
+- `crates/ccid-core` gains the contact-smartcard reader flavor and the
+  PC_to_RDR_Secure (PIN verify/modify) surface:
+  - New `ReaderProfile` type parameter (`SerialNfcProfile` default =
+    byte-identical pre-port ESP32 behavior; `ContactProfile` = the
+    STM32 contact wire behavior) keys the historical per-family
+    differences: IccPowerOn validation (dwLength, 5V/auto-only power
+    select, ICC_MUTE errors) with ATR-derived protocol, the host
+    parameter echo model for Get/Set/ResetParameters with libccid
+    quirk field validation, contact XfrBlock error shapes (0xFE
+    inactive / 0xFF card failure as SlotStatus), T=0 default
+    parameters, Abort-slot acknowledgment, driver power-off + secure
+    cancel on card removal, and no CLA=0xFF pseudo-APDU interception.
+  - New `secure` module: `PinVerifyParams`/`PinModifyParams`/
+    `PinResult`/`PinBuffer` (CCID §6.1.11/12 wire structures) moved
+    from the STM32 `pinpad` module — one reference-locked home for the
+    secure-Messaging wire formats. The handler arms `SecureState` and
+    exposes `take_secure_params`/`take_secure_modify_params`/
+    `complete_pin_entry`/`cancel_secure` events (the esp32
+    `take_card_reset`/`take_parameters_accepted` wiring pattern); the
+    PIN-pad capability is the runtime `pin_pad` knob (Cherry ST-2xxx
+    vendor id only).
+  - `card-interface` grows `SlotDriver` (presence poll + session
+    liveness + cached UID): blanket-implemented for every `NfcCardExt`,
+    implemented directly by the STM32 adapter. The core's driver bound
+    changes from `NfcCardExt` to `SlotDriver`.
+- `firmware/ccid-firmware/src/ccid_core.rs` (`CcidMessageHandler`,
+  1206 lines) is rewritten as a thin wrapper over
+  `CcidHandlerCore<_, ContactProfile>`: USB bulk framing, single-slot +
+  cmd-busy gating, the vendor escape set (0xD0 driver diagnostics,
+  Gemalto 0x6A), IccClock + SetDataRateAndClockFrequency (USART
+  specifics), and the display-feature PIN-result→APDU exchange stay
+  firmware-local; dispatch, parameters, XfrBlock, power lifecycle and
+  Secure delegate to the core. SetParameters acceptance reaches the
+  USART driver through the `take_parameters_accepted` event (so
+  ResetParameters now also applies protocol 0 to the driver — the
+  handler state always did, the driver is now told).
+- Resurrected the orphaned STM32 handler characterization suites
+  (`tests/ccid_core_tests.rs`, `comprehensive_test.rs`,
+  `integration_test.rs`, `replay_seedkeeper.rs` — unwired since the
+  root manifest became a pure virtual workspace) as `[[test]]` targets
+  of `ccid-firmware-rs`: 106 tests over the ported wrapper. Two stale
+  expectations fixed to the wire-correct frames the current handler
+  (and pcscd) produce: SetParameters frames now carry a bProtocolNum
+  matching the structure length and bmTCCKST1 without RFU bits (the
+  suites predated the issue #56/#57 validation fixes and had stopped
+  running before those landed).
+- Gates: `cargo test --workspace` 549 passed / 0 failed (ccid-core
+  suite 65 → 90; firmware lib 88 → 90; four resurrected suites +106);
+  both STM32 MCU builds and both clippy passes clean; fmt clean;
+  spec-quote drift check clean.
+
 ### Fixed — PN7160 SET_CONFIG TLV corrected per reference implementations (Reference-First founding incident)
 
 - **CORE_SET_CONFIG param IDs are ONE octet** — verified against the

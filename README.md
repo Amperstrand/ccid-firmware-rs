@@ -27,8 +27,8 @@ open-issue roadmap):
 - keep one repository and one `main` branch for both products
 - keep target-specific hardware initialization separate
 - shared CCID core crates extracted under `crates/` — the CCID message
-  handler now lives in `ccid-core` (ESP32 uses it; STM32 port is the
-  phase-2 DRY lane)
+  handler lives in `ccid-core` and both firmwares use it (ESP32 serial
+  profile + STM32 contact/PIN-pad profile, DRY phases 1–2)
 - wire-format facts are reference-locked (kernel/NXP/spec citations +
   byte-exact unit tests) — never guessed
 - improvement lanes: m5stick APDU latency (CAP-scale transfers), STM32

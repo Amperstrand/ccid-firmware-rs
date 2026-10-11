@@ -628,9 +628,11 @@ fn test_secure_pin_verify_rejected_on_non_pinpad_vendor() {
     );
 
     // When: the host sends PC_to_RDR_Secure with a PIN-verify operation
-    let mut msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x55, [0x00, 0, 0], &[]);
-    msg.push(0x00); // bPINOperation = PIN verification
-    msg.extend_from_slice(&pin_verify_data());
+    // (frame is dwLength-correct; the pre-port handler read rx_len, but
+    // every real host — pcscd — sends dwLength-correct frames)
+    let mut secure_payload = vec![0x00u8]; // bPINOperation = PIN verification
+    secure_payload.extend_from_slice(&pin_verify_data());
+    let msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x55, [0x00, 0, 0], &secure_payload);
     let resp = exchange(&mut h, &msg);
 
     // Then: a DataBlock response with CMD_NOT_SUPPORTED is queued
@@ -805,9 +807,9 @@ fn test_card_removal_mid_pin_entry_resets_secure_state() {
         &mut h,
         &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
     );
-    let mut msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x77, [0x00, 0, 0], &[]);
-    msg.push(0x00);
-    msg.extend_from_slice(&pin_verify_data());
+    let mut secure_payload = vec![0x00u8];
+    secure_payload.extend_from_slice(&pin_verify_data());
+    let msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x77, [0x00, 0, 0], &secure_payload);
     exchange(&mut h, &msg);
     assert!(h.is_pin_verify_active());
 

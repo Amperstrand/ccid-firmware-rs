@@ -1,3 +1,12 @@
+//! Shared harness for the STM32 handler characterization suites.
+//! Compiled into four separate test binaries via `mod ccid_harness;` —
+//! per-binary unused helpers/imports are expected, keep the file quiet.
+#![allow(unused_imports)]
+#![allow(dead_code)]
+#![allow(unreachable_patterns)]
+#![allow(unused_variables)]
+#![allow(non_snake_case)]
+
 use ccid_firmware_rs::ccid_core::{
     CcidMessageHandler, SlotState, CCID_HEADER_SIZE, COMMAND_STATUS_FAILED,
     COMMAND_STATUS_NO_ERROR, COMMAND_STATUS_TIME_EXTENSION, ICC_STATUS_NO_ICC,
@@ -36,7 +45,14 @@ impl CcidTestHarness {
         msg[1..5].copy_from_slice(&len.to_le_bytes());
         msg[5] = 0; // slot
         msg[6] = seq;
-        msg[7] = 0; // bBWI
+        msg[7] = 0; // bBWI / bPowerSelect / bClockCommand
+                    // SetParameters: byte 7 is bProtocolNum and must match the
+                    // structure length (5 => T=0, 7 => T=1) — the handler validates
+                    // the pairing (stale frames with bProtocolNum=0 + 7-byte T=1
+                    // structures are rejected, matching pcscd's real frames).
+        if msg_type == PC_TO_RDR_SET_PARAMETERS {
+            msg[7] = if payload.len() == 7 { 1 } else { 0 };
+        }
         if payload.len() > 2 {
             msg[8] = payload[0]; // wLevelParameter low
             msg[9] = payload[1]; // wLevelParameter high

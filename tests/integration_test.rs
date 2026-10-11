@@ -1,3 +1,10 @@
+//! Compiled into a per-binary test target via the ccid-firmware
+//! [[test]] wiring — per-binary unused imports are expected.
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 //! Integration tests for pinpad module
 //!
 //! These tests verify the complete PIN entry flow from CCID parsing to APDU construction.

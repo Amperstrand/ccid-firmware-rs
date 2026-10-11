@@ -1,3 +1,10 @@
+//! Compiled into a per-binary test target via the ccid-firmware
+//! [[test]] wiring — per-binary unused imports are expected.
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 mod ccid_harness;
 
 use ccid_firmware_rs::ccid_core::{
@@ -166,7 +173,10 @@ fn test_set_parameters_t0() {
 #[test]
 fn test_set_parameters_t1() {
     let mut h = ccid_harness::gemalto_ct30();
-    let t1_params: [u8; 7] = [0x11, 0x10, 0x00, 0x00, 0x00, 0x20, 0x00];
+    // bmTCCKST1 = 0x00 (LRC CRC): only the EDC bit is meaningful; the
+    // handler rejects RFU bits (0x10) with bad-parameter — see the
+    // ccid_spec_paths SetParameters validation tests.
+    let t1_params: [u8; 7] = [0x11, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00];
     let resp = h.send(PC_TO_RDR_SET_PARAMETERS, &t1_params, 0x01);
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_PARAMETERS);
