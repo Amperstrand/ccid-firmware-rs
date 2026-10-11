@@ -378,4 +378,12 @@ cargo test --target x86_64-unknown-linux-gnu
 - **Single slot** — only one card at a time
 - **Short APDU only** — extended APDU not supported
 - **115200 baud fixed** — no auto-baudrate negotiation
+- **Per-block MFRC522 latency (~40 ms/APDU class)** — CAP-scale uploads
+  (GlobalPlatform installs) through the m5stick reader stall; pcscd-level
+  APDU relay and T=1 are unaffected
+- **Nucula (C3) pcscd impossible** — the C3 USB-Serial/JTAG chip-resets on
+  the DTR/RTS patterns libccidtwin uses; no disable bit on this silicon
+  (issue #117). Direct-serial GemPC probing with the safe opener
+  (`dtr=False; rts=False` BEFORE `open()`, settle ≥4 s) is the supported
+  test surface; expect ~300 ms/command CDC latency floor (issue #119)
 - **Target-specific LED driver** — the M5Stack Atom LED matrix is driven on Xtensa hardware builds; host tests use a stubbed implementation so shared state and pattern logic stay testable without ESP32 hardware

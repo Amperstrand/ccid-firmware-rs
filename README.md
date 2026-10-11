@@ -7,19 +7,34 @@ This repository now carries two firmware products on the same `main` branch:
 
 Current supported hardware combinations:
 
-| MCU | Card frontend | Status | Notes |
-|-----|---------------|--------|-------|
-| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | Primary | Wired CCID over USB |
-| ESP32 (M5Stack Atom Matrix) | MFRC522 over I2C | Primary | NFC CCID over GemPC Twin serial protocol |
-| ESP32 dev boards | PN532 over SPI | Secondary | Kept supported, but current focus is MFRC522 |
-| ESP32-C3 (nucula board) | PN7160 over I2C | Experimental | CCID protocol layer verified over USB-CDC (13/13 on-target tests, `pn7160-ccid`); card-level NFC blocked on PN7160 hardware inspection (issue #63) |
+| MCU | Card frontend | pcscd | Status | Notes |
+|-----|---------------|-------|--------|-------|
+| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | ✓ USB CCID | Primary | Wired CCID over USB, T=0/T=1 + PIN, ~43 ms/APDU, labgrid HIL 7/7 |
+| STM32F746-DISCO | GPIO bit-bang (ISO 7816-3 in software) | ✓ USB CCID | Supported | Same CCID core, software physical layer |
+| ESP32 classic (M5Stick/M5Atom) | MFRC522 over I2C | ✓ serial (libccidtwin) | Primary (NFC) | GemPC Twin serial framing, T=1 endpoint, pcscd + APDU relay verified; CAP-scale transfers limited by per-block MFRC522 latency |
+| ESP32 dev boards | PN532 over SPI | ✓ serial | Secondary | Kept supported, current focus is MFRC522 |
+| ESP32-C3 (nucula board) | PN7160 over I2C | **✗ hardware wall** | Card-level verified (direct-serial only) | ATR + APDU relay PASS over the CDC with the safe opener. pcscd/libccidtwin enumeration is impossible on C3 silicon (chip-resets on every port-open, no disable bit — issue #117); ~300 ms/command CDC latency floor (#119) |
 
-Near-term direction:
+Honest parity vs the bench ACR1252 reference (~8.8 ms/APDU): the STM32
+reader is a fully working pcscd reader (5× latency gap, tracked); the
+m5stick enumerates in pcscd, powers cards, relays APDUs and answers
+T=1 (≈5× latency gap; GPG blocked on CAP-upload perf, not protocol);
+the nucula is a direct-serial test device only on this silicon.
+
+Near-term direction (see AGENTS.md "Reference-First Doctrine" and the
+open-issue roadmap):
 
 - keep one repository and one `main` branch for both products
 - keep target-specific hardware initialization separate
-- shared CCID core crates now extracted under `crates/` (protocol, response builders, serial framing)
-- remaining work: evaluate usbd-ccid as USB transport, board pin config trait, NFC crate extraction
+- shared CCID core crates extracted under `crates/` — the CCID message
+  handler now lives in `ccid-core` (ESP32 uses it; STM32 port is the
+  phase-2 DRY lane)
+- wire-format facts are reference-locked (kernel/NXP/spec citations +
+  byte-exact unit tests) — never guessed
+- improvement lanes: m5stick APDU latency (CAP-scale transfers), STM32
+  latency round 3, nucula log channel off-wire (#118) and CDC latency
+  (#119); pcscd on a nucula-class device needs different silicon or a
+  USB-UART bridge (#117)
 
 The practical architecture is a shared CCID core with interchangeable axes:
 

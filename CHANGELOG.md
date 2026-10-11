@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — PN7160 SET_CONFIG TLV corrected per reference implementations (Reference-First founding incident)
+
+- **CORE_SET_CONFIG param IDs are ONE octet** — verified against the
+  Linux kernel (`struct set_config_param { __u8 id; __u8 len; ... }`,
+  `include/net/nfc/nci.h`), both NXP stacks (`NCI_PARAM_ID_TOTAL_DURATION
+  0x00`, `nci_defs.h` in linux_libnfc-nci AND NFC_NCIHAL_libnfc-nci) and
+  UM11495 §6.2. Our TLV claimed a two-octet id and carried a trailing
+  garbage octet the chip rejected (status=REJECTED, num_applied=0) —
+  masked for weeks by the pre-ed0ed5e status parse, then a hard ladder
+  abort once the parse was corrected. The wallet's plen=5 TLV was VALID
+  all along; our bytes are now wallet-verbatim:
+  `[20 02 05 01 00 02 FE 01]` → RSP `[OK, 0 failed]`, config APPLIED.
+- **Dropped the mislabeled `SET_CONFIG_TC1` step**: param 0x52 is
+  `NCI_PARAM_ID_LF_T3T_MAX` (listen-mode Felica, NXP nci_defs.h) —
+  cargo-culted from the wallet's card-emulation config and mislabeled
+  as ISO-DEP TC1 (no such CORE param exists). Ladder is 5 commands.
+- **Ladder treats SET_CONFIG as advisory** (non-OK tolerated): the
+  bench-proven behavior — the reader ran for weeks on chip-rejected
+  config; re-discovery cadence is owned by the firmware re-arm state
+  machine. Load-bearing steps (CoreInit/RfDiscoverMap/RfDiscover) fail
+  with per-step named errors (the generic "step status != OK" cost a
+  session to localize).
+- **Bench**: actdiag ladder OK, card auto-activates at ~+943 ms, ATR
+  `3B 78 77 91 02 80 73 C8 21…` + real card SW through the relay —
+  first nucula card-level PASS since the regression. Reference-locked
+  test `tx_frames_match_c_driver_bytes` now locks ALL ladder bytes
+  (incl. the NCI 2.0 [proto, intf, mode] DISCOVER_MAP order).
+
+### Fixed — clean-wire part 2: log-shim ring purged at ceiling time
+
+Lines queued in the shim ring BEFORE `set_max_level(Off)` (FWID,
+bring-up, presence events) rode out after later responses via
+`drain_into` and desynced pcscd permanently — libccidtwin's parser is
+a strict byte stream with no SYNC resync (bench evidence:
+`ReadSerial() Got 0x76/0x65/0x64…` = boot-log text mid-session,
+journal-correlated). `log_shim::purge()` empties ring + dropped
+counter at ceiling time; the `drain_into` doc's "intermixing is safe"
+claim corrected — it is safe ONLY for SYNC-scanning bench parsers,
+never for libccidtwin.
+
+### Documented — Reference-First Doctrine + nucula C3 hardware wall
+
+- AGENTS.md gains the owner-directive doctrine: no assumptions on wire
+  formats, references before bench iterations (zread/grep.app/web),
+  GREAT EXPECTATION annotations with reference-locked unit tests,
+  mocks model the reference not our bug, DRY single-place-to-be-right.
+  The WRONG session lesson ("wallet TLV malformed") is corrected.
+- **Nucula C3 pcscd enumeration is hardware-impossible** (register-
+  verified): the C3 USB-Serial/JTAG has no `CHIP_RST_DIS` bit (C6/C61
+  only) — every pcscd port-open chip-resets (`rst:0x15`). Bench
+  reader.conf disabled; direct-serial CCID (safe opener, ~300 ms/cmd
+  floor) is the nucula's test surface. Tracked as #117.
+
+### Fixed — CI: guard cargo-target path check (hosted runners)
+
+`board.py`'s `__post_init__` glob on `/root/.cargo-target/...` raised
+PermissionError during pytest collection on GitHub-hosted runners.
+
 ### Changed — CCID handler unification, phase 1 (PERF_AND_DRY_STRATEGY §3.1)
 
 - **Extracted the ESP32 CCID message handler into `crates/ccid-core`**
