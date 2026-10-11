@@ -255,26 +255,7 @@ mod tests {
         assert_eq!(RDR_TO_PC_NOTIFY_SLOT_CHANGE, 0x50);
     }
 
-    /// Simple xorshift32 PRNG — deterministic, zero dependencies.
-    struct Xorshift32(u32);
-    impl Xorshift32 {
-        fn next_u32(&mut self) -> u32 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 17;
-            x ^= x << 5;
-            self.0 = x;
-            x
-        }
-        fn next_u8(&mut self) -> u8 {
-            self.next_u32() as u8
-        }
-        fn fill_bytes(&mut self, buf: &mut [u8]) {
-            for b in buf.iter_mut() {
-                *b = self.next_u8();
-            }
-        }
-    }
+    use crate::testutil::Xorshift32;
 
     #[test]
     fn test_parse_random_bytes_no_panic() {

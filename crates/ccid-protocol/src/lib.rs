@@ -18,3 +18,31 @@
 pub mod atr;
 pub mod status;
 pub mod types;
+
+/// Shared deterministic PRNG for the fuzz-style "random bytes must not
+/// panic" tests in this crate (zero dependencies, reproducible seeds).
+#[cfg(test)]
+pub(crate) mod testutil {
+    pub struct Xorshift32(pub u32);
+
+    impl Xorshift32 {
+        pub fn next_u32(&mut self) -> u32 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.0 = x;
+            x
+        }
+
+        pub fn next_u8(&mut self) -> u8 {
+            self.next_u32() as u8
+        }
+
+        pub fn fill_bytes(&mut self, buf: &mut [u8]) {
+            for b in buf.iter_mut() {
+                *b = self.next_u8();
+            }
+        }
+    }
+}

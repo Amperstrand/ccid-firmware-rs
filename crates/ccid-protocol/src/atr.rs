@@ -1,5 +1,13 @@
 use core::default::Default;
 
+// osmo-ccid-firmware iso7816_3.c — "@implements ISO/IEC 7816-3:2006(E)
+// table 7". Index 0 IS the Fi=372 default row: an ATR without TA1 means
+// Fi=372, never Fi=0.
+//
+// ISO7816: const uint16_t iso7816_3_fi_table[16] = {
+// ISO7816: 372, 372, 558, 744, 1116, 1488, 1860, 0,
+// ISO7816: 0, 512, 768, 1024, 1536, 2048, 0, 0
+// ISO7816: };
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AtrParams {
     pub fi: u16,
@@ -14,6 +22,9 @@ pub struct AtrParams {
     pub has_ta1: bool,
 }
 
+// ATR-derived defaults per ISO 7816-3:2006 §8.3 (osmo iso7816_3.h:
+// ISO7816_3_DEFAULT_FI 372, ISO7816_3_DEFAULT_DI 1) and §9.1/§9.5.3
+// (T=1: IFSC default 32, BWI default 4, CWI default 13).
 impl Default for AtrParams {
     fn default() -> Self {
         Self {
@@ -33,11 +44,15 @@ impl Default for AtrParams {
 
 pub fn fi_from_ta1_high(nibble: u8) -> u16 {
     const FI_TABLE: [u16; 16] = [
-        0, 372, 558, 744, 1116, 1488, 1860, 0, 0, 512, 768, 1024, 1536, 2048, 0, 0,
+        372, 372, 558, 744, 1116, 1488, 1860, 0, 0, 512, 768, 1024, 1536, 2048, 0, 0,
     ];
     FI_TABLE.get(nibble as usize).copied().unwrap_or(372)
 }
 
+// ISO7816: const uint8_t iso7816_3_di_table[16] = {
+// ISO7816: 0, 1, 2, 4, 8, 16, 32, 64,
+// ISO7816: 12, 20, 0, 0, 0, 0, 0, 0,
+// ISO7816: };
 pub fn di_from_ta1_low(nibble: u8) -> u8 {
     const DI_TABLE: [u8; 16] = [0, 1, 2, 4, 8, 16, 32, 64, 12, 20, 0, 0, 0, 0, 0, 0];
     match DI_TABLE.get(nibble as usize).copied().unwrap_or(1) {
@@ -146,6 +161,9 @@ pub enum ProcedureByte {
     Unexpected(u8),
 }
 
+/// T=0 procedure-byte classification per ISO 7816-3:2006 §10.3.3:
+/// 0x60 = NULL (wait), INS = ACK-all-remaining-data, INS ^ 0xFF = ACK-one
+/// byte, 60-6F/90-9F ranges carry SW1.
 pub fn classify_t0_procedure_byte(ins: u8, pb: u8) -> ProcedureByte {
     if pb == 0x60 {
         return ProcedureByte::Null;
@@ -258,23 +276,13 @@ mod tests {
         assert!(verify_atr_tck(&atr, p.protocol));
     }
 
-    /// Simple xorshift32 PRNG — no external deps.
-    fn xorshift32(state: &mut u32) -> u32 {
-        *state ^= *state << 13;
-        *state ^= *state >> 17;
-        *state ^= *state << 5;
-        *state
-    }
-
     #[test]
     fn test_parse_atr_random_bytes_no_panic() {
-        let mut rng: u32 = 0xDEAD_BEEF;
+        let mut rng = crate::testutil::Xorshift32(0xDEAD_BEEF);
         let mut buf = [0u8; 33];
         for _ in 0..1000 {
-            let len = (xorshift32(&mut rng) as usize) % 34;
-            for b in buf.iter_mut() {
-                *b = xorshift32(&mut rng) as u8;
-            }
+            let len = (rng.next_u32() as usize) % 34;
+            rng.fill_bytes(&mut buf);
             let _ = parse_atr(&buf[..len]);
         }
     }
@@ -304,14 +312,12 @@ mod tests {
 
     #[test]
     fn test_verify_tck_random_bytes_no_panic() {
-        let mut rng: u32 = 0xCAFE_BABE;
+        let mut rng = crate::testutil::Xorshift32(0xCAFE_BABE);
         let mut buf = [0u8; 64];
         for _ in 0..1000 {
-            let len = (xorshift32(&mut rng) as usize) % 65;
-            let protocol = xorshift32(&mut rng) as u8;
-            for b in buf.iter_mut() {
-                *b = xorshift32(&mut rng) as u8;
-            }
+            let len = (rng.next_u32() as usize) % 65;
+            let protocol = rng.next_u8();
+            rng.fill_bytes(&mut buf);
             let _ = verify_atr_tck(&buf[..len], protocol);
         }
     }
@@ -348,6 +354,58 @@ mod tests {
             let _ = fi_from_ta1_high(i);
             let _ = di_from_ta1_low(i);
         }
+    }
+
+    /// GREAT EXPECTATION lock: the full Fi table must stay byte-identical
+    /// to the reference (osmo iso7816_3.c `iso7816_3_fi_table`,
+    /// @implements ISO 7816-3:2006 Table 7). Index 0 is the Fi=372
+    /// default row — NOT zero (audit finding #4: a 0 here gave Fi=0 for
+    /// TA1-less ATRs, corrupting ETU math downstream). If this breaks,
+    /// re-verify against the reference — never "fix" the test.
+    #[test]
+    fn fi_table_locked_to_iso7816_reference() {
+        let expected: [u16; 16] = [
+            372, 372, 558, 744, 1116, 1488, 1860, 0, 0, 512, 768, 1024, 1536, 2048, 0, 0,
+        ];
+        for nib in 0..16u8 {
+            assert_eq!(
+                fi_from_ta1_high(nibble_u4(nib)),
+                expected[nibble_u4(nib) as usize],
+                "Fi mismatch at TA1 high nibble {}",
+                nib
+            );
+        }
+    }
+
+    /// GREAT EXPECTATION lock: Di table byte-identical to osmo
+    /// `iso7816_3_di_table` (ISO 7816-3:2006 Table 8); reserved nibbles
+    /// (Di=0) fall back to Di=1 rather than dividing by zero.
+    #[test]
+    fn di_table_locked_to_iso7816_reference() {
+        let expected: [u8; 16] = [1, 1, 2, 4, 8, 16, 32, 64, 12, 20, 1, 1, 1, 1, 1, 1];
+        for nib in 0..16u8 {
+            assert_eq!(
+                di_from_ta1_low(nibble_u4(nib)),
+                expected[nibble_u4(nib) as usize],
+                "Di mismatch at TA1 low nibble {}",
+                nib
+            );
+        }
+    }
+
+    /// TA1 high nibble 0 = the Fi=372 default row (ISO Table 7 index 0).
+    #[test]
+    fn fi_index_zero_is_default_372() {
+        assert_eq!(fi_from_ta1_high(0), 372);
+        assert_eq!(AtrParams::default().fi, 372);
+        // An ATR with TA1 high nibble 0 keeps the default Fi.
+        let p = parse_atr(&[0x3B, 0x90, 0x0F, 0x00]);
+        assert_eq!(p.fi, 372);
+        assert!(p.has_ta1);
+    }
+
+    fn nibble_u4(v: u8) -> u8 {
+        v & 0x0F
     }
 
     #[test]
