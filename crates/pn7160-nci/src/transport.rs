@@ -72,8 +72,19 @@ pub fn ven_cycle() {
     // gpio_set_level(VEN_PIN, 1); delay_ms(50);
 }
 
-/// PC/SC ATR from ISO 14443-4 ATS.
-/// TS=0x3B + ATS body (T0 through historical, no TL, no CRC_A).
+/// PC/SC ATR from ISO 14443-4 ATS (PC/SC Part 3 §4.2.3.3, contactless
+/// ATR construction rules).
+///
+/// ISO 14443-4 ATS: TL(1) | T0(1) | TA1/TB1/TC1 (per T0's Y-mask) |
+/// historical bytes (T0's K count) | TL-checksum. The ATR strips:
+/// - TL — the ATS length byte is replaced by the ATR TS convention
+///   marker 0x3B (direct convention)
+/// - CRC_A — the ISO 14443-3 transport checksum never appears in the
+///   contact-side ATR
+/// The resulting ATR carries the ATS interface bytes verbatim: T0
+/// becomes the ATR's T0 (Y1 mask + historical count), TA1/TB1/TC1
+/// become the ATR's interface group, and the historical bytes pass
+/// through. pcscd parses these to derive Fi/Di and protocol selection.
 pub fn ats_to_atr(ats: &[u8]) -> Option<Vec<u8, 32>> {
     if ats.len() < 2 {
         return None;
