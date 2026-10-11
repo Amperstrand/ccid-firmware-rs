@@ -91,9 +91,11 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         let payload_len = header.length as usize;
         if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
-            // Truncated transport frame — a protocol error worth counting
-            // (Codex reviews on #40/#38); this early return bypasses the
-            // post-dispatch status accounting below.
+            // CCID-level truncation only (Codex review on #93): an
+            // LRC-valid frame whose dwLength overclaims the carried
+            // payload. Wire-level truncation (frame cut mid-stream)
+            // never gets here — the framing parser catches it and it is
+            // NAK-counted instead.
             self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
             return write_slot_status(
                 header.slot,

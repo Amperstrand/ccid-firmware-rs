@@ -237,6 +237,15 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
                         if server.take_snapshot_request() {
                             panic!("escape 0xD1: diagnostic snapshot requested");
                         }
+                        // Codex PR 98: with inline_poll=false the read-idle
+                        // path was the ONLY poll site — a host keeping the
+                        // wire busy (<500 ms gaps, pcscd's status loop)
+                        // starved presence indefinitely. The response is
+                        // flushed, so #89 (never block a pending response
+                        // on a poll) still holds.
+                        server.poll_if_due_after_response(unsafe {
+                            esp_idf_sys::xTaskGetTickCount()
+                        });
                     }
                     ServeAction::Nak => {
                         write_all_logged(uart, server.nak_frame());

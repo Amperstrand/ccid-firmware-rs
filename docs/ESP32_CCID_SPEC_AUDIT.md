@@ -20,9 +20,18 @@ against):
 - Wire battery: `tests/hardware/nfc/conformance_battery.py`
 
 **Firmware identity**: emulated GemPC Twin (Gemplus 0x08E6:0x3437 identity,
-`dwFeatures = 0x00010270`, `dwMaxCCIDMessageLength = 271`), recognized by
-`pcscd`/`libccidtwin` without custom drivers. All mains route through the single
-`CcidSerialServer` serving core since the #90 consolidation.
+`dwMaxCCIDMessageLength = 271`), recognized by `pcscd`/`libccidtwin` without
+custom drivers. All mains route through the single `CcidSerialServer` serving
+core since the #90 consolidation.
+
+**`dwFeatures` wire reality (Codex review on #93)**: the serial transport has
+no USB descriptors — the host never sees this firmware's declared
+`dwFeatures = 0x00010270` (an internal value, relevant only to a hypothetical
+USB build). What pcscd/libccidtwin actually uses is its **own hardcoded**
+GemPC Twin descriptor with `dwFeatures = 0x00010230`
+(`reference/CCID/src/ccid_serial.c:622`, confirmed by
+`docs/LIBCCID_DRIVER_AUDIT_REPORT.md`). Compliance claims below are evaluated
+against host-visible behavior, not the unused internal constant.
 
 ---
 
@@ -203,7 +212,11 @@ all-msg-types rounds.
    firmware-features) is STM32-only.
 4. **SetParameters store-and-ack** — protocol number recorded, structure
    payload not validated/stored; defaults always echoed. Invisible to
-   libccidtwin (it sets parameters once after ATR).
+   libccidtwin (it sets parameters once after ATR). **Invalid `bProtocolNum`
+   divergence (Codex review on #93)**: values other than 0/1 are stored and
+   echoed verbatim and arm the T=1 endpoint (fallback), rather than being
+   rejected per §6.1.7 — recorded here as a deliberate divergence; pcscd only
+   ever sends 0/1/0xFF, and 0xFF (absent card) is not sent post-activation.
 5. **GetParameters static** — defaults, not ATR-derived (NFC backend has fixed
    Fi/Di; ISO 14443-4 handles framing).
 6. **bPowerSelect ignored** on IccPowerOn while `VOLTAGE_SUPPORT=0x07` is
@@ -212,10 +225,19 @@ all-msg-types rounds.
    Table 6.2-2 code (GemPC-lineage convention).
 8. **Slot byte echoed verbatim** — no runtime rejection of non-zero slots
    (single-slot descriptor, `MAX_SLOT_INDEX=0`); fuzz proves no wedge.
-9. **TPDU-level `dwFeatures` claim (0x00010270)** — inherited GemPC Twin
-   declaration with local PPS echo (bit 0x40); the handler is a transparent
-   APDU relay. Host-visible behavior validated by battery + pcscd interop.
-10. **Bench-known NFC gaps (not CCID-dispatch bugs)**: m5stick marginal-coupling
+9. **Two distinct truncation stories (Codex review on #93)** — wire-level
+   truncation (frame cut mid-stream) is caught by the **framing parser**,
+   never dispatched, NAK-counted (`nak` counter, not `error_count`);
+   CCID-level truncation (an LRC-valid frame whose header's `dwLength`
+   overclaims the carried payload) reaches `process_command`, takes the
+   early-return there, and is **error-counted**. Battery wedge-probe cases
+   exercise the first; the oversized-dwLength fuzz rounds the second.
+10. **Internal `dwFeatures` claim (0x00010270)** — inherited GemPC Twin
+    declaration with local PPS echo (bit 0x40); the handler is a transparent
+    APDU relay. Internal-only — see the "dwFeatures wire reality" note in the
+    header for what serial hosts actually use. Host-visible behavior
+    validated by battery + pcscd interop.
+11. **Bench-known NFC gaps (not CCID-dispatch bugs)**: m5stick marginal-coupling
     activation flakiness — mitigated in `9fd1626` (power_on retries 4× with
     frontend reset, bench-verified 20/20); nucula presence stickiness (#88) —
     TTL re-arm landed in `9fd1626`, negative case bench-verified, positive case

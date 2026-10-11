@@ -258,6 +258,25 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// presence if the interval elapsed.
     pub fn on_read_idle(&mut self, now_ticks: u32) -> bool {
         self.parser.reset();
+        self.poll_and_stash(now_ticks)
+    }
+
+    /// Post-flush poll for the `inline_poll = false` profile (Codex PR 98):
+    /// presence used to refresh ONLY on read idle, so a host that keeps
+    /// the wire busy (commands closer together than the read timeout —
+    /// pcscd's status loop does exactly that) starved the poll
+    /// indefinitely and GetSlotStatus answered cached presence forever.
+    /// Called after the response flush: no response is pending anymore,
+    /// so the #89 rule (a physical poll must never delay a pending
+    /// response) still holds. Transitions ride the next command window
+    /// via `pending_notify`, exactly like the idle path.
+    pub fn poll_if_due_after_response(&mut self, now_ticks: u32) -> bool {
+        self.poll_and_stash(now_ticks)
+    }
+
+    /// Run a due presence poll and stash any transition for the next
+    /// command window. Returns `true` when a poll ran.
+    fn poll_and_stash(&mut self, now_ticks: u32) -> bool {
         if self.poll_due(now_ticks) {
             self.handler.refresh_diagnostics(now_ticks);
             if let Some(present) = self.handler.check_card_change() {
@@ -593,6 +612,50 @@ mod tests {
         // ...but every command still gets answered
         let resp = server.response();
         assert_eq!(resp[2], 0x81, "RDR_to_PC_SlotStatus");
+    }
+
+    #[test]
+    fn post_response_poll_keeps_presence_fresh_under_continuous_traffic() {
+        // Codex PR 98: with inline_poll=false, read-idle was the ONLY
+        // poll site — a host keeping the wire busy (commands closer than
+        // the read timeout) starved presence indefinitely. The main loop
+        // now polls after each response flush; the transition rides the
+        // next command window (pending_notify), and feed_byte itself
+        // still never polls (#89 intact, previous test).
+        let mut server = m5stick_profile(true);
+        server.handler_mut().driver_mut().set_card_present(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let polls_before = server.handler_mut().driver_mut().poll_count();
+
+        // Continuous traffic: every command lands well inside the read
+        // timeout, so on_read_idle would NEVER fire in this scenario.
+        assert_eq!(
+            feed_frame(&mut server, &frame, POLL_INTERVAL * 2 + 1),
+            ServeAction::Respond
+        );
+        assert!(server.poll_if_due_after_response(POLL_INTERVAL * 2 + 2));
+
+        // The card lands mid-storm; the next post-response poll sees it.
+        server.handler_mut().driver_mut().set_card_present(true);
+        assert_eq!(
+            feed_frame(&mut server, &frame, POLL_INTERVAL * 3 + 1),
+            ServeAction::Respond
+        );
+        assert!(server.poll_if_due_after_response(POLL_INTERVAL * 3 + 2));
+
+        // Only the two explicit post-response polls ran — feed_byte
+        // contributed none.
+        assert_eq!(
+            server.handler_mut().driver_mut().poll_count(),
+            polls_before + 2
+        );
+
+        // The transition surfaces in the NEXT command window.
+        assert_eq!(
+            feed_frame(&mut server, &frame, POLL_INTERVAL * 4 + 1),
+            ServeAction::Respond
+        );
+        assert_eq!(server.notify(), &[0x50, 0x03], "present notification");
     }
 
     #[test]
