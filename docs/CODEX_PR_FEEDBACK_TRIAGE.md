@@ -4,7 +4,7 @@ Scope: 13 review-comment dumps in `/tmp/opencode/pr-sweep/` (PRs 77–107, Amper
 Every item below was verified against the working tree at `15f5c34` by reading the flagged code —
 not keyword-grep. `77.txt` is empty (no badged findings).
 
-**Totals: 53 items — 41 ADDRESSED, 12 UNADDRESSED.**
+**Totals: 53 items — 51 ADDRESSED, 2 UNADDRESSED.**
 
 *Refreshed 2026-10-11 (tree at `6f3d61c`)*: 26 rows total re-verified against the tree and moved to
 ADDRESSED across two passes — the PR-85 cluster (`0dabde5`, `ed0ed5e`, `3effa7f`, `34ac464`),
@@ -13,32 +13,32 @@ the PR-86/93/95/96/98/100/100/107 script, doc, battery, and serving-path rows (`
 accumulation, labgrid acquisition) plus one host-tool nicety (`--vid/--pid` threading). Each moved row cites its commit; rows left
 UNADDRESSED were re-checked and are still live in the tree.
 
+*Third refresh 2026-10-11 (tree at `c4c232a`, after the sub-agent catch-up merges `aadb31f`/`7c6722a`)*:
+10 of the 12 re-verified and moved to ADDRESSED — the PR-86 HIL cluster in `aaa4076` (codex-hil,
+issue #113: full=True bootloader flash, otadata erase, unknown-firmware backup gate,
+capture-before-reset ladder, responsiveness probe, sustained-ACK cadence, `--flash-binary`,
+`--vid/--pid`) and the two PR-107 battery rows in `510b797` (codex-battery, issue #114: seq-keyed
+pending-response accumulation, labgrid acquire-before-pcscd). Two PR-86 P2 rows did NOT verify and
+remain UNADDRESSED — the sub-agent commits never touched them (diff-hunk audit): the one-shot
+NCI-INIT marker buffer handling and the session `console`-fixture-vs-`fuser -k` self-kill
+(empirically re-confirmed: `fuser -k <tty>` SIGKILLs the parent holder, rc 137).
+
 Note: `.omo/pr-triage.md` (2026-10-10) was used only as a cross-check. Where it over-claims
 "(a) resolved" versus what is actually in the tree, this table's verdict wins — disagreements are
 flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 
 ---
 
-## UNADDRESSED (12)
+## UNADDRESSED (2)
 
 | PR | Priority | Feedback summary | Status | Suggested action |
 |----|----------|------------------|--------|------------------|
-| 86 | P1 | Flash the bootloader when switching wallet → our firmware | **UNADDRESSED** | `conftest.py:96` calls `flash_and_boot(binary)` with `full=False` → writes PT+app only after the wallet flashed its own bootloader (`board.py:314-315`). The `full=True` path exists (`board.py:310-313`) — pass it in the fixture (or always after `flashed_wallet`) |
-| 86 | P2 | Close/suspend the session ConsoleCapture before `fuser -k` (kills the pytest process itself) | **UNADDRESSED** | Session-scoped `console` fixture (`conftest.py:72-77`) is never closed before `_free_port()`'s `fuser -k` (`board.py:114-129`) during the firmware-flash fixtures |
-| 86 | P2 | Responsiveness test must actually probe the chip (esptool flash-id), not just stat the port | **UNADDRESSED** | `test_nucula.py:22-28` asserts `os.path.exists` only; `board.is_responsive()` exists (`board.py:433-437`) but is unused here |
-| 86 | P2 | Preserve the one-shot `NCI INIT LADDER OK` marker (buffer.clear() can consume it in the ACK test) | **UNADDRESSED** | `test_nucula.py:64,81` still clear the shared console buffer per test; firmware emits the marker once (`pn7160_bringup.rs:242`). Keep cumulative history or assert from one capture |
-| 86 | P2 | Sustained-ACK test demands 5×`ACK @0x28` in 30 s; healthy fw emits it once, then heartbeats per 60 s | **UNADDRESSED** | `test_nucula.py:97-102` unchanged; fw cadence (`pn7160_bringup.rs:268-273`) unchanged. Count `PN7160 still ACKing` or widen the window |
-| 86 | P2 | `--vid/--pid` parsed but never passed to device discovery (hard-coded VID list wins) | **UNADDRESSED** | `scripts/read_diag.py:145` calls `find_ccid_device(args.bus, args.address)`; `:26-35` ignores vid/pid. Thread them through |
-| 86 | P2 | `--flash-binary` registered but never read — fixture always rebuilds | **UNADDRESSED** | `tests/hardware/nucula/conftest.py:36-37` registers it; no reader anywhere in `tests/hardware/nucula/`. Resolve from `request.config` in `flashed_firmware` |
-| 86 | P1 | Erase otadata (or verify exact FWID rev) when flashing ota_0 in the HIL flow | **UNADDRESSED** | `board.py` flash paths (`:173-185`, `:309-315`) write PT+ota_0 only — no `0x30000` erase — and `expect=["FWID"]` (`:317`) accepts any revision, so a stale ota_1 image can pass. (build.sh does erase otadata — different flow.) ⚠️ prior triage claims "otadata erase in flash ladder" — not in board.py |
-| 86 | P1 | Back up (or identify) unknown firmware in `pretest_check()` before any HIL flash | **UNADDRESSED** | `board.py:364-374` checks port/holders/esptool only. AGENTS.md documents the backup *rule* (failure mode 5) but nothing implements it. Capture full flash or refuse on unknown image |
-| 86 | P1 | Start console capture **before** each reset in the boot-verify ladder | **UNADDRESSED** | `board.py:346-352` opens ConsoleCapture after each reset step returns. Mitigated (bringup re-issues FWID in the 5 s probe loop, `pn7160_bringup.rs:156`), but the ordering flaw remains — concurrent capture or exact-rev assertion still needed |
-| 107 | P1 | Late responses across polling windows are lost (no seq accumulation) → in-cap recoveries read as NO RECOVERY | **UNADDRESSED** | `conformance_battery.py:145-177` — per-call buffer + `reset_input_buffer()` (`:150`); no pending-sequence carry. Keep one seq pending to its deadline or accumulate |
-| 107 | P1 | Acquire `nucula-c3` + `m5stick` labgrid places before stopping pcscd / opening ports | **UNADDRESSED** | `conformance_battery.py` has no labgrid usage; stops pcscd directly (`:180-183`). Acquire (or share the pytest `bench_lock`/place machinery from the #99 framework), release in teardown |
+| 86 | P2 | Preserve the one-shot `NCI INIT LADDER OK` marker (buffer.clear() can consume it in the ACK test) | **UNADDRESSED** | Third refresh (`c4c232a`): still live — `aaa4076`'s test_nucula.py diff touches only `test_board_responsive` and `sustained_acks` (2 hunks), NOT this pair. `test_nucula.py:78/:94` still `console._buffer.clear()` per test and `capture_for` clears on entry (`console.py:73`); the marker is emitted once per ladder run (`pn7160_bringup.rs:242`) — one landing in the ACK test's earlier 60 s window is consumed before `test_our_firmware_nci_init` asserts. Fix: cumulative buffer history or assert ACK + NCI_INIT from one capture |
+| 86 | P2 | Close/suspend the session ConsoleCapture before `fuser -k` (kills the pytest process itself) | **UNADDRESSED** | Partial only: `aaa4076` closes flash_and_boot's OWN captures before each esptool rung and deasserts DTR/RTS on connect (`console.py:38-47`) — but the flagged session `console` fixture (`conftest.py:68-73`) is untouched by any catch-up commit: opens lazily, never closed between tests. Empirical check (2026-10-11): `fuser -k <tty>` run as a child SIGKILLs the parent holding the fd (rc 137) — a mixed wallet→firmware session still kills pytest at `flashed_firmware`'s first esptool rung. Fix: close the session capture around flash fixtures (or make it fd-drop/reconnect-safe between tests) |
 
 ---
 
-## ADDRESSED (41)
+## ADDRESSED (51)
 
 | PR | Priority | Feedback summary | Status | Suggested action |
 |----|----------|------------------|--------|------------------|
@@ -69,6 +69,14 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 | 86 | P1 | (Re)resolve esp-idf-sys output paths after the build, not only at import | **ADDRESSED** | `board.py:87-108` — lazy `_esp_idf_sys_out()` re-resolves when the PT is missing; picks max-mtime among valid candidates |
 | 86 | P1 | `pytest.config` doesn't exist on modern pytest → the 3 `--test-firmware` tests are **always skipped** | **ADDRESSED** | `2123e1b` — options read via fixture/hook receiving `config` (`test_nucula.py:25` documents the fix) |
 | 86 | P2 | `read_diag.py`: `argparse` never imported → NameError on **every** invocation | **ADDRESSED** | `ed0ed5e` — `scripts/read_diag.py:15` imports argparse |
+| 86 | P1 | Flash the bootloader when switching wallet → our firmware | **ADDRESSED** | `aaa4076` — `conftest.py:100`/`:114` pass `full=True` in `flashed_firmware`/`flashed_ccid_firmware`; full path writes bootloader@0x0 + PT + ota_0 (`board.py:320-327`, bootloader-missing now raises) |
+| 86 | P1 | Erase otadata (or verify exact FWID rev) when flashing ota_0 in the HIL flow | **ADDRESSED** | `aaa4076` — `board.py:330-343`: `erase-region 0x30000 0x2000` after every ota_0 write in `flash_and_boot` (both full and PT-only paths), `RuntimeError` on failure |
+| 86 | P1 | Back up (or identify) unknown firmware in `pretest_check()` before any HIL flash | **ADDRESSED** | `aaa4076` — `board.py:411-426` gate + `:428-507`: 4 KB peek @0x40000, sha256 vs persisted hash log + wallet-image offset 0x10000; unknown content gets a full 4 MB read-flash backup to /tmp and BLOCKS the session if the backup fails |
+| 86 | P1 | Start console capture **before** each reset in the boot-verify ladder | **ADDRESSED** | `aaa4076` — `board.py:374-399`: `cap.connect()` before each ladder rung (esptool rung reopens on return while the chip still boots — esptool needs exclusive port); eager `connect()` added (`console.py:49-55`) |
+| 86 | P2 | Responsiveness test must actually probe the chip (esptool flash-id), not just stat the port | **ADDRESSED** | `aaa4076` — `test_nucula.py:31-43`: asserts `board.is_responsive()` (esptool flash-id) in addition to port existence |
+| 86 | P2 | Sustained-ACK test demands 5×`ACK @0x28` in 30 s; healthy fw emits it once, then heartbeats per 60 s | **ADDRESSED** | `aaa4076` — `test_nucula.py:106-125`: counts `ACK @0x28` + `PN7160 still ACKing` heartbeats over 130 s (two 60 s intervals), asserts ≥2; failure twin `stopped ACKing` added (`console.py:126-129`) |
+| 86 | P2 | `--flash-binary` registered but never read — fixture always rebuilds | **ADDRESSED** | `aaa4076` — `conftest.py:90-97`: read via `request.config.getoption("--flash-binary")`, flashed without a rebuild |
+| 86 | P2 | `--vid/--pid` parsed but never passed to device discovery (hard-coded VID list wins) | **ADDRESSED** | `aaa4076` — `read_diag.py:27-41` `find_ccid_device(vid, pid, bus, addr)`; `:151-152` threads the parsed args through |
 | 86 | P2 | `--hil` must be registered once (combined-suite runs raise ValueError) | **ADDRESSED** | `ed0ed5e` — registered once in `tests/hardware/labgrid/conftest.py:131` only (verified: no other addoption matches) |
 | 93 | P2 | Audit headline cites `dwFeatures=0x00010270` as reader identity; serial hosts actually get libccidtwin's `0x00010230` | **ADDRESSED** | `6f3d61c` — audit header now separates the internal constant from the host-visible libccidtwin value (evidence: `reference/CCID/src/ccid_serial.c:622`) |
 | 93 | P2 | Distinguish truncated **wire** frames (never reach the handler) from direct handler input in the error_count story | **ADDRESSED** | `6f3d61c` — audit divergence item + `ccid_handler.rs` guard comment now split framing-level (NAK-counted, never dispatched) from CCID-level dwLength overclaim (error-counted) |
@@ -83,12 +91,14 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 | 100 | P2 | `stamp_ms` as u32 wraps at 49.7 days → misleading sequence-diagnostic timestamps | **ADDRESSED** | `6f3d61c` — widened to u64 through `format_stamped_record` + the esp_timer cast |
 | 107 | P1 | **ICC status decoded inverted** (`& 0x07`, comment "0=absent 2=active"; CCID: 0=present+active, 2=no ICC) | **ADDRESSED** | `ed0ed5e` — battery decodes `& 0x03` with the correct mapping (`:218`, `:245`) |
 | 107 | P1 | Deassert DTR/RTS after every nucula open (DTR-asserted holder latches boot:0x5 on reset) | **ADDRESSED** | `ed0ed5e` — `setDTR(False); setRTS(False)` after open and in `reopen()` (`:95-96`, `:119-120`) |
+| 107 | P1 | Late responses across polling windows are lost (no seq accumulation) → in-cap recoveries read as NO RECOVERY | **ADDRESSED** | `510b797` — `conformance_battery.py:99-126`: seq-keyed `pending` dict; pre-drain (`:186-194`) stashes RDR frames BEFORE `reset_input_buffer` discards them; `_collect_response` pops the owning seq and surfaces late frames from earlier seqs — in-budget recoveries read as recoveries |
+| 107 | P1 | Acquire `nucula-c3` + `m5stick` labgrid places before stopping pcscd / opening ports | **ADDRESSED** | `510b797` — `conformance_battery.py:546-553`: `labgrid-client -p` acquire of both places before `pcscd_stop()`/port open, `exit 2` on partial acquire after releasing what was held; released in the outer `finally` (`:577-578`) |
 
 ---
 
 ## Verification notes
 
 - **PR 77**: file empty — no badged findings.
-- **PR 107 items map to `conformance_battery.py`** (not `perf_ab.py`): the review names `power_on_expect`/`xfr_expect`/`reopen()`, all of which live there. The battery's current form **is** the merged #107 head (`f035d9c`, 2026-10-09) — all four P1s were merged unfixed and remain live.
+- **PR 107 items map to `conformance_battery.py`** (not `perf_ab.py`): the review names `power_on_expect`/`xfr_expect`/`reopen()`, all of which live there. All four P1s from the merged #107 head (`f035d9c`) are now closed: ICC-status decode + DTR-latch in `ed0ed5e`, late-response accumulation + labgrid acquisition in `510b797` (third refresh verified each site in the tree).
 - **Skepticism cross-check vs `.omo/pr-triage.md`**: that prior triage marks PR 85 items 4/11/13/15, the PR 86 lump, and PR 98 as resolved; direct reads of `build.sh`, `crates/pn7160-nci/src/lib.rs`, `pn7160_i2c.rs`, `pn7160_v10raw.rs`, `board.py`, and `main.rs` contradict it. This table's UNADDRESSED verdicts for those items are backed by the quoted code sites above.
 - **Spec check for PR 85 #11**: NCI CORE_SET_CONFIG_RSP = `[status, num_params, param_ids…]`; the crate's own `Frame::status()` doc (`lib.rs:138`) says SET_CONFIG_RSP leads with status — the `payload[1]` special case contradicts the file's own documentation.
