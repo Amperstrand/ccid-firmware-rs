@@ -196,21 +196,29 @@ pub fn reset_host_cyccnt_for_test() {
 mod tests {
     extern crate std;
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
 
     // HOST_CYCCNT is process-global: concurrent tests would interleave
-    // advances and resets. Serialize every clock-touching test (Codex
-    // review #35 — nondeterministic failures under parallel execution).
+    // advances and resets. Each test takes the CLOCK_LOCK for its FULL
+    // lifetime via reset_test_clock() and threads the guard through
+    // advance_test_clock() — the helpers used to drop the guard at
+    // return, so a 16-thread run interleaved tests anyway (Codex
+    // review #35 / PR-86 P1: 2750 vs 750 cycles flake).
     static CLOCK_LOCK: Mutex<()> = Mutex::new(());
 
-    fn reset_test_clock() {
-        let _guard = CLOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    type ClockGuard = MutexGuard<'static, ()>;
+
+    fn reset_test_clock() -> ClockGuard {
+        let guard = CLOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_host_cyccnt_for_test();
+        guard
     }
 
-    fn advance_test_clock(delta: u32) {
-        let _guard = CLOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    /// Takes the test's guard and hands it back: the lock is taken
+    /// exactly once per test (std's Mutex is NOT reentrant).
+    fn advance_test_clock(clock: ClockGuard, delta: u32) -> ClockGuard {
         super::host::HOST_CYCCNT.fetch_add(delta, core::sync::atomic::Ordering::Relaxed);
+        clock
     }
 
     #[test]
@@ -246,7 +254,7 @@ mod tests {
 
     #[test]
     fn new_defaults_start_to_zero() {
-        reset_test_clock();
+        let _clock = reset_test_clock();
         let wd = DwtWatchdog::new(1000);
         assert_eq!(wd.start_cycles(), 0);
         assert_eq!(wd.timeout_cycles(), 1000);
@@ -260,7 +268,7 @@ mod tests {
 
     #[test]
     fn expired_is_true_for_zero_timeout_watchdog() {
-        reset_test_clock();
+        let _clock = reset_test_clock();
         let mut wd = DwtWatchdog::new(0);
         wd.start();
         assert!(wd.expired());
@@ -268,69 +276,70 @@ mod tests {
 
     #[test]
     fn expired_false_before_threshold_true_after() {
-        reset_test_clock();
+        let clock = reset_test_clock();
         let mut wd = DwtWatchdog::new(1000);
         wd.start();
         assert!(!wd.expired());
 
-        advance_test_clock(999);
+        let clock = advance_test_clock(clock, 999);
         assert!(!wd.expired());
 
-        advance_test_clock(1);
+        let clock = advance_test_clock(clock, 1);
         assert!(wd.expired());
 
-        advance_test_clock(1000);
+        let _clock = advance_test_clock(clock, 1000);
         assert!(wd.expired());
     }
 
     #[test]
     fn elapsed_cycles_tracks_advance() {
-        reset_test_clock();
+        let clock = reset_test_clock();
         let mut wd = DwtWatchdog::new(1_000_000);
         wd.start();
         assert_eq!(wd.elapsed_cycles(), 0);
 
-        advance_test_clock(500);
+        let clock = advance_test_clock(clock, 500);
         assert_eq!(wd.elapsed_cycles(), 500);
 
-        advance_test_clock(250);
+        let _clock = advance_test_clock(clock, 250);
         assert_eq!(wd.elapsed_cycles(), 750);
     }
 
     #[test]
     fn remaining_cycles_saturates_to_zero() {
-        reset_test_clock();
+        let clock = reset_test_clock();
         let mut wd = DwtWatchdog::new(1000);
         wd.start();
 
         assert_eq!(wd.remaining_cycles(), 1000);
 
-        advance_test_clock(400);
+        let clock = advance_test_clock(clock, 400);
         assert_eq!(wd.remaining_cycles(), 600);
 
-        advance_test_clock(10_000);
+        let _clock = advance_test_clock(clock, 10_000);
         assert_eq!(wd.remaining_cycles(), 0);
     }
 
     #[test]
     fn start_resets_window() {
-        reset_test_clock();
+        let clock = reset_test_clock();
         let mut wd = DwtWatchdog::new(1000);
         wd.start();
-        advance_test_clock(900);
+        let clock = advance_test_clock(clock, 900);
         assert!(!wd.expired());
 
         wd.start();
         assert!(!wd.expired());
-        advance_test_clock(900);
+        let clock = advance_test_clock(clock, 900);
         assert!(!wd.expired());
 
-        advance_test_clock(100);
+        let _clock = advance_test_clock(clock, 100);
         assert!(wd.expired());
     }
 
     #[test]
     fn wrapping_subtraction_handles_cyccnt_rollover() {
+        let _clock = reset_test_clock();
         let start = u32::MAX - 100;
         let wd = DwtWatchdog::with_start_for_test(500, start);
         set_host_cyccnt_for_test(start);

@@ -29,10 +29,17 @@ def _opt_test_firmware():
 
 @pytest.mark.hil
 def test_board_responsive(board):
-    """Board USB port exists (doesn't open it — avoids port conflicts)."""
+    """Board USB port exists AND the chip answers esptool (flash-id).
+
+    Stating the port proves nothing — a latched/braindead C3 keeps the
+    tty alive (PR-86 P2: probe the chip, not the filesystem)."""
     import os
     assert os.path.exists(board.port), (
         f"USB port not found: {board.port}. Is the board plugged in?"
+    )
+    assert board.is_responsive(), (
+        f"Board at {board.port} does not answer esptool flash-id — "
+        "see AGENTS.md reset/recovery ladder."
     )
 
 
@@ -97,13 +104,24 @@ def test_our_firmware_nci_init(flashed_firmware, console):
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_sustained_acks(flashed_firmware, console):
-    """Sustained ACKs for 30 seconds (no flakiness)."""
+    """Sustained ACK health over the heartbeat cadence (no flakiness).
+
+    The boot probe logs 'ACK @0x28' exactly once; the mid-session
+    health check logs 'PN7160 still ACKing' every 60 s
+    (HEARTBEAT_PROBE_EVERY in pn7160_bringup.rs). Count both over a
+    130 s window — two heartbeat intervals regardless of phase
+    (PR-86 P2: the old test demanded 5x a once-per-boot marker)."""
     console._buffer.clear()
-    text = console.capture_for(30)
-    ack_count = text.count(BootMarker.PN7160_ACK)
-    nak_count = text.count(BootMarker.PN7160_NAK)
-    # Allow a few initial NAKs during boot/settling, but require sustained ACKs
-    assert ack_count >= 5, f"Only {ack_count} ACKs in 30s. NAKs: {nak_count}"
+    text = console.capture_for(130)
+    ack_count = (
+        text.count(BootMarker.PN7160_ACK)
+        + text.count(BootMarker.PN7160_STILL_ACKING)
+    )
+    nak_count = (
+        text.count(BootMarker.PN7160_NAK)
+        + text.count(BootMarker.PN7160_STOPPED_ACKING)
+    )
+    assert ack_count >= 2, f"Only {ack_count} ACKs in 130s. NAKs: {nak_count}"
     assert nak_count <= 5, f"Too many NAKs ({nak_count}) — unstable. ACKs: {ack_count}"
 
 

@@ -21,12 +21,14 @@ FAILS HERE instead of silently testing the wrong binary.
 
 import pytest
 import time
+from pathlib import Path
 
 from .board import BOARD
 from .console import ConsoleCapture, BootMarker
 
 
-def pytest_addoption(parser):    parser.addoption("--test-firmware", action="store_true", default=False,
+def pytest_addoption(parser):
+    parser.addoption("--test-firmware", action="store_true", default=False,
                      help="Flash and test our Rust bringup firmware")
     parser.addoption("--test-wallet", action="store_true", default=False,
                      help="Flash and test the wallet firmware (reference)")
@@ -83,11 +85,19 @@ def flashed_wallet(board):
 
 
 @pytest.fixture(scope="session")
-def flashed_firmware(board):
+def flashed_firmware(board, request):
     """Flash our Rust bringup firmware and VERIFY via FWID marker."""
-    binary = board.build_firmware()
-    assert binary is not None, "Firmware build failed"
-    text = board.flash_and_boot(binary)
+    # --flash-binary: prebuilt image instead of a rebuild (PR-86 P2).
+    prebuilt = request.config.getoption("--flash-binary")
+    if prebuilt is not None:
+        binary = Path(prebuilt)
+        assert binary.exists(), f"--flash-binary not found: {binary}"
+    else:
+        binary = board.build_firmware()
+        assert binary is not None, "Firmware build failed"
+    # full=True (idempotent): required after wallet firmware — its
+    # bootloader boots factory@0x30000, never our ota_0@0x40000 (PR-86 P1).
+    text = board.flash_and_boot(binary, full=True)
     fwid = BootMarker.parse_fwid(text)
     assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
     print(f"[flashed_firmware] {fwid}")
@@ -101,7 +111,7 @@ def flashed_ccid_firmware(board):
     workflow (Escape 0xD1, AGENTS.md) is exercised against."""
     binary = board.build_firmware(features="pn7160-ccid")
     assert binary is not None, "Firmware build failed"
-    text = board.flash_and_boot(binary)
+    text = board.flash_and_boot(binary, full=True)
     fwid = BootMarker.parse_fwid(text)
     assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
     print(f"[flashed_ccid_firmware] {fwid}")
