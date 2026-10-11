@@ -108,6 +108,70 @@ use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
 ))]
+use iso14443::type_a::vec::FrameVec;
+use iso14443::type_a::{Frame, PcdTransceiver};
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+use crate::turnaround::OutgoingBlockKind;
+
+/// Escape 0xD2 word 4-8 counters (issue #120 decomposition): wraps the
+/// raw transceiver for the duration of one `session.exchange` and
+/// classifies every outgoing block by its PCB.
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+struct CountingTransceiver<'a, I2C: I2c> {
+    inner: &'a mut mfrc522_pcd::Mfrc522Transceiver<I2C>,
+    blocks: u32,
+    wtx_replies: u32,
+    recoveries: u32,
+    max_transceive_us: u32,
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+impl<I2C: I2c> PcdTransceiver for CountingTransceiver<'_, I2C> {
+    type Error = mfrc522_pcd::Mfrc522Error<I2C::Error>;
+
+    fn transceive(&mut self, frame: &Frame) -> Result<FrameVec, Self::Error> {
+        let started_us = crate::t1::now_us();
+        let result = self.inner.transceive(frame);
+        let took_us = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
+        self.blocks = self.blocks.saturating_add(1);
+        if let Some(pcb) = frame.data().first() {
+            match OutgoingBlockKind::from_pcb(*pcb) {
+                Some(OutgoingBlockKind::SBlock) => {
+                    self.wtx_replies = self.wtx_replies.saturating_add(1)
+                }
+                Some(OutgoingBlockKind::RBlock) => {
+                    self.recoveries = self.recoveries.saturating_add(1)
+                }
+                _ => {}
+            }
+        }
+        self.max_transceive_us = self.max_transceive_us.max(took_us);
+        result
+    }
+
+    fn try_enable_hw_crc(&mut self) -> Result<(), Self::Error> {
+        self.inner.try_enable_hw_crc()
+    }
+
+    fn try_set_timeout_ms(&mut self, ms: u32) -> Result<(), ()> {
+        self.inner.try_set_timeout_ms(ms)
+    }
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CardLifecycle {
     NoCard,
@@ -130,6 +194,8 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
     // ISO 14443-3A UIDs are 4/7/10 bytes (single/double/triple cascade)
     cached_uid: [u8; 10],
     cached_uid_len: usize,
+    last_exchange: Option<(u32, u32, u32, u32)>,
+    configured_fwt_ms: u32,
 }
 
 #[cfg(all(
@@ -151,6 +217,8 @@ where
             init_tracker: InitRecoveryTracker::new(),
             cached_uid: [0u8; 10],
             cached_uid_len: 0,
+            last_exchange: None,
+            configured_fwt_ms: 0,
         }
     }
 
@@ -387,6 +455,31 @@ where
         self.lifecycle == CardLifecycle::ActiveSession
     }
 
+    fn exchange_decomposition(&self) -> Option<(u32, u32, u32, u32)> {
+        self.last_exchange
+    }
+
+    /// Escape 0xD3 probe (issue #120): time `reads` back-to-back
+    /// ComIrqReg register reads — the exact I2C transaction the
+    /// transceive poll loop performs — so the host can derive the
+    /// per-poll cadence and separate I2C wait from card wait.
+    fn i2c_timing_probe(&mut self, reads: u32) -> Option<u32> {
+        let n = reads.clamp(1, 256);
+        let started_us = crate::t1::now_us();
+        for _ in 0..n {
+            self.transceiver
+                .raw()
+                .read_register(mfrc522::Register::ComIrqReg)
+                .ok()?;
+        }
+        let took = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
+        Some(took)
+    }
+
+    fn configured_fwt_ms(&self) -> u32 {
+        self.configured_fwt_ms
+    }
+
     fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
         if !self.is_initialized {
             return Err(NfcError::NotInitialized);
@@ -529,6 +622,7 @@ where
             .set_timeout_ms(fwt_ms)
             .map_err(|_| NfcError::CommunicationError)?;
         session.set_base_fwt_ms(fwt_ms);
+        self.configured_fwt_ms = fwt_ms;
 
         self.session = Some(session);
         self.cached_ats = Some(ats.clone());
@@ -587,7 +681,24 @@ where
             );
         }
 
-        let resp = match session.exchange(&mut self.transceiver, command) {
+        let resp = {
+            let mut counting = CountingTransceiver {
+                inner: &mut self.transceiver,
+                blocks: 0,
+                wtx_replies: 0,
+                recoveries: 0,
+                max_transceive_us: 0,
+            };
+            let result = session.exchange(&mut counting, command);
+            self.last_exchange = Some((
+                counting.blocks,
+                counting.wtx_replies,
+                counting.recoveries,
+                counting.max_transceive_us,
+            ));
+            result
+        };
+        let resp = match resp {
             Ok(resp) => resp,
             Err(err) => {
                 log::error!("transmit_apdu: exchange failed: {:?}", err);

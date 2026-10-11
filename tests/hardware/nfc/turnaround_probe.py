@@ -87,7 +87,8 @@ def read_0xd2(s: serial.Serial, seq: int):
     rtt, resp, _ = exchange_timed(s, seq, MSG_ESCAPE, MSG_ESCAPE_D2)
     for f in resp:
         if f[0] == 0x83 and len(f[4]) >= 16:  # RDR_to_PC_Escape
-            words = [int.from_bytes(f[4][i:i + 4], "little") for i in range(0, 16, 4)]
+            words = [int.from_bytes(f[4][i:i + 4], "little")
+                     for i in range(0, min(len(f[4]), 32), 4)]
             return words, rtt
     return None, rtt
 
@@ -95,9 +96,14 @@ def read_0xd2(s: serial.Serial, seq: int):
 def stats_line(tag, words):
     if words is None:
         return f"{tag}: NO 0xD2 RESPONSE"
-    last_ta, max_ta, last_card, max_card = words
-    return (f"{tag}: turnaround last={last_ta/1000:8.3f} max={max_ta/1000:8.3f} ms | "
+    last_ta, max_ta, last_card, max_card = words[:4]
+    line = (f"{tag}: turnaround last={last_ta/1000:8.3f} max={max_ta/1000:8.3f} ms | "
             f"card last={last_card/1000:8.3f} max={max_card/1000:8.3f} ms")
+    if len(words) >= 8:
+        blocks, wtx, rec, max_xcvr = words[4:8]
+        line += (f" | xcvr blocks={blocks} wtx={wtx} rec={rec}"
+                 f" max_block={max_xcvr/1000:7.3f} ms")
+    return line
 
 
 def run_pass(s: serial.Serial, n: int, do_card: bool):

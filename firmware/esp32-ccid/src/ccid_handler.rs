@@ -130,6 +130,46 @@ impl<D: NfcDriver> CcidHandler<D> {
                     response,
                 );
             }
+            // Escape 0xD3 (issue #120): I2C poll-cadence probe — times N
+            // back-to-back ComIrqReg reads (the exact transaction the
+            // MFRC522 transceive poll loop performs) and reports
+            // total_us, N, configured FWT. Payload out: 3 words LE.
+            if header.message_type == PC_TO_RDR_ESCAPE
+                && header.length == 2
+                && ccid_msg.get(CCID_HEADER_SIZE) == Some(&0xD3)
+            {
+                let reads = u32::from(ccid_msg.get(CCID_HEADER_SIZE + 1).copied().unwrap_or(0));
+                let (took_us, fwt_ms) = match self.core.driver_mut().0.i2c_timing_probe(reads) {
+                    Some(us) => (us, self.core.driver().0.configured_fwt_ms()),
+                    None => (u32::MAX, 0),
+                };
+                let payload = [
+                    took_us.to_le_bytes(),
+                    reads.to_le_bytes(),
+                    fwt_ms.to_le_bytes(),
+                ]
+                .concat();
+                let cmd_status = if took_us == u32::MAX {
+                    COMMAND_STATUS_FAILED
+                } else {
+                    COMMAND_STATUS_NO_ERROR
+                };
+                let b_error = if took_us == u32::MAX {
+                    CMD_NOT_SUPPORTED
+                } else {
+                    0
+                };
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(cmd_status, self.core.slot_state().icc_status()),
+                    b_error,
+                    0,
+                    &payload,
+                    response,
+                );
+            }
         }
 
         let len = self.core.process_command(ccid_msg, response);
@@ -228,7 +268,9 @@ impl<D: NfcDriver> CcidHandler<D> {
                 apdu_buf[..an].copy_from_slice(&card_apdu[..an]);
                 let mut scratch = [0u8; 271];
                 let started_us = now_us();
-                let n = self.core.apdu_pipeline(header, &apdu_buf[..an], &mut scratch);
+                let n = self
+                    .core
+                    .apdu_pipeline(header, &apdu_buf[..an], &mut scratch);
                 let took = elapsed_ms_since(started_us);
                 // The pipeline returns a full DataBlock message; T=1
                 // INF carries only the APDU-level payload — strip the

@@ -47,6 +47,25 @@ pub trait NfcDriver {
         false
     }
 
+    /// Issue #120 decomposition of the last `transmit_apdu`:
+    /// `(blocks, wtx_replies, recoveries, max_transceive_us)` — surfaced
+    /// through Escape 0xD2 words 4-8. `None` until an instrumented
+    /// backend records one (MFRC522 only for now).
+    fn exchange_decomposition(&self) -> Option<(u32, u32, u32, u32)> {
+        None
+    }
+
+    /// Escape 0xD3 probe: total µs for `reads` back-to-back register
+    /// reads over the NFC controller bus (the transceive poll-loop
+    /// transaction). `None` on backends without a reachable bus.
+    fn i2c_timing_probe(&mut self, _reads: u32) -> Option<u32> {
+        None
+    }
+
+    fn configured_fwt_ms(&self) -> u32 {
+        0
+    }
+
     /// Power on the NFC card and read its Answer-to-Reset (ATR)
     ///
     /// # Arguments
@@ -123,6 +142,9 @@ impl<D: NfcDriver> CardBackend for CardDriverAdapter<D> {
         // recorded harmlessly and does not disturb a nonzero max.
         let elapsed_us = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
         self.1.record_card_exchange_us(elapsed_us);
+        if let Some(d) = self.0.exchange_decomposition() {
+            self.1.record_exchange_decomposition(d.0, d.1, d.2, d.3);
+        }
         result
     }
 
