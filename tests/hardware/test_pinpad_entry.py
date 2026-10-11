@@ -26,6 +26,14 @@ import sys
 import argparse
 import time
 
+import pytest
+
+# Hardware PIN-entry flow: needs a PIN-pad reader + a PIN-capable card.
+# (The `reader` fixture these tests request predates the labgrid
+# conftest split and exists nowhere today — under --hil they fail loudly
+# at setup instead of erroring in every bare run.)
+pytestmark = pytest.mark.hil
+
 try:
     from smartcard.System import readers
     from smartcard.scard import (
@@ -34,6 +42,9 @@ try:
     )
     from smartcard import scard
 except ImportError:
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip("pyscard not installed", allow_module_level=True)
     print("Install pyscard: pip install pyscard", file=sys.stderr)
     sys.exit(1)
 

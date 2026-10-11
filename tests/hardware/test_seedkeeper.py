@@ -17,6 +17,9 @@ try:
     from smartcard.System import readers
     from smartcard.scard import SCARD_PROTOCOL_T0, SCARD_PROTOCOL_T1
 except ImportError:
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip("pyscard not installed", allow_module_level=True)
     print("Install pyscard: pip install pyscard", file=sys.stderr)
     sys.exit(1)
 

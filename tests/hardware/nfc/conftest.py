@@ -10,8 +10,10 @@ import time
 
 import pytest
 
-from smartcard.System import readers
-from smartcard.Exceptions import NoCardException, CardConnectionException
+# pyscard is imported INSIDE the helpers, not at module scope: conftests
+# load during pytest collection, and the CI collection gate runs in a
+# minimal env (pytest + stdlib only) — the documented no-hardware
+# `pytest tests/hardware/ -v` path must stay collectable there.
 
 READER_MATCHES = {
     "nucula": "Nucula CCID",
@@ -45,12 +47,16 @@ def pytest_collection_modifyitems(config, items):
 
 
 def find_reader(key: str):
+    from smartcard.System import readers
+
     matches = [r for r in readers() if READER_MATCHES[key] in str(r)]
     return matches[0] if matches else None
 
 
 def connect_reader(reader, attempts: int = 3, delay: float = 1.5):
     """Connect with retries; returns (conn, atr_bytes) or (None, None)."""
+    from smartcard.Exceptions import CardConnectionException, NoCardException
+
     for _ in range(attempts):
         try:
             conn = reader.createConnection()

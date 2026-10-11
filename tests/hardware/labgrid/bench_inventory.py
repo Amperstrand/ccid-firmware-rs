@@ -9,6 +9,7 @@ does pcscd see every reader, and is the DUT/reference identity split clean?
 Exit code 0 = bench fully healthy; 1 = at least one check failed.
 """
 
+import shutil
 import subprocess
 import sys
 
@@ -34,6 +35,19 @@ def sh(cmd: str) -> str:
     return r.stdout
 
 
+def held_places() -> dict:
+    """place -> holder, from `labgrid-client who` (issue #110): a place
+    another session acquired is healthy-but-busy — probe attempts against
+    it are noise (and acquire/release proves nothing while held)."""
+    out = sh("labgrid-client who")
+    held = {}
+    for line in out.splitlines()[1:]:  # skip "User Host Place Changed" header
+        parts = line.split()
+        if len(parts) >= 4:
+            held[parts[2]] = f"{parts[0]}@{parts[1]}"
+    return held
+
+
 def check(name: str, ok: bool, detail: str = ""):
     mark = "OK  " if ok else "FAIL"
     print(f"  [{mark}] {name}" + (f" — {detail}" if detail and not ok else ""))
@@ -49,7 +63,12 @@ missing = EXPECTED_EXPORTS - exported
 check(f"all 7 bench resources exported", not missing, f"missing: {sorted(missing)}")
 
 print("== labgrid places ==")
+held = held_places()
 for place in EXPECTED_PLACES:
+    if place in held:
+        # Held = healthy-but-busy: counted as passing, never probed.
+        print(f"  [HELD] place {place}: acquired by {held[place]} — acquire/release probe skipped")
+        continue
     r = subprocess.run(["labgrid-client", "-p", place, "acquire"],
                        capture_output=True, text=True, timeout=15)
     if r.returncode == 0:
@@ -57,9 +76,7 @@ for place in EXPECTED_PLACES:
                        capture_output=True, timeout=15)
         check(f"place {place}: acquire/release", True)
     else:
-        held = "already acquired" in (r.stderr or "") or "different user" in (r.stderr or "")
-        check(f"place {place}: acquire/release", held,
-              f"in use by another session ({r.stderr.strip()[:80]})" if held else r.stderr.strip()[:100])
+        check(f"place {place}: acquire/release", False, r.stderr.strip()[:100])
 
 print("== pcscd readers ==")
 readers_out = sh(
@@ -78,6 +95,26 @@ dut = [r for r in readers if DUT_SERIAL in r]
 check(f"exactly one DUT reader (serial {DUT_SERIAL})", len(dut) == 1, "; ".join(dut))
 refs = [r for r in readers if DUT_SERIAL not in r and ("ACR1252" in r or "CardMan" in r)]
 check(f"reference readers carry no DUT serial ({len(refs)} found)", len(refs) >= 2, "; ".join(refs))
+
+print("== disk pressure (issue #108) ==")
+# The 2026-10-10 incident: /root/.cargo-target grew until the disk filled
+# and HIL runs died. 85% is the warning line, 90% fails the inventory.
+seen_fs = set()
+for p in ("/root/.cargo-target", "/tmp/opencode"):
+    try:
+        usage = shutil.disk_usage(p)
+    except OSError:
+        continue
+    pct = usage.used * 100 // usage.total
+    fs_key = (usage.total, usage.free)
+    if fs_key in seen_fs:
+        continue
+    seen_fs.add(fs_key)
+    detail = f"{pct}% used ({usage.used // (1 << 30)}G/{usage.total // (1 << 30)}G)"
+    if pct >= 85:
+        check(f"disk under {p} below 85%", pct < 90, detail)
+    else:
+        check(f"disk under {p} below 85%", True, detail)
 
 print("== USB device presence ==")
 lsusb = sh("lsusb")
