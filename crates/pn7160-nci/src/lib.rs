@@ -312,6 +312,10 @@ pub mod data {
 pub mod reader {
     use super::*;
 
+    /// The ladder's RF_DISCOVER command, re-exported for the presence
+    /// paths (power_off re-issue + one-shot probe, issue #125).
+    pub use super::tx::RF_DISCOVER_PASSIVE_A;
+
     /// RF_DEACTIVATE(IDLE) — byte-exact vs nci.c `nci_restart_discovery`
     /// stop[] = {NCI_MT_CMD | NCI_GID_RF, NCI_OID_RF_DEACTIVATE, 0x01, 0x00}.
     pub const RF_DEACTIVATE_IDLE: [u8; 4] = [
@@ -628,6 +632,29 @@ pub mod reader {
         // The DEACTIVATE_NTF is optional timing-wise; a missing one is
         // not fatal — discovery restart is what matters.
         let _ = t.drain();
+        Ok(())
+    }
+
+    /// Re-issue RF_DISCOVER — kernel `nci_start_poll` semantics
+    /// (torvalds net/nfc/nci/rsp.c: the DH owns the polling loop). Bench
+    /// 2026-10-11 (#125): after a session teardown the bench PN7160 does
+    /// NOT resume polling on its own — not even a type-DISCOVERY
+    /// deactivation restarts it — so presence (GSS bStatus) reads absent
+    /// forever while the card sits on the coil. A fresh RF_DISCOVER puts
+    /// the NFCC back in the discovery loop; an ISO-DEP tag in the field
+    /// auto-activates and re-emits RF_INTF_ACTIVATED, re-latching
+    /// presence. ONE-SHOT per teardown: a per-cycle re-issue mutes the
+    /// chip after ~11 cycles (bench 2026-10-10, see
+    /// [`DEACTIVATE_TYPE_DISCOVERY`]).
+    pub fn restart_discovery<T: Transport>(t: &mut T) -> Result<(), &'static str> {
+        let cmd = RF_DISCOVER_PASSIVE_A;
+        let rsp = t.transact(&cmd).ok_or("no discover response")?;
+        if !rsp.is_rsp_to(&cmd) {
+            return Err("discover response mismatch");
+        }
+        if rsp.status() != Some(STATUS_OK) {
+            return Err("discover status != OK");
+        }
         Ok(())
     }
 }

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — PN7160 presence recovery: RF_DISCOVER re-issue (#125, on top of af8641f)
+
+- **One-shot RF_DISCOVER probe in the presence re-arm** (#125 item 2):
+  an empty re-arm window right after a presence/session edge now writes
+  exactly ONE non-blocking RF_DISCOVER probe (new `RearmPhase::
+  DiscoverProbeRsp`) and opens a fresh tag-collect window — covering
+  the "NFCC sat down" mode beyond the power_off re-issue. The probe is
+  armed by presence edges (latch/clear/power_off) and consumed on
+  first use: never per-cycle (a per-cycle RF_DISCOVER re-issue mutes
+  the PN7160 after ~11 cycles, bench 2026-10-10). Probe RSP rejection
+  is survivable (phase gives up, presence unchanged).
+- **`reader::restart_discovery` helper**: validates the RF_DISCOVER RSP
+  shape + STATUS_OK (the raw transact in af8641f could not tell an OK
+  from a rejection); re-exports `tx::RF_DISCOVER_PASSIVE_A` via the
+  reader module so all presence paths share one constant path.
+- **Tests**: the #125 bench repro as a host test (present → IccPowerOff
+  → presence re-latch → power_on ATR, no select), wire-order lock
+  (deactivate then discover), probe one-shot + rejection survival, and
+  the re-arm helper/deferred-RSP tests updated to the new cycle budget
+  (deactivate+probe pair, still one write per poll).
+
 ### Changed — DRY phase 2 (issue #121): STM32 firmware runs on the shared ccid-core handler
 
 - `crates/ccid-core` gains the contact-smartcard reader flavor and the
