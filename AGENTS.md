@@ -446,6 +446,47 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
      fabricator 4790=NXP) — "J3R180" is NXP's JCOP4 R-series PRODUCT
      name on that silicon.
 
+### Codex review feedback — ALWAYS check before/during/after PR work
+
+Every PR on this repo gets an automated Codex-bot review (user
+`chatgpt-codex-connector[bot]`) with P1/P2/P3-badged findings. These
+are HIGH-SIGNAL: the 2026-10-11 sweep found **53 items across 13
+merged PRs — 38 had never been addressed**, including real protocol
+bugs (CORE_SET_CONFIG status byte, PCB bit layout, ICC status decode)
+that host tests missed because the mocks modeled the wrong behavior.
+
+**The rules:**
+1. **Before opening a PR**: read the Codex feedback on the last 3-5
+   merged PRs touching the same area — patterns repeat.
+2. **After a PR merges**: check its Codex comments within the same
+   session. Reply to each finding with what was done or why it was
+   skipped (commit hash or rationale) — the reply IS the audit trail.
+3. **When picking up work in an area**: grep the tracking issues
+   (#112/#113/#114 and successors) for backlog items in that area
+   before writing new code — don't duplicate or contradict.
+4. **The triage file** `docs/CODEX_PR_FEEDBACK_TRIAGE.md` is the
+   canonical sweep output; re-run the sweep when it goes stale.
+
+**How to sweep** (from the 2026-10-11 session):
+```bash
+# 1. Dump all Codex comments from merged PRs
+for pr in $(gh pr list --state merged --json number --jq '.[].number'); do
+  gh api repos/Amperstrand/ccid-firmware-rs/pulls/$pr/comments \
+    --jq '.[] | select(.user.login | test("codex")) | .body' > /tmp/pr-sweep/$pr.txt
+done
+
+# 2. Read each file, verify against the tree (NOT keyword-grep — read
+#    the flagged code), classify ADDRESSED/UNADDRESSED with evidence
+
+# 3. Reply on each PR + create tracking issues for remaining items
+```
+
+**Why this matters**: without the check-reply cycle, Codex feedback
+accumulates silently. The P1 findings compound: the ICC-status decode
+bug made the conformance battery's GetSlotStatus cases meaningless
+(absent cards passed, active cards failed) — exactly the kind of
+test-infrastructure rot that wastes bench sessions.
+
 ### Working-tree coordination
 
 Sessions share this checkout — check `git status` before building.
