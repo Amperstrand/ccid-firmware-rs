@@ -87,6 +87,11 @@ impl EspPn7160Transport {
     #[cfg(feature = "pn7160-ven-never")]
     pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
+        // Codex PR 85: the constructor configures VEN as OUTPUT but
+        // never sets the level — the chip stays in power-down and the
+        // ven-never experiment always fails. Drive VEN high before the
+        // device is added to the bus.
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
         t.add_pn_device()?;
         Ok(t)
     }
