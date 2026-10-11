@@ -89,6 +89,11 @@ class Reader:
         self.name = name
         self.port = port
         self.s = serial.Serial(port, 115200, timeout=0.2)
+        # AGENTS.md DTR-latch rule: pyserial asserts DTR at open; on the
+        # nucula CDC that latches boot:0x5 on the next reset. Deassert
+        # both lines immediately (Codex PR 107 P1).
+        self.s.setDTR(False)
+        self.s.setRTS(False)
         self.seq = 0
 
     def close(self):
@@ -111,6 +116,8 @@ class Reader:
             time.sleep(1.0)
             try:
                 self.s = serial.Serial(self.port, 115200, timeout=0.2)
+                self.s.setDTR(False)
+                self.s.setRTS(False)
                 return True
             except serial.SerialException:
                 continue
@@ -208,7 +215,7 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
     def icc_state(r: Reader) -> int:
         resp = r.exchange(MSG_GET_SLOT_STATUS)
         if resp and resp[0][0] == 0x81:
-            return resp[0][2] & 0x07  # 0=absent 1=present+inactive 2=active
+            return resp[0][2] & 0x03  # CCID bmICCStatus: 0=present+active 1=present+inactive 2=no ICC
         return -1
 
     icc = {rname: icc_state(r) for rname, r in readers.items()}
@@ -235,7 +242,7 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
         ("Escape sync-enable", MSG_ESCAPE, bytes([0x01, 0x01, 0x01]),
          lambda r, i: r and r[0][0] == 0x83),
         ("GetSlotStatus", MSG_GET_SLOT_STATUS, b"",
-         lambda r, i: r and r[0][0] == 0x81 and (r[0][2] & 0x07) in (0x01, 0x02)),
+         lambda r, i: r and r[0][0] == 0x81 and (r[0][2] & 0x03) in (0x00, 0x01)),
         ("IccPowerOn", MSG_ICC_POWER_ON, b"", power_on_expect),
         ("IccPowerOff", MSG_ICC_POWER_OFF, b"",
          lambda r, i: bool(r)),
@@ -263,7 +270,7 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
             if not passed:
                 ok = False
 
-    print(f"\nICC state: {icc} (0=absent 1=present+inactive 2=active)")
+    print(f"\nICC state: {icc} (0=present+active 1=present+inactive 2=no ICC)")
     print(f"{'case':28s} {'nucula':>30s}   {'m5stick':>30s}   verdict")
     for name, per in results.items():
         cells = []

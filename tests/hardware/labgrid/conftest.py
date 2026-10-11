@@ -139,10 +139,6 @@ def pytest_addoption(parser):
                           "(stm32-ccid,nucula-c3,m5stick,ref-acr1252,ref-cardman).")
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "hil: hardware-in-the-loop test (requires --hil flag)")
-
-
 def pytest_collection_modifyitems(config, items):
     if not config.getoption("--hil"):
         skip_hil = pytest.mark.skip(reason="HIL test — pass --hil to run")

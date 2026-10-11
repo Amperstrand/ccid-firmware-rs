@@ -221,10 +221,12 @@ impl LogRing {
 pub fn format_stamped_record(level: &str, stamp_ms: u32, target: &str, message: &str) -> Vec<u8> {
     let mut rendered = format!("[{level}] ({stamp_ms}ms) {target}: {message}\n").into_bytes();
     if rendered.len() > MAX_LINE_LEN {
-        rendered.truncate(MAX_LINE_LEN.saturating_sub(1));
-        if rendered.last().copied() != Some(b'\n') {
-            rendered.push(b'\n');
-        }
+        rendered.truncate(MAX_LINE_LEN.saturating_sub(2));
+        // Codex PR 100: the ~ marker must land ON the wire — the ring
+        // never truncates (it drops whole lines), so the helper is the
+        // only place truncation is visible.
+        rendered.push(b'~');
+        rendered.push(b'\n');
     }
     rendered
 }

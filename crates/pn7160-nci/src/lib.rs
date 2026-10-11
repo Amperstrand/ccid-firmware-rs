@@ -659,21 +659,15 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         if !rsp.is_rsp_to(step.tx_bytes()) {
             return Err("response does not match command");
         }
-        // SET_CONFIG_RSP payload is [num_params, status, ...] (NCI §5.1.3):
-        // the status octet sits at index 1. Reading payload[0] compared the
-        // PARAMETER COUNT against STATUS_OK — the real PN7160 answers
-        // SET_CONFIG with num_params=1 → the ladder aborted every time
-        // after a fully successful CORE_INIT.
-        let status = if matches!(step, Step::SetConfigTc1 | Step::SetConfigTotalDuration) {
-            if rsp.len >= 2 {
-                Some(rsp.payload[1])
-            } else {
-                None
-            }
-        } else {
-            rsp.status()
-        };
-        if status != Some(STATUS_OK) {
+        // NCI v2.x §5.1.3 (CORE_SET_CONFIG_RSP): payload =
+        // [status, num_params, param_id...]. ALL CORE responses lead
+        // with the status octet (see Frame::status() — same rule).
+        // The previous special case read payload[1] (num_params) as
+        // status and pushed mock payloads [0x01, 0x00] — modeling a
+        // REJECTED config as success. Codex PR 85 flagged it; the
+        // file's own doc (Frame::status, "SET_CONFIG_RSP … lead with
+        // status") contradicted the special case.
+        if rsp.status() != Some(STATUS_OK) {
             return Err("step status != OK");
         }
     }
@@ -838,8 +832,8 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
@@ -854,8 +848,8 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
+        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x00, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 

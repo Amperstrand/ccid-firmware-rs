@@ -26,19 +26,13 @@ from .board import BOARD
 from .console import ConsoleCapture, BootMarker
 
 
-def pytest_addoption(parser):
-    parser.addoption("--hil", action="store_true", default=False,
-                     help="Run hardware-in-the-loop tests")
-    parser.addoption("--test-firmware", action="store_true", default=False,
+def pytest_addoption(parser):    parser.addoption("--test-firmware", action="store_true", default=False,
                      help="Flash and test our Rust bringup firmware")
     parser.addoption("--test-wallet", action="store_true", default=False,
                      help="Flash and test the wallet firmware (reference)")
     parser.addoption("--flash-binary", type=str, default=None,
                      help="Path to a specific binary to flash and test")
 
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "hil: hardware-in-the-loop test")
 
 
 def pytest_collection_modifyitems(config, items):

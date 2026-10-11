@@ -12,6 +12,7 @@ Usage:
 Requires: pip install pyusb
 """
 
+import argparse
 import struct
 import sys
 import usb.core

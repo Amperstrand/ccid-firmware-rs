@@ -31,15 +31,9 @@ AID_PROBES = {
 }
 
 
-def pytest_addoption(parser):
-    parser.addoption("--hil", action="store_true", default=False,
-                     help="Run hardware-in-the-loop tests")
-    parser.addoption("--readers", action="store", default="nucula,m5stick,acr1252",
+def pytest_addoption(parser):    parser.addoption("--readers", action="store", default="nucula,m5stick,acr1252",
                      help="Comma-separated subset: nucula,m5stick,acr1252")
 
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "hil: hardware-in-the-loop test")
 
 
 def pytest_collection_modifyitems(config, items):
