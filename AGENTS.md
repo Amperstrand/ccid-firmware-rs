@@ -1021,6 +1021,17 @@ answered "no response" on every case until RTS-pulse-recovered —
 pre-open dtr/rts deassert in the battery's `Reader` is the tracked
 hardening item alongside PR #107.
 
+### pcscd over Bluetooth (m5stick, 2026-10-11 — bench-verified)
+
+The `m5stick-spp` board (build.sh entry, sdkconfig-xtensa-spp.full) serves
+the SAME GemPC CCID protocol over BT-Classic SPP instead of UART0. Host:
+`rfcomm bind 0 4C:75:25:CB:92:9E 1` + reader.conf `DEVICENAME
+/dev/rfcomm0:GemPCTwin` — pcscd enumerates `GemPC Twin BT (m5stick)`,
+card-level verified (ATR + APDU, 30/30 soak, p50 48ms/APDU). Recipe in
+firmware/esp32-ccid/README.md; bench conf archived at
+/root/reader-conf-backup/m5stick-spp.bench. NOTE: this board flashes the
+ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
+
 ### Debug-channel matrix (per board)
 
 | Board | CCID wire | Debug channel |
