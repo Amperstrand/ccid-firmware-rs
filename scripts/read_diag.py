@@ -24,11 +24,16 @@ RDR_TO_PC_ESCAPE = 0x83
 
 
 
-def find_ccid_device(bus=None, addr=None):
-    # CCID is an interface class (0x0B), not device class. Search by known VIDs.
+def find_ccid_device(vid=None, pid=None, bus=None, addr=None):
+    # CCID is an interface class (0x0B), not device class. Search by known
+    # VIDs unless --vid narrows it; --pid further filters within the VID.
     VIDS = [0x046a, 0x08e6]
-    for vid in VIDS:
-        dev = usb.core.find(idVendor=vid)
+    vids = [vid] if vid is not None else VIDS
+    for v in vids:
+        find_kwargs = {"idVendor": v}
+        if pid is not None:
+            find_kwargs["idProduct"] = pid
+        dev = usb.core.find(**find_kwargs)
         if dev:
             if bus is not None and (dev.bus != bus or dev.address != addr):
                 continue
@@ -143,7 +148,8 @@ def main():
     parser.add_argument("--address", type=int, default=None)
     args = parser.parse_args()
 
-    dev = find_ccid_device(args.bus, args.address)
+    dev = find_ccid_device(vid=args.vid, pid=args.pid,
+                           bus=args.bus, addr=args.address)
     if dev is None:
         print("ERROR: device not found")
         sys.exit(1)

@@ -27,15 +27,32 @@ class ConsoleCapture:
         self._serial: Optional[serial.Serial] = None
 
     def _connect(self) -> bool:
-        """Try to open the serial port. Returns True on success."""
+        """Try to open the serial port. Returns True on success.
+
+        DTR/RTS are deasserted immediately after open: pyserial asserts
+        DTR by default and the C3's USB-Serial/JTAG peripheral latches
+        host line state across soft resets — a DTR-asserted holder turns
+        every later reset into a boot:0x5 download-mode latch (AGENTS.md
+        bench lessons, 2026-10-09/10).
+        """
         try:
             if self._serial and self._serial.is_open:
                 return True
             self._serial = serial.Serial(self.port, self.baud, timeout=0.1)
+            self._serial.setDTR(False)
+            self._serial.setRTS(False)
             return True
         except (serial.SerialException, OSError):
             self._serial = None
             return False
+
+    def connect(self) -> bool:
+        """Open the serial fd now instead of lazily in capture_for.
+
+        flash_and_boot opens the capture BEFORE issuing a reset so boot
+        output is not lost to connect latency.
+        """
+        return self._connect()
 
     def _drain(self):
         """Read all available data into the buffer."""
@@ -106,6 +123,10 @@ class BootMarker:
     # Success/failure markers
     PN7160_ACK = "ACK @0x28"
     PN7160_NAK = "no-ack"
+    # Mid-session health heartbeat (HEARTBEAT_PROBE_EVERY = 60 s):
+    # success and failure twins — "still" vs "stopped", no overlap.
+    PN7160_STILL_ACKING = "PN7160 still ACKing"
+    PN7160_STOPPED_ACKING = "PN7160 stopped ACKing"
     NCI_INIT_OK = "NCI INIT LADDER OK"
     KEYBOARD_ACK = "keyboard @0x20 rc=0"
     BUS_PRIMED = "bus primed"
