@@ -21,6 +21,9 @@ try:
     from smartcard.util import toHexString, toBytes
     from smartcard.Exceptions import NoCardException, CardConnectionException
 except ImportError:
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip("pyscard not installed", allow_module_level=True)
     print("Error: pyscard not installed. Run: pip install pyscard")
     sys.exit(1)
 

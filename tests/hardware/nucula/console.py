@@ -9,12 +9,12 @@ Uses the by-id path (follows the device regardless of tty number) and
 reconnects aggressively during the re-enumeration window.
 """
 
+from __future__ import annotations
+
 import re
 import time
 from pathlib import Path
 from typing import Callable, Optional
-
-import serial
 
 
 class ConsoleCapture:
@@ -24,7 +24,7 @@ class ConsoleCapture:
         self.port = port
         self.baud = baud
         self._buffer = bytearray()
-        self._serial: Optional[serial.Serial] = None
+        self._serial: Optional["object"] = None
 
     def _connect(self) -> bool:
         """Try to open the serial port. Returns True on success.
@@ -38,11 +38,14 @@ class ConsoleCapture:
         try:
             if self._serial and self._serial.is_open:
                 return True
+            import serial
+
             self._serial = serial.Serial(self.port, self.baud, timeout=0.1)
             self._serial.setDTR(False)
             self._serial.setRTS(False)
             return True
-        except (serial.SerialException, OSError):
+        except OSError:
+            # serial.SerialException subclasses OSError in pyserial 3.x
             self._serial = None
             return False
 
@@ -62,7 +65,7 @@ class ConsoleCapture:
             data = self._serial.read(65536)
             if data:
                 self._buffer.extend(data)
-        except (serial.SerialException, OSError):
+        except OSError:
             self._serial = None
 
     def capture_for(self, duration_s: float, markers: list[str] | None = None) -> str:

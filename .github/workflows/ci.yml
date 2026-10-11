@@ -365,6 +365,43 @@ jobs:
             firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig \
             firmware/esp32-ccid/build.sh
 
+  python-collect:
+    # Regression lock for the collection bug class (found live 2026-10-11:
+    # a duplicate --hil addoption made every combined-suite run die with
+    # ValueError; module-level pyscard imports and import-time sys.exit
+    # in collected scripts are the same class). py_compile can't see any
+    # of it — only real collection can.
+    #
+    # Deliberately MINIMAL env: pytest + stdlib, no pyscard/pyserial/
+    # labgrid. The documented no-hardware path (`pytest tests/hardware/
+    # -v`, everything skips without --hil) must collect there — hardware
+    # deps belong inside functions/fixtures, never at module scope of
+    # collected files.
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest only
+        run: pip install pytest
+      - name: Collect tests/hardware (exit-code discipline)
+        run: |
+          set +e
+          python3 -m pytest tests/hardware/ --collect-only -q > collect.txt 2>&1
+          rc=$?
+          set -e
+          cat collect.txt
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::collection failed (pytest exit $rc) — duplicate addoption, module-level hardware import, or import-time sys.exit"
+            exit 1
+          fi
+          # Positive canary: a silently-empty tree would exit 0 too.
+          grep -q " tests collected" collect.txt || {
+            echo "::error::zero tests collected"; exit 1; }
+
   stm32-test:
     needs: changes
     if: needs.changes.outputs.stm32 == 'true'

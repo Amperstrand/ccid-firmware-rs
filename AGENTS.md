@@ -148,6 +148,21 @@ All jobs check out with `submodules: true` (required — see Gotchas).
 | `stm32-test` | Host-side workspace tests | `cargo test --workspace --target x86_64-unknown-linux-gnu` |
 | `esp32-host-test` | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
 | `iso14443-host-test` | Vendored iso14443 crate tests | `cargo test --features std --target x86_64-unknown-linux-gnu` (from `vendor/iso14443-rs/`) |
+| `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) | `python3 -m pytest tests/hardware/ --collect-only -q` |
+
+**Why `python-collect` exists** (found live 2026-10-11): a duplicate
+`--hil` `addoption` in `labgrid/conftest.py` made every combined-suite
+invocation die with `ValueError` — and module-level pyscard imports plus
+import-time `sys.exit(1)` in collected scripts are the same class.
+`py_compile` (the old stm32-lint step) cannot see any of it; only real
+collection can. The gate runs with pytest + stdlib ONLY, deliberately:
+the documented no-hardware path (`pytest tests/hardware/ -v`, everything
+skips without `--hil`) must collect without any hardware deps. Rule:
+**hardware imports belong inside functions/fixtures, never at module
+scope of a collected file** — a script named `test_*.py` that needs
+pyscard up front uses the `if "pytest" in sys.modules:
+pytest.skip(..., allow_module_level=True)` guard (see
+`tests/hardware/test_ccid_apdu.py`).
 
 ### stm32-build matrix (4 entries)
 
@@ -512,6 +527,16 @@ test-infrastructure rot that wastes bench sessions.
 **Being reviewed (Codex or human):**
 - Every finding gets a REPLY — done (commit hash) or skipped (reason).
   The reply IS the audit trail; silence = the finding compounds.
+
+**Issue truth (2026-10-11 lesson, #110):** issues lag reality — 3 of 5
+items in #110 were already fixed when picked up, wasting triage time
+and risking duplicate fixes. Rules: (1) before working an issue,
+re-verify each item against the tree (`git log -- <file>`) — an issue
+body is a lead, not evidence; (2) when a PR/commit fixes an issue item,
+cross-reference it on the issue in the SAME session (check off the
+checklist line or comment the commit hash) so the next session starts
+from truth; (3) write issue bodies as checklists (`- [ ]`) so partial
+completion is visible at a glance.
 - P1 findings get fixed before merge when possible; if deferred, a
   tracking issue MUST be created in the same session.
 - Mock-only fixes don't count until verified against the hardware —
@@ -996,6 +1021,15 @@ at any disk-pressure signal; a full `rm -rf /root/.cargo-target/debug/
 incremental` is safe any time no build is running. NOTE: `cargo sweep
 --time` works per target dir, so run it once from this repo AND once
 from the other active checkouts (their artifacts share the dir).
+
+**The audit is code, not prose** (2026-10-11): run
+`python3 scripts/host_hygiene.py` for the one-shot report —
+disk pressure (85% warn / 90% action), prunable candidates vs the
+manifest IDF pin, and the worktree-farm unpushed-work classification.
+Read-only by design (pruning is owner-executed); `--json` for tooling,
+exit 1 only when something needs action NOW (unpushed work, disk ≥90%).
+`bench_inventory.py` additionally carries the disk-pressure check
+(85%/90%) so the daily bench health run surfaces it.
 
 Repo-side: `.gitignore` already covers `/target/` + `**/target/` and
 `.cargo/config.toml` sets no target-dir — the pin lives host-level in
