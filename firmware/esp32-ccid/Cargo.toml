@@ -42,6 +42,12 @@ pn7160-m1 = ["backend-pn7160", "board-nucula"]
 pn7160-v10raw = ["backend-pn7160", "board-nucula"]
 pn7160-actdiag = ["backend-pn7160", "board-nucula"]
 ble = []
+# pcscd over Bluetooth Classic SPP: RFCOMM replaces UART0 as the GemPC CCID
+# wire (console moves to UART0, logs stay on). REQUIRES the classic-BT+SPP
+# sdkconfig (`sdkconfig-xtensa-spp.full`) — a mismatched pair fails loudly
+# at the esp-idf-svc `bt::spp` imports, same compile-loud pairing rule as
+# `ble`. ESP32 silicon only (BR/EDR). Mutually exclusive with `ble` (modem).
+spp = []
 
 [dependencies]
 card-interface = { path = "../../crates/card-interface" }
