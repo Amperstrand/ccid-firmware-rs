@@ -223,6 +223,11 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
         match uart.read(&mut byte_buf, timeout_ticks) {
             Ok(1) => {
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                // Issue #120 turnaround stamp: this read returned the
+                // newest command byte; if it completes a frame, the
+                // Respond arm measures from here (last byte received)
+                // through flush_write (response on the wire).
+                let byte_us = esp32_ccid::t1::now_us();
                 match server.feed_byte(byte_buf[0], now) {
                     ServeAction::Respond => {
                         write_all_logged(uart, server.echo());
@@ -232,6 +237,10 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
                         }
                         write_all_logged(uart, server.response());
                         let _ = uart.flush_write();
+                        let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
+                        server
+                            .handler_mut()
+                            .record_turnaround_us(turnaround_us.clamp(0, u32::MAX as i64) as u32);
                         // Presence under continuous traffic (issue #114,
                         // Codex on #98): with inline_poll=false the poll
                         // on the read-idle path only fired when the host

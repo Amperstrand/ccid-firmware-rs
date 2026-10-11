@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::turnaround::TurnaroundStats;
 pub use card_interface::PresenceState;
 use card_interface::{CardBackend, NfcCardExt};
 
@@ -86,7 +87,19 @@ pub trait NfcDriver {
 /// CCID handler core (ccid-core, PERF_AND_DRY_STRATEGY §3.1), which is
 /// generic over the card-interface traits — one adapter instead of
 /// touching every driver impl.
-pub struct CardDriverAdapter<D>(pub D);
+///
+/// The second field carries the issue #120 turnaround counters (Escape
+/// 0xD2): every card exchange passes through here, so this is the
+/// single point where the card-I/O half of the latency budget is
+/// stamped. The serve-loop half (RX byte → response flushed) is stamped
+/// in `main.rs` and written through the wrapper's passthrough.
+pub struct CardDriverAdapter<D>(pub D, pub TurnaroundStats);
+
+impl<D: NfcDriver> CardDriverAdapter<D> {
+    pub fn new(driver: D) -> Self {
+        Self(driver, TurnaroundStats::new())
+    }
+}
 
 impl<D: NfcDriver> CardBackend for CardDriverAdapter<D> {
     type Error = D::Error;
@@ -104,7 +117,13 @@ impl<D: NfcDriver> CardBackend for CardDriverAdapter<D> {
     }
 
     fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error> {
-        self.0.transmit_apdu(command, response)
+        let started_us = crate::t1::now_us();
+        let result = self.0.transmit_apdu(command, response);
+        // Host builds have no clock (now_us() == 0) — the zero sample is
+        // recorded harmlessly and does not disturb a nonzero max.
+        let elapsed_us = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
+        self.1.record_card_exchange_us(elapsed_us);
+        result
     }
 
     fn reinit_count(&self) -> u32 {

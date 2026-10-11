@@ -21,6 +21,7 @@ pub mod serial_framing;
 pub mod t1;
 #[cfg(test)]
 pub mod t1_fuzz;
+pub mod turnaround;
 
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;

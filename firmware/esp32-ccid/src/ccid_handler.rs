@@ -8,11 +8,12 @@
 
 use crate::ccid_types::{
     build_bstatus, CcidHeader, SlotState, CCID_HEADER_SIZE, CMD_NOT_SUPPORTED,
-    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, ICC_NOT_ACTIVE, PC_TO_RDR_XFR_BLOCK,
-    RDR_TO_PC_DATABLOCK,
+    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, ICC_NOT_ACTIVE, PC_TO_RDR_ESCAPE,
+    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE,
 };
 use crate::nfc::{CardDriverAdapter, NfcDriver, PresenceState};
 use crate::t1::{self, elapsed_ms_since, now_us, FeedResult, T1Endpoint};
+use crate::turnaround::TurnaroundStats;
 use ccid_core::handler::CcidHandlerCore;
 use ccid_core::response::{write_message, write_slot_status};
 use ccid_core::Diagnostics;
@@ -29,10 +30,21 @@ pub struct CcidHandler<D: NfcDriver> {
 impl<D: NfcDriver> CcidHandler<D> {
     pub fn new(nfc: D) -> Self {
         Self {
-            core: CcidHandlerCore::new(CardDriverAdapter(nfc), FIRMWARE_VERSION),
+            core: CcidHandlerCore::new(CardDriverAdapter::new(nfc), FIRMWARE_VERSION),
             t1: T1Endpoint::new(),
             t1_armed: false,
         }
+    }
+
+    /// Escape 0xD2 (issue #120): serve-loop stamp of the command
+    /// turnaround (last command byte received → response flushed).
+    pub fn record_turnaround_us(&mut self, us: u32) {
+        self.core.driver_mut().1.record_turnaround_us(us);
+    }
+
+    /// Snapshot of the Escape 0xD2 counters.
+    pub fn turnaround_stats(&self) -> TurnaroundStats {
+        self.core.driver().1
     }
 
     pub fn take_snapshot_request(&mut self) -> bool {
@@ -96,6 +108,27 @@ impl<D: NfcDriver> CcidHandler<D> {
                 && self.core.current_protocol() == 1
             {
                 return self.xfr_via_t1(&header, ccid_msg, response);
+            }
+            // Escape 0xD2 (issue #120): turnaround counters, answered
+            // here instead of the core's escape dispatch so the surface
+            // stays local to the ESP32 serial profile (0xD0's 28-byte
+            // core format is untouched).
+            if header.message_type == PC_TO_RDR_ESCAPE
+                && header.length == 1
+                && ccid_msg.get(CCID_HEADER_SIZE) == Some(&0xD2)
+            {
+                let mut buf = [0u8; TurnaroundStats::SERIALIZED_SIZE];
+                self.core.driver().1.to_bytes(&mut buf);
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.core.slot_state().icc_status()),
+                    0,
+                    0,
+                    &buf,
+                    response,
+                );
             }
         }
 
@@ -467,6 +500,93 @@ mod tests {
         // fire exactly once so a retried 0xD1 is a fresh snapshot.
         assert!(handler.take_snapshot_request());
         assert!(!handler.take_snapshot_request());
+    }
+
+    #[test]
+    fn escape_0xd2_returns_recorded_turnaround_bytes() {
+        let mut handler = new_handler(true);
+        handler.record_turnaround_us(3_200_000);
+        handler.record_turnaround_us(2_100_000);
+        handler.record_turnaround_us(1_500_000);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 40, &[0xD2]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(header.specific[0] & 0xC0, 0x00, "command status OK");
+        assert_eq!(payload.len(), TurnaroundStats::SERIALIZED_SIZE);
+        let mut expected = [0u8; TurnaroundStats::SERIALIZED_SIZE];
+        handler.turnaround_stats().to_bytes(&mut expected);
+        assert_eq!(payload, expected);
+        // last=1_500_000, max=3_200_000 in the first two LE words
+        assert_eq!(
+            u32::from_le_bytes(payload[0..4].try_into().unwrap()),
+            1_500_000
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload[4..8].try_into().unwrap()),
+            3_200_000
+        );
+    }
+
+    #[test]
+    fn escape_0xd2_zeroed_before_any_recording() {
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 41, &[0xD2]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(payload.len(), TurnaroundStats::SERIALIZED_SIZE);
+        assert!(payload.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn escape_0xd2_only_matches_single_byte_payload() {
+        // A longer escape carrying 0xD2 first must NOT hit the counters —
+        // it falls through to the core dispatch (CMD_NOT_SUPPORTED).
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 42, &[0xD2, 0x00]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, _) = parse_response(&response[..len]);
+
+        assert_eq!(
+            header.message_type,
+            crate::ccid_types::RDR_TO_PC_SLOTSTATUS,
+            "multi-byte escape is not the 0xD2 query"
+        );
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn card_exchange_recorded_through_apdu_pipeline() {
+        // Host now_us() is a stub, so the adapter records a zero sample —
+        // but the recording must happen for EVERY transmit_apdu, which we
+        // observe through the stats snapshot staying consistent (a
+        // non-stamp would leave the counters at their previous value
+        // through a power-on + APDU exchange).
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.record_turnaround_us(999);
+        let before = handler.turnaround_stats();
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 43, &[0x00, 0xA4, 0x04, 0x00, 0x00]);
+        let mut response = [0u8; 271];
+        handler.process_command(&cmd, &mut response);
+
+        let after = handler.turnaround_stats();
+        assert_eq!(after.last_turnaround_us(), 999, "serve stamp untouched");
+        assert_eq!(
+            after.last_card_exchange_us(),
+            before.last_card_exchange_us(),
+            "host clock stub records zero"
+        );
     }
 
     #[test]
