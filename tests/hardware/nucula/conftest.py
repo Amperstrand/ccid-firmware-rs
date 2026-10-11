@@ -24,7 +24,10 @@ import time
 from pathlib import Path
 
 from .board import BOARD
-from .console import ConsoleCapture, BootMarker
+
+# pyserial is a HARDWARE dep: imported lazily inside the fixtures so the
+# no-hardware CI collection path (python-collect, minimal env) never
+# needs it (AGENTS.md rule — hardware imports stay out of module scope).
 
 
 def pytest_addoption(parser):
@@ -67,6 +70,7 @@ def board():
 
 @pytest.fixture(scope="session")
 def console(board):
+    from .console import ConsoleCapture
     """Console capture with fast USB-CDC reconnection."""
     capture = ConsoleCapture(board.port, board.baud_console)
     yield capture
@@ -87,6 +91,7 @@ def flashed_wallet(board):
 @pytest.fixture(scope="session")
 def flashed_firmware(board, request):
     """Flash our Rust bringup firmware and VERIFY via FWID marker."""
+    from .console import BootMarker
     # --flash-binary: prebuilt image instead of a rebuild (PR-86 P2).
     prebuilt = request.config.getoption("--flash-binary")
     if prebuilt is not None:
@@ -107,6 +112,7 @@ def flashed_firmware(board, request):
 @pytest.fixture(scope="session")
 def flashed_ccid_firmware(board):
     """Flash the pn7160-ccid reader firmware (USB-CDC CCID serve loop)
+    from .console import BootMarker
     and VERIFY via FWID marker — the binary the dump-and-retrieve
     workflow (Escape 0xD1, AGENTS.md) is exercised against."""
     binary = board.build_firmware(features="pn7160-ccid")
