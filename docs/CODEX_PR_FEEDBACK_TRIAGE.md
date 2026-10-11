@@ -4,7 +4,12 @@ Scope: 13 review-comment dumps in `/tmp/opencode/pr-sweep/` (PRs 77–107, Amper
 Every item below was verified against the working tree at `15f5c34` by reading the flagged code —
 not keyword-grep. `77.txt` is empty (no badged findings).
 
-**Totals: 53 items — 15 ADDRESSED, 38 UNADDRESSED.**
+**Totals: 53 items — 29 ADDRESSED, 24 UNADDRESSED.**
+
+*Refreshed 2026-10-11 (tree at `34ac464`)*: 14 rows re-verified against the tree and moved to
+ADDRESSED — the PR-85 cluster landed in `0dabde5`, `ed0ed5e`, `3effa7f`, `34ac464`, and the
+PR-86 script/pytest rows in `ed0ed5e`/`2123e1b`. Each moved row cites its commit; rows left
+UNADDRESSED were re-checked and are still live in the tree.
 
 Note: `.omo/pr-triage.md` (2026-10-10) was used only as a cross-check. Where it over-claims
 "(a) resolved" versus what is actually in the tree, this table's verdict wins — disagreements are
@@ -12,34 +17,20 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 
 ---
 
-## UNADDRESSED (38)
+## UNADDRESSED (24)
 
 | PR | Priority | Feedback summary | Status | Suggested action |
 |----|----------|------------------|--------|------------------|
-| 85 | P1 | Stamp/clean esp-idf-sys cache when the **IDF version pin** changes (stamp is sdkconfig-only) | **UNADDRESSED** | `build.sh` stamp = sdkconfig contents only; nothing reads `esp_idf_version`. AGENTS.md documents the manual `cargo clean -p esp-idf-sys` step — encode it: add the pin (from `Cargo.toml` metadata) into the stamp key. Files: `firmware/esp32-ccid/build.sh:216-234` |
-| 85 | P2 | Bit-bang probe must poll `read_scl()` with timeout (clock stretching) before sampling ACK | **UNADDRESSED** | `pn7160_bitbang.rs:70-72` still samples SDA one half-period after raising SCL. Add bounded SCL-wait. Wontfix-lean: diagnostic main partially superseded by `pn7160-actdiag` — close with rationale if so |
-| 85 | P2 | Install a logger before `pn7160-bitbang` diagnostics (all output discarded today) | **UNADDRESSED** | `pn7160_bitbang.rs:85-87` goes `link_patches()` → `log::warn!` with no logger install; `main.rs:738-739` dispatches bare. Mirror `pn7160_bringup.rs:73` (`netlog::init()`) |
-| 85 | P2 | Cycle VEN before the bit-bang address probe (chip is in power-down on cold boot → NAK is meaningless) | **UNADDRESSED** | `pn7160_bitbang.rs` never touches GPIO7/VEN. Same wontfix-lean caveat as above |
-| 85 | P2 | build.rs should watch the **resolved git ref**, not `.git/HEAD` (commit advance leaves HEAD unchanged → stale FW_GIT_REV) | **UNADDRESSED** | `firmware/esp32-ccid/build.rs:27` watches `../../.git/HEAD`, comment admits "best-effort / cargo may warn and ignore". Resolve `refs/heads/<branch>` (worktree-safe: `git rev-parse --git-dir`) and watch that file too, or stamp from a rerun-if-env-changed CI export |
-| 85 | P2 | v10raw delays are raw ticks (`vTaskDelay(10)/(50)` = 100/500 ms at HZ=100, not 10/50 ms) | **UNADDRESSED** | `pn7160_v10raw.rs:62-68` unchanged. Wontfix-lean: v10raw is the bench-verified reference binary — if left, record the tick caveat in its header comment |
-| 85 | P1 | **CORE_SET_CONFIG_RSP status is byte 0** (`[status, num_params, ...]`); code reads byte 1 and mock pushes `[0x01, 0x00]` (= REJECTED) | **UNADDRESSED** | Verified live: special case reads `rsp.payload[1]` (`crates/pn7160-nci/src/lib.rs:667-672`), mocks still `[0x01,0x00]` (`lib.rs:841-858`); contradicts the file's own doc `lib.rs:138` ("SET_CONFIG_RSP … lead with status"). Ladder reports success on a rejected config. Fix: use `rsp.status()`, mocks → `[0x00, 0x00]`. ⚠️ `.omo/pr-triage.md` wrongly lists this as resolved |
-| 85 | P2 | IRQ-wait budget counts µs while `delay_ms(1)` sleeps one 10 ms tick (HZ=100) → 200 ms budget ≈ 2 s | **UNADDRESSED** | `pn7160_i2c.rs:365-366` (`FreeRtos::delay_ms(1); waited += 1000;`); `CONFIG_FREERTOS_HZ=100` confirmed in both full sdkconfigs. Count ticks (`waited += 10_000`) or use a µs delay |
-| 85 | P2 | ven-never constructor never drives VEN high (chip stays in power-down; experiment always fails) | **UNADDRESSED** | `pn7160_i2c.rs:87-92` + `from_peripherals` configure VEN as OUTPUT but never `gpio_set_level(VEN_PIN, 1)`. ⚠️ prior triage lists as resolved — it is not |
-| 85 | P2 | verdict-C recovery re-runs baseline `ven_cycle()` instead of the verdict-aware `ven_retrigger` | **UNADDRESSED** | `pn7160_bringup.rs:196` still calls `t.ven_cycle()` in the health-probe NAK path, though the helper exists (`:59-66`) and is used at `:257/:289`. One-line fix |
-| 85 | P2 | v10raw no-op ISR can storm on warm reset (IRQ already high when handler added); production ISR quenches | **UNADDRESSED** | `pn7160_v10raw.rs:10` `dummy_isr` body is empty; `gpio_intr_disable` runs only after `gpio_isr_handler_add` (`:51-52`). Production pattern is at `pn7160_i2c.rs:39-44`. ⚠️ prior triage lists as resolved — it is not |
-| 86 | P1 | `pytest.config` doesn't exist on modern pytest → the 3 `--test-firmware` tests are **always skipped** | **UNADDRESSED** | `tests/hardware/nucula/test_nucula.py:57-59,74-76,89-91` (`hasattr(pytest,"config") else True` → skip). Move lookup into a fixture/hook receiving `config` |
 | 86 | P1 | Flash the bootloader when switching wallet → our firmware | **UNADDRESSED** | `conftest.py:96` calls `flash_and_boot(binary)` with `full=False` → writes PT+app only after the wallet flashed its own bootloader (`board.py:314-315`). The `full=True` path exists (`board.py:310-313`) — pass it in the fixture (or always after `flashed_wallet`) |
 | 86 | P2 | Close/suspend the session ConsoleCapture before `fuser -k` (kills the pytest process itself) | **UNADDRESSED** | Session-scoped `console` fixture (`conftest.py:72-77`) is never closed before `_free_port()`'s `fuser -k` (`board.py:114-129`) during the firmware-flash fixtures |
 | 86 | P2 | Responsiveness test must actually probe the chip (esptool flash-id), not just stat the port | **UNADDRESSED** | `test_nucula.py:22-28` asserts `os.path.exists` only; `board.is_responsive()` exists (`board.py:433-437`) but is unused here |
 | 86 | P2 | Preserve the one-shot `NCI INIT LADDER OK` marker (buffer.clear() can consume it in the ACK test) | **UNADDRESSED** | `test_nucula.py:64,81` still clear the shared console buffer per test; firmware emits the marker once (`pn7160_bringup.rs:242`). Keep cumulative history or assert from one capture |
 | 86 | P2 | Sustained-ACK test demands 5×`ACK @0x28` in 30 s; healthy fw emits it once, then heartbeats per 60 s | **UNADDRESSED** | `test_nucula.py:97-102` unchanged; fw cadence (`pn7160_bringup.rs:268-273`) unchanged. Count `PN7160 still ACKing` or widen the window |
 | 86 | P1 | Hold CLOCK_LOCK for each test's full lifetime (16-thread flake reproduced: 2750 vs 750 cycles) | **UNADDRESSED** | `firmware/ccid-firmware/src/dwt_watchdog.rs:206-214` — guards drop when the helpers return; inter-op windows remain. Return the guard or wrap tests in a serializer |
-| 86 | P2 | `read_diag.py`: `argparse` never imported → NameError on **every** invocation | **UNADDRESSED** | `scripts/read_diag.py:15-17` imports struct/sys/usb.core only; `:135` calls `argparse.ArgumentParser`. Add the import (also refresh the stale 0x6B docstring) |
 | 86 | P2 | `--vid/--pid` parsed but never passed to device discovery (hard-coded VID list wins) | **UNADDRESSED** | `scripts/read_diag.py:145` calls `find_ccid_device(args.bus, args.address)`; `:26-35` ignores vid/pid. Thread them through |
 | 86 | P2 | `--flash-binary` registered but never read — fixture always rebuilds | **UNADDRESSED** | `tests/hardware/nucula/conftest.py:36-37` registers it; no reader anywhere in `tests/hardware/nucula/`. Resolve from `request.config` in `flashed_firmware` |
 | 86 | P1 | Erase otadata (or verify exact FWID rev) when flashing ota_0 in the HIL flow | **UNADDRESSED** | `board.py` flash paths (`:173-185`, `:309-315`) write PT+ota_0 only — no `0x30000` erase — and `expect=["FWID"]` (`:317`) accepts any revision, so a stale ota_1 image can pass. (build.sh does erase otadata — different flow.) ⚠️ prior triage claims "otadata erase in flash ladder" — not in board.py |
 | 86 | P1 | Back up (or identify) unknown firmware in `pretest_check()` before any HIL flash | **UNADDRESSED** | `board.py:364-374` checks port/holders/esptool only. AGENTS.md documents the backup *rule* (failure mode 5) but nothing implements it. Capture full flash or refuse on unknown image |
-| 86 | P2 | `--hil` must be registered once (combined-suite runs raise ValueError) | **UNADDRESSED** | Registered in **three** conftests: `nucula/conftest.py:30`, `labgrid/conftest.py:131`, `nfc/conftest.py:35`. Move to a shared ancestor `tests/hardware/conftest.py` |
 | 86 | P1 | Start console capture **before** each reset in the boot-verify ladder | **UNADDRESSED** | `board.py:346-352` opens ConsoleCapture after each reset step returns. Mitigated (bringup re-issues FWID in the 5 s probe loop, `pn7160_bringup.rs:156`), but the ordering flaw remains — concurrent capture or exact-rev assertion still needed |
 | 93 | P2 | Audit headline cites `dwFeatures=0x00010270` as reader identity; serial hosts actually get libccidtwin's `0x00010230` | **UNADDRESSED** | `docs/ESP32_CCID_SPEC_AUDIT.md:22-23` still leads with 0x00010270; `:215` footnote acknowledges but doesn't correct. Label the constant as unused-internal + state the host-visible value |
 | 93 | P2 | Distinguish truncated **wire** frames (never reach the handler) from direct handler input in the error_count story | **UNADDRESSED** | `ccid_handler.rs:88-107` guard still commented "Truncated transport frame"; the serial server resets the parser on stall without calling `process_command` (`ccid_serial_server.rs:153-173`), so wire truncations are never counted. One corrective sentence in code comment + audit |
@@ -57,7 +48,7 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 
 ---
 
-## ADDRESSED (15)
+## ADDRESSED (29)
 
 | PR | Priority | Feedback summary | Status | Suggested action |
 |----|----------|------------------|--------|------------------|
@@ -70,10 +61,24 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 | 85 | P1 | Define SCRIPT_DIR before expanding it (set -u crash) | **ADDRESSED** | `build.sh:21` assigns SCRIPT_DIR before any expansion (workspace pin at `:29`); `--help` path clean |
 | 85 | P1 | Use `CONFIG_MAIN_TASK_STACK_SIZE` (not the nonexistent ESP_MAIN variant) in sdkconfig.wallet-test | **ADDRESSED** | `sdkconfig.wallet-test:6` — `CONFIG_MAIN_TASK_STACK_SIZE=16384`; file is git-tracked |
 | 85 | P2 | Configure bit-bang pins INPUT_OUTPUT_OD so ACK/idle sampling reads the line | **ADDRESSED** | `pn7160_bitbang.rs:23-25` — `GPIO_MODE_INPUT_OUTPUT_OD` with explanatory comment |
+| 85 | P1 | Stamp/clean esp-idf-sys cache when the **IDF version pin** changes (stamp is sdkconfig-only) | **ADDRESSED** | `3effa7f` — `build.sh` stamp body = `# esp_idf_version:` header (parsed from Cargo.toml metadata) + sdkconfig; version bump with unchanged sdkconfig now drops the cmake caches |
+| 85 | P2 | **CORE_SET_CONFIG_RSP status is byte 0**; code read byte 1 and mock pushed `[0x01, 0x00]` (= REJECTED) | **ADDRESSED** | `ed0ed5e` — `crates/pn7160-nci/src/lib.rs:141` reads `payload[0]`; mocks corrected |
+| 85 | P2 | Bit-bang probe must poll `read_scl()` with timeout (clock stretching) before sampling ACK | **ADDRESSED** | `34ac464` — `pn7160_bitbang.rs` `scl_high_bounded()` at every SCL rise (UM10204 §3.1.9), bounded ~320 µs, stuck line logs + reads as NAK |
+| 85 | P2 | Install a logger before `pn7160-bitbang` diagnostics (all output discarded today) | **ADDRESSED** | `3effa7f` — `EspLogger::initialize_default()` before the first `log::warn!` |
+| 85 | P2 | Cycle VEN before the bit-bang address probe (chip is in power-down on cold boot → NAK is meaningless) | **ADDRESSED** | `34ac464` — `ven_wake()` runs the raw v10raw sequence (high 10 ms, low 50 ms, high 50 ms) before any probing; module outcome table updated |
+| 85 | P2 | build.rs should watch the **resolved git ref**, not `.git/HEAD` (commit advance leaves HEAD unchanged → stale FW_GIT_REV) | **ADDRESSED** | `3effa7f` — `rev-parse --git-dir` (worktree-aware) + symref resolution + packed-refs, existence-guarded; bench-proven: a commit marks the package Dirty on the ref file |
+| 85 | P2 | v10raw delays are raw ticks (`vTaskDelay(10)/(50)` = 100/500 ms at HZ=100, not 10/50 ms) | **ADDRESSED** | `3effa7f` — all sites route through `delay_ticks(ms)` = `ms * configTICK_RATE_HZ / 1000` (pdMS_TO_TICKS expansion) |
+| 85 | P2 | IRQ-wait budget counts µs while `delay_ms(1)` sleeps one 10 ms tick (HZ=100) → 200 ms budget ≈ 2 s | **ADDRESSED** | `3effa7f` — `pn7160_i2c.rs` counts `RTOS_TICK_US` (10 000) per iteration |
+| 85 | P2 | ven-never constructor never drives VEN high (chip stays in power-down; experiment always fails) | **ADDRESSED** | `0dabde5` — `gpio_set_level(VEN_PIN, 1)` in the ven-never constructor with the Codex-PR-85 comment |
+| 85 | P2 | verdict-C recovery re-runs baseline `ven_cycle()` instead of the verdict-aware `ven_retrigger` | **ADDRESSED** | `0dabde5` — `pn7160_bringup.rs:196` health-probe NAK path calls `ven_retrigger(t)` |
+| 85 | P2 | v10raw no-op ISR can storm on warm reset (IRQ already high when handler added); production ISR quenches | **ADDRESSED** | `3effa7f` — `dummy_isr` calls `gpio_intr_disable(IRQ)`, same contract as `pn7160_i2c.rs::dummy_irq_isr` |
 | 85 | P2 | Install a logger before pn7160-bringup diagnostics | **ADDRESSED** | `pn7160_bringup.rs:73` — `crate::netlog::init()` restored before the FWID line; `netlog.rs:45-47` installs a real boxed logger |
 | 86 | P1 | Build the HIL firmware with a checked-in sdkconfig | **ADDRESSED** | `sdkconfig.wallet-test` is checked in; `board.py:444` uses `ESP_IDF_SDKCONFIG_DEFAULTS` (coherent defaults flow) |
 | 86 | P1 | Emit the FWID marker (build.rs stamps + firmware prints it) | **ADDRESSED** | `build.rs:40-41` emits FW_GIT_REV/FW_BUILD_TS; every main prints `FWID <name> rev=…` (bringup `:75`, v10raw `:21`, actdiag `:33`, m1 `:14`, ccid `:51`, main `:601`); conftest verifies via `BootMarker.parse_fwid` |
 | 86 | P1 | (Re)resolve esp-idf-sys output paths after the build, not only at import | **ADDRESSED** | `board.py:87-108` — lazy `_esp_idf_sys_out()` re-resolves when the PT is missing; picks max-mtime among valid candidates |
+| 86 | P1 | `pytest.config` doesn't exist on modern pytest → the 3 `--test-firmware` tests are **always skipped** | **ADDRESSED** | `2123e1b` — options read via fixture/hook receiving `config` (`test_nucula.py:25` documents the fix) |
+| 86 | P2 | `read_diag.py`: `argparse` never imported → NameError on **every** invocation | **ADDRESSED** | `ed0ed5e` — `scripts/read_diag.py:15` imports argparse |
+| 86 | P2 | `--hil` must be registered once (combined-suite runs raise ValueError) | **ADDRESSED** | `ed0ed5e` — registered once in `tests/hardware/labgrid/conftest.py:131` only (verified: no other addoption matches) |
 | 94 | P2 | `settle` must actually gate the exchange read window (generous-timing claim was unverified) | **ADDRESSED** | `conformance_battery.py:119-177` (landed with #107, f035d9c) — idle counted only after `settle`, hard cap `settle+1.5`; docstring cites the #89 false flag |
 | 96 | P2 | Honor the slow-path window in recovery polling | **ADDRESSED** | Same exchange() rework — windows now settle-gated so 0.3–0.8 s responses are captured in-window (residual: `recovery_latency` uses `settle=0.2` ≈ 0.5 s window and `reset_input_buffer()` between probes leaves a narrow blind gap; consider `settle=0.6` there) |
 
