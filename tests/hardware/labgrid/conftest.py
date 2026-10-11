@@ -128,8 +128,9 @@ def _lg(*args: str, check: bool = True):
 # ---------------------------------------------------------------- options
 
 def pytest_addoption(parser):
-    parser.addoption("--hil", action="store_true", default=False,
-                     help="Enable HIL tests (disabled by default — requires hardware).")
+    # --hil is registered ONCE in tests/hardware/conftest.py (the shared
+    # parent) — a second registration here kills combined-suite runs with
+    # ValueError: option names {'--hil'} already added.
     parser.addoption("--firmware-bin", action="store", default=None,
                      help="Path to .bin to flash before tests. If omitted, run against current flash.")
     parser.addoption("--skip-labgrid", action="store_true", default=False,

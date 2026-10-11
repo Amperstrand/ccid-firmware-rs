@@ -34,6 +34,19 @@ def sh(cmd: str) -> str:
     return r.stdout
 
 
+def held_places() -> dict:
+    """place -> holder, from `labgrid-client who` (issue #110): a place
+    another session acquired is healthy-but-busy — probe attempts against
+    it are noise (and acquire/release proves nothing while held)."""
+    out = sh("labgrid-client who")
+    held = {}
+    for line in out.splitlines()[1:]:  # skip "User Host Place Changed" header
+        parts = line.split()
+        if len(parts) >= 4:
+            held[parts[2]] = f"{parts[0]}@{parts[1]}"
+    return held
+
+
 def check(name: str, ok: bool, detail: str = ""):
     mark = "OK  " if ok else "FAIL"
     print(f"  [{mark}] {name}" + (f" — {detail}" if detail and not ok else ""))
@@ -49,7 +62,12 @@ missing = EXPECTED_EXPORTS - exported
 check(f"all 7 bench resources exported", not missing, f"missing: {sorted(missing)}")
 
 print("== labgrid places ==")
+held = held_places()
 for place in EXPECTED_PLACES:
+    if place in held:
+        # Held = healthy-but-busy: counted as passing, never probed.
+        print(f"  [HELD] place {place}: acquired by {held[place]} — acquire/release probe skipped")
+        continue
     r = subprocess.run(["labgrid-client", "-p", place, "acquire"],
                        capture_output=True, text=True, timeout=15)
     if r.returncode == 0:
@@ -57,9 +75,7 @@ for place in EXPECTED_PLACES:
                        capture_output=True, timeout=15)
         check(f"place {place}: acquire/release", True)
     else:
-        held = "already acquired" in (r.stderr or "") or "different user" in (r.stderr or "")
-        check(f"place {place}: acquire/release", held,
-              f"in use by another session ({r.stderr.strip()[:80]})" if held else r.stderr.strip()[:100])
+        check(f"place {place}: acquire/release", False, r.stderr.strip()[:100])
 
 print("== pcscd readers ==")
 readers_out = sh(

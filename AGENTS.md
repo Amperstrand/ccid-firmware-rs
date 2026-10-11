@@ -955,6 +955,74 @@ labgrid build only supports STRING udev matches
 `/dev/serial/by-id/` paths contain colons (MAC bytes). Use the resolved
 `/dev/ttyACM0`-style path (see /etc/reader.conf.d/nucula-ccid).
 
+## ai-legion Host Hygiene (issue #108)
+
+Two standing rules from the 2026-10-10 disk-full incident. The disk
+filled to 78G+ on `/root/.cargo-target` while several worktrees held
+unpushed fix branches that existed nowhere else.
+
+### 1. Shared CARGO_TARGET_DIR: prune on a cadence
+
+`/root/.cargo/config.toml` pins `target-dir = /root/.cargo-target` for
+**every cargo project on the host** (this repo's runbook pattern, and
+the root of several build gotchas above). Nothing evicts from it
+automatically — without a pruning cadence it only grows.
+
+Measured 2026-10-11 (79G total): `debug/` 42G (19G deps + 17G
+incremental), `x86_64-unknown-linux-gnu/` 20G (host test artifacts),
+`release/` 4.2G, `.embuild/espressif` 11G (tools 6.7G + IDF copies +
+1.1G dist tarballs).
+
+**Safe-to-prune (owner-executed; nothing here is unique):**
+
+| Path | Size | Why |
+|---|---|---|
+| `debug/incremental/` | 17G | always regenerated; delete freely |
+| `.embuild/espressif/dist/` | 1.1G | toolchain tarballs, re-downloadable |
+| `.embuild/espressif/esp-idf/v5.2.3/` | 546M | stale — manifest pins v5.5.1 |
+| `x86_64-unknown-linux-gnu/` + `release/` | ~24G | rebuildable; `cargo sweep --time 30` trims by mtime |
+| other projects' binaries (`cln-*`, `cashud`, `decode-vls`, ...) | varies | the dir is HOST-WIDE — coordinate with those lanes before bulk deletion |
+
+**Keep:** the top-level cached bench binaries (`esp32-ccid-m5stick.bin`
+etc. — the m5stick recovery image), `.embuild/espressif/tools/` (the
+actual toolchains; re-downloadable but a 10+ min stall mid-session),
+`esp-idf/v5.5.1` (current pin), and the riscv/xtensa esp-idf-sys build
+dirs while `/root/src/ccid-firmware-rs` (the checkout they cache-stamp
+against) is live.
+
+`cargo-sweep` 0.8.0 is installed (`/root/.cargo/bin/cargo-sweep`).
+Cadence: run `cargo sweep --time 30` from the workspace root monthly or
+at any disk-pressure signal; a full `rm -rf /root/.cargo-target/debug/
+incremental` is safe any time no build is running. NOTE: `cargo sweep
+--time` works per target dir, so run it once from this repo AND once
+from the other active checkouts (their artifacts share the dir).
+
+Repo-side: `.gitignore` already covers `/target/` + `**/target/` and
+`.cargo/config.toml` sets no target-dir — the pin lives host-level in
+`/root/.cargo/config.toml` and is deliberately NOT tracked here.
+
+### 2. Worktree farm: close lanes by pushing, then removing
+
+ccid sessions spawn parallel worktrees under `/tmp/opencode` (39 dirs
+at the 2026-10-11 survey). Unpushed branches in scratch worktrees are
+**fixes that exist only on this disk** — the 2026-10-10 audit found
+five (stm32-perf-fix, nucula-rearm-fix, sisyphus/ccid-49-50,
+sisyphus/presence-ttl, sisyphus/pn7160-drvab) sitting unpushed for
+days. The pattern recurred on 2026-10-11 (`triage-refresh` held one
+unpushed docs commit).
+
+**Rule — at lane close, in order:**
+
+```bash
+git -C <worktree> push origin <branch>   # every branch that carries work
+git worktree remove <worktree>           # then the worktree itself
+git branch -d <merged-branch>            # labels already on origin/main
+```
+
+Before any disk cleanup that touches `/tmp/opencode`, audit for
+unpushed work: for each worktree, `git log origin/main..<branch>` must
+be empty (or the branch pushed) before that worktree is deletable.
+
 ## Session Lessons: PN7160 Card Path + Reader Fuzzing (2026-10-09)
 
 ### Mock/hardware divergence — the #1 firmware-bug class this week
