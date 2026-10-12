@@ -13,7 +13,7 @@ import struct
 
 import pytest
 
-from conftest import EXPECTED_ATR, remote_apdu
+from hil_helpers import EXPECTED_ATR, remote_apdu
 
 pytestmark = pytest.mark.hil
 
