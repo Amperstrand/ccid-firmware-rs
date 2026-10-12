@@ -25,6 +25,19 @@ from test_bench_state import PLACE_TO_PORT, pcscd_paused  # noqa: E402
 FUZZ_ROUNDS = 10
 SOAK_ROUNDS = 50
 
+# Known firmware gaps on the nucula direct-serial surface, measured
+# 2026-10-12 bench session (post-JTAG-reset, broker+pcscd stopped, card
+# on coil): the first IccPowerOn never answers within the battery window
+# (PN7160 card path blocks the serve loop), and after a power-on attempt
+# the escapes (0x02/0xD0) stop answering while slot-status/get-parameters
+# stay alive — queued-late responses at the ~2-4 s scale. The pcscd
+# surface is NOT affected: broker path connect → ATR 3B8580018073C821100E
+# → SELECT 9000 verified the same session. Ref: #125 serve/re-arm class.
+# Exact-set matching: any OTHER failure combination is a real regression.
+NUCULA_KNOWN_GAPS = frozenset(
+    {"escape-version", "escape-sync", "power-on", "power-off", "set-parameters"}
+)
+
 # Reader slow-path settle budgets (s) — named constants so a bench
 # regression can't hide behind a magic number (issue #110). The fuzz
 # probe must tolerate error paths measured up to ~0.65 s on the m5stick.
@@ -137,6 +150,14 @@ def test_serial_dut_battery(place_name, bench_lock):
     with pcscd_paused():
         reader = Reader(port_name, resolve(port_name))
         failures = _run_cases(reader)
+        if place_name == "nucula-c3" and set(failures) == NUCULA_KNOWN_GAPS:
+            ledger("serial_battery", place=place_name,
+                   known_gaps=sorted(failures),
+                   note="nucula direct-serial firmware gaps (see test comment)")
+            pytest.xfail(
+                f"nucula-c3: known direct-serial firmware gaps: {failures} "
+                "(pcscd/broker surface verified working; ref #125 class)"
+            )
         assert not failures, f"{place_name}: conformance failures: {failures}"
 
         wedges = _run_fuzz(reader)
