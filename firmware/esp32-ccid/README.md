@@ -140,20 +140,22 @@ cargo espflash flash --monitor target/xtensa-esp32-espidf/release/esp32-ccid
 ## ESP-IDF Rust toolchain and bring-up builds (verified on ai-legion, 2026-10)
 
 The esp-idf targets (`riscv32imc-esp-espidf`, `xtensa-esp32-espidf`) have **no
-precompiled std** — esp-idf-sys builds std from source via `-Zbuild-std`, so
-`rustup target add` is not applicable. Per-target toolchains:
-
-- **ESP32-C3 / Nucula (RISC-V):** `RUSTUP_TOOLCHAIN=nightly` with `rustup component add rust-src`
-- **ESP32 / M5Stick (Xtensa):** `RUSTUP_TOOLCHAIN=esp` (installed by `espup install --targets esp32,esp32c3`, which also writes `~/export-esp.sh`)
+precompiled std** — esp-idf-sys builds std from source via `-Z build-std`, so
+`rustup target add` is not applicable. One-Rust-version policy (2026-10-12):
+BOTH esp32 targets ride the **pinned esp fork `v1.98.1.0`** (`espup install
+-c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3`) — the same Rust
+version number as the stable pin, and the fork (a nightly-derived but frozen
+vendor release) is the only compiler with xtensa espidf codegen anyway. The
+dated upstream nightly is retired.
 
 ```bash
-source ~/export-esp.sh   # LIBCLANG_PATH (esp-clang) + Xtensa GCC
+source ~/export-esp.sh   # LIBCLANG_PATH (esp-clang) + GCC
 cd firmware/esp32-ccid
 
 # C3 / Nucula PN7160 bring-up
 # ESP_IDF_GLOB_* injects partitions-ota.csv into the embuild project dir
 # before cmake configure (or just use build.sh, which sets all of this)
-RUSTUP_TOOLCHAIN=nightly \
+RUSTUP_TOOLCHAIN=esp \
 ESP_IDF_SDKCONFIG=$PWD/sdkconfig.full \
 ESP_IDF_GLOB_PARTCSV_BASE=$PWD \
 ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv" \
