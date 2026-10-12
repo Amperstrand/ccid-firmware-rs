@@ -1,0 +1,17 @@
+# Single toolchain authority for host crates + STM32 firmware (issue #115
+# + the 2026-10-12 split-authority outage). rustup activates this override
+# for every invocation at/below the repo root and installs the declared
+# components/targets on demand — CI (dtolnay action), the release Docker
+# build, and fresh clones all resolve the SAME complete toolchain.
+#
+# ESP32 targets deliberately live OUTSIDE this file: a single channel
+# cannot express the per-board split (xtensa = espup `esp` toolchain,
+# C3 = nightly-2026-09-29 — newer nightlies ICE on esp-idf-svc 0.52.1).
+# Those are selected by firmware/esp32-ccid/build.sh (RUSTUP_TOOLCHAIN)
+# and CI's explicit `cargo +<toolchain>`, both of which override this
+# file. The exact version string "1.92.0" must match ci.yml's dtolnay
+# pin — "1.92" and "1.92.0" are DISTINCT toolchains to rustup.
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
+targets = ["thumbv7em-none-eabihf"]
