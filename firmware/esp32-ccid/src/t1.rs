@@ -36,8 +36,10 @@ use heapless::Vec;
 
 /// Max INF field (§11.6.2 IFS ceiling is 254).
 pub const MAX_IFSC: usize = 254;
-/// Max APDU + response the relay assembles from a chain.
-const MAX_RELAY: usize = 512;
+/// Relay capacity: max APDU/response assembled from a chain. Public so
+/// the CCID handler's copy buffer derives from it — independent sizes
+/// caused the G-03 silent-truncation bug.
+pub const MAX_RELAY: usize = 512;
 
 const DEFAULT_HOST_IFSD: usize = 32;
 
@@ -367,6 +369,47 @@ mod tests {
 
     fn host_i(ns: u8, more: bool, nr: u8, inf: &[u8]) -> Vec<u8, 520> {
         block(i_pcb(ns, more, nr), inf)
+    }
+
+    #[test]
+    fn pcb_bit_layout_locked_to_iso_7816_3_table_45() {
+        // GREAT EXPECTATION: byte literals, not builder calls — the
+        // pre-7f136a0 bug (R(1) emitted 0x88, reserved bit set) was
+        // invisible to tests that asserted against r_pcb() itself.
+        assert_eq!(r_pcb(0, 0), 0x80);
+        assert_eq!(r_pcb(0, 1), 0x81);
+        assert_eq!(r_pcb(1, 0), 0x90);
+        assert_eq!(r_pcb(1, 1), 0x91);
+        assert_eq!(i_pcb(0, false, 0), 0x00);
+        assert_eq!(i_pcb(0, false, 1), 0x10);
+        assert_eq!(i_pcb(0, true, 0), 0x20);
+        assert_eq!(i_pcb(1, false, 0), 0x40);
+        match parse_pcb(0x90) {
+            Some(Pcb::R { nr, err }) => assert_eq!((nr, err), (1, 0)),
+            other => panic!("0x90 must decode as R(1, 0), got {other:?}"),
+        }
+        match parse_pcb(0x10) {
+            Some(Pcb::I { ns, more, nr }) => assert_eq!((ns, more, nr), (0, false, 1)),
+            other => panic!("0x10 must decode as I(0, M=0, nr=1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chain_overflow_answers_r_other_error() {
+        // G-03 guard: the piece that would cross MAX_RELAY is rejected
+        // with R(N(R), other-error=1) — never silently truncated.
+        let mut ep = T1Endpoint::new();
+        let piece = [0xAA; 32];
+        for _ in 0..MAX_RELAY / 32 {
+            match ep.feed(&host_i(0, true, 0, &piece)) {
+                FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 0)),
+                other => panic!("expected chain ACK, got {other:?}"),
+            }
+        }
+        match ep.feed(&host_i(0, true, 0, &[0xBB])) {
+            FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 1)),
+            other => panic!("expected R(other-error) on overflow, got {other:?}"),
+        }
     }
 
     #[test]

@@ -190,6 +190,8 @@ pub struct MockNfcDriver {
     uid: Vec<u8>,
     /// Test instrumentation: number of is_card_present() calls.
     poll_count: u32,
+    /// Test instrumentation: last APDU handed to transmit_apdu.
+    last_apdu: Vec<u8>,
 }
 
 impl MockNfcDriver {
@@ -208,12 +210,18 @@ impl MockNfcDriver {
             session_active: false,
             uid: Vec::new(),
             poll_count: 0,
+            last_apdu: Vec::new(),
         }
     }
 
     /// Test instrumentation: number of presence polls performed.
     pub fn poll_count(&self) -> u32 {
         self.poll_count
+    }
+
+    /// Test instrumentation: the last APDU forwarded to the card.
+    pub fn last_apdu(&self) -> &[u8] {
+        &self.last_apdu
     }
 
     pub fn set_uid(&mut self, uid: &[u8]) {
@@ -277,11 +285,7 @@ impl NfcDriver for MockNfcDriver {
         (!self.uid.is_empty()).then_some(&self.uid)
     }
 
-    fn transmit_apdu(
-        &mut self,
-        _command: &[u8],
-        response: &mut [u8],
-    ) -> Result<usize, Self::Error> {
+    fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error> {
         if !self.card_present {
             self.session_active = false;
             return Err(NfcError::NoCard);
@@ -290,6 +294,8 @@ impl NfcDriver for MockNfcDriver {
         if !self.session_active {
             return Err(NfcError::NotInitialized);
         }
+
+        self.last_apdu = command.to_vec();
 
         if response.len() < self.apdu_response.len() {
             return Err(NfcError::BufferOverflow);
