@@ -10,12 +10,12 @@ use crate::pps_fsm::{PpsFsm, PpsState};
 // shared crate): imported at the source, NOT via a smartcard_common
 // re-export — the re-export was cfg-asymmetric (dead in the f746 pass
 // where this file is compiled out → unused_imports under -D warnings).
-use ccid_protocol::atr::t1_bwt_ms;
 use crate::smartcard_common::{
     detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, t1_block_total_len,
     transmit_apdu_t0, verify_atr_tck, Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo,
     DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
+use ccid_protocol::atr::t1_bwt_ms;
 
 use crate::t1_engine::T1Transport;
 use ccid_firmware_rs::dwt_watchdog::DwtWatchdog;
