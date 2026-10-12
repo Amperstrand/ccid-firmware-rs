@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — esp32 T=1 relay: G-03 chained-APDU truncation at 254 (2026-10-12)
+
+`xfr_via_t1` copied the T=1-assembled APDU into a `[u8; 254]` buffer with
+a silent `min()` clamp — any case-3/4 APDU above 254 bytes (GP STORE DATA
+during CAP install is exactly this class) reached the card mangled while
+the T=1 layer reported success. The relay buffer is now `[u8;
+t1::MAX_RELAY]`, derived from the assembler's own `Vec` capacity, so the
+two capacities cannot drift (fix-all-siblings protocol; the assembler
+already answers R(other-error) on chain overflow). Regression test
+`chained_apdu_over_254_reaches_card_untruncated` proves a 301-byte
+chained APDU reaches the card byte-complete; `MockNfcDriver` records the
+last forwarded APDU. Also locked: byte-literal PCB layout test
+(`r_pcb(1,0)==0x90` — ISO 7816-3 Table 45, the pre-7f136a0 bug class)
+and chain-overflow → R(other-error).
+
+### Docs — gap-table truth repairs (2026-10-12)
+
+`docs/T1_BEST_PRACTICES.md` gap table had gone stale against the tree:
+G-01/G-02 marked open though fixed by 7f136a0 (bench-verified), G-07
+marked fully open though the first-byte half landed in 46c4701. All rows
+now carry per-gap RESOLVED/PARTIALLY RESOLVED annotations with commit
+hashes. New `reference/README.md` indexes every tracked reference source
+with upstream pins, licenses, and specquotes wiring (#134). AGENTS.md
+gains the fix-all-siblings DRY protocol (owner directive) and the
+three-class vendoring policy.
+
 ### Fixed — STM32 T=1 relay: honest-error contract kills the #132 orphaned-block race (2026-10-12)
 
 Root cause (full dig: `docs/t1_relay_132_rootcause.md`, issue #132):
