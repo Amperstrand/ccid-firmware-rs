@@ -261,12 +261,14 @@ def test_wire_silence_after_banner(flashed_ccid_firmware):
 
     # THE assertion: after the banner's last line ("rust main ALIVE"),
     # nothing but framed CCID may appear. No frames have been sent yet,
-    # so the tail must be free of printable ASCII entirely.
+    # so the tail must contain no bytes at all — control bytes included
+    # (Codex #145 P2: libccidtwin consumes ANY byte as protocol data;
+    # only CR/LF/TAB line-terminator bytes are tolerated).
     marker = "rust main ALIVE"
     idx = text.rfind(marker)
     assert idx >= 0, f"banner terminator missing: {text[-300:]!r}"
     tail = text[idx + len(marker):]
-    stray = [c for c in tail if c.isprintable() and c not in "\r\n\t"]
+    stray = [c for c in tail if c not in "\r\n\t"]
     assert not stray, (
         f"unsolicited bytes after the boot banner (clean-wire violation, "
         f"#131): {tail[-300:]!r}"
