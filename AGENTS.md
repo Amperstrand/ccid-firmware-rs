@@ -212,6 +212,15 @@ fully usable; only install/delete/re-personalize died). Incident record:
    its first run** — including "read-only-looking" GP tooling: `gp -l`,
    `gp -i`, `gp --info` ALL attempt authentication and burn budget on
    failure.
+5. **There is NO master-key recovery once the ISD lockout trips** —
+   researched 2026-10-12 (#144): the 69FF refusal is pre-authentication
+   (identical at key-ver 00/01 — the card refuses before key-set lookup),
+   so knowing the correct keys does not help; every GP reset path needs
+   a successful authentication first, which needs INIT_UPDATE, which is
+   the refused command. Only NXP vendor re-personalization could undo
+   it. Card **50947320 is the permanent record of this** (#144): a
+   perfectly good SmartPGP single-applet card forever — applet fixture
+   only, no GP install/delete.
 
 **Safe/unsafe table for test design:**
 
