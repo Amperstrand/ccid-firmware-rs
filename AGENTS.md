@@ -422,9 +422,8 @@ carries its reason.
 | Context | Toolchain | Why |
 |---|---|---|
 | Host crates, STM32 firmware, all `cargo install` tooling | **Stable, exact-pinned: 1.99.0** — the root `rust-toolchain.toml` is the single authority (rustfmt + clippy + `thumbv7em-none-eabihf` declared) | nothing we ship needs unstable features; the exact pin keeps CI, the release Docker build (#115), and every bench checkout bit-identical. 1.92.0 was retired when modern tooling (espflash 4.x class) stopped building under it |
-| ESP32 xtensa (m5stick/m5atom) | espup **`esp`** toolchain + crosstool `esp-14.2.0_20260121` | upstream rustc has no xtensa-espidf backend — the vendor fork is the only compiler. Not a nightly preference; it IS the stable of that target |
-| ESP32-C3 (nucula, `riscv32imc-esp-espidf`) | **dated nightly `nightly-2026-09-29`** | esp-idf std targets ship NO precompiled std — `-Z build-std` is mandatory and unstable, so a nightly is load-bearing, not a choice. The DATE is pinned: newer nightlies ICE on esp-idf-svc 0.52.1 (`compare_impl_item` on `wifi::scan_n`, 2026-10-09); re-bump only with the full gate green |
-| CI mirrors | exact same strings: dtolnay `1.99.0`, `cargo +esp`, `cargo +nightly-2026-09-29` | one authority; the string must match the toml EXACTLY |
+| ESP32 — BOTH targets (xtensa m5stick/m5atom AND C3 nucula) | **pinned esp fork `v1.98.1.0`** + crosstool `esp-14.2.0_20260121` — `espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3` | upstream rustc has no xtensa-espidf backend (fork is the only compiler there), and no `-Zbuild-std`-capable stable exists for espidf std — so BOTH targets ride the fork (2026-10-12 one-Rust-version change: same version NUMBER as the stable pin, one vendor-frozen compiler instead of fork + dated upstream nightly). `-v` is load-bearing: espup installs the LATEST fork by default (a moving nightly-derived compiler) |
+| CI mirrors | exact same strings: dtolnay `1.99.0`, `cargo +esp`, espup pins `-c 14.2.0_20260121 -v 1.98.1.0` | one authority; the strings must match the toml + bench EXACTLY |
 
 **Rules:**
 
@@ -435,27 +434,28 @@ carries its reason.
    (`-D warnings`: f469 default + f746 bitbang), STM32 release build,
    workspace host tests. (2026-10-12's 1.92→1.99 migration surfaced
    zero new lints because the gate ran first.)
-2. **Nightly only under a hard upstream constraint** — currently just
-   esp-idf's `-Z build-std`. Never a floating `nightly`: always the
-   DATED pin with the reason recorded next to it (build.sh, ci.yml,
-   board.py all carry `nightly-2026-09-29` + the ICE note).
+2. **Nightly-class only under a hard upstream constraint** — esp-idf's
+   std story (see below). Since 2026-10-12 there are ZERO upstream
+   nightlies in the fleet: both esp32 targets ride the pinned fork.
+   Never a floating nightly or an unpinned espup (the `-v 1.98.1.0`
+   pin is as load-bearing as the crosstool `-c` pin).
 
-   Why nightly is STRUCTURAL for esp-idf targets (bench-verified
-   2026-10-12 — this recurs, don't re-derive): `*-espidf` std links
-   against ESP-IDF's newlib libc, which only exists inside an IDF
-   build tree, so no stable-channel std exists (`rustup target add`
-   has nothing to offer; our esp toolchain's rustlib carries only
-   host+src — everything build-stds). The only two ways to get std are
-   (a) build from source = `-Z build-std`, unstable, nightly-only —
-   our path for BOTH C3 (upstream dated nightly) and xtensa; or
-   (b) Espressif's precompiled std — distributed for their `esp` fork,
-   which is itself nightly-derived (bench: 1.97.0-nightly 2026-07-08).
-   There is no supported stable path. The distinction that matters is
-   FLOATING vs PINNED, not stable vs nightly — we pin both compilers.
-   Known alternative (marginal, not taken): unify C3 onto the `esp`
-   fork (one nightly-class toolchain for both ESP32 targets, drops the
-   separate dated-nightly pin; costs: older rustc, esp-idf-svc 0.52.1
-   under the fork untested, CI c3 job would need espup provisioning).
+   Why a nightly-CLASS compiler is structural for esp-idf targets
+   (bench-verified 2026-10-12 — this recurs, don't re-derive):
+   `*-espidf` std links against ESP-IDF's newlib libc, which only
+   exists inside an IDF build tree, so no stable-channel std exists
+   (`rustup target add` has nothing to offer; the fork's rustlib
+   carries only host+src — everything build-stds). Std comes either
+   from `-Z build-std` (unstable) or Espressif's precompiled std for
+   their fork — a nightly-derived vendor release. There is no
+   supported upstream-stable path. RESOLUTION (2026-10-12, later the
+   same day): the dated upstream nightly is RETIRED — both esp32
+   targets now ride the PINNED fork (v1.98.1.0 via espup -v), one
+   compiler, same version number as stable. Zero upstream nightlies.
+   Future option if we ever want C3 on true upstream stable: espup's
+   `-b/--stable-version` RISC-V model (stable + espup-installed
+   precompiled std) — requires config restructuring ([unstable]
+   build-std is crate-global) and was not needed for the consolidation.
 3. **Exact version strings everywhere.** `1.99` and `1.99.0` are
    DISTINCT rustup toolchains. The 2026-10-12 CI outage was exactly
    this mismatch: main's toml said `1.92.0`, ci.yml's dtolnay pin said

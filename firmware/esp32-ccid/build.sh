@@ -113,7 +113,7 @@ done
 
 case "${BOARD}" in
     c3)
-        TOOLCHAIN="nightly-2026-09-29"  # pinned: 2026-10-09 nightly ICEs on esp-idf-svc (see ci.yml)
+        TOOLCHAIN="esp"  # pinned esp fork v1.98.1.0 (espup -v). NOT v1.99.0.0: its rust-src/libc pairing breaks -Zbuild-std on espidf (libc AT_FDCWD, rustix#1652 / rust-lang#160170). Retires the dated upstream nightly
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
@@ -124,7 +124,7 @@ case "${BOARD}" in
         FLASH_BAUD="460800"
         ;;
     c3-ccid)
-        TOOLCHAIN="nightly-2026-09-29"  # pinned: 2026-10-09 nightly ICEs on esp-idf-svc (see ci.yml)
+        TOOLCHAIN="esp"  # pinned esp fork v1.98.1.0 (espup -v). NOT v1.99.0.0: its rust-src/libc pairing breaks -Zbuild-std on espidf (libc AT_FDCWD, rustix#1652 / rust-lang#160170). Retires the dated upstream nightly
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"

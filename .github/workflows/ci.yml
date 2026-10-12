@@ -189,10 +189,11 @@ jobs:
             features: "pn7160-bringup,pn7160-verdict-b"
             no-default-features: true
             gate: false
-            # Pinned nightly: 2026-10-09 nightly (32dba69d6) ICEs on
-            # esp-idf-svc 0.52.1 (compare_impl_item on wifi::scan_n);
-            # 2026-09-29 (f3865b2a4) is the bench-verified compiler.
-            toolchain: nightly-2026-09-29
+            # One-Rust-version policy (2026-10-12): the C3 rides the
+            # PINNED esp fork (espup -v 1.98.1.0) like xtensa — same
+            # Rust version as stable, retires the dated upstream nightly
+            # (and its ICE-pinning maintenance) entirely.
+            toolchain: esp
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
@@ -206,7 +207,7 @@ jobs:
             features: "pn7160-ccid"
             no-default-features: true
             gate: false
-            toolchain: nightly-2026-09-29
+            toolchain: esp
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
@@ -280,26 +281,22 @@ jobs:
             espressif-${{ runner.os }}-v7-${{ matrix.name }}-
             espressif-${{ runner.os }}-v7-
 
-      - name: Install ESP toolchain (xtensa)
+      - name: Install ESP toolchain (pinned fork + crosstool, all esp32 entries)
         if: matrix.toolchain == 'esp'
         run: |
-          # Pin the crosstool GCC to what IDF v5.5.5's tool_version_check
-          # accepts ('esp-14.2.0_20260121' — the check matches the FULL
-          # crosstool-NG build string from `gcc --version`, so IDF v5.5.2+
-          # REJECTS the 20241119 build of the same GCC 14.2.0). espup
-          # installs the LATEST
-          # crosstool by default; its bin dir lands ahead of embuild's own
-          # copy in PATH, and a brand-new release (esp-16.2.0_20260914,
-          # 2026-10-09) made every xtensa matrix entry fail the IDF
-          # version check at cmake configure time.
-          espup install -c 14.2.0_20260121
+          # BOTH pins matter (one-Rust-version policy, 2026-10-12):
+          # - crosstool 'esp-14.2.0_20260121': what IDF v5.5.5's
+          #   tool_version_check accepts — it matches the FULL
+          #   crosstool-NG build string from `gcc --version`; the LATEST
+          #   install broke CI once already (esp-16.2.0_20260914).
+          # - fork '1.98.1.0' (-v): the esp toolchain is espup-LATEST by
+          #   default (a moving nightly-derived compiler). Pinning it to
+          #   v1.98.1.0 aligns BOTH esp32 targets (xtensa + C3) on the
+          #   same Rust version as the stable pin and retires the dated
+          #   upstream nightly entirely.
+          espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
-
-      - name: Install nightly toolchain (riscv/C3)
-        if: startsWith(matrix.toolchain, 'nightly')
-        run: |
-          rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component rust-src
 
       - name: Build firmware (${{ matrix.name }})
         working-directory: firmware/esp32-ccid
