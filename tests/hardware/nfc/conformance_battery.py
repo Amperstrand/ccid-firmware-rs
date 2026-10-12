@@ -187,9 +187,9 @@ class Reader:
         # are the late responses the pending buffer exists for — they
         # must be read BEFORE reset_input_buffer discards them.
         try:
-            if self.s.in_waiting():
+            if self.s.in_waiting:
                 self.s.timeout = 0.02
-                self._stash_frames(self.s.read(max(self.s.in_waiting(), 1)))
+                self._stash_frames(self.s.read(max(self.s.in_waiting, 1)))
         except serial.SerialException:
             pass
         try:

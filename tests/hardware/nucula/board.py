@@ -599,7 +599,11 @@ class NuculaBoard:
         """Build the firmware and return the path to the app binary."""
         env = os.environ.copy()
         env.update({
-            "RUSTUP_TOOLCHAIN": "nightly",
+            # Pinned dated nightly — matches build.sh/CI (a bare "nightly"
+            # is a latent bench dependency: whichever generic nightly is
+            # installed, and it may lack the rust-src component build-std
+            # needs).
+            "RUSTUP_TOOLCHAIN": "nightly-2026-09-29",
             "ESP_IDF_SDKCONFIG_DEFAULTS": f"{self.firmware_dir}/sdkconfig.wallet-test",
             "ESP_IDF_GLOB_PARTCSV_BASE": str(self.firmware_dir),
             "ESP_IDF_GLOB_PARTCSV_1": "/partitions-ota.csv",
