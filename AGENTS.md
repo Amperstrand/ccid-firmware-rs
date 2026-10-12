@@ -410,13 +410,49 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
 ## CI Testing Protocol
 
 
-CI lives in `.github/workflows/ci.yml`. Toolchain authority: the root
-`rust-toolchain.toml` pins **Rust 1.99.0** (current stable, with
-rustfmt+clippy+thumbv7em declared — 1.92.0 was retired 2026-10-12 when
-modern tooling stopped building under it). ci.yml's dtolnay pins use
-the exact same string; ESP32 targets stay outside the toml (per-board
-`esp`/`nightly-2026-09-29` via build.sh + `cargo +toolchain`).
-All jobs check out with `submodules: true` (required — see Gotchas).
+CI lives in `.github/workflows/ci.yml`. All jobs check out with
+`submodules: true` (required — see Gotchas).
+
+### Rust toolchain policy (2026-10-12) — the map and the why
+
+House stance: **stable-first, early adoption by deliberate bumps,
+nightlies ONLY where upstream forces them.** Every pin is exact and
+carries its reason.
+
+| Context | Toolchain | Why |
+|---|---|---|
+| Host crates, STM32 firmware, all `cargo install` tooling | **Stable, exact-pinned: 1.99.0** — the root `rust-toolchain.toml` is the single authority (rustfmt + clippy + `thumbv7em-none-eabihf` declared) | nothing we ship needs unstable features; the exact pin keeps CI, the release Docker build (#115), and every bench checkout bit-identical. 1.92.0 was retired when modern tooling (espflash 4.x class) stopped building under it |
+| ESP32 xtensa (m5stick/m5atom) | espup **`esp`** toolchain + crosstool `esp-14.2.0_20260121` | upstream rustc has no xtensa-espidf backend — the vendor fork is the only compiler. Not a nightly preference; it IS the stable of that target |
+| ESP32-C3 (nucula, `riscv32imc-esp-espidf`) | **dated nightly `nightly-2026-09-29`** | esp-idf std targets ship NO precompiled std — `-Z build-std` is mandatory and unstable, so a nightly is load-bearing, not a choice. The DATE is pinned: newer nightlies ICE on esp-idf-svc 0.52.1 (`compare_impl_item` on `wifi::scan_n`, 2026-10-09); re-bump only with the full gate green |
+| CI mirrors | exact same strings: dtolnay `1.99.0`, `cargo +esp`, `cargo +nightly-2026-09-29` | one authority; the string must match the toml EXACTLY |
+
+**Rules:**
+
+1. **Stable by default; bumps are deliberate, not accidental.** Track
+   current stable; move the pin when tooling stops building under the
+   old one, or on a planned cadence. A bump must pass the full gate
+   before landing: `cargo fmt --all --check`, BOTH STM32 clippy passes
+   (`-D warnings`: f469 default + f746 bitbang), STM32 release build,
+   workspace host tests. (2026-10-12's 1.92→1.99 migration surfaced
+   zero new lints because the gate ran first.)
+2. **Nightly only under a hard upstream constraint** — currently just
+   esp-idf's `-Z build-std`. Never a floating `nightly`: always the
+   DATED pin with the reason recorded next to it (build.sh, ci.yml,
+   board.py all carry `nightly-2026-09-29` + the ICE note).
+3. **Exact version strings everywhere.** `1.99` and `1.99.0` are
+   DISTINCT rustup toolchains. The 2026-10-12 CI outage was exactly
+   this mismatch: main's toml said `1.92.0`, ci.yml's dtolnay pin said
+   `1.92` — the toml override shadowed the action's install with a
+   component-less twin (no cargo-fmt → lint dead; no thumbv7em →
+   builds dead).
+4. **One authority per domain.** Root toml owns host+STM32.
+   build.sh/CI `+toolchain` owns the per-board ESP32 split (env and
+   explicit `+toolchain` beat the toml by design). No per-directory
+   tomls inside `firmware/esp32-ccid/` — a single file cannot express
+   the xtensa/C3 split and would fight build.sh.
+5. **CI tool installs run under the toml's stable** (`cargo install
+   espup ldproxy` …): keep installed tools stable-compatible or pin
+   their versions — the espflash-under-1.92 breakage was this class.
 
 ### Jobs
 
