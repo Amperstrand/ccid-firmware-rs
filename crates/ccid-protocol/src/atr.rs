@@ -164,6 +164,38 @@ pub enum ProcedureByte {
 /// T=0 procedure-byte classification per ISO 7816-3:2006 §10.3.3:
 /// 0x60 = NULL (wait), INS = ACK-all-remaining-data, INS ^ 0xFF = ACK-one
 /// byte, 60-6F/90-9F ranges carry SW1.
+/// Block wait time for a T=1 exchange start, in milliseconds: BWT =
+/// 11 + 2^BWI · 960 etu (ISO 7816-3 §11.6.2.1) at the given wire baud
+/// (etu = 1/baud). Ceiling division — the caller must wait at least as
+/// long as the window it advertises to the host.
+///
+/// Shared single definition (fix-all-siblings): consumed by the STM32
+/// relay (`smartcard_common`) and the esp32 T=1 endpoint (`t1.rs`).
+pub fn t1_bwt_ms(bwi: u8, baud: u32) -> u32 {
+    if baud == 0 {
+        return 5_000;
+    }
+    let bwt_etu: u64 = 11 + (1u64 << (bwi as u32 & 0x0F)) * 960;
+    let baud64 = baud as u64;
+    let ms = (bwt_etu * 1_000).div_ceil(baud64);
+    ms.min(u32::MAX as u64) as u32
+}
+
+/// The negotiated T=1 timing fields of a CCID §6.1.7
+/// abProtocolDataStructure (T=1): byte 3 packs BWI (high) | CWI (low),
+/// byte 5 is bIFSC. Single reference-locked home for the layout — used
+/// by the contact-profile SetParameters application and the esp32
+/// endpoint hook (G-04).
+pub fn t1_bwi_cwi_ifsc(raw: &[u8; 7]) -> (u8, u8, u8) {
+    (raw[3] >> 4, raw[3] & 0x0F, raw[5])
+}
+
+/// The TB3 byte encoding BWI/CWI for a T=1-declaring ATR (BWI high
+/// nibble, CWI low nibble — the mirror of `t1_bwi_cwi_ifsc`).
+pub const fn t1_tb3(bwi: u8, cwi: u8) -> u8 {
+    (bwi << 4) | (cwi & 0x0F)
+}
+
 pub fn classify_t0_procedure_byte(ins: u8, pb: u8) -> ProcedureByte {
     if pb == 0x60 {
         return ProcedureByte::Null;
@@ -419,5 +451,33 @@ mod tests {
         let p = parse_atr(&atr);
         // Should not panic; returns partial result from TD1 (protocol=0)
         assert_eq!(p.protocol, 0);
+    }
+
+    #[test]
+    fn t1_bwt_ms_matches_iso_7816_3_formula() {
+        // BWI=4, 11290 baud (4.2 MHz / 372): (11 + 16·960) etu / 11290
+        // = 1361.47 ms → 1362 (ceiling). This is the window we echo to
+        // the host as BWI=4 — the reader must honor it (#132: the old
+        // hardcoded 500 ms raced legal BWT-class answers).
+        assert_eq!(t1_bwt_ms(4, 11_290), 1_362);
+        // BWI=0, 10752 baud (4 MHz / 372): (11 + 960) etu / 10752 = 90.3 → 91.
+        assert_eq!(t1_bwt_ms(0, 10_752), 91);
+        // BWI=4 at the esp32's advertised default (G-05 TB3): ~1.43 s.
+        assert_eq!(t1_bwt_ms(4, 10_752), 1_430);
+    }
+
+    #[test]
+    fn t1_bwt_ms_is_monotonic_in_bwi_and_safe_at_edges() {
+        assert!(t1_bwt_ms(5, 11_290) > t1_bwt_ms(4, 11_290));
+        assert!(t1_bwt_ms(15, 11_290) > t1_bwt_ms(4, 11_290));
+        assert_eq!(t1_bwt_ms(4, 0), 5_000);
+    }
+
+    #[test]
+    fn t1_bwi_cwi_ifsc_and_tb3_round_trip() {
+        let raw = [0x11, 0x00, 0x00, 0x45, 0x00, 0xFE, 0x00];
+        assert_eq!(t1_bwi_cwi_ifsc(&raw), (4, 5, 254));
+        assert_eq!(t1_tb3(4, 5), 0x45);
+        assert_eq!(t1_tb3(0, 3), 0x03);
     }
 }

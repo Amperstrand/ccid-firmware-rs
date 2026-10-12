@@ -43,19 +43,10 @@ pub fn t1_block_total_len(prologue: &[u8], buf_len: usize) -> Option<usize> {
     Some(total)
 }
 
-/// Block wait time for a T=1 exchange start, in milliseconds: BWT =
-/// 11 + 2^BWI · 960 etu (ISO 7816-3 §11.6.2.1) at the given wire baud
-/// (etu = 1/baud). Ceiling division — the caller must wait at least as
-/// long as the window it advertises to the host in GetParameters.
-pub fn t1_bwt_ms(bwi: u8, baud: u32) -> u32 {
-    if baud == 0 {
-        return 5_000;
-    }
-    let bwt_etu: u64 = 11 + (1u64 << (bwi as u32 & 0x0F)) * 960;
-    let baud64 = baud as u64;
-    let ms = (bwt_etu * 1_000).div_ceil(baud64);
-    ms.min(u32::MAX as u64) as u32
-}
+// Single shared definition (fix-all-siblings): the ISO 7816-3 §11.6.2.1
+// BWT math lives in ccid-protocol and is re-exported here so existing
+// callers keep their import paths.
+pub use ccid_protocol::atr::t1_bwt_ms;
 
 pub const SMARTCARD_CONFIG_DEFAULT: SmartcardConfig = SmartcardConfig {
     power_on_delay_ms: 50,
@@ -73,24 +64,6 @@ pub const SMARTCARD_CONFIG_DEFAULT: SmartcardConfig = SmartcardConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn t1_bwt_ms_matches_iso_7816_3_formula() {
-        // BWI=4, 11290 baud (4.2 MHz / 372): (11 + 16·960) etu / 11290
-        // = 1361.47 ms → 1362 (ceiling). This is the window we echo to
-        // the host as BWI=4 in GetParameters — the reader must honor it
-        // (#132: the old hardcoded 500 ms raced legal BWT-class answers).
-        assert_eq!(t1_bwt_ms(4, 11_290), 1_362);
-        // BWI=0, 10752 baud (4 MHz / 372): (11 + 960) etu / 10752 = 90.3 → 91.
-        assert_eq!(t1_bwt_ms(0, 10_752), 91);
-    }
-
-    #[test]
-    fn t1_bwt_ms_is_monotonic_in_bwi_and_safe_at_edges() {
-        assert!(t1_bwt_ms(5, 11_290) > t1_bwt_ms(4, 11_290));
-        assert!(t1_bwt_ms(15, 11_290) > t1_bwt_ms(4, 11_290));
-        assert_eq!(t1_bwt_ms(4, 0), 5_000); // defensive baud=0 → cap
-    }
 
     #[test]
     fn smartcard_config_default_matches_historical_consts() {
