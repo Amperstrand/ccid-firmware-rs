@@ -439,6 +439,23 @@ carries its reason.
    esp-idf's `-Z build-std`. Never a floating `nightly`: always the
    DATED pin with the reason recorded next to it (build.sh, ci.yml,
    board.py all carry `nightly-2026-09-29` + the ICE note).
+
+   Why nightly is STRUCTURAL for esp-idf targets (bench-verified
+   2026-10-12 — this recurs, don't re-derive): `*-espidf` std links
+   against ESP-IDF's newlib libc, which only exists inside an IDF
+   build tree, so no stable-channel std exists (`rustup target add`
+   has nothing to offer; our esp toolchain's rustlib carries only
+   host+src — everything build-stds). The only two ways to get std are
+   (a) build from source = `-Z build-std`, unstable, nightly-only —
+   our path for BOTH C3 (upstream dated nightly) and xtensa; or
+   (b) Espressif's precompiled std — distributed for their `esp` fork,
+   which is itself nightly-derived (bench: 1.97.0-nightly 2026-07-08).
+   There is no supported stable path. The distinction that matters is
+   FLOATING vs PINNED, not stable vs nightly — we pin both compilers.
+   Known alternative (marginal, not taken): unify C3 onto the `esp`
+   fork (one nightly-class toolchain for both ESP32 targets, drops the
+   separate dated-nightly pin; costs: older rustc, esp-idf-svc 0.52.1
+   under the fork untested, CI c3 job would need espup provisioning).
 3. **Exact version strings everywhere.** `1.99` and `1.99.0` are
    DISTINCT rustup toolchains. The 2026-10-12 CI outage was exactly
    this mismatch: main's toml said `1.92.0`, ci.yml's dtolnay pin said
