@@ -1225,4 +1225,46 @@ mod tests {
         let (_hdr, payload) = parse_response(&resp[..n]);
         assert_eq!(payload[1] & 0xC0, 0x80, "R-block, not I/S");
     }
+
+    #[test]
+    fn retransmitted_t1_iblock_serves_cache_not_card() {
+        // #101: a retransmitted I-block XfrBlock (our DataBlock was
+        // lost on the wire) must return byte-identical bytes with NO
+        // second card exchange — re-executing an INSTALL-class APDU is
+        // the double-INSTALL hazard.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.set_current_protocol(1);
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let apdu = [0x84u8, 0xE6, 0x02, 0x00, 0x00];
+        let mut iblock = [0u8; 3 + 5 + 1];
+        iblock[0] = 0x00;
+        iblock[1] = 0x00;
+        iblock[2] = apdu.len() as u8;
+        iblock[3..3 + apdu.len()].copy_from_slice(&apdu);
+        let end = 3 + apdu.len();
+        iblock[end] = iblock[..end].iter().fold(0u8, |a, b| a ^ b);
+
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 2, &iblock[..end + 1]);
+        let n = handler.process_command(&msg, &mut resp);
+        let (_hdr, first_payload) = parse_response(&resp[..n]);
+        let first_payload = first_payload.to_vec();
+        let tx_after_first = handler.diagnostics().apdu_tx_count;
+
+        let retry = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 3, &iblock[..end + 1]);
+        let n2 = handler.process_command(&retry, &mut resp);
+        let (_hdr2, retry_payload) = parse_response(&resp[..n2]);
+
+        assert_eq!(
+            first_payload, retry_payload,
+            "replay must be byte-identical"
+        );
+        assert_eq!(
+            handler.diagnostics().apdu_tx_count,
+            tx_after_first,
+            "no second card exchange"
+        );
+    }
 }
