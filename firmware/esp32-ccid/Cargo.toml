@@ -75,8 +75,12 @@ esp-idf-hal = "0.46"
 esp-idf-svc = "0.52.1"
 
 [build-dependencies]
-embuild = { version = "0.32", features = ["espidf"] }
+embuild = { version = "0.33", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
-esp_idf_version = "tag:v5.5.1"
+# v5.5.5 (2026-10-12 unification bump from v5.5.1): requires crosstool
+# esp-14.2.0_20260121 (exact build-string tool_version_check). esp-idf-svc
+# stays 0.52.1: 0.53.0 requires the hal-0.47/sys-0.38 generation, which
+# conflicts with the vendored legacy-I2C hal 0.46.2 (follow-up lane).
+esp_idf_version = "tag:v5.5.5"
 

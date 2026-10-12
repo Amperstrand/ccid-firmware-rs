@@ -338,12 +338,46 @@ Three distinct things get called "vendoring" — only two are allowed:
 
 The CCID wire carries CCID frames ONLY. libccidtwin's parser is a
 strict byte stream with NO resync — any ASCII between frames desyncs
-pcscd for the whole session. This includes logs queued BEFORE the
-`set_max_level(Off)` ceiling: the log-shim ring must be PURGED at
-ceiling time (`log_shim::purge()`, bench 2026-10-11: `ReadSerial() Got
-0x76/0x65/0x64…` = boot-log text mid-session). Debug output goes to:
-Escape 0xD0 counters, Escape 0xD1 coredumps (dump-and-retrieve), a
-`ble` build, or WiFi netlog — never unsolicited on the CCID wire.
+pcscd for the whole session. Since 2026-10-12 (issue #131) this is
+enforced by CONSTRUCTION, not discipline: the log ceiling
+(`set_max_level(Off)`) is set BEFORE the protocol driver claim, right
+after the one allowed boot banner (FWID + "rust main ALIVE", which
+ends before serving starts). The #91 log-shim (ring + drain + purge)
+is RETIRED — deleted, not fixed: keeping logs alive on a protocol wire
+was machinery that itself became the bug (its 5.5.5 drain breakage was
+the port's only regression). Debug output goes to: Escape 0xD0
+counters, Escape 0xD1 coredumps (dump-and-retrieve), a `ble` build, a
+`pn7160-actdiag` diagnostic build, or WiFi netlog — never unsolicited
+on the CCID wire. Enforcement: `test_wire_silence_after_banner`
+(tests/hardware/nucula) asserts zero printable ASCII after the banner.
+Full analysis + alternatives matrix: `docs/LOGGING_DOCTRINE.md`.
+
+### Debug-channel lesson (2026-10-12, #131 — read before adding ANY
+### diagnostics to a time-sensitive path)
+
+When troubleshooting feels hard because the debug channel interferes
+with the thing being debugged, DELETE the channel — do not build
+machinery to route around the interference. Rules for the future:
+
+1. A protocol wire is not a debug channel; strict parsers treat
+   unsolicited bytes as corruption (correctly).
+2. Diagnostics are PULL (in-band escape queries) or POST-MORTEM
+   (coredumps) — never push.
+3. Logging perturbs timing at the moment it matters (print-path
+   stalls, console starvation during busy-waits, driver-claim
+   semantics) — for timing bugs the observation must not perturb the
+   observed (dump-and-retrieve).
+4. Live logs belong on dedicated diagnostic surfaces: a diagnostic
+   BUILD (actdiag pattern), a separate wire (RTT/JTAG, dedicated
+   UART), or a non-protocol radio channel (ble/netlog).
+5. If a workaround subsystem grows (rings, drains, purges, flush
+   ordering) to keep observation alive inside a protocol path, that
+   is the architecture telling you the channel should not exist.
+   Complexity added to preserve observation becomes the next
+   incident (log_shim: 619 lines, multiple bench sessions, and it
+   still broke first on the IDF bump).
+6. Lock the invariant with a wire-silence regression test — CI
+   failure beats reviewer vigilance.
 
 ### Nucula C3 hardware wall (register-verified 2026-10-11)
 
@@ -376,8 +410,49 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
 ## CI Testing Protocol
 
 
-CI lives in `.github/workflows/ci.yml`. Toolchain is pinned to **Rust 1.92**.
-All jobs check out with `submodules: true` (required — see Gotchas).
+CI lives in `.github/workflows/ci.yml`. All jobs check out with
+`submodules: true` (required — see Gotchas).
+
+### Rust toolchain policy (2026-10-12) — the map and the why
+
+House stance: **stable-first, early adoption by deliberate bumps,
+nightlies ONLY where upstream forces them.** Every pin is exact and
+carries its reason.
+
+| Context | Toolchain | Why |
+|---|---|---|
+| Host crates, STM32 firmware, all `cargo install` tooling | **Stable, exact-pinned: 1.99.0** — the root `rust-toolchain.toml` is the single authority (rustfmt + clippy + `thumbv7em-none-eabihf` declared) | nothing we ship needs unstable features; the exact pin keeps CI, the release Docker build (#115), and every bench checkout bit-identical. 1.92.0 was retired when modern tooling (espflash 4.x class) stopped building under it |
+| ESP32 xtensa (m5stick/m5atom) | espup **`esp`** toolchain + crosstool `esp-14.2.0_20260121` | upstream rustc has no xtensa-espidf backend — the vendor fork is the only compiler. Not a nightly preference; it IS the stable of that target |
+| ESP32-C3 (nucula, `riscv32imc-esp-espidf`) | **dated nightly `nightly-2026-09-29`** | esp-idf std targets ship NO precompiled std — `-Z build-std` is mandatory and unstable, so a nightly is load-bearing, not a choice. The DATE is pinned: newer nightlies ICE on esp-idf-svc 0.52.1 (`compare_impl_item` on `wifi::scan_n`, 2026-10-09); re-bump only with the full gate green |
+| CI mirrors | exact same strings: dtolnay `1.99.0`, `cargo +esp`, `cargo +nightly-2026-09-29` | one authority; the string must match the toml EXACTLY |
+
+**Rules:**
+
+1. **Stable by default; bumps are deliberate, not accidental.** Track
+   current stable; move the pin when tooling stops building under the
+   old one, or on a planned cadence. A bump must pass the full gate
+   before landing: `cargo fmt --all --check`, BOTH STM32 clippy passes
+   (`-D warnings`: f469 default + f746 bitbang), STM32 release build,
+   workspace host tests. (2026-10-12's 1.92→1.99 migration surfaced
+   zero new lints because the gate ran first.)
+2. **Nightly only under a hard upstream constraint** — currently just
+   esp-idf's `-Z build-std`. Never a floating `nightly`: always the
+   DATED pin with the reason recorded next to it (build.sh, ci.yml,
+   board.py all carry `nightly-2026-09-29` + the ICE note).
+3. **Exact version strings everywhere.** `1.99` and `1.99.0` are
+   DISTINCT rustup toolchains. The 2026-10-12 CI outage was exactly
+   this mismatch: main's toml said `1.92.0`, ci.yml's dtolnay pin said
+   `1.92` — the toml override shadowed the action's install with a
+   component-less twin (no cargo-fmt → lint dead; no thumbv7em →
+   builds dead).
+4. **One authority per domain.** Root toml owns host+STM32.
+   build.sh/CI `+toolchain` owns the per-board ESP32 split (env and
+   explicit `+toolchain` beat the toml by design). No per-directory
+   tomls inside `firmware/esp32-ccid/` — a single file cannot express
+   the xtensa/C3 split and would fight build.sh.
+5. **CI tool installs run under the toml's stable** (`cargo install
+   espup ldproxy` …): keep installed tools stable-compatible or pin
+   their versions — the espflash-under-1.92 breakage was this class.
 
 ### Jobs
 
@@ -613,6 +688,7 @@ a release the same day.
 
 | Board | Identity probe (run this) | State 2026-10-11 ~22:3x |
 |---|---|---|
+| **IDF 5.5.5 unification (2026-10-12, branch `sisyphus/idf-555-unify` @91653fc)** — all three ESP-IDF repos (ccid/bolty/micronuts) bumped v5.5.1/v5.2.4→v5.5.5, crosstool `esp-14.2.0_20260121` on bench+CI, embuild 0.33.5, vendored-hal sd.rs backport (upstream 0.47.0 fix, field added in 5.5.5). Bench-verified: m5stick conformance battery (fuzz 87/0 wedges, pcscd restart 10/10, soak 1000/1000) + card-level differential FULL PASS (ATR/AID/APDU + ACR1252 agreement); nucula D1 coredump round-trip + fuzz 87/0 + soak 998/1000 + broker serving; stm32 HIL 7/7. **One open 5.5.5 item**: `log_shim` post-claim ring drain delivers nothing on the wire (bench-reproduced: serve loop + framing + D1 all fine, log lines never drain — suspect the 5.5.2 USJ-console tx changes) — **RESOLVED-BY-RETIREMENT the same day (#131)**: the shim was deleted, the ceiling moved before the driver claim, and `test_wire_silence_after_banner` now locks the clean wire. esp-idf-svc stays 0.52.1 (0.53.0 = hal 0.47/sys 0.38 generation, conflicts with the vendored legacy-I2C hal — follow-up lane). | | |
 | nucula | pcscd: `Nucula CCID 00 00/01 00` via the PTY broker (`systemctl status nucula-ccid-broker`, journal = wire tap); identity probe: connect → ATR `3B 85 80 01 80 73 C8 21 10 0E` → SELECT ISD `9000` | OURS @3c74d74-era flashed 2026-10-11 ~23:0x (PT@0x8000 + app@0x40000): **pcscd WORKS through `host-tools/nucula-ccid-broker.py`** (PTY relay defeats the rst:0x15 wall — direct CDC opens still chip-reset, safe opener only). Broker = systemd service, symlink `/dev/nucula-ccid` gated on serving. Bench-verified 2026-10-11: 8/8 connect+ATR+SELECT sessions, >5.5 min stable enumeration, PTY GSS RTT 0.72 ms p50 (direct floor 0.20 ms). **Known gaps**: (1) after a host IccPowerOff the re-arm probe is rejected NCI `DISCOVERY_ALREADY_STARTED` (0xA0) and the HALTed card never re-activates (#125 hardware gap) — the broker's `POWER_OFF_SHIM=1` answers power-offs locally until fixed; (2) GP CAP installs fail at the first T=1 INSTALL (card answers `9100`, gp retries into comm error — m5stick-class T=1/CAP limitation). reader.conf `nucula-broker` DISABLED when idle (`mv` to re-enable + `flock /run/lock/bench-pcscd.lock systemctl restart pcscd`). Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
 | m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters; Escape 0xD2 → turnaround split + exchange decomposition (issue #120, 32-byte LE: last/max turnaround µs, last/max card-exchange µs, blocks/wtx/recoveries/max_transceive_us; probe: `tests/hardware/nfc/turnaround_probe.py`); Escape 0xD3 [D3,N] → I2C poll-cadence probe (total µs for N ComIrqReg reads + configured FWT) | OURS @e473682-era flashed 2026-10-11 ~23:1x (bl@0x1000+PT@0x8000+app@0x40000): **P71 BACK ON COIL, 0xD2 32B + 0xD3 live, bSeq fix landed** (XfrBlock DataBlock answers now echo bSeq, CCID §6.2-1 — pcscd tolerated the old seq=0, strict parsers didn't). **#120 CLOSED as card-bound**: minimal card answer 18–25 ms (P71 FWI=9, fwt=164 ms — the card advertises up to ~155 ms), reader floor ~3 ms (8 I2C ops × 277 µs legacy-driver cadence, 0xD3-proven); single block, wtx=0, rec=0 always — transport exonerated. **CAP install (#59/#101) root-caused by PTY wire tap** (`tap.py` pattern, /tmp/opencode/tap.log): gp dies at the first chained I-block (INSTALL[FOR LOAD] 33 B > ifsc=32) because the serve loop BLOCKS in card exchanges, host retries arrive at a blocked loop, the reader's echo comes back TRUNCATED (UART RX loss) and the T=1 state desyncs into dead air (see #101 comment 2026-10-11; libccid serial timeout is 3 s — BWT was never the killer; after one WTX pcscd's t1->wtx persists → lost response = infinite hang). Fix = serve-loop RX hardening + retry-idempotent t1 endpoint — NOT latency. At ~30 ms/APDU a 470-block upload ≈ 15–20 s card time — fits the 10-min budget once the relay stops dying |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7. **2026-10-12: T=1 relay hardening landed** (#132 fix — BWT-derived first-byte wait, honest-error contract, pre-read drain, ORE hygiene; root cause `docs/t1_relay_132_rootcause.md`; suite 14+1 green + fidelity hammer 0 anomalies vs 54 pre-fix; definitive card-50942720 gp proof pending its move into our slot). **Bench lesson**: INIT_UPDATE hammering locked the SmartPGP card's ISD management state (69FF on SC-class commands, survives power cycle; applet unaffected — #127) — NEVER hammer SC-class commands (INIT_UPDATE/EXT_AUTH/GET DATA 00E0); fidelity hammers use SELECT+CPLC only. |
@@ -957,22 +1033,26 @@ drains fast enough not to need it.
 
 ### espup crosstool pin (CI, 2026-10-09)
 
-CI pins `espup install -c 14.2.0_20241119` (the GCC IDF v5.5.1's
-`tool_version_check` accepts). espup defaults to the LATEST crosstool
+CI pins `espup install -c 14.2.0_20260121` (the crosstool build IDF
+v5.5.5's `tool_version_check` accepts — the check matches the FULL
+crosstool-NG build string from `gcc --version`, so IDF v5.5.2+
+REJECTS the 20241119 build of the very same GCC 14.2.0). espup
+defaults to the LATEST crosstool
 and its bin dir lands ahead of embuild's own copy in PATH — the day's
 `esp-16.2.0_20260914` release failed every xtensa matrix entry at cmake
 configure. The SAME day exposed a second failure mode: the
 espressif-cache restore-key chain fell back across toolchain
 generations and restored v5.2-era `esp-13.2.0` embuild tools against
 IDF v5.5.1 — the red run then SAVED that poison under a fresh exact
-key. The cache key/restore-keys now carry a generation prefix (`v6`)
+key. The cache key/restore-keys now carry a generation prefix (`v7`,
+the IDF v5.5.5 generation)
 that only falls back within the current generation; **bump it whenever
 the toolchain/IDF world moves** (ci.yml carries the same note).
-**Bench landmine**: this machine's espup crosstool is
-`esp-15.2.0_20250920` and works only because the bench's cmake
-configure is cache-stamped; a FRESH bench configure (stamp loss, new
-checkout) would fail the same check — pin the bench espup too if it
-bites. Also: pushes touching `.github/workflows/` must go over SSH
+**Bench**: espup re-pinned to `esp-14.2.0_20260121` on 2026-10-12
+(the v5.5.5 unification) — bench and CI now match. Historical note:
+before that the bench ran `esp-15.2.0_20250920`, which only passed
+because the cmake configure was cache-stamped (a fresh configure
+would have failed the tool_version_check). Also: pushes touching `.github/workflows/` must go over SSH
 (`git push git@github.com:…`) — the OAuth tokens here lack the
 `workflow` scope.
 
@@ -1204,7 +1284,7 @@ ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
 | STM32F469/F746 | USB CCID | defmt + RTT via probe-rs (separate from USB) |
 | M5Stick/M5Atom (standard) | UART0 | console NONE by default; netlog (UDP :4567) with WiFi creds |
 | M5Stick/M5Atom (`ble` build, experimental) | UART0 | BLE NUS notifications (`m5stick-ble`) |
-| nucula standard | USB-CDC | console on the same CDC (parser tolerates log noise) |
+| nucula standard | USB-CDC | clean-wire (#131): boot banner only, then framed CCID only — diagnostics via Escape 0xD0/0xD1, coredumps, or actdiag/ble/netlog builds |
 | nucula (`ble` build) | USB-CDC | blocked — no `c3-ccid-ble` board until the C3 adv quirk is root-caused |
 
 ## Labgrid Bench Doctrine (ai-legion NFC/CCID testbed, 2026-10-09)
@@ -1283,14 +1363,14 @@ incremental), `x86_64-unknown-linux-gnu/` 20G (host test artifacts),
 |---|---|---|
 | `debug/incremental/` | 17G | always regenerated; delete freely |
 | `.embuild/espressif/dist/` | 1.1G | toolchain tarballs, re-downloadable |
-| `.embuild/espressif/esp-idf/v5.2.3/` | 546M | stale — manifest pins v5.5.1 |
+| `.embuild/espressif/esp-idf/v5.2.3/` | 546M | stale — manifest pins v5.5.5 (v5.5.1 clones are also prunable post-migration) |
 | `x86_64-unknown-linux-gnu/` + `release/` | ~24G | rebuildable; `cargo sweep --time 30` trims by mtime |
 | other projects' binaries (`cln-*`, `cashud`, `decode-vls`, ...) | varies | the dir is HOST-WIDE — coordinate with those lanes before bulk deletion |
 
 **Keep:** the top-level cached bench binaries (`esp32-ccid-m5stick.bin`
 etc. — the m5stick recovery image), `.embuild/espressif/tools/` (the
 actual toolchains; re-downloadable but a 10+ min stall mid-session),
-`esp-idf/v5.5.1` (current pin), and the riscv/xtensa esp-idf-sys build
+`esp-idf/v5.5.5` (current pin), and the riscv/xtensa esp-idf-sys build
 dirs while `/root/src/ccid-firmware-rs` (the checkout they cache-stamp
 against) is live.
 
@@ -1381,7 +1461,7 @@ RF_INTF_ACTIVATED instead of RF_DISCOVER. Correct model, now in the driver:
   (~TOTAL_DURATION after discovery start) — anything reading earlier sees
   nothing; don't "fix" the wait.
 
-### Main-loop logging dies after the USB-CDC driver claim — FIXED by `log_shim` (issue #91, bench-verified 2026-10-09)
+### Main-loop logging dies after the USB-CDC driver claim — was "fixed" by `log_shim` (#91) — RETIRED 2026-10-12 (#131)
 esp-idf logs flow until `UsbSerialDriver::new` takes the peripheral;
 after that the CCID serving loop's log output silently drops. **Fix
 (bench-verified)**: `log_shim::install()` after the claim routes logs

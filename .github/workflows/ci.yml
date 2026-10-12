@@ -98,7 +98,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: thumbv7em-none-eabihf
 
       - name: Install cargo-binutils
@@ -229,7 +229,7 @@ jobs:
       - name: Install espup + espflash (xtensa only)
         if: matrix.toolchain == 'esp'
         run: |
-          cargo install espup espflash
+          cargo install espup
 
       # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
       # C framework + Rust std (-Z build-std) there — the dominant ~80% of
@@ -272,23 +272,27 @@ jobs:
           # within the SAME generation — a cross-generation fallback once
           # restored v5.2-era 13.2.0 tools against IDF v5.5.1 (which wants
           # esp-14.2.0_20241119) and the red run then SAVED that poison
-          # under a fresh exact key (2026-10-09). v6 evicts that.
-          key: espressif-${{ runner.os }}-v6-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
+          # under a fresh exact key (2026-10-09). v6 evicted that; v7 is
+          # the IDF v5.5.5 generation (2026-10-12, crosstool 20260121).
+          key: espressif-${{ runner.os }}-v7-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
           restore-keys: |
-            espressif-${{ runner.os }}-v6-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
-            espressif-${{ runner.os }}-v6-${{ matrix.name }}-
-            espressif-${{ runner.os }}-v6-
+            espressif-${{ runner.os }}-v7-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
+            espressif-${{ runner.os }}-v7-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v7-
 
       - name: Install ESP toolchain (xtensa)
         if: matrix.toolchain == 'esp'
         run: |
-          # Pin the crosstool GCC to what IDF v5.5.1's tool_version_check
-          # accepts ('esp-14.2.0_20241119'). espup installs the LATEST
+          # Pin the crosstool GCC to what IDF v5.5.5's tool_version_check
+          # accepts ('esp-14.2.0_20260121' — the check matches the FULL
+          # crosstool-NG build string from `gcc --version`, so IDF v5.5.2+
+          # REJECTS the 20241119 build of the same GCC 14.2.0). espup
+          # installs the LATEST
           # crosstool by default; its bin dir lands ahead of embuild's own
           # copy in PATH, and a brand-new release (esp-16.2.0_20260914,
           # 2026-10-09) made every xtensa matrix entry fail the IDF
           # version check at cmake configure time.
-          espup install -c 14.2.0_20241119
+          espup install -c 14.2.0_20260121
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
 
@@ -341,7 +345,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: thumbv7em-none-eabihf
           components: rustfmt, clippy
       
@@ -416,7 +420,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
       
       - name: Install system dependencies
@@ -445,7 +449,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo dependencies

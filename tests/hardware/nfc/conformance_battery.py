@@ -152,6 +152,27 @@ class Reader:
                 continue
         return False
 
+    def quiet_bytes(self, window_s: float = 2.0) -> bytes:
+        """Collect any UNSOLICITED bytes with no frame sent (silence check).
+
+        Clean-wire enforcement (issues #131/#133): post-handshake, the
+        GemPC wires must deliver zero bytes until the host speaks. The
+        m5stick twin of the nucula's test_wire_silence_after_banner.
+        """
+        got = bytearray()
+        t0 = time.time()
+        self.s.timeout = 0.1
+        while time.time() - t0 < window_s:
+            try:
+                chunk = self.s.read(8192)
+            except serial.SerialException:
+                if not self.reopen():
+                    break
+                continue
+            if chunk:
+                got.extend(chunk)
+        return bytes(got)
+
     def exchange(self, msg_type: int, data: bytes = b"", raw: bytes | None = None,
                  settle: float = 0.15) -> list:
         """Send (raw bytes if given, else a frame); return parsed RDR frames.
@@ -378,6 +399,18 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
     valid GetSlotStatus answered correctly."""
     ok = True
     rng = random.Random(20261009)
+    # Wire-silence check (issues #131/#133): no frames sent for 2 s —
+    # the wires must be SILENT (clean-wire by construction: ceiling
+    # before the driver claim; any bytes here are a regression or a
+    # reintroduced unsolicited log line).
+    print("\nwire silence (2 s quiet window, no frames sent):")
+    for rname, r in readers.items():
+        quiet = r.quiet_bytes(2.0)
+        state = "PASS" if quiet == b"" else f"FAIL ({len(quiet)}B: {quiet[:24]!r})"
+        print(f"  {rname}: {state}")
+        if quiet:
+            ok = False
+
     print(f"\nfuzz ({rounds} randomized rounds + fixed cases):")
     wedges = {n: 0 for n in readers}
     cases: list[tuple[str, bytes]] = [

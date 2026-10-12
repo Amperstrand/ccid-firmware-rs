@@ -203,17 +203,20 @@ def test_escape_d1_snapshot_roundtrip(flashed_ccid_firmware):
     board.run_esptool("erase-region", COREDUMP_OFFSET, COREDUMP_SIZE)
 
 
-@pytest.mark.hil
-def test_log_shim_post_claim_output(flashed_ccid_firmware):
-    """Issue #91 regression: after the USB-CDC driver claim, log lines
-    must still reach the wire (ring-drained by the serving loop) and
-    framed CCID commands must get LRC-valid answers amid the log text.
 
-    Capture discipline (AGENTS.md "Session Lessons: Log-Shim Bench
-    Verify"): one serial session, DTR/RTS held low (a DTR-asserted
-    holder latches boot:0x5 download mode across resets), RTS pulse for
-    a fresh boot, aggressive reconnect through the CDC re-enumeration
-    (the reset kills our own fd)."""
+@pytest.mark.hil
+def test_wire_silence_after_banner(flashed_ccid_firmware):
+    """Clean-wire regression (issue #131, retires the #91 log_shim):
+    after the pre-claim boot banner, the CCID wire must carry framed
+    protocol ONLY — zero unsolicited bytes (no log text, no C-level
+    output, no ring-drained ASCII). Framed commands must still get
+    LRC-valid answers. Strictly stronger than the old log_shim test:
+    it asserts the wire is CLEAN, not that logs eventually arrive.
+
+    Capture discipline (AGENTS.md "Session Lessons"): one serial
+    session, DTR/RTS held low (a DTR-asserted holder latches
+    boot:0x5 download mode across resets), RTS pulse for a fresh boot,
+    aggressive reconnect through the CDC re-enumeration."""
     import serial as pyserial
 
     board = flashed_ccid_firmware
@@ -253,21 +256,26 @@ def test_log_shim_post_claim_output(flashed_ccid_firmware):
     text = bytes(buf).decode("utf-8", "replace")
 
     assert "FWID pn7160-ccid" in text, (
-        f"pre-claim FWID missing from boot console: {text[-300:]!r}"
+        f"boot banner missing from boot console: {text[-300:]!r}"
     )
-    assert "USB-CDC ready" in text, (
-        f"post-claim line not ring-drained (issue #91 regression): "
-        f"{text[-300:]!r}"
-    )
-    assert any(
-        marker in text for marker in ("pn7160_i2c", "init attempt", "PN7160")
-    ), f"PN7160 bring-up ladder not visible post-claim: {text[-300:]!r}"
 
-    # Framed GetSlotStatus over the same open port: the response must be
-    # SYNC-anchored and LRC-valid despite the interleaved log text.
-    # Host line-state wiggling at reconnect can fire the C3's reset
-    # magic — a second boot may still be running its ladder here, so
-    # wait for the serve loop, then retry the frame a few times.
+    # THE assertion: after the banner's last line ("rust main ALIVE"),
+    # nothing but framed CCID may appear. No frames have been sent yet,
+    # so the tail must contain no bytes at all — control bytes included
+    # (Codex #145 P2: libccidtwin consumes ANY byte as protocol data;
+    # only CR/LF/TAB line-terminator bytes are tolerated).
+    marker = "rust main ALIVE"
+    idx = text.rfind(marker)
+    assert idx >= 0, f"banner terminator missing: {text[-300:]!r}"
+    tail = text[idx + len(marker):]
+    stray = [c for c in tail if c not in "\r\n\t"]
+    assert not stray, (
+        f"unsolicited bytes after the boot banner (clean-wire violation, "
+        f"#131): {tail[-300:]!r}"
+    )
+
+    # Framed GetSlotStatus over the same open port: echo + LRC-valid
+    # response (the serve loop works; the wire carries frames fine).
     gss = bytes([0x65, 0, 0, 0, 0, 0, 42, 0, 0, 0])
     frame = bytes([0x03, 0x06]) + gss
     lrc = 0
@@ -283,12 +291,6 @@ def test_log_shim_post_claim_output(flashed_ccid_firmware):
             except (pyserial.SerialException, OSError):
                 break
         return bytes(got)
-
-    ready_deadline = time.time() + 8
-    while time.time() < ready_deadline:
-        tail = read_available(time.time() + 0.5)
-        if b"CCID loop starting" in tail:
-            break
 
     wire = bytearray()
     for _ in range(3):
@@ -318,5 +320,5 @@ def test_log_shim_post_claim_output(flashed_ccid_firmware):
             valid = x == 0
         i = stream.find(needle, i + 1)
     assert valid, (
-        f"no LRC-valid GetSlotStatus answer amid log text: {stream.hex()}"
+        f"no LRC-valid GetSlotStatus answer on the clean wire: {stream.hex()}"
     )

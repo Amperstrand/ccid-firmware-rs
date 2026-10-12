@@ -112,9 +112,9 @@ def flashed_firmware(board, request):
 @pytest.fixture(scope="session")
 def flashed_ccid_firmware(board):
     """Flash the pn7160-ccid reader firmware (USB-CDC CCID serve loop)
-    from .console import BootMarker
     and VERIFY via FWID marker — the binary the dump-and-retrieve
     workflow (Escape 0xD1, AGENTS.md) is exercised against."""
+    from .console import BootMarker
     binary = board.build_firmware(features="pn7160-ccid")
     assert binary is not None, "Firmware build failed"
     text = board.flash_and_boot(binary, full=True)
