@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — STM32 T=1 relay: honest-error contract kills the #132 orphaned-block race (2026-10-12)
+
+Root cause (full dig: `docs/t1_relay_132_rootcause.md`, issue #132):
+`transmit_raw`'s T=1 branch returned `Ok(short)` on a first-byte timeout —
+an empty "success" DataBlock — after a hardcoded 500 ms first-byte wait,
+while GetParameters advertises BWI=4 (~1.38 s BWT) to the host. A card
+answering inside BWT but outside 500 ms got its block orphaned (ORE-shredded
+by the next exchange), and libccid could mis-associate a valid card
+response with the wrong host exchange — the path-dependent SCP02
+"cryptogram mismatch" on the older bench P71. Introduced by perf commit
+13b17c8 (benchmarked only on the fast ComSign card).
+
+The fix (receive-layer only; the reader-role TPDU-pipe doctrine is
+untouched — host still owns T=1):
+- first-byte wait = the card's BWT (ISO 7816-3 §11.6.2.1) at the current
+  wire baud (`t1_bwt_ms`, host-tested), clamped 500 ms..5 s
+- first-byte timeout and truncated blocks now return `Err` (CCID error),
+  never a short success
+- `prepare_rx()` drain before every response read (echoes, orphaned tails)
+- ORE in `receive_byte_timeout` fails the exchange (`ProtocolError`)
+  instead of feeding the stale DR byte as a fresh prologue
+
+Bench (STM32F469, Cherry profile, reflashed): labgrid suite 14 passed +
+1 xfailed; content-fidelity hammer (SELECT+CPLC, 400 iterations) 0
+exceptions and 0 byte mismatches vs 54 exceptions/446 pre-fix — and 4.7×
+the iteration rate. Definitive #132 close-out (gp -l on card 50942720
+through the Cherry reader) pending a physical card move to the STM32 slot.
+Test updates: GET CHALLENGE accepts card-dependent clean SW (69xx on a
+JCOP ISD default-app card vs 6D/6E on ComSign); nucula battery exact-set
+xfail gains the card-absent signature (escapes-only — the #128 escape gap
+is card-independent).
+
 ### Fixed — bench suite regressions + combined-suite collection (2026-10-12)
 
 `conformance_battery` pre-drain called pyserial's `in_waiting` property

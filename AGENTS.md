@@ -144,6 +144,39 @@ ESP32 firmware lives in `firmware/esp32-ccid/` and has its own feature set:
 | `backend-mfrc522` | MFRC522 | I2C (M5Stack Atom Matrix) | ✓ |
 | `backend-pn532` | PN532 | SPI | (secondary, still supported) |
 
+## Reader-Role vs Standalone-Role T=1 Doctrine (owner directive 2026-10-12)
+
+**Two roles, deliberately different T=1/protocol ownership — never mix them
+on one wire path.**
+
+1. **Reader role (pcscd-facing CCID, STM32 USB)**: the HOST owns the T=1
+   protocol and the secure channel; the reader is a transparent TPDU-level
+   block relay. Implemented and locked by the reference-first profiles:
+   all three device profiles advertise TPDU exchange level (Cherry
+   reference `dwFeatures=0x000100BA` → TPDU; CT30/K30 `0x00010230` →
+   TPDU) and `smartcard.rs` `transmit_raw` forwards complete T=1 blocks
+   untouched — only T=0 procedure-byte handling is on-device (standard
+   for CCID TPDU level, `libccid` sends the full T=0 TPDU and expects
+   the full response). **Rule: in the reader role we never inspect,
+   reassemble, re-frame, or answer T=1 content** — a host-card secure
+   channel (GP SCP02/03) must pass through byte-transparent. Issue #132
+   (card-specific SCP02 mismatch through our path) is a bug in this
+   relay's electrical/receive layers, NOT license to add protocol logic.
+2. **Standalone role (device-driven card provisioning)**: firmware itself
+   flashes/personalizes cards (GP install flows, wallet-style use). Here
+   the device legitimately terminates protocols and runs GP client logic.
+   This must live in a SEPARATE main/feature (like the pn7160-actdiag /
+   bring-up mains), never inside the pcscd serving path.
+3. **ESP32 serial GemPC-Twin emulation**: `t1.rs` answers S-blocks locally
+   and reassembles I-block INF to APDUs — that is what the REAL GemPC
+   Twin does and what `libccidtwin` expects; reference-justified, but it
+   is the #101 RX-hardening weak spot. The USB-CDC nucula path
+   (`ccid_serial_server`) stays APDU-level relay (NFC ISO-DEP handles
+   blocks below us).
+
+Stale-doc note: the repo README's "XfrBlock: Short APDU level" line
+predates the descriptor correction — the profiles are TPDU level.
+
 ## Reference-First Doctrine (owner directive 2026-10-11)
 
 **We do not reinvent wire formats, timings, or protocol bytes by trial
@@ -477,7 +510,7 @@ a release the same day.
 |---|---|---|
 | nucula | pcscd: `Nucula CCID 00 00/01 00` via the PTY broker (`systemctl status nucula-ccid-broker`, journal = wire tap); identity probe: connect → ATR `3B 85 80 01 80 73 C8 21 10 0E` → SELECT ISD `9000` | OURS @3c74d74-era flashed 2026-10-11 ~23:0x (PT@0x8000 + app@0x40000): **pcscd WORKS through `host-tools/nucula-ccid-broker.py`** (PTY relay defeats the rst:0x15 wall — direct CDC opens still chip-reset, safe opener only). Broker = systemd service, symlink `/dev/nucula-ccid` gated on serving. Bench-verified 2026-10-11: 8/8 connect+ATR+SELECT sessions, >5.5 min stable enumeration, PTY GSS RTT 0.72 ms p50 (direct floor 0.20 ms). **Known gaps**: (1) after a host IccPowerOff the re-arm probe is rejected NCI `DISCOVERY_ALREADY_STARTED` (0xA0) and the HALTed card never re-activates (#125 hardware gap) — the broker's `POWER_OFF_SHIM=1` answers power-offs locally until fixed; (2) GP CAP installs fail at the first T=1 INSTALL (card answers `9100`, gp retries into comm error — m5stick-class T=1/CAP limitation). reader.conf `nucula-broker` DISABLED when idle (`mv` to re-enable + `flock /run/lock/bench-pcscd.lock systemctl restart pcscd`). Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
 | m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters; Escape 0xD2 → turnaround split + exchange decomposition (issue #120, 32-byte LE: last/max turnaround µs, last/max card-exchange µs, blocks/wtx/recoveries/max_transceive_us; probe: `tests/hardware/nfc/turnaround_probe.py`); Escape 0xD3 [D3,N] → I2C poll-cadence probe (total µs for N ComIrqReg reads + configured FWT) | OURS @e473682-era flashed 2026-10-11 ~23:1x (bl@0x1000+PT@0x8000+app@0x40000): **P71 BACK ON COIL, 0xD2 32B + 0xD3 live, bSeq fix landed** (XfrBlock DataBlock answers now echo bSeq, CCID §6.2-1 — pcscd tolerated the old seq=0, strict parsers didn't). **#120 CLOSED as card-bound**: minimal card answer 18–25 ms (P71 FWI=9, fwt=164 ms — the card advertises up to ~155 ms), reader floor ~3 ms (8 I2C ops × 277 µs legacy-driver cadence, 0xD3-proven); single block, wtx=0, rec=0 always — transport exonerated. **CAP install (#59/#101) root-caused by PTY wire tap** (`tap.py` pattern, /tmp/opencode/tap.log): gp dies at the first chained I-block (INSTALL[FOR LOAD] 33 B > ifsc=32) because the serve loop BLOCKS in card exchanges, host retries arrive at a blocked loop, the reader's echo comes back TRUNCATED (UART RX loss) and the T=1 state desyncs into dead air (see #101 comment 2026-10-11; libccid serial timeout is 3 s — BWT was never the killer; after one WTX pcscd's t1->wtx persists → lost response = infinite hang). Fix = serve-loop RX hardening + retry-idempotent t1 endpoint — NOT latency. At ~30 ms/APDU a 470-block upload ≈ 15–20 s card time — fits the 10-min budget once the relay stops dying |
-| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7 |
+| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7. **2026-10-12: T=1 relay hardening landed** (#132 fix — BWT-derived first-byte wait, honest-error contract, pre-read drain, ORE hygiene; root cause `docs/t1_relay_132_rootcause.md`; suite 14+1 green + fidelity hammer 0 anomalies vs 54 pre-fix; definitive card-50942720 gp proof pending its move into our slot). **Bench lesson**: INIT_UPDATE hammering locked the SmartPGP card's ISD management state (69FF on SC-class commands, survives power cycle; applet unaffected — #127) — NEVER hammer SC-class commands (INIT_UPDATE/EXT_AUTH/GET DATA 00E0); fidelity hammers use SELECT+CPLC only. |
 | STM32 F746 | NOT ON USB (no second 0483 device ever appeared 2026-10-11 session; **bring-up needs the physical USB plug**) | PREP COMPLETE 2026-10-11: bench-distinct iSerial `ST2XXX-F746` landed (commit 0af0fb0, cfg-gated on `stm32f746`+Cherry — F469 keeps `ST2XXX-001`; the reference files constrain no iSerial, CherrySmartTerminalST2XXX.txt has no serial field); release binary cached at `/tmp/opencode/ccid-firmware-f746.bin` (both clippy passes + 562 host tests green). NEXT: plug USB → flash via probe-rs (chip STM32F746xx) or st-flash → verify pcscd shows BOTH Cherrys distinctly (iSerial ST2XXX-001 + ST2XXX-F746) → add labgrid place `stm32-f746` to `exporter-ai-legion-nfc.yaml` (match `ID_SERIAL_SHORT=ST2XXX-F746`) + environment.yaml + exporter restart per doctrine → T=1 card check per CHANGELOG [0.1.1] (bitbang TPDU pipe, 74.4 ms RTT class) |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
 

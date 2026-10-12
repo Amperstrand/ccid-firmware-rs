@@ -34,9 +34,14 @@ SOAK_ROUNDS = 50
 # surface is NOT affected: broker path connect → ATR 3B8580018073C821100E
 # → SELECT 9000 verified the same session. Ref: #125 serve/re-arm class.
 # Exact-set matching: any OTHER failure combination is a real regression.
+# Card-present signature (measured 2026-10-12): the five-case set below.
+# Card-absent signature (measured 2026-10-12, coil empty): power-on/off and
+# set-parameters answer fast, well-formed error frames — only the two
+# escape gaps remain, proving #128's escape gap is card-independent.
 NUCULA_KNOWN_GAPS = frozenset(
     {"escape-version", "escape-sync", "power-on", "power-off", "set-parameters"}
 )
+NUCULA_KNOWN_GAPS_CARDLESS = frozenset({"escape-version", "escape-sync"})
 
 # Reader slow-path settle budgets (s) — named constants so a bench
 # regression can't hide behind a magic number (issue #110). The fuzz
@@ -150,7 +155,10 @@ def test_serial_dut_battery(place_name, bench_lock):
     with pcscd_paused():
         reader = Reader(port_name, resolve(port_name))
         failures = _run_cases(reader)
-        if place_name == "nucula-c3" and set(failures) == NUCULA_KNOWN_GAPS:
+        if place_name == "nucula-c3" and set(failures) in (
+            NUCULA_KNOWN_GAPS,
+            NUCULA_KNOWN_GAPS_CARDLESS,
+        ):
             ledger("serial_battery", place=place_name,
                    known_gaps=sorted(failures),
                    note="nucula direct-serial firmware gaps (see test comment)")
