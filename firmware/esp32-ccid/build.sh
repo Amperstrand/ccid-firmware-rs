@@ -134,6 +134,17 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
         ;;
+    wifi-ccid)
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features wifi-ccid)
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
     m5stick)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa.full"

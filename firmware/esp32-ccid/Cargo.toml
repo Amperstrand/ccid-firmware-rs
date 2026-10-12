@@ -35,6 +35,9 @@ pn7160-verdict-b = []
 pn7160-ven-never = []
 pn7160-verdict-c = []
 pn7160-ccid = ["backend-pn7160", "board-nucula"]
+# WiFi TCP transport — the board's application port (#117 workaround by
+# design): GemPC CCID over TCP :29443, host bridges with socat PTY↔TCP.
+wifi-ccid = ["backend-pn7160", "board-nucula"]
 # Wire-level instrument + NCI-over-GPIO fallback (issues #63/#80).
 pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 # M1 milestone: minimal bus+probe, nothing else (issues #63/#80).
