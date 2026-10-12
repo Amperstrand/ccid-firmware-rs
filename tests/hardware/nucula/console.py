@@ -9,12 +9,18 @@ Uses the by-id path (follows the device regardless of tty number) and
 reconnects aggressively during the re-enumeration window.
 """
 
+# Lazy pyserial discipline (the python-collect CI gate runs with pytest +
+# stdlib ONLY): this module is imported at collection time by
+# test_nucula.py — `import serial` stays INSIDE the methods that use it,
+# and the annotations stay lazy via `from __future__ import annotations`
+# (the documented rule: hardware imports never at module scope of a
+# collected file's import graph).
+from __future__ import annotations
+
 import re
 import time
 from pathlib import Path
 from typing import Callable, Optional
-
-import serial
 
 
 class ConsoleCapture:
@@ -43,6 +49,7 @@ class ConsoleCapture:
         every later reset into a boot:0x5 download-mode latch (AGENTS.md
         bench lessons, 2026-10-09/10).
         """
+        import serial  # lazy: module is imported at collection time (CI gate)
         try:
             if self._serial and self._serial.is_open:
                 return True
@@ -64,6 +71,7 @@ class ConsoleCapture:
 
     def _drain(self):
         """Read all available data into the buffer."""
+        import serial  # lazy: module is imported at collection time (CI gate)
         if not self._serial:
             return
         try:
