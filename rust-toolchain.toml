@@ -9,9 +9,12 @@
 # C3 = nightly-2026-09-29 — newer nightlies ICE on esp-idf-svc 0.52.1).
 # Those are selected by firmware/esp32-ccid/build.sh (RUSTUP_TOOLCHAIN)
 # and CI's explicit `cargo +<toolchain>`, both of which override this
-# file. The exact version string "1.92.0" must match ci.yml's dtolnay
-# pin — "1.92" and "1.92.0" are DISTINCT toolchains to rustup.
+# file. The exact version string "1.99.0" must match ci.yml's dtolnay
+# pin — "1.99" and "1.99.0" are DISTINCT toolchains to rustup. 1.99.0 =
+# current stable (2026-09-28), the bench's installed stable (local↔CI
+# parity); 1.92.0 was retired because modern tooling (espflash 4.x et al)
+# no longer builds under it.
 [toolchain]
-channel = "1.92.0"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]
 targets = ["thumbv7em-none-eabihf"]

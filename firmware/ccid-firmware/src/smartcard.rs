@@ -6,8 +6,13 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::pps_fsm::{PpsFsm, PpsState};
+// Canonical path (5426c51 moved the ISO 7816-3 §11.6.2.1 BWT math to the
+// shared crate): imported at the source, NOT via a smartcard_common
+// re-export — the re-export was cfg-asymmetric (dead in the f746 pass
+// where this file is compiled out → unused_imports under -D warnings).
+use ccid_protocol::atr::t1_bwt_ms;
 use crate::smartcard_common::{
-    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, t1_block_total_len, t1_bwt_ms,
+    detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, t1_block_total_len,
     transmit_apdu_t0, verify_atr_tck, Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo,
     DEFAULT_TA1, SC_ATR_MAX_LEN,
 };

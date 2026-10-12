@@ -43,11 +43,6 @@ pub fn t1_block_total_len(prologue: &[u8], buf_len: usize) -> Option<usize> {
     Some(total)
 }
 
-// Single shared definition (fix-all-siblings): the ISO 7816-3 §11.6.2.1
-// BWT math lives in ccid-protocol and is re-exported here so existing
-// callers keep their import paths.
-pub use ccid_protocol::atr::t1_bwt_ms;
-
 pub const SMARTCARD_CONFIG_DEFAULT: SmartcardConfig = SmartcardConfig {
     power_on_delay_ms: 50,
     reset_delay_ms: 25,

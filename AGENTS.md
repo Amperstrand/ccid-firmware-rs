@@ -410,7 +410,12 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
 ## CI Testing Protocol
 
 
-CI lives in `.github/workflows/ci.yml`. Toolchain is pinned to **Rust 1.92**.
+CI lives in `.github/workflows/ci.yml`. Toolchain authority: the root
+`rust-toolchain.toml` pins **Rust 1.99.0** (current stable, with
+rustfmt+clippy+thumbv7em declared — 1.92.0 was retired 2026-10-12 when
+modern tooling stopped building under it). ci.yml's dtolnay pins use
+the exact same string; ESP32 targets stay outside the toml (per-board
+`esp`/`nightly-2026-09-29` via build.sh + `cargo +toolchain`).
 All jobs check out with `submodules: true` (required — see Gotchas).
 
 ### Jobs

@@ -98,7 +98,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.99.0"
           targets: thumbv7em-none-eabihf
 
       - name: Install cargo-binutils
@@ -229,7 +229,7 @@ jobs:
       - name: Install espup + espflash (xtensa only)
         if: matrix.toolchain == 'esp'
         run: |
-          cargo install espup espflash
+          cargo install espup
 
       # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
       # C framework + Rust std (-Z build-std) there — the dominant ~80% of
@@ -345,7 +345,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.99.0"
           targets: thumbv7em-none-eabihf
           components: rustfmt, clippy
       
@@ -420,7 +420,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
       
       - name: Install system dependencies
@@ -449,7 +449,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92.0"
+          toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo dependencies
