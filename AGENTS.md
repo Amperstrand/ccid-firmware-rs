@@ -200,12 +200,46 @@ and wrote the wrong story into this file, which later sessions trusted
 
 The CCID wire carries CCID frames ONLY. libccidtwin's parser is a
 strict byte stream with NO resync — any ASCII between frames desyncs
-pcscd for the whole session. This includes logs queued BEFORE the
-`set_max_level(Off)` ceiling: the log-shim ring must be PURGED at
-ceiling time (`log_shim::purge()`, bench 2026-10-11: `ReadSerial() Got
-0x76/0x65/0x64…` = boot-log text mid-session). Debug output goes to:
-Escape 0xD0 counters, Escape 0xD1 coredumps (dump-and-retrieve), a
-`ble` build, or WiFi netlog — never unsolicited on the CCID wire.
+pcscd for the whole session. Since 2026-10-12 (issue #131) this is
+enforced by CONSTRUCTION, not discipline: the log ceiling
+(`set_max_level(Off)`) is set BEFORE the protocol driver claim, right
+after the one allowed boot banner (FWID + "rust main ALIVE", which
+ends before serving starts). The #91 log-shim (ring + drain + purge)
+is RETIRED — deleted, not fixed: keeping logs alive on a protocol wire
+was machinery that itself became the bug (its 5.5.5 drain breakage was
+the port's only regression). Debug output goes to: Escape 0xD0
+counters, Escape 0xD1 coredumps (dump-and-retrieve), a `ble` build, a
+`pn7160-actdiag` diagnostic build, or WiFi netlog — never unsolicited
+on the CCID wire. Enforcement: `test_wire_silence_after_banner`
+(tests/hardware/nucula) asserts zero printable ASCII after the banner.
+Full analysis + alternatives matrix: `docs/LOGGING_DOCTRINE.md`.
+
+### Debug-channel lesson (2026-10-12, #131 — read before adding ANY
+### diagnostics to a time-sensitive path)
+
+When troubleshooting feels hard because the debug channel interferes
+with the thing being debugged, DELETE the channel — do not build
+machinery to route around the interference. Rules for the future:
+
+1. A protocol wire is not a debug channel; strict parsers treat
+   unsolicited bytes as corruption (correctly).
+2. Diagnostics are PULL (in-band escape queries) or POST-MORTEM
+   (coredumps) — never push.
+3. Logging perturbs timing at the moment it matters (print-path
+   stalls, console starvation during busy-waits, driver-claim
+   semantics) — for timing bugs the observation must not perturb the
+   observed (dump-and-retrieve).
+4. Live logs belong on dedicated diagnostic surfaces: a diagnostic
+   BUILD (actdiag pattern), a separate wire (RTT/JTAG, dedicated
+   UART), or a non-protocol radio channel (ble/netlog).
+5. If a workaround subsystem grows (rings, drains, purges, flush
+   ordering) to keep observation alive inside a protocol path, that
+   is the architecture telling you the channel should not exist.
+   Complexity added to preserve observation becomes the next
+   incident (log_shim: 619 lines, multiple bench sessions, and it
+   still broke first on the IDF bump).
+6. Lock the invariant with a wire-silence regression test — CI
+   failure beats reviewer vigilance.
 
 ### Nucula C3 hardware wall (register-verified 2026-10-11)
 
@@ -464,7 +498,7 @@ a release the same day.
 
 | Board | Identity probe (run this) | State 2026-10-11 ~22:3x |
 |---|---|---|
-| **IDF 5.5.5 unification (2026-10-12, branch `sisyphus/idf-555-unify` @91653fc)** — all three ESP-IDF repos (ccid/bolty/micronuts) bumped v5.5.1/v5.2.4→v5.5.5, crosstool `esp-14.2.0_20260121` on bench+CI, embuild 0.33.5, vendored-hal sd.rs backport (upstream 0.47.0 fix, field added in 5.5.5). Bench-verified: m5stick conformance battery (fuzz 87/0 wedges, pcscd restart 10/10, soak 1000/1000) + card-level differential FULL PASS (ATR/AID/APDU + ACR1252 agreement); nucula D1 coredump round-trip + fuzz 87/0 + soak 998/1000 + broker serving; stm32 HIL 7/7. **One open 5.5.5 item**: `log_shim` post-claim ring drain delivers nothing on the wire (bench-reproduced: serve loop + framing + D1 all fine, log lines never drain — suspect the 5.5.2 USJ-console tx changes; `test_log_shim_post_claim_output` is the failing regression). esp-idf-svc stays 0.52.1 (0.53.0 = hal 0.47/sys 0.38 generation, conflicts with the vendored legacy-I2C hal — follow-up lane). | | |
+| **IDF 5.5.5 unification (2026-10-12, branch `sisyphus/idf-555-unify` @91653fc)** — all three ESP-IDF repos (ccid/bolty/micronuts) bumped v5.5.1/v5.2.4→v5.5.5, crosstool `esp-14.2.0_20260121` on bench+CI, embuild 0.33.5, vendored-hal sd.rs backport (upstream 0.47.0 fix, field added in 5.5.5). Bench-verified: m5stick conformance battery (fuzz 87/0 wedges, pcscd restart 10/10, soak 1000/1000) + card-level differential FULL PASS (ATR/AID/APDU + ACR1252 agreement); nucula D1 coredump round-trip + fuzz 87/0 + soak 998/1000 + broker serving; stm32 HIL 7/7. **One open 5.5.5 item**: `log_shim` post-claim ring drain delivers nothing on the wire (bench-reproduced: serve loop + framing + D1 all fine, log lines never drain — suspect the 5.5.2 USJ-console tx changes) — **RESOLVED-BY-RETIREMENT the same day (#131)**: the shim was deleted, the ceiling moved before the driver claim, and `test_wire_silence_after_banner` now locks the clean wire. esp-idf-svc stays 0.52.1 (0.53.0 = hal 0.47/sys 0.38 generation, conflicts with the vendored legacy-I2C hal — follow-up lane). | | |
 | nucula | pcscd: `Nucula CCID 00 00/01 00` via the PTY broker (`systemctl status nucula-ccid-broker`, journal = wire tap); identity probe: connect → ATR `3B 85 80 01 80 73 C8 21 10 0E` → SELECT ISD `9000` | OURS @3c74d74-era flashed 2026-10-11 ~23:0x (PT@0x8000 + app@0x40000): **pcscd WORKS through `host-tools/nucula-ccid-broker.py`** (PTY relay defeats the rst:0x15 wall — direct CDC opens still chip-reset, safe opener only). Broker = systemd service, symlink `/dev/nucula-ccid` gated on serving. Bench-verified 2026-10-11: 8/8 connect+ATR+SELECT sessions, >5.5 min stable enumeration, PTY GSS RTT 0.72 ms p50 (direct floor 0.20 ms). **Known gaps**: (1) after a host IccPowerOff the re-arm probe is rejected NCI `DISCOVERY_ALREADY_STARTED` (0xA0) and the HALTed card never re-activates (#125 hardware gap) — the broker's `POWER_OFF_SHIM=1` answers power-offs locally until fixed; (2) GP CAP installs fail at the first T=1 INSTALL (card answers `9100`, gp retries into comm error — m5stick-class T=1/CAP limitation). reader.conf `nucula-broker` DISABLED when idle (`mv` to re-enable + `flock /run/lock/bench-pcscd.lock systemctl restart pcscd`). Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
 | m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters; Escape 0xD2 → turnaround split + exchange decomposition (issue #120, 32-byte LE: last/max turnaround µs, last/max card-exchange µs, blocks/wtx/recoveries/max_transceive_us; probe: `tests/hardware/nfc/turnaround_probe.py`); Escape 0xD3 [D3,N] → I2C poll-cadence probe (total µs for N ComIrqReg reads + configured FWT) | OURS @e473682-era flashed 2026-10-11 ~23:1x (bl@0x1000+PT@0x8000+app@0x40000): **P71 BACK ON COIL, 0xD2 32B + 0xD3 live, bSeq fix landed** (XfrBlock DataBlock answers now echo bSeq, CCID §6.2-1 — pcscd tolerated the old seq=0, strict parsers didn't). **#120 CLOSED as card-bound**: minimal card answer 18–25 ms (P71 FWI=9, fwt=164 ms — the card advertises up to ~155 ms), reader floor ~3 ms (8 I2C ops × 277 µs legacy-driver cadence, 0xD3-proven); single block, wtx=0, rec=0 always — transport exonerated. **CAP install (#59/#101) root-caused by PTY wire tap** (`tap.py` pattern, /tmp/opencode/tap.log): gp dies at the first chained I-block (INSTALL[FOR LOAD] 33 B > ifsc=32) because the serve loop BLOCKS in card exchanges, host retries arrive at a blocked loop, the reader's echo comes back TRUNCATED (UART RX loss) and the T=1 state desyncs into dead air (see #101 comment 2026-10-11; libccid serial timeout is 3 s — BWT was never the killer; after one WTX pcscd's t1->wtx persists → lost response = infinite hang). Fix = serve-loop RX hardening + retry-idempotent t1 endpoint — NOT latency. At ~30 ms/APDU a 470-block upload ≈ 15–20 s card time — fits the 10-min budget once the relay stops dying |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7 |
@@ -1044,7 +1078,7 @@ ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
 | STM32F469/F746 | USB CCID | defmt + RTT via probe-rs (separate from USB) |
 | M5Stick/M5Atom (standard) | UART0 | console NONE by default; netlog (UDP :4567) with WiFi creds |
 | M5Stick/M5Atom (`ble` build, experimental) | UART0 | BLE NUS notifications (`m5stick-ble`) |
-| nucula standard | USB-CDC | console on the same CDC (parser tolerates log noise) |
+| nucula standard | USB-CDC | clean-wire (#131): boot banner only, then framed CCID only — diagnostics via Escape 0xD0/0xD1, coredumps, or actdiag/ble/netlog builds |
 | nucula (`ble` build) | USB-CDC | blocked — no `c3-ccid-ble` board until the C3 adv quirk is root-caused |
 
 ## Labgrid Bench Doctrine (ai-legion NFC/CCID testbed, 2026-10-09)
@@ -1221,7 +1255,7 @@ RF_INTF_ACTIVATED instead of RF_DISCOVER. Correct model, now in the driver:
   (~TOTAL_DURATION after discovery start) — anything reading earlier sees
   nothing; don't "fix" the wait.
 
-### Main-loop logging dies after the USB-CDC driver claim — FIXED by `log_shim` (issue #91, bench-verified 2026-10-09)
+### Main-loop logging dies after the USB-CDC driver claim — was "fixed" by `log_shim` (#91) — RETIRED 2026-10-12 (#131)
 esp-idf logs flow until `UsbSerialDriver::new` takes the peripheral;
 after that the CCID serving loop's log output silently drops. **Fix
 (bench-verified)**: `log_shim::install()` after the claim routes logs

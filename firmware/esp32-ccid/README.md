@@ -413,7 +413,7 @@ The included `setup.sh` automates the host setup:
 | `pn7160_bringup.rs` | PN7160 bring-up mains: NCI init ladder + card heartbeat (target-only) |
 | `pn7160_ccid.rs` | nucula CCID main: serves CCID over the USB-Serial/JTAG CDC port (target-only) |
 | `ccid_serial_server.rs` | Host-testable GemPC serial CCID serving core: echo, framed response, interval-gated card polling (shared by the USB-CDC main) |
-| `log_shim.rs` | USB-CDC log shim (issue #91): pure host-tested log ring + target-gated shell that captures logs after the driver claim (`esp_log_set_vprintf` sink for `ESP_LOGx`, `log` facade routing) and drains them onto the claimed CDC from the serving loop |
+| `log_shim.rs` | REMOVED 2026-10-12 (issue #131): the #91 USB-CDC log ring/drain is retired — the clean-wire ceiling now lands before the driver claim (one boot banner, then framed CCID only; see `docs/LOGGING_DOCTRINE.md` at the repo root) |
 | `ble_console.rs` | BLE debug console facade (issue #66): logger install + Bluedroid GATT bring-up + C-log silencing, one `init`/`drain` pair per main (target-only, `ble` feature) |
 | `ble_debug.rs` | NUS-lookalike BLE GATT server for the debug console (target-only, `ble` feature) |
 | `ble_logger.rs` | `log` crate sink queueing records for the BLE console (target-only, `ble` feature) |
