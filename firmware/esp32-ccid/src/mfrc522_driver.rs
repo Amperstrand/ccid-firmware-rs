@@ -374,17 +374,28 @@ fn build_pcsc_atr_from_historical(
     historical: &[u8],
     atr_buf: &mut [u8],
 ) -> Result<usize, NfcError> {
+    // G-05: declare T=1 with TA3 (IFSC=254) + TB3 (BWI=4, CWI=5).
+    // Without TA3 the host chains every block at ifsc=32 (ifdhandler.c
+    // get_IFSC → t1_set_param IFSC — 8× the round trips on this slow
+    // UART/I2C relay); without TB3 it guesses BWT from defaults. TCK is
+    // legal now that a protocol ≠ T=0 is offered. Byte layout:
+    // TS, T0(Y1=TD1|K), TD1=0x81, TD2=0x31 (TA3+TB3, T=1), TA3=0xFE,
+    // TB3, historical(K), TCK. (TD1 carries the T=1 nibble because the
+    // shared parser — like several host stacks — reads the protocol
+    // from TD1.)
     let n = historical.len();
-    let atr_len = 5 + n;
+    let atr_len = 7 + n;
     if atr_buf.len() < atr_len {
         return Err(NfcError::BufferOverflow);
     }
 
     atr_buf[0] = 0x3B;
     atr_buf[1] = 0x80 | (n as u8 & 0x0F);
-    atr_buf[2] = 0x80;
-    atr_buf[3] = 0x01;
-    atr_buf[4..4 + n].copy_from_slice(historical);
+    atr_buf[2] = 0x81;
+    atr_buf[3] = 0x31;
+    atr_buf[4] = 0xFE;
+    atr_buf[5] = ccid_protocol::atr::t1_tb3(4, 5);
+    atr_buf[6..6 + n].copy_from_slice(historical);
 
     let mut tck: u8 = 0;
     for &b in &atr_buf[1..atr_len - 1] {
@@ -771,16 +782,16 @@ mod tests {
     fn test_build_pcsc_atr_no_historical_bytes() {
         let mut buf = [0u8; 33];
         let len = build_pcsc_atr_from_historical(&[], &mut buf).unwrap();
-        assert_eq!(len, 5);
-        assert_eq!(&buf[..5], &[0x3B, 0x80, 0x80, 0x01, 0x01]);
+        assert_eq!(len, 7);
+        assert_eq!(&buf[..7], &[0x3B, 0x80, 0x81, 0x31, 0xFE, 0x45, 0x8B]);
     }
 
     #[test]
     fn test_build_pcsc_atr_one_historical_byte() {
         let mut buf = [0u8; 33];
         let len = build_pcsc_atr_from_historical(&[0x80], &mut buf).unwrap();
-        assert_eq!(len, 6);
-        assert_eq!(&buf[..6], &[0x3B, 0x81, 0x80, 0x01, 0x80, 0x80]);
+        assert_eq!(len, 8);
+        assert_eq!(&buf[..8], &[0x3B, 0x81, 0x81, 0x31, 0xFE, 0x45, 0x80, 0x0A]);
     }
 
     #[test]
@@ -788,12 +799,27 @@ mod tests {
         let mut buf = [0u8; 33];
         let hist = &[0x80, 0x5A, 0x01, 0x02];
         let len = build_pcsc_atr_from_historical(hist, &mut buf).unwrap();
-        assert_eq!(len, 9);
+        assert_eq!(len, 11);
         assert_eq!(buf[0], 0x3B);
         assert_eq!(buf[1], 0x84);
-        assert_eq!(&buf[4..8], hist);
-        let expected_tck = 0x84 ^ 0x80 ^ 0x01 ^ 0x80 ^ 0x5A ^ 0x01 ^ 0x02;
-        assert_eq!(buf[8], expected_tck);
+        assert_eq!(&buf[6..10], hist);
+        let expected_tck = 0x84 ^ 0x81 ^ 0x31 ^ 0xFE ^ 0x45 ^ 0x80 ^ 0x5A ^ 0x01 ^ 0x02;
+        assert_eq!(buf[10], expected_tck);
+    }
+
+    #[test]
+    fn synthetic_atr_semantically_locks_t1_timing() {
+        // G-05 semantic lock: parse our own ATR with the shared parser
+        // and see exactly what ifdhandler.c would — protocol T=1,
+        // IFSC 254 (TA3), BWI=4/CWI=5 (TB3).
+        let mut buf = [0u8; 33];
+        let hist = &[0x80, 0x73, 0xC8, 0x21, 0x10];
+        let len = build_pcsc_atr_from_historical(hist, &mut buf).unwrap();
+        let p = ccid_protocol::atr::parse_atr(&buf[..len]);
+        assert_eq!(p.protocol, 1);
+        assert_eq!(p.ifsc, 254);
+        assert_eq!((p.bwi, p.cwi), (4, 5));
+        assert!(ccid_protocol::atr::verify_atr_tck(&buf[..len], 1));
     }
 
     #[test]
