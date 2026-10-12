@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — ESP-IDF v5.5.1 → v5.5.5 (Amperstrand unification)
+
+`esp_idf_version` bumped to `tag:v5.5.5`. esp-idf-svc STAYS at 0.52.1:
+0.53.0 requires the esp-idf-hal ^0.47 / esp-idf-sys ^0.38 generation,
+which conflicts with our vendored legacy-I2C esp-idf-hal 0.46.2 (links
+conflict) — taking it means porting off `legacy-i2c`, a separate
+follow-up lane (it would also bring the Bluedroid-advertising fix for
+esp32/c3/s3, candidate root cause for the parked C3 BLE `0x0c` wall,
+issue #66). svc 0.52.x is IDF-5.5.x-compatible per its changelog.
+Toolchain consequences (verified from
+v5.5.5 `tools.json` + `tool_version_check.cmake`):
+
+- **Crosstool**: IDF v5.5.2+ tools.json lists ONLY
+  `esp-14.2.0_20260121`; the check matches the full crosstool-NG
+  build string, so the `20241119` build of the same GCC 14.2.0 is
+  REJECTED at cmake configure (FATAL_ERROR). CI espup pin and the
+  bench moved to `-c 14.2.0_20260121`.
+- **CI cache**: generation prefix `v6` → `v7` (restore-keys must not
+  fall back across the IDF bump — documented poison class).
+- esp-idf-sys 0.37 / vendored esp-idf-hal 0.46.2 / esp-idf-svc 0.52.1
+  stay: all are the correct baseline for 5.5.x (hal 0.46.0 already
+  absorbs the IDF 5.5.2+ driver-signature changes).
+- Fixes picked up on the way (release-note verified): USB-Serial/JTAG
+  ~50 ms wake-print block, C3/S3 USB-DP-after-CPU-reset, I2C
+  multi-read-job data loss, esp_coredump `MAX_TASKS_NUM` honored,
+  Bluedroid GATT response-timeout + ATT UAF, mbedTLS 3.6.5. No
+  USB-Serial/JTAG reset-semantics change (C3 `rst:0x15` wall is
+  silicon, unchanged).
+
 ### Fixed — PIN verify/modify wire shape (audit P1, spec-verified)
 
 `wPINMaxExtraDigit` is a LE u16 hosts build as (min<<8)+max with wire

@@ -792,22 +792,26 @@ drains fast enough not to need it.
 
 ### espup crosstool pin (CI, 2026-10-09)
 
-CI pins `espup install -c 14.2.0_20241119` (the GCC IDF v5.5.1's
-`tool_version_check` accepts). espup defaults to the LATEST crosstool
+CI pins `espup install -c 14.2.0_20260121` (the crosstool build IDF
+v5.5.5's `tool_version_check` accepts — the check matches the FULL
+crosstool-NG build string from `gcc --version`, so IDF v5.5.2+
+REJECTS the 20241119 build of the very same GCC 14.2.0). espup
+defaults to the LATEST crosstool
 and its bin dir lands ahead of embuild's own copy in PATH — the day's
 `esp-16.2.0_20260914` release failed every xtensa matrix entry at cmake
 configure. The SAME day exposed a second failure mode: the
 espressif-cache restore-key chain fell back across toolchain
 generations and restored v5.2-era `esp-13.2.0` embuild tools against
 IDF v5.5.1 — the red run then SAVED that poison under a fresh exact
-key. The cache key/restore-keys now carry a generation prefix (`v6`)
+key. The cache key/restore-keys now carry a generation prefix (`v7`,
+the IDF v5.5.5 generation)
 that only falls back within the current generation; **bump it whenever
 the toolchain/IDF world moves** (ci.yml carries the same note).
-**Bench landmine**: this machine's espup crosstool is
-`esp-15.2.0_20250920` and works only because the bench's cmake
-configure is cache-stamped; a FRESH bench configure (stamp loss, new
-checkout) would fail the same check — pin the bench espup too if it
-bites. Also: pushes touching `.github/workflows/` must go over SSH
+**Bench**: espup re-pinned to `esp-14.2.0_20260121` on 2026-10-12
+(the v5.5.5 unification) — bench and CI now match. Historical note:
+before that the bench ran `esp-15.2.0_20250920`, which only passed
+because the cmake configure was cache-stamped (a fresh configure
+would have failed the tool_version_check). Also: pushes touching `.github/workflows/` must go over SSH
 (`git push git@github.com:…`) — the OAuth tokens here lack the
 `workflow` scope.
 
@@ -1118,14 +1122,14 @@ incremental), `x86_64-unknown-linux-gnu/` 20G (host test artifacts),
 |---|---|---|
 | `debug/incremental/` | 17G | always regenerated; delete freely |
 | `.embuild/espressif/dist/` | 1.1G | toolchain tarballs, re-downloadable |
-| `.embuild/espressif/esp-idf/v5.2.3/` | 546M | stale — manifest pins v5.5.1 |
+| `.embuild/espressif/esp-idf/v5.2.3/` | 546M | stale — manifest pins v5.5.5 (v5.5.1 clones are also prunable post-migration) |
 | `x86_64-unknown-linux-gnu/` + `release/` | ~24G | rebuildable; `cargo sweep --time 30` trims by mtime |
 | other projects' binaries (`cln-*`, `cashud`, `decode-vls`, ...) | varies | the dir is HOST-WIDE — coordinate with those lanes before bulk deletion |
 
 **Keep:** the top-level cached bench binaries (`esp32-ccid-m5stick.bin`
 etc. — the m5stick recovery image), `.embuild/espressif/tools/` (the
 actual toolchains; re-downloadable but a 10+ min stall mid-session),
-`esp-idf/v5.5.1` (current pin), and the riscv/xtensa esp-idf-sys build
+`esp-idf/v5.5.5` (current pin), and the riscv/xtensa esp-idf-sys build
 dirs while `/root/src/ccid-firmware-rs` (the checkout they cache-stamp
 against) is live.
 
