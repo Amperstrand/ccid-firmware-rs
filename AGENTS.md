@@ -177,6 +177,53 @@ on one wire path.**
 Stale-doc note: the repo README's "XfrBlock: Short APDU level" line
 predates the descriptor correction — the profiles are TPDU level.
 
+## Card-Handling Doctrine (2026-10-12 ISD-lock incident — never repeat)
+
+**What happened:** a transport-fidelity hammer sent ~450 INITIALIZE UPDATE
+commands in a few minutes against the SmartPGP card (CPLC 50947320) to
+stress the T=1 relay. INIT_UPDATE is the FIRST step of the GP secure
+channel: it makes the ISD issue a challenge. JCOP counts every
+abandoned/failed authentication attempt against a SMALL non-renewable
+error budget. The hammer exhausted it; the card now answers `69FF` to all
+secure-channel-class commands, survives VCC power-off (persistent EEPROM
+state — commercial-reader-verified, not a relay artifact), and the only
+standard recovery path (a successful authentication resetting the counter)
+is impossible because INIT_UPDATE itself is refused. **Effectively
+permanent loss of GP management on that card** (applets on it remain
+fully usable; only install/delete/re-personalize died). Incident record:
+#127/#132.
+
+**Rules:**
+
+1. **Never send SC-class commands in loops.** SC-class = anything that
+   initiates or feeds the GP secure channel: INITIALIZE UPDATE (80 50),
+   EXTERNAL AUTHENTICATE (84 82), and SC-gated GET DATA (e.g. 00E0).
+   Each one is a budget-bearing authentication event on JCOP-class cards.
+2. **Load/stress/fidelity tests use the zero-risk set ONLY:** SELECT by
+   AID (00 A4 04 00), GET DATA CPLC (80 CA 9F7F 00), and applet-level
+   reads of already-selected applications. These are pure reads — no
+   security state, no counters.
+3. **GP authentication attempts are budgeted and ledgered.** Track every
+   attempt per CPLC serial on #127 (current: 50947320 ISD locked;
+   50972320 at 3 attempts; 50942720 at 2 mismatches + working AUTH
+   triple; nucula-coil card unprobed). One aimed attempt per NEW keyset
+   with provenance — never speculative retries.
+4. **Any new hammer/soak design gets checked against this table before
+   its first run** — including "read-only-looking" GP tooling: `gp -l`,
+   `gp -i`, `gp --info` ALL attempt authentication and burn budget on
+   failure.
+
+**Safe/unsafe table for test design:**
+
+| APDU / tool | Class | Loopable? |
+|---|---|---|
+| SELECT by AID | pure read | ✅ unlimited |
+| GET DATA CPLC (80CA 9F7F) | pure read | ✅ unlimited |
+| Applet GET DATA / app commands (e.g. OpenPGP 00CA 004F) | applet read | ✅ unlimited (mind PIN rules) |
+| Raw INIT_UPDATE (80 50 …) — "no auth, just probing" | **SC initiation** | ❌ **NEVER in a loop** |
+| `gp -l` / `-i` / `--info` / `--list` with wrong keys | full auth attempt | ❌ budgeted singles only |
+| INIT_UPDATE + EXT_AUTH with correct keys | completes session (resets counters on some masks) | ⚠️ fine, but pointless in a loop |
+
 ## Reference-First Doctrine (owner directive 2026-10-11)
 
 **We do not reinvent wire formats, timings, or protocol bytes by trial
