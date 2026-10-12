@@ -38,7 +38,9 @@ use crate::pps::is_pps_request;
 use crate::response::{write_message, write_slot_status};
 use crate::secure::{PinModifyParams, PinResult, PinVerifyParams, SecureState};
 use card_interface::{PresenceState, SlotDriver};
-use ccid_protocol::atr::{di_from_ta1_low, fi_from_ta1_high, parse_atr, AtrParams};
+use ccid_protocol::atr::{
+    di_from_ta1_low, fi_from_ta1_high, parse_atr, t1_bwi_cwi_ifsc, AtrParams,
+};
 use ccid_protocol::status::build_bstatus;
 use ccid_protocol::types::{
     CcidHeader, SlotState, CCID_ERR_CMD_ABORTED, CCID_ERR_CMD_NOT_SUPPORTED,
@@ -180,6 +182,17 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
     /// rejections never set it).
     pub fn take_parameters_accepted(&mut self) -> bool {
         core::mem::replace(&mut self.parameters_accepted_event, false)
+    }
+
+    /// The negotiated T=1 timing (BWI, CWI, IFSC) from the last accepted
+    /// SetParameters — for protocol endpoints that must honor the
+    /// windows the host believes (G-04).
+    pub fn applied_t1_timing(&self) -> Option<(u8, u8, u8)> {
+        let (proto, raw) = self.host_params?;
+        if proto != 1 || self.current_protocol != 1 {
+            return None;
+        }
+        Some(t1_bwi_cwi_ifsc(&raw))
     }
 
     /// True while a PC_to_RDR_Secure PIN session is armed (verify or
@@ -789,6 +802,15 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
         self.current_protocol = header.specific[0];
+        // G-04: store the accepted T=1 structure so GetParameters echoes
+        // the applied set (what pcscd believes) instead of the static
+        // defaults, and so wrappers can apply the negotiated timing to
+        // protocol endpoints via `applied_t1_timing`.
+        if header.specific[0] == 1 && header.length == 7 && payload.len() >= 7 {
+            let mut raw = [0u8; 7];
+            raw.copy_from_slice(&payload[..7]);
+            self.host_params = Some((1, raw));
+        }
         self.parameters_accepted_event = true;
         self.write_parameters(header, response)
     }
@@ -869,10 +891,11 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         p.di = di_from_ta1_low(raw[0] & 0x0F);
         p.guard_time_n = raw[2];
         if requested_protocol == 1 {
-            p.bwi = raw[3] >> 4;
-            p.cwi = raw[3] & 0x0F;
+            let (bwi, cwi, ifsc) = t1_bwi_cwi_ifsc(&raw);
+            p.bwi = bwi;
+            p.cwi = cwi;
             p.edc_type = raw[1] & 1;
-            p.ifsc = raw[5];
+            p.ifsc = ifsc;
         }
 
         self.write_parameters(header, response)
@@ -1085,49 +1108,56 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
     }
 
     /// Current abProtocolDataStructure: `(buffer, length, bProtocolNum)`.
-    /// Serial profile: the static defaults. Contact profile: the stored
-    /// host-supplied set when it matches the active protocol, else the
-    /// ATR-derived values (ported from the STM32 handler, issue #121).
+    /// Serial profile: the stored host-supplied set when it matches the
+    /// active protocol (the accepted SetParameters echo — G-04), else the
+    /// static defaults. Contact profile: the stored host-supplied set
+    /// when it matches the active protocol, else the ATR-derived values
+    /// (ported from the STM32 handler, issue #121).
     fn parameter_payload(&self) -> ([u8; 7], usize, u8) {
-        if P::CONTACT {
+        if !P::CONTACT {
             if let Some((proto, raw)) = self.host_params {
-                if proto == self.current_protocol {
-                    let len = if proto == 1 { 7 } else { 5 };
-                    return (raw, len, proto);
+                if proto == self.current_protocol && proto == 1 {
+                    return (raw, 7, proto);
                 }
             }
-            let p = &self.atr_params;
-            let params: [u8; 7] = if self.current_protocol == 1 {
-                [
-                    if p.has_ta1 { p.ta1 } else { 0x11 },
-                    (p.edc_type & 1) << 4,
-                    p.guard_time_n,
-                    (p.bwi << 4) | (p.cwi & 0x0F),
-                    0x00,
-                    p.ifsc.min(254),
-                    0x00,
-                ]
-            } else {
-                [
-                    if p.has_ta1 { p.ta1 } else { 0x11 },
-                    0x00,
-                    p.guard_time_n,
-                    // T=0 waiting integer (plain WI, 0x00 default) — not the
-                    // T=1 (BWI<<4)|CWI packing.
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x00,
-                ]
-            };
-            let len = if self.current_protocol == 1 { 7 } else { 5 };
-            return (params, len, self.current_protocol);
+            let defaults = default_params(self.current_protocol);
+            let mut buf = [0u8; 7];
+            let len = defaults.len().min(7);
+            buf[..len].copy_from_slice(&defaults[..len]);
+            return (buf, len, self.current_protocol);
         }
-        let defaults = default_params(self.current_protocol);
-        let mut buf = [0u8; 7];
-        let len = defaults.len().min(7);
-        buf[..len].copy_from_slice(&defaults[..len]);
-        (buf, len, self.current_protocol)
+        if let Some((proto, raw)) = self.host_params {
+            if proto == self.current_protocol {
+                let len = if proto == 1 { 7 } else { 5 };
+                return (raw, len, proto);
+            }
+        }
+        let p = &self.atr_params;
+        let params: [u8; 7] = if self.current_protocol == 1 {
+            [
+                if p.has_ta1 { p.ta1 } else { 0x11 },
+                (p.edc_type & 1) << 4,
+                p.guard_time_n,
+                (p.bwi << 4) | (p.cwi & 0x0F),
+                0x00,
+                p.ifsc.min(254),
+                0x00,
+            ]
+        } else {
+            [
+                if p.has_ta1 { p.ta1 } else { 0x11 },
+                0x00,
+                p.guard_time_n,
+                // T=0 waiting integer (plain WI, 0x00 default) — not the
+                // T=1 (BWI<<4)|CWI packing.
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+            ]
+        };
+        let len = if self.current_protocol == 1 { 7 } else { 5 };
+        (params, len, self.current_protocol)
     }
 
     // CCID_SPEC: /* Section 6.1.11 */ struct ccid_pc_to_rdr_secure {
