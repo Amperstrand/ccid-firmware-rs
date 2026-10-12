@@ -15,26 +15,49 @@ Current supported hardware combinations:
 | ESP32 dev boards | PN532 over SPI | ✓ serial | Secondary | Kept supported, current focus is MFRC522 |
 | ESP32-C3 (nucula board) | PN7160 over I2C | **✗ hardware wall** | Card-level verified (direct-serial only) | ATR + APDU relay PASS over the CDC with the safe opener. pcscd/libccidtwin enumeration is impossible on C3 silicon (chip-resets on every port-open, no disable bit — issue #117); ~300 ms/command CDC latency floor (#119) |
 
-Honest parity vs the bench ACR1252 reference (~8.8 ms/APDU): the STM32
-reader is a fully working pcscd reader (5× latency gap, tracked); the
-m5stick enumerates in pcscd, powers cards, relays APDUs and answers
-T=1 (≈5× latency gap; GPG blocked on CAP-upload perf, not protocol);
-the nucula is a direct-serial test device only on this silicon.
+## Status (2026-10-12): what works, what doesn't, what's tested
 
-Near-term direction (see AGENTS.md "Reference-First Doctrine" and the
-open-issue roadmap):
+**Works, hardware-tested (bench evidence 2026-10-11/12):**
 
-- keep one repository and one `main` branch for both products
-- keep target-specific hardware initialization separate
-- shared CCID core crates extracted under `crates/` — the CCID message
-  handler lives in `ccid-core` and both firmwares use it (ESP32 serial
-  profile + STM32 contact/PIN-pad profile, DRY phases 1–2)
-- wire-format facts are reference-locked (kernel/NXP/spec citations +
-  byte-exact unit tests) — never guessed
-- improvement lanes: m5stick APDU latency (CAP-scale transfers), STM32
-  latency round 3, nucula log channel off-wire (#118) and CDC latency
-  (#119); pcscd on a nucula-class device needs different silicon or a
-  USB-UART bridge (#117)
+- All six pcscd readers card-level verified in one session: Cherry
+  (STM32, ours), GemPCTwin serial (m5stick, ours), Nucula via the PTY
+  broker (ours), CardMan/ACR1252/NR7101 (references). ATR + APDU relay
+  on every one; sustained soak 30/30 rounds, 0 errors.
+- **pcscd over Bluetooth** (new): `m5stick-spp` — RFCOMM/SPP transport
+  for the same GemPC server; card ATR + APDUs over the air, p50 48ms.
+- Differential suite 16/16 (ATR + AID + read-only APDU agreement).
+- Full `gpg --card-status` on the ACR1252 SmartPGP card (keys,
+  fingerprints, counters).
+- Cherry latency 42.75ms p50 (n=60) post-DRY-handler-port —
+  non-regression proven on hardware. Nucula card path 16ms/command.
+- PIN verify/modify parse fixed to the pcscd wire shape (reference-
+  locked tests; HIL round-trip is the recommended follow-up).
+
+**Doesn't work / gated (tracked):**
+
+- GPG applet install *through our own readers*: CAP-scale uploads need
+  the m5stick perf pass (#120); the nucula GP-install flow is untested
+  pending the #125 tail.
+- Satochip/SeedKeeper lanes: no card on the bench + the `pysatochip`
+  sdist is currently broken on this host (#126).
+- Nucula BLE (C3 is BLE-only): needs the GATT↔PTY bridge (#118);
+  pcscd-over-BT is m5stick-only for now.
+- PSO signature format quirk on the SmartPGP card (#123, card-side).
+- STM32F746 USB bring-up still needs the physical plug (bench table).
+
+**Blockers are logistics, not protocol**: cards (Satochip, identical
+differential card), silicon (C3 pcscd wall → broker path shipped), and
+two perf/finish lanes (#120, #122).
+
+## Roadmap
+
+1. **#120** m5stick perf → SmartPGP install through our reader → GPG
+   on all three of our readers (matrix complete).
+2. **#125 tail** nucula GP-install + gpg through the broker.
+3. **#122** STM32 latency round 3 (42.8 → ~11ms target).
+4. **#118** nucula BLE GATT bridge (pcscd-over-BT for C3).
+5. **#123** PSO signature quirk; Satochip once a card lands.
+6. Soak + release-cadence: tag per hardware-verified bench state.
 
 The practical architecture is a shared CCID core with interchangeable axes:
 
