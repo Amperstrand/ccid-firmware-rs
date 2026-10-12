@@ -151,6 +151,9 @@ fn t1_fuzz_wtx_dance_never_wedges() {
     for round in 0..500u32 {
         let mut ep = T1Endpoint::new();
         ep.feed(&[0x00, 0x02, 0x00, 0x02]); // clean empty I-block
+                                            // G-04: WTX fires against the negotiated BWT — force a tight
+                                            // window (BWI=0 → BWT 91 ms) so the 400 ms exchange overruns it.
+        ep.set_host_timing(0, 254);
         let mult = 1 + rng.below(59) as u8;
         let wtx = ep.card_response(&[0x90, 0x00], 400);
         assert_eq!(wtx[1], 0xC3, "round {round}: not a WTX request");

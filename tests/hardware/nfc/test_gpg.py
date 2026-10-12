@@ -23,7 +23,7 @@ import time
 
 import pytest
 
-from conftest import find_reader
+from cardlib import find_reader
 
 pytestmark = pytest.mark.hil
 

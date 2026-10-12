@@ -12,7 +12,7 @@ use crate::ccid_types::{
     PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE,
 };
 use crate::nfc::{CardDriverAdapter, NfcDriver, PresenceState};
-use crate::t1::{self, elapsed_ms_since, now_us, FeedResult, T1Endpoint};
+use crate::t1::{self, elapsed_ms_since, now_us, FeedResult, T1Endpoint, MAX_RELAY};
 use crate::turnaround::TurnaroundStats;
 use ccid_core::handler::CcidHandlerCore;
 use ccid_core::response::{write_message, write_slot_status};
@@ -176,6 +176,13 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         if self.core.take_parameters_accepted() {
             self.t1_armed = true;
+            // G-04: apply the negotiated T=1 timing to the endpoint —
+            // WTX requests are then sized against the BWT the host
+            // actually believes, and chain pieces up to the negotiated
+            // IFSC are accepted.
+            if let Some((bwi, _cwi, ifsc)) = self.core.applied_t1_timing() {
+                self.t1.set_host_timing(bwi, ifsc);
+            }
         }
         if self.core.take_card_reset() {
             // Card reset invalidates the negotiated protocol (CCID
@@ -263,9 +270,14 @@ impl<D: NfcDriver> CcidHandler<D> {
                 response,
             ),
             FeedResult::Apdu(card_apdu) => {
-                let mut apdu_buf = [0u8; 254];
-                let an = card_apdu.len().min(apdu_buf.len());
-                apdu_buf[..an].copy_from_slice(&card_apdu[..an]);
+                // G-03: GP STORE DATA (CAP install) chains case-3/4
+                // APDUs past 254 — the old min() clamp at 254 corrupted
+                // them while reporting success. Sized from t1::MAX_RELAY
+                // (the assembler's Vec capacity), so truncation here is
+                // impossible by construction.
+                let mut apdu_buf = [0u8; MAX_RELAY];
+                apdu_buf[..card_apdu.len()].copy_from_slice(&card_apdu);
+                let an = card_apdu.len();
                 let mut scratch = [0u8; 271];
                 let started_us = now_us();
                 let n = self
@@ -1117,6 +1129,82 @@ mod tests {
         assert_eq!(&payload[3..3 + plen], &[0x90, 0x00], "card answer in INF");
         let e = 3 + plen;
         assert_eq!(payload[e], payload[..e].iter().fold(0u8, |a, b| a ^ b));
+    }
+
+    #[test]
+    fn chained_apdu_over_254_reaches_card_untruncated() {
+        // G-03 regression: GP STORE DATA during CAP install chains a
+        // case-3/4 APDU past 254 bytes; the relay used to clamp it to
+        // 254 silently while reporting success.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.set_current_protocol(1);
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let apdu: Vec<u8> = std::iter::once(0x80)
+            .chain(std::iter::repeat(0x5A).take(298))
+            .chain([0x90, 0x00].iter().copied())
+            .collect();
+        assert_eq!(apdu.len(), 301);
+
+        let chunks: Vec<&[u8]> = apdu.chunks(32).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let more = i < chunks.len() - 1;
+            let pcb = (0u8 << 6) | ((more as u8) << 5);
+            let mut blk = vec![0x00u8, pcb, chunk.len() as u8];
+            blk.extend_from_slice(chunk);
+            blk.push(blk.iter().fold(0u8, |a, b| a ^ b));
+
+            let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 2, &blk);
+            let n = handler.process_command(&msg, &mut resp);
+            assert!(n >= 10);
+            let (_hdr, payload) = parse_response(&resp[..n]);
+            if more {
+                assert_eq!(payload[1], 0x80, "chain piece ACKed with R(0, 0)");
+            } else {
+                let plen = payload[2] as usize;
+                assert_eq!(&payload[3..3 + plen], &[0x90, 0x00]);
+            }
+        }
+
+        assert_eq!(
+            handler.core.driver_mut().0.last_apdu(),
+            apdu.as_slice(),
+            "full 301-byte APDU must reach the card — G-03 truncation"
+        );
+    }
+
+    #[test]
+    fn set_parameters_applies_t1_timing_to_endpoint() {
+        // G-04: the negotiated BWI/IFSC must reach the endpoint, and
+        // GetParameters must echo the accepted set (what pcscd believes)
+        // instead of the static defaults.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.set_current_protocol(1);
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let mut params = DEFAULT_T1_PARAMS;
+        params[5] = 0xFE; // bIFSC 254 — what the host derives from our TA3
+        let cmd = build_set_parameters_cmd(0, 9, 1, &params);
+        let n = handler.process_command(&cmd, &mut resp);
+        let (header, payload) = parse_response(&resp[..n]);
+        assert_eq!(header.message_type, RDR_TO_PC_PARAMETERS);
+        assert_eq!(payload, params, "SetParameters must echo the accepted set");
+
+        // A 64-byte INF piece exceeds DEFAULT_HOST_IFSD (32) but fits
+        // the negotiated 254 — must be chain-ACKed, not bad_block'ed.
+        let piece = [0x5Au8; 64];
+        let pcb = (0u8 << 6) | (1u8 << 5);
+        let mut blk = vec![0x00u8, pcb, piece.len() as u8];
+        blk.extend_from_slice(&piece);
+        blk.push(blk.iter().fold(0u8, |a, b| a ^ b));
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 10, &blk);
+        let n = handler.process_command(&msg, &mut resp);
+        let (_hdr, payload) = parse_response(&resp[..n]);
+        assert_eq!(payload[1], 0x80, "chain piece within negotiated IFSC ACKed");
     }
 
     #[test]

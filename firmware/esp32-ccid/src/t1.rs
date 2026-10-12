@@ -32,14 +32,29 @@
 //!   m × BWT. Without this, card ops slower than the host's BWT
 //!   (BWI=4 → ~177 ms; on-card RSA runs seconds) would time out.
 
+use ccid_protocol::atr::t1_bwt_ms;
 use heapless::Vec;
 
 /// Max INF field (§11.6.2 IFS ceiling is 254).
 pub const MAX_IFSC: usize = 254;
-/// Max APDU + response the relay assembles from a chain.
-const MAX_RELAY: usize = 512;
+/// Relay capacity: max APDU/response assembled from a chain. Public so
+/// the CCID handler's copy buffer derives from it — independent sizes
+/// caused the G-03 silent-truncation bug.
+pub const MAX_RELAY: usize = 512;
 
 const DEFAULT_HOST_IFSD: usize = 32;
+
+// G-04/G-05: the BWI our synthetic ATR advertises in TB3 and the baud
+// the host computes BWT in (no TA1 in the ATR → default Fi 372/Di 1 in
+// the card clock domain — the same 4 MHz/372 = 10752 the STM32 locks
+// its BWT tests against). BWT(BWI=4) ≈ 1.43 s: comfortably above the
+// bench card's 18–25 ms answer floor, so WTX fires only for
+// seconds-class on-card crypto — exactly when §11.6.2 intends it.
+const ATR_TB3_BWI: u8 = 4;
+const HOST_DEFAULT_BAUD: u32 = 10_752;
+// Serial turnaround margin folded into the WTX m size (our block TX +
+// host processing, beyond the card exchange itself).
+const WTX_TURNAROUND_MS: u32 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pcb {
@@ -150,6 +165,10 @@ pub struct T1Endpoint {
     last_sent: Option<Vec<u8, 520>>,
     /// Card response held while the WTX dance runs.
     wtx_pending: bool,
+    /// The BWI the host currently believes (BWT = `t1_bwt_ms(bwi, …)`);
+    /// drives the WTX request size (G-04). Defaults to the BWI our
+    /// synthetic ATR advertises in TB3; updated by SetParameters.
+    host_bwi: u8,
 }
 
 impl Default for T1Endpoint {
@@ -169,7 +188,17 @@ impl T1Endpoint {
             send_chain: Vec::new(),
             last_sent: None,
             wtx_pending: false,
+            host_bwi: ATR_TB3_BWI,
         }
+    }
+
+    /// Apply the host-negotiated T=1 timing from SetParameters (G-04):
+    /// `bwi` sizes future WTX requests against the BWT the host
+    /// actually believes; `ifsc` raises the INF size we accept from
+    /// host chains (§6.1.7 bIFSC).
+    pub fn set_host_timing(&mut self, bwi: u8, ifsc: u8) {
+        self.host_bwi = bwi;
+        self.host_ifsd = (ifsc as usize).clamp(16, MAX_IFSC);
     }
 
     pub fn reset(&mut self) {
@@ -312,10 +341,17 @@ impl T1Endpoint {
         let cap = rsp.len().min(MAX_RELAY);
         let _ = self.send_chain.extend_from_slice(&rsp[..cap]);
 
-        if took_ms > 150 {
-            // §11.6.2 WTX: buy m × BWT before our I-block appears.
+        // G-04 (§11.6.2): request WTX only when the card exchange
+        // threatens the host's BWT window, and size m to cover it — the
+        // host multiplies its read timeout by m exactly once
+        // (proto-t1.c t1_xcv), so m = elapsed/BWT rounded up plus a
+        // turnaround margin. The old fixed m=2 at a flat 150 ms was
+        // detached from every window the host actually runs.
+        let bwt = t1_bwt_ms(self.host_bwi, HOST_DEFAULT_BAUD);
+        if took_ms + WTX_TURNAROUND_MS > bwt {
+            let m = ((took_ms + WTX_TURNAROUND_MS).div_ceil(bwt)).clamp(2, 59) as u8;
             self.wtx_pending = true;
-            let wtx = block(s_pcb(SKind::Wtx, false), &[2]);
+            let wtx = block(s_pcb(SKind::Wtx, false), &[m]);
             self.last_sent = Some(wtx.clone());
             return wtx;
         }
@@ -367,6 +403,47 @@ mod tests {
 
     fn host_i(ns: u8, more: bool, nr: u8, inf: &[u8]) -> Vec<u8, 520> {
         block(i_pcb(ns, more, nr), inf)
+    }
+
+    #[test]
+    fn pcb_bit_layout_locked_to_iso_7816_3_table_45() {
+        // GREAT EXPECTATION: byte literals, not builder calls — the
+        // pre-7f136a0 bug (R(1) emitted 0x88, reserved bit set) was
+        // invisible to tests that asserted against r_pcb() itself.
+        assert_eq!(r_pcb(0, 0), 0x80);
+        assert_eq!(r_pcb(0, 1), 0x81);
+        assert_eq!(r_pcb(1, 0), 0x90);
+        assert_eq!(r_pcb(1, 1), 0x91);
+        assert_eq!(i_pcb(0, false, 0), 0x00);
+        assert_eq!(i_pcb(0, false, 1), 0x10);
+        assert_eq!(i_pcb(0, true, 0), 0x20);
+        assert_eq!(i_pcb(1, false, 0), 0x40);
+        match parse_pcb(0x90) {
+            Some(Pcb::R { nr, err }) => assert_eq!((nr, err), (1, 0)),
+            other => panic!("0x90 must decode as R(1, 0), got {other:?}"),
+        }
+        match parse_pcb(0x10) {
+            Some(Pcb::I { ns, more, nr }) => assert_eq!((ns, more, nr), (0, false, 1)),
+            other => panic!("0x10 must decode as I(0, M=0, nr=1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chain_overflow_answers_r_other_error() {
+        // G-03 guard: the piece that would cross MAX_RELAY is rejected
+        // with R(N(R), other-error=1) — never silently truncated.
+        let mut ep = T1Endpoint::new();
+        let piece = [0xAA; 32];
+        for _ in 0..MAX_RELAY / 32 {
+            match ep.feed(&host_i(0, true, 0, &piece)) {
+                FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 0)),
+                other => panic!("expected chain ACK, got {other:?}"),
+            }
+        }
+        match ep.feed(&host_i(0, true, 0, &[0xBB])) {
+            FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 1)),
+            other => panic!("expected R(other-error) on overflow, got {other:?}"),
+        }
     }
 
     #[test]
@@ -487,7 +564,7 @@ mod tests {
             FeedResult::Apdu(_) => {}
             other => panic!("expected Apdu, got {other:?}"),
         }
-        let wtx = ep.card_response(&[0x00, 0x00, 0x90, 0x00], 200);
+        let wtx = ep.card_response(&[0x00, 0x00, 0x90, 0x00], 1_500);
         assert_eq!(wtx[1], s_pcb(SKind::Wtx, false));
 
         // host grants S(WTX response 02) → deferred I-block(ns=0, nr=1)
@@ -584,10 +661,11 @@ mod tests {
     fn slow_card_runs_wtx_dance() {
         let mut ep = T1Endpoint::new();
         ep.feed(&host_i(0, false, 0, &[0x00]));
-        // §11.6.2: >BWT → S(WTX request m) first, I-block after the grant
-        let wtx = ep.card_response(&[0x90, 0x00], 400);
+        // §11.6.2: exchange beyond BWT (default BWI=4 → ~1.43 s) →
+        // S(WTX request m) first, I-block after the grant
+        let wtx = ep.card_response(&[0x90, 0x00], 1_500);
         assert_eq!(wtx[1], s_pcb(SKind::Wtx, false));
-        assert_eq!(wtx[3], 2);
+        assert_eq!(wtx[3], 2); // ceil((1500+100)/1430) = 2
         match ep.feed(&[0x00, 0xE3, 0x01, 0x02, 0xE0]) {
             FeedResult::Immediate(b) => {
                 assert_eq!(b[1], i_pcb(0, false, 1));
@@ -595,6 +673,31 @@ mod tests {
             }
             other => panic!("expected deferred I-block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn wtx_m_sized_from_negotiated_bwt() {
+        // G-04: m covers the elapsed exchange against the BWT the host
+        // believes — not a fixed 2.
+        let mut ep = T1Endpoint::new();
+        ep.feed(&host_i(0, false, 0, &[0x00]));
+        // 3.2 s card crypto vs 1.43 s default BWT → ceil(3300/1430) = 3
+        let wtx = ep.card_response(&[0x90, 0x00], 3_200);
+        assert_eq!(wtx[3], 3);
+
+        // Host negotiates BWI=0 (BWT 91 ms at default baud): a 200 ms
+        // exchange needs m = ceil(300/91) = 4.
+        let mut ep = T1Endpoint::new();
+        ep.set_host_timing(0, 254);
+        ep.feed(&host_i(0, false, 0, &[0x00]));
+        let wtx = ep.card_response(&[0x90, 0x00], 200);
+        assert_eq!(wtx[3], 4);
+
+        // Normal bench-class exchange (25 ms ≪ 1430 ms): no WTX at all.
+        let mut ep = T1Endpoint::new();
+        ep.feed(&host_i(0, false, 0, &[0x00]));
+        let rsp = ep.card_response(&[0x90, 0x00], 25);
+        assert_eq!(rsp[1] & 0xC0, 0x00, "plain I-block, no WTX dance");
     }
 }
 

@@ -94,7 +94,7 @@ rustup target add thumbv7em-none-eabihf   # for STM32 firmware builds
 
 ```python
 import pytest
-from conftest import remote_apdu
+from hil_helpers import remote_apdu
 
 pytestmark = pytest.mark.hil  # skip unless --hil
 
@@ -125,3 +125,43 @@ st-flash --reset write /path/to/gm65-firmware.bin 0x08000000
 | pyscard `Unsupported card` from opensc | Use pyscard directly (bypasses opensc driver matching) |
 | Place skip: "held by ..." | Another session owns the board — coordinate, don't force |
 | Bench skip: "bench flock held" | A cross-project session (bolty/micronuts) is on the bench |
+
+## Bench cards & GlobalPlatform (issue #127)
+
+All five cards are NXP P71D321 silicon (JCOP4 J3R180 family, fab batch 6782).
+`gp` = `/usr/local/bin/gp` (GlobalPlatformPro v25.10.20, jar at
+`/usr/local/share/ccid-bench/gp.jar`).
+
+| Reader / card | ATR | CPLC serial / pre-pers | GP keys |
+|---|---|---|---|
+| acr1252 PICC | 3B8580018073C821100E | 50947320 / 1619 | **AUTH triple works** (SmartPGP installed) |
+| m5stick coil | 3B8580018073C821100E | 50861320 / 1633 | unknown — keyver FF, SCP02 i=17,06,98,0D |
+| Cherry contact | 3BD518FF8191FE1FC38073C821100A | 50942720 / 1647 | unknown — keyver FF, SCP02 i=04,33,F5,DB |
+| OmniKey contact | 3BD518FF8191FE1FC38073C821100A | 50972320 / 164B | unknown — keyver FF, SCP02 i=04,33,F5,DB |
+| nucula coil | 3B8580018073C821100E | — | unprobed (retry-budget discipline) |
+
+Key material locations: `tests/soak/soak_02_globalplatform.py:32-33`
+(AUTH triple + DEFAULT) and `Amperstrand/specter-javacard` AGENTS.md
+(J3R180 card dossier). Nothing else exists org-wide (searched: repos,
+agent sessions, GitHub org — see #127).
+
+Working invocation (ACR card only):
+
+```bash
+gp --reader "ACS ACR1252 Dual Reader [ACR1252 Dual Reader PICC] 02 00" \
+   --key-enc 5A9E63D03BADBC2A240FE8F534709EDF \
+   --key-mac 7CCC1E79D64FC5FA263B8F2955282998 \
+   --key-dek B040703EC3DE23EE8AE4CFB6D632AA80 -l
+```
+
+**Fail-fast discipline**: failed SCP attempts consume the card's ISD retry
+counter (~5–15 total). Already burned: OmniKey 3, Cherry 2, m5stick 2 —
+do NOT blind-retry; obtain keys from the card source first (#127).
+Identify a card without burning retries with a raw INITIALIZE UPDATE
+(no EXTERNAL AUTH): `SELECT A000000151000000` → `80 50 00 00 08 <8 rand>`
+→ parse keyver/SCP params from the response.
+
+GP applet lifecycle template (install → use → uninstall, proven with
+TeapotApplet on the ACR card without disturbing the SmartPGP fixture):
+see the procedure on #127. CAPs: `gh run download` from
+Amperstrand/specter-javacard CI (`cap-files` artifact).

@@ -35,6 +35,119 @@ v5.5.5 `tools.json` + `tool_version_check.cmake`):
   Bluedroid GATT response-timeout + ATT UAF, mbedTLS 3.6.5. No
   USB-Serial/JTAG reset-semantics change (C3 `rst:0x15` wall is
   silicon, unchanged).
+### Added — STM32F469 known-good: full GP CAP lifecycle through our own reader (2026-10-12)
+
+### Changed — esp32 T=1 timing contract: G-04 + G-05 (2026-10-12, code landed; bench pending)
+
+G-04 (WTX detached from BWT): SetParameters T=1 is now parsed and applied —
+the shared core stores the accepted structure (GetParameters echoes it
+instead of static defaults; `applied_t1_timing()` getter) and the esp32
+handler feeds it to the T=1 endpoint (`set_host_timing`). WTX requests are
+sized from the BWT the host actually believes: m = ceil((elapsed + 100 ms) /
+BWT) clamped 2..59, BWT from the negotiated BWI via the now-shared
+`t1_bwt_ms` (moved to `ccid-protocol`, re-exported by the STM32's
+`smartcard_common` — one definition for both firmwares, fix-all-siblings).
+The flat 150 ms threshold and fixed m=2 are gone.
+
+G-05 (synthetic ATR declared no T=1): the m5stick/mfrc522 ATR is now
+`3B (80|K) 81 31 FE 45 <hist> TCK` — TA3 announces IFSC 254 (the host
+chains at ifsc=32 without it, per ifdhandler.c get_IFSC: 8× the round
+trips on this relay), TB3 advertises BWI=4/CWI=5, TCK legal. Semantic
+lock test parses the ATR back through the shared parser. The nucula's
+ATS-derived ATR (ACR-mirroring, d6b3877) is deliberately unchanged —
+own bench pass required.
+
+Tests: `wtx_m_sized_from_negotiated_bwt`, `set_parameters_applies_t1_timing_to_endpoint`,
+`synthetic_atr_semantically_locks_t1_timing`, relocated BWT unit tests.
+
+### Fixed — esp32 T=1 relay: G-03 chained-APDU truncation at 254 (2026-10-12)
+
+`xfr_via_t1` copied the T=1-assembled APDU into a `[u8; 254]` buffer with
+a silent `min()` clamp — any case-3/4 APDU above 254 bytes (GP STORE DATA
+during CAP install is exactly this class) reached the card mangled while
+the T=1 layer reported success. The relay buffer is now `[u8;
+t1::MAX_RELAY]`, derived from the assembler's own `Vec` capacity, so the
+two capacities cannot drift (fix-all-siblings protocol; the assembler
+already answers R(other-error) on chain overflow). Regression test
+`chained_apdu_over_254_reaches_card_untruncated` proves a 301-byte
+chained APDU reaches the card byte-complete; `MockNfcDriver` records the
+last forwarded APDU. Also locked: byte-literal PCB layout test
+(`r_pcb(1,0)==0x90` — ISO 7816-3 Table 45, the pre-7f136a0 bug class)
+and chain-overflow → R(other-error).
+
+### Docs — gap-table truth repairs (2026-10-12)
+
+`docs/T1_BEST_PRACTICES.md` gap table had gone stale against the tree:
+G-01/G-02 marked open though fixed by 7f136a0 (bench-verified), G-07
+marked fully open though the first-byte half landed in 46c4701. All rows
+now carry per-gap RESOLVED/PARTIALLY RESOLVED annotations with commit
+hashes. New `reference/README.md` indexes every tracked reference source
+with upstream pins, licenses, and specquotes wiring (#134). AGENTS.md
+gains the fix-all-siblings DRY protocol (owner directive) and the
+three-class vendoring policy.
+
+### Fixed — STM32 T=1 relay: honest-error contract kills the #132 orphaned-block race (2026-10-12)
+
+Root cause (full dig: `docs/t1_relay_132_rootcause.md`, issue #132):
+`transmit_raw`'s T=1 branch returned `Ok(short)` on a first-byte timeout —
+an empty "success" DataBlock — after a hardcoded 500 ms first-byte wait,
+while GetParameters advertises BWI=4 (~1.38 s BWT) to the host. A card
+answering inside BWT but outside 500 ms got its block orphaned (ORE-shredded
+by the next exchange), and libccid could mis-associate a valid card
+response with the wrong host exchange — the path-dependent SCP02
+"cryptogram mismatch" on the older bench P71. Introduced by perf commit
+13b17c8 (benchmarked only on the fast ComSign card).
+
+The fix (receive-layer only; the reader-role TPDU-pipe doctrine is
+untouched — host still owns T=1):
+- first-byte wait = the card's BWT (ISO 7816-3 §11.6.2.1) at the current
+  wire baud (`t1_bwt_ms`, host-tested), clamped 500 ms..5 s
+- first-byte timeout and truncated blocks now return `Err` (CCID error),
+  never a short success
+- `prepare_rx()` drain before every response read (echoes, orphaned tails)
+- ORE in `receive_byte_timeout` fails the exchange (`ProtocolError`)
+  instead of feeding the stale DR byte as a fresh prologue
+
+Bench (STM32F469, Cherry profile, reflashed): labgrid suite 14 passed +
+1 xfailed; content-fidelity hammer (SELECT+CPLC, 400 iterations) 0
+exceptions and 0 byte mismatches vs 54 exceptions/446 pre-fix — and 4.7×
+the iteration rate. Definitive #132 close-out (gp -l on card 50942720
+through the Cherry reader) pending a physical card move to the STM32 slot.
+Test updates: GET CHALLENGE accepts card-dependent clean SW (69xx on a
+JCOP ISD default-app card vs 6D/6E on ComSign); nucula battery exact-set
+xfail gains the card-absent signature (escapes-only — the #128 escape gap
+is card-independent).
+
+### Fixed — bench suite regressions + combined-suite collection (2026-10-12)
+
+`conformance_battery` pre-drain called pyserial's `in_waiting` property
+as a method (both call sites, introduced in 510b797) — every battery
+exchange died with TypeError; fixed. Bare `from conftest import ...` in
+test modules made combined-suite collection order-dependent
+(labgrid+nfc and nfc+labgrid both died with ImportError while the CI
+gate passed by traversal luck) — helpers moved to uniquely-named
+modules `labgrid/hil_helpers.py` + `nfc/cardlib.py`; conftests
+re-import, test modules repointed; every collection permutation and
+the CI gate verified green. Nucula direct-serial firmware gaps (first
+IccPowerOn blocks the serve loop >4 s; escapes silent after any
+power-on attempt; pcscd/broker surface unaffected) encoded as the
+exact-set xfail `NUCULA_KNOWN_GAPS` in the serial battery — any other
+failure combination stays a hard red (#128).
+
+### Changed — SSH HIL retired; labgrid is the de facto test mechanism
+
+`tests/hardware/labgrid/exporter-208.yaml` (remote-rig relic) removed;
+AGENTS.md SSH-HIL sections rewritten to the local labgrid doctrine; the
+`ai-legion-nfc` exporter converted from ad-hoc nohup to the systemd
+unit `labgrid-exporter-nfc.service` (bench host) and
+`/etc/labgrid/MANAGED_BY` rewritten to local truth. Bench docs gain
+the card/GP inventory (labgrid README): all five bench cards are NXP
+P71D321; AUTH triple verified on the ACR1252 card (full
+install→use→uninstall GP lifecycle proven with TeapotApplet, SmartPGP
+fixture preserved); three cards carry unknown pre-personalized ISD
+keys — fingerprints + retry budgets on #127, do not blind-retry.
+Soak README marked as targeting the retired rig with a localization
+checklist before any re-run.
 
 ### Fixed — PIN verify/modify wire shape (audit P1, spec-verified)
 
