@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — STM32F469 known-good: full GP CAP lifecycle through our own reader (2026-10-12)
 
+### Changed — esp32 T=1 timing contract: G-04 + G-05 (2026-10-12, code landed; bench pending)
+
+G-04 (WTX detached from BWT): SetParameters T=1 is now parsed and applied —
+the shared core stores the accepted structure (GetParameters echoes it
+instead of static defaults; `applied_t1_timing()` getter) and the esp32
+handler feeds it to the T=1 endpoint (`set_host_timing`). WTX requests are
+sized from the BWT the host actually believes: m = ceil((elapsed + 100 ms) /
+BWT) clamped 2..59, BWT from the negotiated BWI via the now-shared
+`t1_bwt_ms` (moved to `ccid-protocol`, re-exported by the STM32's
+`smartcard_common` — one definition for both firmwares, fix-all-siblings).
+The flat 150 ms threshold and fixed m=2 are gone.
+
+G-05 (synthetic ATR declared no T=1): the m5stick/mfrc522 ATR is now
+`3B (80|K) 81 31 FE 45 <hist> TCK` — TA3 announces IFSC 254 (the host
+chains at ifsc=32 without it, per ifdhandler.c get_IFSC: 8× the round
+trips on this relay), TB3 advertises BWI=4/CWI=5, TCK legal. Semantic
+lock test parses the ATR back through the shared parser. The nucula's
+ATS-derived ATR (ACR-mirroring, d6b3877) is deliberately unchanged —
+own bench pass required.
+
+Tests: `wtx_m_sized_from_negotiated_bwt`, `set_parameters_applies_t1_timing_to_endpoint`,
+`synthetic_atr_semantically_locks_t1_timing`, relocated BWT unit tests.
+
 ### Fixed — esp32 T=1 relay: G-03 chained-APDU truncation at 254 (2026-10-12)
 
 `xfr_via_t1` copied the T=1-assembled APDU into a `[u8; 254]` buffer with
