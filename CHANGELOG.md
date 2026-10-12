@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-10-12
+
+Hardware-verified release: all six bench readers card-level tested
+through pcscd, differential 16/16, GPG re-verified, pcscd-over-
+Bluetooth SPP new capability.
 
 ### Added — STM32F469 known-good: full GP CAP lifecycle through our own reader (2026-10-12)
 
