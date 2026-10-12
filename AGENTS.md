@@ -273,6 +273,55 @@ and wrote the wrong story into this file, which later sessions trusted
    hardware defect — and use the documented full-reflash ladder to get
    back to a known good state.
 
+### Fix-all-siblings protocol (owner directive 2026-10-12)
+
+DRY is the FIX protocol, not just a new-code rule. The tree serves the
+same protocol through several sibling paths — STM32 USB (`firmware/ccid-firmware`
+ccid_core wrapper), esp32 serial (`ccid_handler` + `CcidSerialServer`,
+shared by m5stick/nucula/SPP mains), shared crates (`crates/ccid-core`,
+`ccid-transport-serial`), and per-firmware escape bolt-ons. When a bug
+is fixed anywhere:
+
+1. **Before writing the fix, grep the sibling paths for the same
+   pattern** — same constant, same silent clamp (`.min(` on a copy),
+   same parse, same timeout, same escape-code handling. The known
+   sibling-groups: relay/APDU buffer capacities (now derived from
+   `t1::MAX_RELAY`), escape tables, diagnostics extensions, presence
+   retry patterns, T=1 block builders.
+2. **If the logic can live in a shared crate without mixing the
+   reader-role vs standalone-role doctrines** (see the T=1 doctrine
+   above), REFACTOR it there and point every path at it — one fix
+   lands everywhere. Prefer exporting the existing constant/function
+   over duplicating its value at a second site.
+3. **If the paths must legitimately differ** (electrical frontends,
+   USB vs UART transport, role doctrine), fix EVERY sibling in the
+   SAME session and cross-reference them in the commit/issue.
+4. **Never leave a known-fixed bug alive in a sibling path** — a fix
+   that only lands on one board is how the mock/hardware-divergence
+   bug class breeds (G-03 was exactly this shape: one handler, but the
+   capacity constant lived separately from the assembler's).
+
+### Vendoring policy (three classes)
+
+Three distinct things get called "vendoring" — only two are allowed:
+
+1. **Quote-only reference copies** (`reference/…`, never compiled,
+   never linked): ALLOWED and encouraged. Pin provenance (upstream repo
+   + commit) in `reference/README.md`, keep upstream license headers,
+   trim to what we quote; full upstream repos stay git submodules.
+   PDF-only authorities get verbatim-quote markdown under
+   `docs/quote-sources/` with section/page cites (the specquotes.toml
+   approach). The index of all tracked sources: `reference/README.md`.
+2. **Build-path vendored code** (`vendor/…`, compiled): ONLY when we
+   patch it and the patch cannot live in a fork/git dep
+   (`vendor/synopsys-usb-otg` is the one legal case). Un-patched
+   vendored copies were deliberately removed (issues #19, #6) — do not
+   reintroduce that class; linkable code goes through canonical git
+   deps/forks.
+3. **C headers as build dependencies**: NOT vendored — our HAL comes
+   from the Amperstrand Rust fork. C headers (ST HAL smartcard,
+   ST USB middleware) are vendored ONLY as class-1 quote sources.
+
 ### The reference library (verified useful)
 
 | Topic | Reference | Where |
