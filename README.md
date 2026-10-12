@@ -91,7 +91,7 @@ This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
 | IccPowerOn | 6.1.1 | ✅ Full | dwLength validated |
 | IccPowerOff | 6.1.2 | ✅ Full | |
 | GetSlotStatus | 6.1.3 | ✅ Full | |
-| XfrBlock | 6.1.4 | ✅ Full | Short APDU level |
+| XfrBlock | 6.1.4 | ✅ Full | TPDU exchange level — T=1 blocks relayed untouched (host/libccid owns the protocol + secure channel); T=0 procedure bytes handled on-device per CCID TPDU level |
 | GetParameters | 6.1.5 | ✅ Full | T=0 and T=1 |
 | SetParameters | 6.1.7 | ✅ Full | With libccid quirk handling |
 | ResetParameters | 6.1.6 | ✅ Full | |
@@ -107,7 +107,7 @@ This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
 
 The stubbed commands are intentional:
 - **Escape**: 0xD0 vendor extension returns diagnostic counters (28 bytes LE). 0x6A returns firmware-features (Gemalto IDBridge convention). Other escape codes return CMD_NOT_SUPPORTED.
-- **T0APDU**: TPDU-level control, we use Short APDU level
+- **T0APDU**: we are TPDU exchange level (see `device_profile.rs`); stays CMD_NOT_SUPPORTED
 - **Mechanical**: No mechanical card eject/capture hardware
 - **Abort**: Single-slot synchronous reader, no async operations to abort
 
