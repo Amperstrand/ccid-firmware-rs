@@ -120,6 +120,15 @@ someone reintroduces unsolicited logging, CI/bench fails loudly.
 
 ## Addendum: defmt is cheap, not free (2026-10-12)
 
+Audit result (same day, read-only): the STM32 hot loops are CLEAN —
+no defmt records inside `smartcard_bitbang.rs` `send_byte`/`recv_byte_
+timeout`/bit-cell loops, nor `smartcard.rs` exchange internals; all
+records sit at bring-up / PPS / exchange granularity (power-on
+bounded). The residual exposure is the defmt-rtt 0.4 blocking write
+below — a probe-rs unplug during power-on logging can stall the
+target. Placement discipline already contains it; the version bump is
+the real fix.
+
 Even the best live channel costs something on-target. Rough budget:
 
 | Channel | Per-record on-target cost | Failure mode when host is slow |
