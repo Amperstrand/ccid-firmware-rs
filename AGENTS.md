@@ -266,6 +266,17 @@ pyscard up front uses the `if "pytest" in sys.modules:
 pytest.skip(..., allow_module_level=True)` guard (see
 `tests/hardware/test_ccid_apdu.py`).
 
+Second rule of the same class (found live 2026-10-12): **test modules
+never bare-import their conftest** (`from conftest import ...`). When
+two suite directories are collected together, whichever conftest.py
+claims the bare `conftest` module name first wins and the other suite
+dies with ImportError — empirically both
+`pytest tests/hardware/labgrid/ tests/hardware/nfc/` and the reverse
+order broke collection while the single-dir and full-tree runs passed
+by traversal luck. Shared helpers live in uniquely-named modules:
+`labgrid/bench.py`, `labgrid/hil_helpers.py`, `nfc/cardlib.py` —
+conftests re-import from there, tests import the module directly.
+
 ### stm32-build matrix (4 entries)
 
 ```yaml
@@ -454,7 +465,7 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
-## Known-Good Bench State (2026-10-09)
+## Known-Good Bench State (2026-10-09, re-verified 2026-10-12)
 
 The per-board verification matrix — run these probes after acquiring a
 place or whenever bench reality is in doubt. **A place you don't hold is
@@ -475,6 +486,22 @@ clean-wire log ceiling BEFORE its FWID log line — identity on the CCID
 wire must be ON-DEMAND (the Escape 0x02 string is today's identity;
 folding the git rev into it is the tracked improvement). Never put an
 unsolicited FWID on the UART0 wire — libccidtwin is strict.
+
+**2026-10-12 session verification (post-migration)**: bench_inventory
+all-green; all five project readers serve pcscd SIMULTANEOUSLY
+(GemPCTwin serial, Nucula CCID via broker, CardMan 3121, Cherry
+ST2XXX-001, ACR1252 PICC+SAM — NR7101 canary intact after every
+restart); labgrid suite `pytest tests/hardware/labgrid/ -v --hil
+--firmware-bin=<fresh build>` = 14 passed + 1 xfailed (STM32 st-flash
+reflash + re-enumeration included); differential 12 passed / 4
+card-gated skips. Bench card/GP inventory + key state: issue #127 —
+AUTH triple verified on the ACR1252 card (full install→use→uninstall
+lifecycle proven with TeapotApplet, SmartPGP fixture preserved); three
+cards carry unknown pre-personalized ISD keys (retry budgets: OmniKey
+3, Cherry 2, m5stick 2 of ~5-15 — no blind retries). Nucula
+direct-serial gaps encoded as the exact-set xfail `NUCULA_KNOWN_GAPS`
+(#128). `nucula-broker` reader.conf left ENABLED (serving state) —
+disable when idle per the nucula row above.
 
 ### Recovery events (2026-10-09, all resolved)
 
@@ -1930,7 +1957,7 @@ same HAL fork) and the wider Amperstrand STM32 ecosystem.
 | SmartcardConfig | `firmware/ccid-firmware/src/smartcard_common.rs` | Replaces 10 hardcoded `const SC_*` with a configurable struct. Values unchanged. |
 | Self-Healing | `firmware/ccid-firmware/src/main.rs` (SmartcardWrapper), `firmware/esp32-ccid/src/mfrc522_driver.rs` | Re-init peripheral after 3 consecutive failures. `reinit_count` tracked. |
 | Escape 0xD0 | `crates/ccid-core/src/handler.rs` (shared dispatch), fed by `firmware/ccid-firmware/src/ccid_core.rs` + `firmware/esp32-ccid/src/ccid_handler.rs` (thin wrapper) | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |
-| HIL Harness | `tests/hardware/labgrid/` | Pytest SSH-based HIL tests. 6 tests: USB enum, pcscd, ATR, APDU relay, pinpad. |
+| HIL Harness | `tests/hardware/labgrid/` | Labgrid-native local HIL suite (2026-10-09 migration removed the old SSH style): bench flock + place acquire + identity probes + per-place suites. |
 
 ### SmartcardDriver Trait
 
@@ -1942,14 +1969,19 @@ SmartcardWrapper (F469) overrides to return `reinit_count` + `card_present`.
 `firmware/esp32-ccid/src/nfc.rs` — added default `fn reinit_count()` method.
 MFRC522 driver overrides to return actual count.
 
-### HIL Testbed
+### HIL Testbed (local labgrid — SSH HIL retired 2026-10-09)
 
-The STM32F469I-DISCO on `192.168.13.208` is managed via labgrid (coordinator on
-`.221:20408`). Security: ufw active (SSH + labgrid from `.221` only), SSH key-only.
+The bench is the local host (ai-legion, 192.168.13.208): all five devices
+(stm32-ccid, nucula-c3, m5stick, ref-acr1252, ref-cardman) hang off it and
+tests run ON it as local subprocesses through labgrid places. There is no
+SSH anywhere in the harness; the old `--ssh-host` remote-HIL style and the
+`exporter-208.yaml` remote-rig config were removed in the 2026-10-09
+labgrid migration. See "Labgrid Bench Doctrine" + "Testing through labgrid"
+above, and `tests/hardware/labgrid/README.md`.
 
-Run HIL tests:
+Run HIL tests (bench host):
 ```bash
-pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil --ssh-host=192.168.13.208
+pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil
 ```
 
 ### libccid Configuration

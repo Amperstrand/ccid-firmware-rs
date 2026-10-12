@@ -1,6 +1,10 @@
 # Manual Hardware Tests (Non-Destructive)
 
-These tests are manual and are not executed by CI.
+These tests are manual and are not executed in CI.
+
+> Automated bench testing lives in `tests/hardware/labgrid/` (labgrid
+> places + pcscd identity doctrine — see its README). The scripts here
+> are manual, card-safe checks.
 
 ## Safety goals
 

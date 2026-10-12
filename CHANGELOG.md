@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — bench suite regressions + combined-suite collection (2026-10-12)
+
+`conformance_battery` pre-drain called pyserial's `in_waiting` property
+as a method (both call sites, introduced in 510b797) — every battery
+exchange died with TypeError; fixed. Bare `from conftest import ...` in
+test modules made combined-suite collection order-dependent
+(labgrid+nfc and nfc+labgrid both died with ImportError while the CI
+gate passed by traversal luck) — helpers moved to uniquely-named
+modules `labgrid/hil_helpers.py` + `nfc/cardlib.py`; conftests
+re-import, test modules repointed; every collection permutation and
+the CI gate verified green. Nucula direct-serial firmware gaps (first
+IccPowerOn blocks the serve loop >4 s; escapes silent after any
+power-on attempt; pcscd/broker surface unaffected) encoded as the
+exact-set xfail `NUCULA_KNOWN_GAPS` in the serial battery — any other
+failure combination stays a hard red (#128).
+
+### Changed — SSH HIL retired; labgrid is the de facto test mechanism
+
+`tests/hardware/labgrid/exporter-208.yaml` (remote-rig relic) removed;
+AGENTS.md SSH-HIL sections rewritten to the local labgrid doctrine; the
+`ai-legion-nfc` exporter converted from ad-hoc nohup to the systemd
+unit `labgrid-exporter-nfc.service` (bench host) and
+`/etc/labgrid/MANAGED_BY` rewritten to local truth. Bench docs gain
+the card/GP inventory (labgrid README): all five bench cards are NXP
+P71D321; AUTH triple verified on the ACR1252 card (full
+install→use→uninstall GP lifecycle proven with TeapotApplet, SmartPGP
+fixture preserved); three cards carry unknown pre-personalized ISD
+keys — fingerprints + retry budgets on #127, do not blind-retry.
+Soak README marked as targeting the retired rig with a localization
+checklist before any re-run.
+
 ### Fixed — PIN verify/modify wire shape (audit P1, spec-verified)
 
 `wPINMaxExtraDigit` is a LE u16 hosts build as (min<<8)+max with wire

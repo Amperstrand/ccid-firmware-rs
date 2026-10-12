@@ -1,5 +1,15 @@
 # CCID Soak Tests
 
+> **STATUS (2026-10-12): targets the RETIRED remote rig.** These suites
+> were built for the old Gemalto (BCF852F0) + CT30-001 bench with
+> `/home/ubuntu/gt/...` paths. Before any re-run: localize soaklib
+> (LOG_BASE, reader discovery by current bench reader names), gate the
+> auto-gh-issue filing behind an env var (default OFF), and take GP keys
+> from `soak_02_globalplatform.py` / issue #127 (bench card inventory —
+> most current bench cards do NOT open with those keys). The current
+> automated test entry point is `tests/hardware/labgrid/` (see AGENTS.md
+> "Testing through labgrid").
+
 End-to-end integration tests that run identical operations on both a real
 Gemalto PC Twin Reader and the STM32F469 running our Rust firmware, then
 compare responses to find behavioral differences.
