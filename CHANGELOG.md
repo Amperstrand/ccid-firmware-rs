@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — STM32F469 known-good: full GP CAP lifecycle through our own reader (2026-10-12)
+
 ### Fixed — esp32 T=1 relay: G-03 chained-APDU truncation at 254 (2026-10-12)
 
 `xfr_via_t1` copied the T=1-assembled APDU into a `[u8; 254]` buffer with

@@ -42,6 +42,30 @@ The practical architecture is a shared CCID core with interchangeable axes:
 - card frontend: wired contact or NFC
 - transport: USB CCID or serial CCID
 
+## Current state & roadmap (2026-10-12)
+
+**Known-good states** (regression-locked by `pytest tests/hardware/labgrid/ -v --hil` — currently 15 passed + 1 xfailed):
+
+| Hardware | State |
+|---|---|
+| **STM32F469-DISCO** (Cherry profile, contact) | **Fully known-good**: pcscd + ATR/APDU relay, reflash cycle, hardened TPDU-level T=1 pipe (0 corruption in 400-exchange fidelity), and the **full GlobalPlatform CAP lifecycle through our own reader** — SCP02 auth, install → use (byte-exact) → uninstall → card power-cycle reset (`test_gp_lifecycle_hil.py`, factory card CPLC 50796920, #132 closed) |
+| Bench (labgrid, 5 places) | All-green; all five readers serve pcscd simultaneously |
+| m5stick (ESP32 + MFRC522, serial CCID) | Serving pcscd (GemPCTwin) + full conformance battery green; CAP installs pending serve-loop hardening (#101) + perf (#59) |
+| nucula (ESP32-C3 + PN7160) | Serving pcscd via the PTY broker; known gaps: #125 (re-arm after power-off), #128 (direct-serial serve) |
+| STM32F746 | Bring-up pending — bench-distinct iSerial landed, needs the physical USB plug + labgrid place |
+
+**Roadmap** (priority order — the issue tracker is the source of truth):
+
+1. **m5stick CAP-install unlock** — #142 G-04/G-05 (WTX + relay), #59 (MFRC522 per-block perf), #101 (serve-loop RX hardening)
+2. **nucula known-good** — #125 (IccPowerOff re-arm), #128 (direct-serial serve gaps)
+3. **STM32 polish** — #135 (smartcard framing: STOP/GT/PE-ORE→0xFD), #136 (libccid conformance residuals), #141 (PC/SC contract audit)
+4. **Infrastructure** — #133 (observability; after the `sisyphus/idf-555-unify` merge), #143 (capture corpus + byte-diff), #139 (GP lane)
+5. **F746 bring-up** — distinct iSerial ready; needs USB + place + T=1 card check
+
+Card & GP doctrine: see AGENTS.md "Card-Handling Doctrine" — never hammer
+secure-channel-class commands; #144 records the one card lost learning
+this; GP keys and the per-card retry ledger live on #127.
+
 ## Repository layout
 
 - `crates/ccid-protocol/` — shared CCID protocol types, constants, ATR parsing
