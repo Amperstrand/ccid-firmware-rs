@@ -87,7 +87,7 @@ to keep it there.
 | **BLE NUS** (`ble` build, issue #66) | live | zero (CCID stays clean) | pairing + flaky bench centrals; C3 blocked (adv 0x0c, maybe svc 0.53 fix); parked | optional, experimental |
 | **WiFi netlog** (UDP) | live | zero | credentials baked; radio timing/power; another failure domain | optional |
 | **Dedicated UART** | live | zero on CCID wire | costs a pin + a USB-UART bridge on the board | hardware-rev option |
-| **RTT / JTAG** (defmt on STM32; GDB on ESP32) | live | zero (separate debug peripheral) | debugger attached; ESP32-C3 shares its only USB port with JTAG (workable, documented) | best option WHEN a debugger is attached; STM32 default |
+| **RTT / JTAG** (defmt on STM32; GDB on ESP32) | live | zero on protocol wires | **µs-class on-target cost — cheap, NOT free** (bit-pack + brief critical section per record; `Block` RTT mode can STALL the firmware on a full ring); debugger attached; ESP32-C3 shares its only USB port with JTAG | best option WHEN a debugger is attached AND the code is not in a hot loop; STM32 default — Drop mode, never Block |
 | **Console before driver claim** (boot banner) | boot only | bounded (ends before claim) | ROM/bootloader output is not controllable from the app | keep, as the ONLY console use |
 
 ## Decision matrix
@@ -97,7 +97,7 @@ to keep it there.
 | Production (pcscd-facing) | clean-wire ceiling + Escape 0xD0/0xD1/0x02 + coredumps |
 | Bring-up / new silicon bring-up | diagnostic build (actdiag pattern) + JTAG when available |
 | Bench debugging a timing bug | NOTHING live (dump-and-retrieve) — the observation must not perturb the observed |
-| STM32 | defmt + RTT (separate wire — logging is genuinely free there) |
+| STM32 | defmt + RTT — Drop mode, outside hot loops (bit-bang cells, ISRs); counters inside them |
 
 ## The meta-lesson (why we built the wrong thing)
 
@@ -117,3 +117,33 @@ The enforcement is a regression test, not discipline:
 `test_wire_silence_after_banner` (tests/hardware/nucula) asserts that
 everything after the boot banner is framed CCID — no ASCII, ever. If
 someone reintroduces unsolicited logging, CI/bench fails loudly.
+
+## Addendum: defmt is cheap, not free (2026-10-12)
+
+Even the best live channel costs something on-target. Rough budget:
+
+| Channel | Per-record on-target cost | Failure mode when host is slow |
+|---|---|---|
+| UART/CDC print | ~87 µs/byte @115200 + driver paths (ms/line) | wire corruption, parser desync |
+| USB-Serial/JTAG print | driver-dependent; **~50 ms stalls observed** (IDF 5.5.2 fix class) | CPU stalls, starved tasks |
+| defmt → RTT | µs-class: bit-pack + memcpy into ring under a brief critical section | **`Block` mode stalls the firmware**; `Drop` mode discards records |
+
+Rules that follow:
+
+1. **RTT mode is a correctness setting**: use Drop (or Skip), never
+   Block — a full ring must cost a lost record, not a stalled target.
+   A debugger that isn't draining must not be able to pause the
+   firmware by existing.
+2. **Hot paths get counters, not records**: inside the F746 bit-bang
+   cell loop, the F469 smartcard ISR, and equivalent ESP32 paths
+   (T=1 re-frame loop, PN7160 ACK window), a few µs still eats timing
+   margin. Increment a u32 (cycles) or push a (timestamp, event-id)
+   pair into a small trace ring; dump via an escape when the host
+   asks. Counters never block and never desync anything.
+3. **defmt placement**: init, loop boundaries, state transitions —
+   fine. Per-byte/per-bit paths — never. The timestamp hook itself
+   should be a cycle-counter read (DWT), not a formatter.
+4. **For timing bisection, no live channel at all**: dump-and-retrieve
+   (coredump + counters + trace ring), or external instruments (logic
+   analyzer on the wire). The observation must not perturb the
+   observed — defmt included.
