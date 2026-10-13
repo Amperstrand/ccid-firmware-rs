@@ -11,7 +11,7 @@ handling into one shared core. Update it as lanes land.
 |---|---|---|---|---|---|
 | ACR1252 (reference) | full GPG | 8.8 ms | 8.9 | 39 ms | — |
 | CardMan 3121 (reference) | full | 10.9 ms | 11.0 | 39 ms | — |
-| **Cherry/STM32F469 (ours)** | works | 95.3 → **42.8 ms** (round 2 running) | 43.0 | 1507 → **504 ms** | fixed per-exchange cost, agent iterating (a8fef3b) |
+| **Cherry/STM32F469 (ours)** | works | **42.9 ms** (42.8 pre-port; dry-phase2 shared-core build re-measured 2026-10-11, n=300: non-regressing) | 45.9 | 503 ms | fixed per-exchange cost, agent iterating (a8fef3b) |
 | **GemPCTwin/m5stick (ours)** | works, cardless | ~10–30 ms (T=1 relay) | — | ~300 ms | card off coil (physical); CAP-upload relay latency |
 | **Nucula (ours)** | **fixed 2026-10-10** | **5.1 ms** p50, max 8.3 | — | — | ~~2.0 s stalls~~ ELIMINATED (5f702e4); 10-min pcscd soak 20/20 clean; cardless (physical) |
 
@@ -81,9 +81,15 @@ PIN processing); SetParameters acceptance reaches the USART via the
 `take_parameters_accepted` event. Both wire behaviors are pinned by
 tests on both sides (esp32 137/137 byte-identical; firmware suites +
 the resurrected root characterization suites over the wrapper;
-ccid-core contact-profile tests). HIL re-verification pending — run
-`pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` on the next
-bench session before shipping a release binary.
+ccid-core contact-profile tests). **HIL verified 7/7 on the bench
+(2026-10-11, dry-phase2 build sha256 8393464e…)**: USB enum, pcscd
+detection + ComSign ATR, APDU relay, PIN-pad feature advertisement,
+Escape 0xD0 counters — and the §2 refactor gate closed: perf
+non-regressing (42.89 ms mean n=300 vs 42.8 baseline, connect 503 vs
+504 ms). ESP32 byte-identity is pinned by the 137/137 host suite
+(phase-1 precedent — the serial profile branches are compile-time
+const-off there; the serial conformance battery additionally needs the
+m5stick/nucula places, held by sibling lanes at measurement time).
 
 ### 3.2 What osmo-ccid-firmware teaches (reference study)
 
@@ -124,7 +130,7 @@ block↔APDU logic) and moves to ccid-core unchanged.
 | 2 | STM32 95 ms root-cause | **round 1 landed** (a8fef3b): 95.3→42.8 ms; round 2 running | STM32 on-par |
 | 3 | card placement (m5stick + nucula coils) | **human** — both verified cardless via known-good + power-cycle | #87 differential, GPG-through-our-readers |
 | 4 | differential rerun (#87 close) | blocked on 3 | card-level correctness across readers |
-| 5 | handler unification (3.1) | **DONE**: phase 1 ESP32 extraction + phase 2 STM32 port onto the core (issue #121); HIL re-run pending | STM32 HIL 7/7 re-verification |
+| 5 | handler unification (3.1) | **DONE**: phase 1 ESP32 extraction + phase 2 STM32 port onto the core (issue #121); HIL 7/7 on the bench | — |
 | 6 | m5stick CAP-upload perf | blocked on 3 (need a card to test) | install-through-our-reader |
 
 ## 5. Card-safety rules (standing)
