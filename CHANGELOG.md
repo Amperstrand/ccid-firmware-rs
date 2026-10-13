@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — wifi-vpcd: pcscd, GPG and GlobalPlatform over WiFi (#154)
+
+- `firmware/esp32-ccid/src/vpcd.rs` — vpcd protocol client in reversed
+  connection mode: the stock `libifdvpcd.so` stays in server mode
+  (listening on :35963) and the board connects out with 3 s
+  auto-reconnect. Bench-verified 2026-10-13 end-to-end over WiFi:
+  ATR, GPG `--card-status` (OpenPGP 3.4), and full GP
+  uninstall/install of SmartPGP (`gp --bs 200`, see runbook for the
+  NCI single-packet limitation).
+- `wifi_common.rs` / `wifi_vpcd.rs` — shared station bring-up ladder
+  and the vpcd firmware main. Credentials are build-time env vars
+  only (`NUCULA_WIFI_SSID` / `NUCULA_WIFI_PASS` / `NUCULA_VPCD_HOST`).
+- `docs/VPCD_WIFI_RUNBOOK.md` — host setup (reader.conf, pcscd
+  systemd overrides, ufw rules), GPG/GP configuration, and the
+  operational rules that each cost an hour to learn.
+- `docs/VPCD_ALIGNMENT_AUDIT.md` — stock-driver protocol alignment
+  audit.
+- `host-tools/ifd-nucula/` — research alternative: native network IFD
+  driver sketch with mock-board selftest (from the #154 transport
+  research decision matrix).
+
+### Fixed
+
+- netlog: subnet-directed broadcast — the bench AP does not forward
+  limited broadcasts between wireless stations.
+- ota: rollback hardening — app marked valid only after full
+  bring-up, short-write detection on the image stream.
+- pn7160: cold-cache wall-power re-activation in the driver,
+  bring-up step logging in the I2C shim.
+- wifi-ccid: bring-up deduplicated onto `wifi_common`.
+
 ## [0.2.0] — 2026-10-12
 
 Hardware-verified release: all six bench readers card-level tested
