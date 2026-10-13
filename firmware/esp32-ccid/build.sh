@@ -134,16 +134,42 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
         ;;
-    wifi-ccid|wifi-vpcd)
+    wifi-ccid)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
         RELEASE_ARGS=()
-        FEATURE_ARGS=(--no-default-features --features "${BOARD}")
+        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula")
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
+        ;;
+    wifi-vpcd)
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula")
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
+    m5stick-vpcd)
+        # m5stick + MFRC522 (Grove I2C) running the vpcd reversed-connection
+        # firmware — the computer-USB-power proof: no wall adapter involved.
+        # Console returns to UART0 (the USB bridge): the CCID serial wire is
+        # unused by vpcd, and netlog keeps carrying the same lines over UDP.
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa-vpcd.full"
+        TRIPLE="xtensa-esp32-espidf"
+        PROFILE="release"
+        RELEASE_ARGS=(--release)
+        FEATURE_ARGS=(--no-default-features --features wifi-vpcd,backend-mfrc522,board-m5stick)
+        CHIP="esp32"
+        FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
+        FLASH_BAUD="115200"
         ;;
     m5stick)
         TOOLCHAIN="esp"
@@ -335,7 +361,13 @@ if [ -n "${FLASH_PORT}" ]; then
     # #67/#73): a board still carrying a factory/single-app table would
     # otherwise lack the ota slots (and the c3 coredump partition) that this
     # build assumes. Idempotent — safe to reflash every time.
-    PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
+    # Location: inside the esp-idf-sys out dir (esp-idf-sys-<hash>/out/
+    # build/partition_table/) — the hash dir changes with fingerprints, so
+    # resolve by newest match; fall back to the legacy flat path.
+    PART_TABLE="$(ls -t "${TARGET_DIR}/${TRIPLE}"/${PROFILE}/build/esp-idf-sys*/out/build/partition_table/partition-table.bin 2>/dev/null | head -1)"
+    if [ -z "${PART_TABLE}" ]; then
+        PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
+    fi
     # Codex review on #82: writing ota_0 while otadata still points at
     # ota_1 leaves the bootloader on the OLD image after a "successful"
     # flash. Erasing otadata resets boot selection to the first valid
