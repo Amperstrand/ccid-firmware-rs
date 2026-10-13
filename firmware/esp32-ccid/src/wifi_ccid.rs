@@ -42,10 +42,11 @@ pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
 
-    // The CDC is the DEBUG console in this build (no CCID on it) —
-    // logs stay enabled for the whole lifetime.
-    use esp_idf_svc::log::EspLogger;
-    EspLogger::initialize_default();
+    // netlog writes every log line to the serial console AND (once
+    // the network is up) to a UDP broadcast on :4567 — the bench log
+    // channel when no USB link exists (wall-power operation). Replaces
+    // EspLogger (first installer wins in the log crate).
+    crate::netlog::init();
 
     log::warn!(
         "FWID wifi-ccid rev={} build={} transport=wifi device=\"GemPC Twin ESP32\"",
@@ -80,6 +81,12 @@ pub fn run() -> ! {
         ip,
         TCP_PORT
     );
+
+    // WiFi debug + OTA: bind the netlog UDP socket now that lwIP is up
+    // (binding earlier asserts); spawn the TCP OTA flash server (:3232)
+    // so the board can be updated without a USB link.
+    crate::netlog::set_ip(&ip);
+    crate::ota::spawn();
 
     let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).expect("tcp bind");
     log::warn!("wifi-ccid: listening on 0.0.0.0:{}", TCP_PORT);
