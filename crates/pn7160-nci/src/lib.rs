@@ -106,6 +106,12 @@ pub const GID_PROP: u8 = 0x0F;
 /// field anywhere is `TechDet_NBR_RETRIES`, tag-detector/LPCD only).
 pub const NTF_PROP_RF_WTX: u8 = 0x17;
 
+// UM11495: Notification indicating that RF communication is in phase of
+// WTX(RTOX) REQ/RESP exchange for longer period of time.
+// UM11495: If WTX REQ/RESP exchange phase continues an NCI system
+// notification WTX is sent with a period configurable via
+// READER_FWITOX_NTF_CFG.
+
 /// Is this frame the PN7160 WTX advisory notification (`6F 17 00`)?
 /// See [`NTF_PROP_RF_WTX`] for the UM11495 Rev 1.8 citation; the frame
 /// carries no payload (Table 74: 0 parameters).
@@ -277,6 +283,46 @@ pub mod tx {
         0xFE,
         0x01,
     ];
+
+    /// CORE_SET_CONFIG carrying ONE EXTENDED (proprietary) TLV:
+    /// `READER_FWITOX_NTF_CFG` (tag `0xA0 0x65`, len 2) = the given
+    /// value. GREAT EXPECTATION (reference-locked shape — do not "fix"
+    /// without re-verifying against the cited references): UM11495
+    /// Rev 1.8 §7.2 Table 22 "Extended TLV for proprietary parameters"
+    /// — "Tag = 0xA0XX (2 bytes) | Len (1 byte) | Val (m bytes)" —
+    /// riding the same CORE_SET_CONFIG payload form as the standard
+    /// TLV (NCI 1.0 §5.1.3: `[num_params][param...]`, plen covers the
+    /// WHOLE payload). For m=2: plen = 1 + 3 + 2 = 06 (the standard
+    /// sibling above carries plen=05 for its 1+1+1+2 payload).
+    ///
+    /// ⚠️ RW in E²PROM (UM11495 Table 99: "RW in E²PROM") — persistent
+    /// across boots: any probe write MUST be reverted to the default
+    /// (`0x1000`) in the same session.
+    pub const fn set_config_fwitox(value_le: [u8; 2]) -> [u8; 9] {
+        // UM11495: To extend this space, the solution chosen is to
+        // define a space of Tags coded on 16 bits, instead of 8 bits.
+        // These extended Tags will always start by the value 0xA0,
+        // which is the first value available in the Proprietary range.
+        [
+            MT_CMD,
+            OID_CORE_SET_CONFIG,
+            0x06,
+            0x01,
+            0xA0,
+            0x65,
+            0x02,
+            value_le[0],
+            value_le[1],
+        ]
+    }
+
+    /// `READER_FWITOX_NTF_CFG` factory default (UM11495 Rev 1.8
+    /// Table 99: default value `0x1000` — "Delay before sending TOX
+    /// notification to Host. Unit is 4096/fc (~302us)": 0x1000 × 302 µs
+    /// ≈ 1.24 s, the bench-observed WTX-NTF spacing, issue #151).
+    pub const FWITOX_DEFAULT: [u8; 2] = [0x10, 0x00];
+    // UM11495: Delay before sending TOX notification to Host. Unit is
+    // 4096/fc (~302us)
 
     /// RF_DISCOVER_MAP with one mapping: ISO-DEP protocol to ISO-DEP
     /// interface, poll mode. Payload [num=1, protocol, interface, mode=1]
@@ -692,6 +738,49 @@ pub mod reader {
         Some(&activation.payload[6..6 + params_len])
     }
 
+    /// Outcome of [`exchange_detailed`] (issue #156 A2).
+    ///
+    /// The Data variant carries the same inline 1 KiB heapless buffer
+    /// the previous `Option<Vec<u8, 1024>>` return did — identical
+    /// stack cost, no allocator to box it in (no_std).
+    #[allow(clippy::large_enum_variant)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum ExchangeOutcome {
+        /// Complete response payload (PBF chain reassembled).
+        Data(Vec<u8, 1024>),
+        /// The 2.4 s collect budget expired (or a DATA write failed on
+        /// a mute link) with no completed response: the RF interface
+        /// may STILL be live and the chip still honoring WTX — the
+        /// driver must resync (deactivate + drain + clear) so the late
+        /// response cannot land in the next command's poll window.
+        Timeout,
+        /// RF_DEACTIVATE_NTF(reason = RF link lost) arrived
+        /// mid-exchange: the tag left the field and the chip already
+        /// tore the RF interface down itself.
+        LinkLost,
+    }
+
+    /// Stall callback for [`exchange_detailed`] (issue #156 B): receives
+    /// the NOMINAL elapsed collection wait in ms. The CCID layer uses it
+    /// to emit interim RDR_to_PC_SlotStatus time-extension frames.
+    pub type StallHook = fn(elapsed_ms: u32);
+
+    /// Collect rounds per exchange: 12 × 200 ms ≈ 2.4 s, under the
+    /// serial host's 3 s read timeout (libccidtwin
+    /// DEFAULT_COM_READ_TIMEOUT, reference/CCID/src/defs.h:76).
+    const DATA_COLLECT_ROUNDS: usize = 12;
+
+    /// Nominal wait per collect round (host mocks make `wait_ms` a
+    /// no-op, so elapsed is tracked as rounds × this value).
+    const DATA_COLLECT_WAIT_MS: u64 = 200;
+
+    /// Stall-report cadence (issue #156 B): the stall hook fires once
+    /// the nominal elapsed crosses 1.5 s and every 1.5 s after —
+    /// comfortably inside libccidtwin's 3 s DEFAULT_COM_READ_TIMEOUT,
+    /// so an interim CCID time-extension frame always reaches the host
+    /// before its select() expires.
+    const STALL_REPORT_MS: u32 = 1500;
+
     /// Exchange one APDU over the RF data connection: TX fragmentation,
     /// credit gating between fragments, RX reassembly of the reply
     /// chain. The reply must be DATA packet(s) on the same connection
@@ -738,9 +827,62 @@ pub mod reader {
     /// 2.4 s budget above is the bound (the chip offers no retry-bound
     /// TLV to tighten, see [`NTF_PROP_RF_WTX`]).
     pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 1024>> {
-        const DATA_COLLECT_ROUNDS: usize = 12;
-        const DATA_COLLECT_WAIT_MS: u64 = 200;
+        match exchange_detailed(t, conn_id, apdu, None) {
+            (ExchangeOutcome::Data(v), _) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// Fire-and-collect DATA exchange with a detailed outcome (issue
+    /// #156 A2): distinguishes a collection TIMEOUT (the #151 desync
+    /// hole — the RF interface is still live and the chip still honors
+    /// WTX; the late DATA response would land in the NEXT command's
+    /// poll window) from a mid-exchange LINK LOSS (the tag left the
+    /// field; the chip already tore the interface down itself).
+    ///
+    /// `stall` (issue #156 B): invoked with the NOMINAL elapsed wait
+    /// (waited rounds × [`DATA_COLLECT_WAIT_MS`]) each time the
+    /// exchange has been collecting without a completed response for
+    /// ~1.5 s and every ~1.5 s after that — the caller emits CCID
+    /// time-extension frames from it. With the current 2.4 s budget at
+    /// most ONE emission lands per exchange (~1.6 s in); a future
+    /// larger budget extends at the same cadence.
+    ///
+    /// A DATA-packet send failure (mute/NAK link) is reported as
+    /// [`ExchangeOutcome::Timeout`]: the driver's resync teardown is
+    /// the safe response to an unknown chip state either way.
+    pub fn exchange_detailed<T: Transport>(
+        t: &mut T,
+        conn_id: u8,
+        apdu: &[u8],
+        stall: Option<StallHook>,
+    ) -> (ExchangeOutcome, u32) {
         let mut budget = DATA_COLLECT_ROUNDS;
+        let mut waited_rounds: usize = 0;
+        let mut wtx: u32 = 0;
+        // Stall cadence: first report once the nominal elapsed crosses
+        // 1.5 s, then every 1.5 s after (under libccidtwin's 3 s
+        // DEFAULT_COM_READ_TIMEOUT — reference/CCID/src/defs.h:76).
+        let mut next_stall_ms: u32 = STALL_REPORT_MS;
+
+        // One waited round completed without a response: count WTX
+        // churn, advance the stall clock.
+        fn round_waited<T: Transport>(
+            t: &mut T,
+            waited_rounds: &mut usize,
+            next_stall_ms: &mut u32,
+            stall: Option<StallHook>,
+        ) {
+            *waited_rounds += 1;
+            let elapsed = (*waited_rounds as u32) * (DATA_COLLECT_WAIT_MS as u32);
+            if elapsed >= *next_stall_ms {
+                if let Some(hook) = stall {
+                    hook(elapsed);
+                }
+                *next_stall_ms = (*next_stall_ms).saturating_add(STALL_REPORT_MS);
+            }
+            t.wait_ms(DATA_COLLECT_WAIT_MS);
+        }
 
         // TX: PBF-chained fragments, credit-gated (NCI 1.0 §3.5).
         if apdu.is_empty() {
@@ -749,7 +891,7 @@ pub mod reader {
             // single empty DATA packet.
             let mut frame = Vec::new();
             if !data::encode_fragment(conn_id, false, &[], &mut frame) || !t.send(&frame) {
-                return None;
+                return (ExchangeOutcome::Timeout, wtx);
             }
         }
         let mut fragments = apdu.chunks(data::MAX_DATA_FRAGMENT).peekable();
@@ -757,7 +899,7 @@ pub mod reader {
             let last = fragments.peek().is_none();
             let mut frame = Vec::new();
             if !data::encode_fragment(conn_id, !last, fragment, &mut frame) || !t.send(&frame) {
-                return None;
+                return (ExchangeOutcome::Timeout, wtx);
             }
             if last {
                 break;
@@ -769,16 +911,22 @@ pub mod reader {
             let mut credited = false;
             while budget > 0 {
                 if let Some(f) = t.poll_frame() {
+                    if is_wtx_ntf(&f) {
+                        wtx += 1;
+                    }
+                    if matches!(event_of(&f), Some(TagEvent::LinkLost)) {
+                        return (ExchangeOutcome::LinkLost, wtx);
+                    }
                     if is_conn_credits_ntf(&f) {
                         credited = true;
                         break;
                     }
                 }
                 budget -= 1;
-                t.wait_ms(DATA_COLLECT_WAIT_MS);
+                round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall);
             }
             if !credited {
-                return None;
+                return (ExchangeOutcome::Timeout, wtx);
             }
         }
 
@@ -787,19 +935,26 @@ pub mod reader {
         let mut response: Vec<u8, 1024> = Vec::new();
         while budget > 0 {
             if let Some(f) = t.poll_frame() {
+                if is_wtx_ntf(&f) {
+                    wtx += 1;
+                }
+                if matches!(event_of(&f), Some(TagEvent::LinkLost)) {
+                    return (ExchangeOutcome::LinkLost, wtx);
+                }
                 if f.mt == MT_DATA && f.gid == conn_id && f.len > 0 {
                     if response.extend_from_slice(&f.payload[..f.len]).is_err() {
-                        return None; // reassembly overran the 1024-octet budget
+                        // reassembly overran the 1024-octet budget
+                        return (ExchangeOutcome::Timeout, wtx);
                     }
                     if !f.pbf {
-                        return Some(response);
+                        return (ExchangeOutcome::Data(response), wtx);
                     }
                 }
             }
             budget -= 1;
-            t.wait_ms(DATA_COLLECT_WAIT_MS);
+            round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall);
         }
-        None
+        (ExchangeOutcome::Timeout, wtx)
     }
 
     /// Deactivate to idle, then consume the DEACTIVATE notification —
@@ -1113,6 +1268,18 @@ mod tests {
         assert_eq!(
             &tx::RF_DISCOVER_PASSIVE_A,
             &[0x21, 0x03, 0x03, 0x01, 0x00, 0x01]
+        );
+        // GREAT EXPECTATION (extended-TLV probe bytes, issue #156 C —
+        // derived from Table 22 + the NCI §5.1.3 payload form locked by
+        // SET_CONFIG_TOTAL_DURATION above; plen=06 covers
+        // [num=1][tag A0 65][len 02][val]):
+        assert_eq!(
+            &tx::set_config_fwitox([0x02, 0x00]),
+            &[0x20, 0x02, 0x06, 0x01, 0xA0, 0x65, 0x02, 0x02, 0x00]
+        );
+        assert_eq!(
+            &tx::set_config_fwitox(tx::FWITOX_DEFAULT),
+            &[0x20, 0x02, 0x06, 0x01, 0xA0, 0x65, 0x02, 0x10, 0x00]
         );
     }
 
@@ -1454,6 +1621,65 @@ mod tests {
         let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
             .expect("data must arrive after wtx churn");
         assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+    }
+
+    #[test]
+    fn exchange_detailed_distinguishes_timeout_from_link_lost() {
+        // Issue #156 A2: an exchange that runs the full collect budget
+        // out with no DATA packet is a TIMEOUT (interface may still be
+        // live — driver must resync); an RF_DEACTIVATE(link-loss) NTF
+        // mid-collection is LINK LOST (chip already tore down).
+        let mut t = mock::MockTransport::new();
+        let (outcome, wtx) = reader::exchange_detailed(&mut t, 0, &[0x00, 0xA4], None);
+        assert_eq!(outcome, reader::ExchangeOutcome::Timeout);
+        assert_eq!(wtx, 0, "no advisories in a silent timeout");
+
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            0x00,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+        ]);
+        let (outcome, _) = reader::exchange_detailed(&mut t, 0, &[0x00, 0xA4], None);
+        assert_eq!(outcome, reader::ExchangeOutcome::LinkLost);
+    }
+
+    #[test]
+    fn exchange_detailed_counts_wtx_advisories() {
+        // Issue #156 A3: every consumed 6F 17 00 advisory counts toward
+        // the exchange's WTX total (bench model: ≈ stall / 1.24 s).
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[0x6F, 0x17, 0x00]);
+        t.push_notification(&[0x6F, 0x17, 0x00]);
+        t.push_notification(&[0x00, 0x00, 0x02, 0x90, 0x00]);
+        let (outcome, wtx) = reader::exchange_detailed(&mut t, 0, &[0x00, 0xA4], None);
+        assert!(matches!(outcome, reader::ExchangeOutcome::Data(_)));
+        assert_eq!(wtx, 2);
+    }
+
+    #[test]
+    fn exchange_stall_hook_fires_at_1p5s_cadence() {
+        // Issue #156 B: the stall hook fires once the nominal elapsed
+        // (rounds × 200 ms) crosses 1.5 s, then every 1.5 s after. The
+        // 12-round budget (2.4 s) admits exactly ONE emission (round 8
+        // → 1600 ms); a round-16 second emission would need a bigger
+        // budget.
+        use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(usize::MAX);
+        static LAST: AtomicU32 = AtomicU32::new(u32::MAX);
+        fn recorder(elapsed_ms: u32) {
+            LAST.store(elapsed_ms, Ordering::SeqCst);
+            CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        CALLS.store(0, Ordering::SeqCst);
+
+        let mut t = mock::MockTransport::new();
+        let (outcome, _) = reader::exchange_detailed(&mut t, 0, &[0x00, 0xA4], Some(recorder));
+        assert_eq!(outcome, reader::ExchangeOutcome::Timeout);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "single emission in 2.4 s");
+        assert_eq!(LAST.load(Ordering::SeqCst), 1600, "round 8 × 200 ms");
     }
 
     #[test]
