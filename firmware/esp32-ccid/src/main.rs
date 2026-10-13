@@ -111,8 +111,15 @@ use esp_idf_sys::EspError;
 const UART_RX_TIMEOUT_MS: u64 = 500;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const CARD_POLL_INTERVAL_MS: u64 = 3000;
+// #101 RX hardening: the serve loop BLOCKS inside card exchanges
+// (20–60 ms typical, WTX-class 150 ms+) while host retries keep
+// arriving at line rate. ESP-IDF sizes the driver ring at
+// rx_buffer_size − 128 (HW FIFO), so the old 548 gave ~420 usable
+// bytes — under one 60 ms burst at 115200 8N2 (≈ 628 B). 4096 holds
+// ~380 ms of continuous arrivals, far beyond any host retry pattern
+// (libccid retransmits at BWT ≥ 1.4 s or the 3 s serial timeout).
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const UART_BUF_SIZE: usize = 548;
+const UART_BUF_SIZE: usize = 4096;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const MAX_FRAME_SIZE: usize = 274;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
@@ -176,6 +183,61 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     }
 }
 
+/// Feed one host byte through the server and, when the byte completes
+/// a frame, write echo (+notify) + response and flush. Extracted so the
+/// #101 drain loop can feed queued bytes through the identical path.
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    any(feature = "backend-mfrc522", feature = "backend-pn532"),
+    not(feature = "spp")
+))]
+fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
+    uart: &UartDriver,
+    server: &mut esp32_ccid::ccid_serial_server::CcidSerialServer<D>,
+    byte: u8,
+) {
+    use esp32_ccid::ccid_serial_server::ServeAction;
+
+    let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+    // Issue #120 turnaround stamp: measured from this byte's feed (the
+    // frame-completing byte is the one that matters) through flush_write.
+    let byte_us = esp32_ccid::t1::now_us();
+    match server.feed_byte(byte, now) {
+        ServeAction::Respond => {
+            write_all_logged(uart, server.echo());
+            let notify = server.notify();
+            if !notify.is_empty() {
+                write_all_logged(uart, notify);
+            }
+            write_all_logged(uart, server.response());
+            let _ = uart.flush_write();
+            let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
+            server
+                .handler_mut()
+                .record_turnaround_us(turnaround_us.clamp(0, u32::MAX as i64) as u32);
+            // Presence under continuous traffic (issue #114, Codex on
+            // #98): with inline_poll=false the poll on the read-idle
+            // path only fired when the host paused, so commands
+            // arriving <500 ms apart starved it entirely. Post-response
+            // the wire is quiet from our side — poll here too (same
+            // primitive the USB-CDC main uses) so the presence cache
+            // stays fresh.
+            let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+            server.poll_if_due(now);
+            // Dump-and-retrieve: the 0xD1 ack went out — panic now so
+            // the panic handler writes the flash coredump.
+            if server.take_snapshot_request() {
+                panic!("escape 0xD1: diagnostic snapshot requested");
+            }
+            server.poll_if_due_after_response(unsafe { esp_idf_sys::xTaskGetTickCount() });
+        }
+        ServeAction::Nak => {
+            write_all_logged(uart, server.nak_frame());
+        }
+        ServeAction::None => {}
+    }
+}
+
 /// Shared UART serving loop (issue #90): both classic mains route through
 /// [`CcidSerialServer`] with the UART-main profile (NAK on malformed
 /// frames, NotifySlotChange on presence transitions) — one implementation
@@ -191,7 +253,7 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
     uart: &UartDriver,
     handler: esp32_ccid::ccid_handler::CcidHandler<D>,
 ) -> ! {
-    use esp32_ccid::ccid_serial_server::{CcidSerialServer, ServeAction, ServeConfig};
+    use esp32_ccid::ccid_serial_server::CcidSerialServer;
 
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
@@ -199,7 +261,7 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
         handler,
         poll_interval_ticks,
         unsafe { esp_idf_sys::xTaskGetTickCount() },
-        ServeConfig {
+        esp32_ccid::ccid_serial_server::ServeConfig {
             nak_on_error: true,
             notify_slot_change: true,
             // #89: MFRC522 presence polls on marginal coupling block for
@@ -223,59 +285,32 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
         }
     }
 
+    // #101 RX hardening: bytes that queued while the loop was busy
+    // (card exchange inside feed_byte, response flush, presence poll)
+    // are host retries or the next frame — feed them BEFORE blocking
+    // again. Blocking only happens BETWEEN frames (feed_byte runs the
+    // card only after a frame completes), so the drained bytes always
+    // begin at a frame boundary; the ring sizing above guarantees they
+    // survived the block. The blocking read stays 1-byte: UART reads
+    // wait for the FULL requested length, so a larger buffer would
+    // add latency, not throughput.
     let mut byte_buf = [0u8; 1];
+    let mut drain_buf = [0u8; 256];
     let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
+    let drain_ticks = esp_idf_hal::delay::TickType::new_millis(0).ticks();
     loop {
         match uart.read(&mut byte_buf, timeout_ticks) {
             Ok(1) => {
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                // Issue #120 turnaround stamp: this read returned the
-                // newest command byte; if it completes a frame, the
-                // Respond arm measures from here (last byte received)
-                // through flush_write (response on the wire).
-                let byte_us = esp32_ccid::t1::now_us();
-                match server.feed_byte(byte_buf[0], now) {
-                    ServeAction::Respond => {
-                        write_all_logged(uart, server.echo());
-                        let notify = server.notify();
-                        if !notify.is_empty() {
-                            write_all_logged(uart, notify);
+                serve_byte(uart, &mut server, byte_buf[0]);
+                loop {
+                    match uart.read(&mut drain_buf, drain_ticks) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            for &b in &drain_buf[..n] {
+                                serve_byte(uart, &mut server, b);
+                            }
                         }
-                        write_all_logged(uart, server.response());
-                        let _ = uart.flush_write();
-                        let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
-                        server
-                            .handler_mut()
-                            .record_turnaround_us(turnaround_us.clamp(0, u32::MAX as i64) as u32);
-                        // Presence under continuous traffic (issue #114,
-                        // Codex on #98): with inline_poll=false the poll
-                        // on the read-idle path only fired when the host
-                        // paused, so commands arriving <500 ms apart
-                        // starved it entirely. Post-response the wire is
-                        // quiet from our side — poll here too (same
-                        // primitive the USB-CDC main uses) so the presence
-                        // cache stays fresh.
-                        let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                        server.poll_if_due(now);
-                        // Dump-and-retrieve: the 0xD1 ack went out — panic
-                        // now so the panic handler writes the flash coredump.
-                        if server.take_snapshot_request() {
-                            panic!("escape 0xD1: diagnostic snapshot requested");
-                        }
-                        // Codex PR 98: with inline_poll=false the read-idle
-                        // path was the ONLY poll site — a host keeping the
-                        // wire busy (<500 ms gaps, pcscd's status loop)
-                        // starved presence indefinitely. The response is
-                        // flushed, so #89 (never block a pending response
-                        // on a poll) still holds.
-                        server.poll_if_due_after_response(unsafe {
-                            esp_idf_sys::xTaskGetTickCount()
-                        });
                     }
-                    ServeAction::Nak => {
-                        write_all_logged(uart, server.nak_frame());
-                    }
-                    ServeAction::None => {}
                 }
             }
             _ => {

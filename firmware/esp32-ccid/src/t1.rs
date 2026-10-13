@@ -169,6 +169,16 @@ pub struct T1Endpoint {
     /// drives the WTX request size (G-04). Defaults to the BWI our
     /// synthetic ATR advertises in TB3; updated by SetParameters.
     host_bwi: u8,
+    /// #101 retry-idempotence: ns of the last COMPLETED host chain
+    /// (pre-toggle) whose answer already went out. A retransmitted
+    /// I-block carrying this ns means our answer was lost on the wire.
+    retry_ns: Option<u8>,
+    /// First frame of the answer to the last completed host chain
+    /// (the WTX request while the dance runs, the first I-block after
+    /// the grant). Replaying it never re-executes the APDU — a
+    /// double-INSTALL-class hazard — and never dead-airs the host
+    /// (libccid answers our old R(N(R),0) with a resend, forever).
+    retry_first_frame: Option<Vec<u8, 520>>,
 }
 
 impl Default for T1Endpoint {
@@ -189,6 +199,8 @@ impl T1Endpoint {
             last_sent: None,
             wtx_pending: false,
             host_bwi: ATR_TB3_BWI,
+            retry_ns: None,
+            retry_first_frame: None,
         }
     }
 
@@ -250,6 +262,20 @@ impl T1Endpoint {
             Some(Pcb::I { ns, more, nr: _ }) => {
                 let _ = nad;
                 if ns != self.host_ns {
+                    // #101 retry-idempotence: after a completed chain the
+                    // only legal carrier of the OLD ns is a retransmission
+                    // (our answer was lost). Serve the cache — the old
+                    // R(N(R),0) answer made libccid resend in a loop.
+                    if Some(ns) == self.retry_ns {
+                        if more {
+                            // duplicate chain piece: re-ACK (§11.6.3),
+                            // never re-append to the (already consumed) chain.
+                            return FeedResult::Immediate(block(r_pcb(ns, 0), &[]));
+                        }
+                        if let Some(frame) = &self.retry_first_frame {
+                            return FeedResult::Immediate(frame.clone());
+                        }
+                    }
                     // Sequence violation → request retransmission (§11.5.3).
                     return FeedResult::Immediate(block(r_pcb(self.host_ns, 0), &[]));
                 }
@@ -281,6 +307,8 @@ impl T1Endpoint {
                 self.recv_chain.clear();
                 self.send_chain.clear();
                 self.wtx_pending = false;
+                self.retry_ns = None;
+                self.retry_first_frame = None;
                 let rsp = block(s_pcb(SKind::Resync, true), &[]);
                 self.last_sent = Some(rsp.clone());
                 FeedResult::Immediate(rsp)
@@ -315,6 +343,9 @@ impl T1Endpoint {
                 // Host granted the WTX: send the deferred first block.
                 self.wtx_pending = false;
                 if let Some(b) = self.take_next_chain_block() {
+                    // The real answer supersedes the WTX request as the
+                    // cached replay frame (#101).
+                    self.retry_first_frame = Some(b.clone());
                     return FeedResult::Immediate(b);
                 }
                 self.bad_block()
@@ -353,10 +384,22 @@ impl T1Endpoint {
             self.wtx_pending = true;
             let wtx = block(s_pcb(SKind::Wtx, false), &[m]);
             self.last_sent = Some(wtx.clone());
+            self.cache_retry_answer(wtx.clone());
             return wtx;
         }
-        self.take_next_chain_block()
-            .unwrap_or_else(|| self.final_empty_block())
+        let first = self
+            .take_next_chain_block()
+            .unwrap_or_else(|| self.final_empty_block());
+        self.cache_retry_answer(first.clone());
+        first
+    }
+
+    /// Arm the #101 replay cache: `frame` is the first frame of the
+    /// answer to the chain that just completed (`host_ns` already
+    /// toggled in `feed`, so the answered ns is the complement).
+    fn cache_retry_answer(&mut self, frame: Vec<u8, 520>) {
+        self.retry_ns = Some(self.host_ns ^ 1);
+        self.retry_first_frame = Some(frame);
     }
 
     /// Empty-payload final I-block: still a real final block — toggles
@@ -698,6 +741,120 @@ mod tests {
         ep.feed(&host_i(0, false, 0, &[0x00]));
         let rsp = ep.card_response(&[0x90, 0x00], 25);
         assert_eq!(rsp[1] & 0xC0, 0x00, "plain I-block, no WTX dance");
+    }
+
+    /// #101: a retransmitted final I-block (our answer was lost) must
+    /// replay the cached answer — never re-execute the APDU (double-
+    /// INSTALL hazard) and never answer R(N(R),0) (libccid resends into
+    /// the R forever: the bench dead-air spiral).
+    #[test]
+    fn retransmitted_final_iblock_replays_cached_answer() {
+        let mut ep = T1Endpoint::new();
+        let install = [0x84, 0xE6, 0x02, 0x00, 0x00];
+        match ep.feed(&host_i(0, false, 0, &install)) {
+            FeedResult::Apdu(a) => assert_eq!(a.as_slice(), &install),
+            other => panic!("expected Apdu, got {other:?}"),
+        }
+        let first = ep.card_response(&[0x90, 0x00], 30);
+
+        // answer lost on the wire → host retransmits I(0); twice, to
+        // prove the cache is stable across replays
+        for _ in 0..2 {
+            match ep.feed(&host_i(0, false, 0, &install)) {
+                FeedResult::Immediate(replay) => assert_eq!(replay, first),
+                other => panic!("duplicate final I-block must replay cache, got {other:?}"),
+            }
+        }
+
+        // host finally advances: a fresh chain (ns=1) still executes
+        match ep.feed(&host_i(1, false, 0, &[0x00, 0xCA, 0x00, 0x00])) {
+            FeedResult::Apdu(_) => {}
+            other => panic!("fresh ns after replay must execute, got {other:?}"),
+        }
+        let next = ep.card_response(&[0x90, 0x00], 5);
+        assert_eq!(next[1], i_pcb(1, false, 0));
+    }
+
+    #[test]
+    fn retransmitted_chain_piece_after_completion_re_acks() {
+        // Duplicate MID-chain piece after the chain completed: re-ACK
+        // it (§11.6.3) without re-appending — then the duplicate final
+        // piece still replays the cached answer.
+        let mut ep = T1Endpoint::new();
+        let p1 = vec![0xAA; 32];
+        let p2 = vec![0xBB; 8];
+        match ep.feed(&host_i(0, true, 0, &p1)) {
+            FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 0)),
+            other => panic!("expected chain ACK, got {other:?}"),
+        }
+        match ep.feed(&host_i(0, false, 0, &p2)) {
+            FeedResult::Apdu(_) => {}
+            other => panic!("expected Apdu, got {other:?}"),
+        }
+        let first = ep.card_response(&[0x90, 0x00], 5);
+
+        match ep.feed(&host_i(0, true, 0, &p1)) {
+            FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 0), "re-ACK, no re-append"),
+            other => panic!("duplicate chain piece must re-ACK, got {other:?}"),
+        }
+        match ep.feed(&host_i(0, false, 0, &p2)) {
+            FeedResult::Immediate(replay) => assert_eq!(replay, first),
+            other => panic!("duplicate final piece must replay cache, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn retransmit_during_and_after_wtx_dance_replays_the_live_frame() {
+        // Slow exchange → S(WTX request) goes out. If the WTX request
+        // is lost, the host retransmits its I-block: replay the WTX.
+        // After the grant defers the real I-block, a later duplicate
+        // replays THAT block instead.
+        let mut ep = T1Endpoint::new();
+        let apdu = [0x80, 0x50, 0x00, 0x00, 0x08];
+        match ep.feed(&host_i(0, false, 0, &apdu)) {
+            FeedResult::Apdu(_) => {}
+            other => panic!("expected Apdu, got {other:?}"),
+        }
+        let wtx = ep.card_response(&[0x00, 0x00, 0x90, 0x00], 1_500);
+        assert_eq!(wtx[1], s_pcb(SKind::Wtx, false));
+        match ep.feed(&host_i(0, false, 0, &apdu)) {
+            FeedResult::Immediate(replay) => assert_eq!(replay, wtx, "WTX replayed while pending"),
+            other => panic!("duplicate during WTX must replay WTX, got {other:?}"),
+        }
+
+        let grant = block(s_pcb(SKind::Wtx, true), &[0x02]);
+        let deferred = match ep.feed(&grant) {
+            FeedResult::Immediate(b) => {
+                assert_eq!(b[1], i_pcb(0, false, 1));
+                b
+            }
+            other => panic!("expected deferred I-block, got {other:?}"),
+        };
+        match ep.feed(&host_i(0, false, 0, &apdu)) {
+            FeedResult::Immediate(replay) => {
+                assert_eq!(replay, deferred, "post-grant duplicate replays the I-block")
+            }
+            other => panic!("duplicate after grant must replay I-block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resync_clears_the_retry_cache() {
+        // §11.5.3.2: RESYNC restarts the protocol — a stale cached
+        // answer must not survive it.
+        let mut ep = T1Endpoint::new();
+        ep.feed(&host_i(0, false, 0, &[0x00]));
+        ep.card_response(&[0x90, 0x00], 5);
+        match ep.feed(&[0x00, 0xC0, 0x00, 0xC0]) {
+            FeedResult::Immediate(r) => assert_eq!(r[1], s_pcb(SKind::Resync, true)),
+            other => panic!("expected D0, got {other:?}"),
+        }
+        // Post-resync a wrong-ns block is a plain sequence violation
+        // again (R retransmit-request), NOT a cache replay.
+        match ep.feed(&host_i(1, false, 0, &[0x00])) {
+            FeedResult::Immediate(r) => assert_eq!(r[1], r_pcb(0, 0), "no stale cache post-resync"),
+            other => panic!("expected R-block, got {other:?}"),
+        }
     }
 }
 
