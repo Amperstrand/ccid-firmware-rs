@@ -15,14 +15,14 @@ import time
 
 import pytest
 
-from conftest import AID_PROBES, select_aid
+from cardlib import AID_PROBES, select_aid
 
 pytestmark = pytest.mark.hil
 
 
 def test_reader_enumerates(reader_key):
     """Each reader family is present in pcscd (hardware + driver chain)."""
-    from conftest import find_reader
+    from cardlib import find_reader
     assert find_reader(reader_key) is not None, f"{reader_key} missing from pcscd"
 
 

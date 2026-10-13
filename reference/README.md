@@ -1,0 +1,64 @@
+# Reference library — provenance index
+
+Every tracked external source this repo quotes from, with its upstream
+pin, license, and what we use it for. This is the index required by the
+Reference-First Doctrine and issue #134: quote-only copies and submodules
+must carry provenance so a quote can always be traced to its authority.
+
+Vendoring policy (what may live where) is defined in `AGENTS.md` →
+"Reference-First Doctrine" → "Vendoring policy (three classes)".
+
+## Git submodules (full upstream checkouts)
+
+| Path | Upstream | Pin (gitlink) | Upstream license | What we quote/use |
+|---|---|---|---|---|
+| `reference/CCID/` | [salsa.debian.org/rousseau/CCID](https://salsa.debian.org/rousseau/CCID.git) — the pcscd CCID driver (libccid) | `1a0f75d` (1.7.1-8) | LGPL-2.1-or-later (GPL-2.0 dual) | Host-side contract: `readers/*.txt` (authoritative device identities — Cherry/CT30/K30), `src/commands.c` (bError handling; specquotes `LIBCCID`), `src/ccid_serial.c` (GemPC serial framing; specquotes `CCID_SERIAL`), `src/openct/proto-t1.c` (host T=1 engine), `src/ifdhandler.c` + `src/parse.c` (PC/SC↔CCID translation, descriptor parser), `MacOSX/reader.h` (PIN structures; specquotes `PCSC`) |
+| `reference/osmo-ccid-firmware/` | [gitea.osmocom.org sim-card/osmo-ccid-firmware](https://gitea.osmocom.org/sim-card/osmo-ccid-firmware) | `639db14` (0.3-44) | GPL-2.0-or-later | Open-source CCID device reference: `ccid_common/ccid_proto.h` (CCID constants; specquotes `CCID_SPEC`), `ccid_common/iso7816_3.{c,h}` (`@implements ISO 7816-3:2006` Fi/Di/WT tables; specquotes `ISO7816`), `sysmoOCTSIM/config/hpl_sercom_config.h` (SAMD51 ISO 7816 USART config incl. NACK policy), `ccid_common/ccid_slot_fsm.c` (ICC_MUTE timeout shapes) |
+
+## Build-path vendored code (compiled — only when patched)
+
+| Path | Upstream | Pin | License | Why vendored |
+|---|---|---|---|---|
+| `vendor/synopsys-usb-otg/` | [Amperstrand/synopsys-usb-otg](https://github.com/Amperstrand/synopsys-usb-otg) | `764bc04` (master) | MIT/Apache (upstream driver) | Carries local patches that cannot live in a crates.io release; wired via `[patch.crates-io]` in the root `Cargo.toml`. The ONE legal build-path vendoring (see AGENTS.md policy). |
+
+## Canonical git deps (NOT vendored — consumed from forks)
+
+Unpatched dependencies are consumed as git deps from canonical Amperstrand
+forks, never copied into this tree (issues #19, #6 removed the old
+`vendor/mfrc522` and `vendor/iso14443-rs` divergent copies):
+
+| Crate | Source | Pin | Shared with |
+|---|---|---|---|
+| `mfrc522` | `Amperstrand/mfrc522-rs` (`ai-experiments`) | rev `e9ced1e` | bolty-rs |
+| `iso14443` | `Amperstrand/iso14443-rs` (`ai-experiments`) | rev `268db79` | bolty-rs |
+| `mfrc522-pcd` | `Amperstrand/bolty-rs` | rev `3808ba9` | bolty-rs |
+| `pn532-transport` | `Amperstrand/bolty-rs` | rev `5f1215da` | bolty-rs |
+
+Pins live in `firmware/esp32-ccid/Cargo.toml`.
+
+## Quote-lock wiring
+
+`specquotes.toml` (checked by `.github/workflows/spec-quote-drift.yml`)
+maps in-tree `// MARKER:` comments to verbatim source lines:
+
+| Source key | File | Marker | Coverage gate |
+|---|---|---|---|
+| `CCID_SPEC` | `reference/osmo-ccid-firmware/ccid_common/ccid_proto.h` | `CCID_SPEC` | strict |
+| `CCID_SERIAL` | `reference/CCID/src/ccid_serial.c` | `CCID_SERIAL` | strict |
+| `GEMPC` | `reference/CCID/readers/GemPCTwinSerial.txt` | `GEMPC` | strict |
+| `PCSC` | `reference/CCID/MacOSX/reader.h` | `PCSC` | drift-check only |
+| `LIBCCID` | `reference/CCID/src/commands.c` | `LIBCCID` | drift-check only |
+| `ISO7816` | `reference/osmo-ccid-firmware/ccid_common/iso7816_3.c` | `ISO7816` | drift-check only |
+
+PDF-only authorities with no canonical text source (USB CCID Rev 1.1,
+RM0090) are quoted via the closest tracked text sources above; extracted
+verbatim quotes for them belong under `docs/quote-sources/` with
+section/page cites (issue #140 lane).
+
+## Rules
+
+1. Adding a quote source: pin provenance here FIRST (upstream repo +
+   commit), then wire `[sources.X]` in `specquotes.toml`, then annotate
+   the code site with the marker.
+2. Submodule bumps update this table in the same commit.
+3. Never compile or link anything from `reference/` — it is quote-only.

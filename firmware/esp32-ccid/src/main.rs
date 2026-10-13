@@ -24,6 +24,10 @@ compile_error!("feature board-nucula is mutually exclusive with board-m5atom/boa
     ))
 ))]
 compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
+#[cfg(all(feature = "ble", feature = "spp"))]
+compile_error!(
+    "features ble and spp are mutually exclusive (both claim the single Bluetooth modem)"
+);
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -78,31 +82,28 @@ use esp32_ccid::ble_console::BleConsole;
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
 ))]
-use esp32_ccid::{
-    ccid_handler::CcidHandler,
-    ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
-    nfc::NfcDriver,
-    serial_framing::{
-        build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
-        FrameParser,
-    },
-};
+use esp32_ccid::ccid_handler::CcidHandler;
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
 ))]
+use esp_idf_hal::{delay::FreeRtos, i2c, peripherals::Peripherals, units::Hertz};
+
+// UART0 CCID wiring — absent in `spp` builds (RFCOMM replaces it).
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522",
+    not(feature = "spp")
+))]
 use esp_idf_hal::{
-    delay::FreeRtos,
     gpio::AnyIOPin,
-    i2c,
-    peripherals::Peripherals,
     uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
-    units::Hertz,
 };
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-mfrc522"
+    feature = "backend-mfrc522",
+    not(feature = "spp")
 ))]
 use esp_idf_sys::EspError;
 
@@ -150,7 +151,8 @@ impl embedded_hal::digital::InputPin for IrqPin<'_> {
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    any(feature = "backend-mfrc522", feature = "backend-pn532")
+    any(feature = "backend-mfrc522", feature = "backend-pn532"),
+    not(feature = "spp")
 ))]
 fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     while !bytes.is_empty() {
@@ -165,7 +167,8 @@ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    any(feature = "backend-mfrc522", feature = "backend-pn532")
+    any(feature = "backend-mfrc522", feature = "backend-pn532"),
+    not(feature = "spp")
 ))]
 fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     if let Err(e) = write_all(uart, bytes) {
@@ -177,9 +180,12 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
 /// [`CcidSerialServer`] with the UART-main profile (NAK on malformed
 /// frames, NotifySlotChange on presence transitions) — one implementation
 /// instead of three near-copies that drifted apart bug-by-bug.
+/// (Not compiled under `spp` — RFCOMM replaces UART0 as the CCID wire
+/// there; building pn532+spp fails loudly here by design.)
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    any(feature = "backend-mfrc522", feature = "backend-pn532")
+    any(feature = "backend-mfrc522", feature = "backend-pn532"),
+    not(feature = "spp")
 ))]
 fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
     uart: &UartDriver,
@@ -223,6 +229,11 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
         match uart.read(&mut byte_buf, timeout_ticks) {
             Ok(1) => {
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                // Issue #120 turnaround stamp: this read returned the
+                // newest command byte; if it completes a frame, the
+                // Respond arm measures from here (last byte received)
+                // through flush_write (response on the wire).
+                let byte_us = esp32_ccid::t1::now_us();
                 match server.feed_byte(byte_buf[0], now) {
                     ServeAction::Respond => {
                         write_all_logged(uart, server.echo());
@@ -232,11 +243,34 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
                         }
                         write_all_logged(uart, server.response());
                         let _ = uart.flush_write();
+                        let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
+                        server
+                            .handler_mut()
+                            .record_turnaround_us(turnaround_us.clamp(0, u32::MAX as i64) as u32);
+                        // Presence under continuous traffic (issue #114,
+                        // Codex on #98): with inline_poll=false the poll
+                        // on the read-idle path only fired when the host
+                        // paused, so commands arriving <500 ms apart
+                        // starved it entirely. Post-response the wire is
+                        // quiet from our side — poll here too (same
+                        // primitive the USB-CDC main uses) so the presence
+                        // cache stays fresh.
+                        let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                        server.poll_if_due(now);
                         // Dump-and-retrieve: the 0xD1 ack went out — panic
                         // now so the panic handler writes the flash coredump.
                         if server.take_snapshot_request() {
                             panic!("escape 0xD1: diagnostic snapshot requested");
                         }
+                        // Codex PR 98: with inline_poll=false the read-idle
+                        // path was the ONLY poll site — a host keeping the
+                        // wire busy (<500 ms gaps, pcscd's status loop)
+                        // starved presence indefinitely. The response is
+                        // flushed, so #89 (never block a pending response
+                        // on a poll) still holds.
+                        server.poll_if_due_after_response(unsafe {
+                            esp_idf_sys::xTaskGetTickCount()
+                        });
                     }
                     ServeAction::Nak => {
                         write_all_logged(uart, server.nak_frame());
@@ -288,6 +322,9 @@ fn main() {
         &uart_config,
     )
     .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
+    // Same RX-TOUT fix as the MFRC522 main: default flush adds ~40 ms per
+    // CCID frame (bench perf_ab 2026-10-10).
+    unsafe { esp_idf_sys::uart_set_rx_timeout(esp_idf_sys::uart_port_t_UART_NUM_0, 1) };
 
     let irq_pin = IrqPin(
         PinDriver::input(peripherals.pins.gpio16, gpio::Pull::Up)
@@ -345,15 +382,19 @@ fn main() {
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-mfrc522"
+    feature = "backend-mfrc522",
+    not(feature = "wifi-ccid"),
+    not(feature = "wifi-vpcd")
 ))]
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
-    // (console enabled) and in the `ble` feature build (BLE log bridge).
-    #[cfg(not(feature = "ble"))]
+    // (console enabled) and in the `ble` feature build (BLE log bridge). In
+    // `spp` builds the console stays enabled: CCID rides RFCOMM, so UART0 is
+    // free for logs.
+    #[cfg(not(any(feature = "ble", feature = "spp")))]
     esp32_ccid::netlog::init();
 
     let peripherals = Peripherals::take().expect("ESP32 peripherals already taken");
@@ -366,10 +407,10 @@ fn main() {
     let ble_console = BleConsole::init(peripherals.modem, true);
 
     // WiFi + OTA for serial-free bring-up (bench power bricks): the
-    // modem is exclusive with the `ble` feature build, and credentials
-    // come from NUCULA_WIFI_SSID/PASS at build time — absent creds
-    // leave the board serial/CCID-only exactly as before.
-    #[cfg(not(feature = "ble"))]
+    // modem is exclusive with the `ble` and `spp` feature builds, and
+    // credentials come from NUCULA_WIFI_SSID/PASS at build time — absent
+    // creds leave the board serial/CCID-only exactly as before.
+    #[cfg(not(any(feature = "ble", feature = "spp")))]
     match (
         option_env!("NUCULA_WIFI_SSID"),
         option_env!("NUCULA_WIFI_PASS"),
@@ -403,10 +444,14 @@ fn main() {
     // strict: even WARN-level failure lines ("power_on failed") interleave
     // with GemPC frames and pcscd rejects the handshake. Diagnostics go
     // through Escape 0xD0 counters / 0xD1 coredumps / `ble` builds — the
-    // wire itself stays pristine.
-    #[cfg(not(feature = "ble"))]
+    // wire itself stays pristine. NOT applied under `spp`: the CCID wire
+    // is RFCOMM there, so console logs cannot reach it.
+    #[cfg(not(any(feature = "ble", feature = "spp")))]
     log::set_max_level(log::LevelFilter::Off);
 
+    // UART0 as the CCID wire — replaced entirely by the SPP transport in
+    // `spp` builds (the modem goes to BtDriver<BtClassic> instead).
+    #[cfg(not(feature = "spp"))]
     let uart_config = uart::config::Config::new()
         .baudrate(Hertz(115_200))
         .data_bits(DataBits::DataBits8)
@@ -420,11 +465,12 @@ fn main() {
     // (TX=GPIO1, RX=GPIO3); the ESP32-C3 nucula board has no UART bridge, so use
     // the C3 UART0 defaults (TX=GPIO21, RX=GPIO20). Console output on nucula is the
     // ROM USB-Serial/JTAG CDC on GPIO18/19 (see sdkconfig.defaults.esp32c3).
-    #[cfg(feature = "board-nucula")]
+    #[cfg(all(feature = "board-nucula", not(feature = "spp")))]
     let (uart_tx, uart_rx) = (peripherals.pins.gpio21, peripherals.pins.gpio20);
-    #[cfg(not(feature = "board-nucula"))]
+    #[cfg(all(not(feature = "board-nucula"), not(feature = "spp")))]
     let (uart_tx, uart_rx) = (peripherals.pins.gpio1, peripherals.pins.gpio3);
 
+    #[cfg(not(feature = "spp"))]
     let uart = UartDriver::new(
         peripherals.uart0,
         uart_tx,
@@ -434,7 +480,17 @@ fn main() {
         &uart_config,
     )
     .expect("UART0 init failed (CCID serial TX/RX)");
+    // Bench (perf_ab, 2026-10-10): the default hardware RX-TOUT left short
+    // CCID frames in the UART FIFO until the periodic flush — a fixed ~40 ms
+    // first-byte (echo) delay dominated every APDU round-trip. A 1-symbol
+    // TOUT flushes as soon as the line goes idle (~90 us at 115200 8N2).
+    #[cfg(not(feature = "spp"))]
+    unsafe {
+        esp_idf_sys::uart_set_rx_timeout(esp_idf_sys::uart_port_t_UART_NUM_0, 1)
+    };
+    #[cfg(not(feature = "spp"))]
     log::warn!("bring-up: UART0 ok");
+    #[cfg(not(feature = "spp"))]
     log::warn!("bring-up: pins chosen, entering 50ms settle");
     #[cfg(target_arch = "riscv32")]
     log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
@@ -526,6 +582,13 @@ fn main() {
         led.set_state(esp32_ccid::led::LedState::Error);
     }
 
+    // Transport split: `spp` builds serve the same CcidHandler over the
+    // BT-Classic SPP byte pipe (spp_server::shell::serve_spp — same
+    // echo/response/poll cadence as serve_uart, REFERENCE
+    // esp-idf-svc bt_spp_acceptor.rs); everything else stays on UART0.
+    #[cfg(feature = "spp")]
+    esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(mfrc522_driver));
+    #[cfg(not(feature = "spp"))]
     serve_uart(&uart, CcidHandler::new(mfrc522_driver));
 }
 
@@ -681,6 +744,8 @@ mod pad_diag {
     feature = "backend-pn7160",
     not(feature = "pn7160-bringup"),
     not(feature = "pn7160-ccid"),
+    not(feature = "wifi-ccid"),
+    not(feature = "wifi-vpcd"),
     not(feature = "pn7160-bitbang"),
     not(feature = "pn7160-m1"),
     not(feature = "pn7160-v10raw"),
@@ -712,6 +777,22 @@ fn main() {
 ))]
 fn main() {
     esp32_ccid::pn7160_actdiag::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "wifi-vpcd"
+))]
+fn main() {
+    esp32_ccid::wifi_vpcd::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "wifi-ccid"
+))]
+fn main() {
+    esp32_ccid::wifi_ccid::run()
 }
 
 #[cfg(all(

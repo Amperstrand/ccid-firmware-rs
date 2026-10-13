@@ -1,3 +1,10 @@
+//! Compiled into a per-binary test target via the ccid-firmware
+//! [[test]] wiring — per-binary unused imports are expected.
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 mod ccid_harness;
 
 use ccid_firmware_rs::ccid_core::{
@@ -73,12 +80,13 @@ fn captures() -> Vec<ReplayCapture> {
             rx_payload: &[0xFF, 0x11, 0x18, 0xF6], // PPS confirm
         },
         // 5: SET_PARAMETERS: T=1 protocol
-        // Firmware returns ATR-derived protocol params (correct per CCID spec).
-        // SeedKeeper ATR gives: ta1=0x18, edc=CRC(1), guard=0, bwi=4, cwi=5, ifsc=254
+        // bmTCCKST1 = 0x00 (LRC): RFU bits are rejected with bad-parameter
+        // since the SetParameters validation fix; the accepted set is
+        // echoed verbatim (ta1=0x18, bwi=4, cwi=5, ifsc=254).
         ReplayCapture {
             name: "SETPARAMETERS: T=1, IFSC=254",
             tx: &[
-                0x61, 0x07, 0x00, 0x00, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00, 0x18, 0x10, 0x00, 0x45,
+                0x61, 0x07, 0x00, 0x00, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00, 0x18, 0x00, 0x00, 0x45,
                 0x00, 0xFE, 0x00,
             ],
             rx_msg_type: RDR_TO_PC_PARAMETERS,
@@ -318,15 +326,15 @@ fn replay_set_parameters_t1() {
     // Power on first
     h.send(PC_TO_RDR_ICC_POWER_ON, &[], 0x01);
 
-    // Set parameters: T=1, IFSC=254, BWI=1, CWI=4
-    let params = &[0x18, 0x10, 0x00, 0x45, 0x00, 0xFE, 0x00];
+    // Set parameters: T=1, IFSC=254, BWI=1, CWI=4 (bmTCCKST1 = 0x00 LRC;
+    // RFU bits are rejected since the SetParameters validation fix)
+    let params = &[0x18, 0x00, 0x00, 0x45, 0x00, 0xFE, 0x00];
     let resp = h.send(PC_TO_RDR_SET_PARAMETERS, params, 0x02);
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_PARAMETERS);
     assert!(r.is_success());
-    // Firmware returns ATR-derived params, not echo of request
-    assert_eq!(r.data[0], 0x18); // ta1
-    assert_eq!(r.data[5], 0xFE); // ifsc=254
+    // Firmware echoes the accepted host set verbatim (issue #56)
+    assert_eq!(r.data, &[0x18, 0x00, 0x00, 0x45, 0x00, 0xFE, 0x00]);
 }
 
 #[test]
@@ -433,7 +441,7 @@ fn replay_full_session_with_verify() {
     // 5. Set parameters
     let resp = h.send(
         PC_TO_RDR_SET_PARAMETERS,
-        &[0x18, 0x10, 0x00, 0x45, 0x00, 0xFE, 0x00],
+        &[0x18, 0x00, 0x00, 0x45, 0x00, 0xFE, 0x00],
         0x05,
     );
     let r = parse_ccid_response(&resp);

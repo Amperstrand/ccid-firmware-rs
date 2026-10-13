@@ -1,11 +1,17 @@
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
-pub use card_interface::{CardBackend, ContactCardExt, NfcCardExt, PresenceState};
+pub use card_interface::{CardBackend, ContactCardExt, NfcCardExt, PresenceState, SlotDriver};
 pub use ccid_protocol::*;
 
 pub mod diagnostics;
 pub use diagnostics::Diagnostics;
+
+pub mod handler;
+pub use handler::{ContactProfile, ReaderProfile, SerialNfcProfile};
+
+pub mod secure;
+pub use secure::{PinBuffer, PinModifyParams, PinResult, PinVerifyParams, SecureState};
 
 use ccid_protocol::status::build_bstatus;
 use ccid_protocol::types::{

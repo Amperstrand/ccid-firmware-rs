@@ -29,7 +29,6 @@ Usage:
 """
 
 import os
-import re
 import shlex
 import subprocess
 import time
@@ -48,13 +47,22 @@ from bench import (  # noqa: F401  (PLACES re-exported for addoption default)
     place_holder as _place_holder,
 )
 
+# APDU helpers live in hil_helpers.py (uniquely named): bare
+# `from conftest import ...` in test modules breaks when several suite
+# directories are collected together — whichever conftest.py claims the
+# module name first wins. Same pattern as bench.py above.
+from hil_helpers import (  # noqa: F401  (re-exported for fixture use)
+    CARD_CMD_ATTEMPTS,
+    EXPECTED_ATR,
+    HELPER_DIR,
+    remote_apdu,
+)
+
 PLACE = "stm32-ccid"
 DUT_READER_SERIAL = "ST2XXX-001"
 CHERRY_VID_PID = "046a:003e"
-EXPECTED_ATR = "3B D5 18 FF 81 91 FE 1F C3 80 73 C8 21 10 0A"
 DEFAULT_FLASH_BASE = "0x08000000"
 USB_RESCAN_DELAY_S = 3
-CARD_CMD_ATTEMPTS = 3
 
 # ---------------------------------------------------------------- helpers
 
@@ -128,8 +136,9 @@ def _lg(*args: str, check: bool = True):
 # ---------------------------------------------------------------- options
 
 def pytest_addoption(parser):
-    parser.addoption("--hil", action="store_true", default=False,
-                     help="Enable HIL tests (disabled by default — requires hardware).")
+    # --hil is registered ONCE in tests/hardware/conftest.py (the shared
+    # parent) — a second registration here kills combined-suite runs with
+    # ValueError: option names {'--hil'} already added.
     parser.addoption("--firmware-bin", action="store", default=None,
                      help="Path to .bin to flash before tests. If omitted, run against current flash.")
     parser.addoption("--skip-labgrid", action="store_true", default=False,
@@ -137,10 +146,6 @@ def pytest_addoption(parser):
     parser.addoption("--places", action="store", default=",".join(PLACES),
                      help="Comma-separated subset of bench places to cover "
                           "(stm32-ccid,nucula-c3,m5stick,ref-acr1252,ref-cardman).")
-
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "hil: hardware-in-the-loop test (requires --hil flag)")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -233,9 +238,6 @@ def bench(labgrid_place):
     return Bench()
 
 
-HELPER_DIR = "/tmp/hil-ccid-bench"
-
-
 @pytest.fixture(scope="session")
 def helpers(bench):
     """Install helper scripts once per session (owner-scoped dir: the
@@ -300,27 +302,3 @@ def pcsc_reader_name(cherry_reader, pcscd_running):
     )
     assert DUT_READER_SERIAL in name, f"Unexpected reader (serial missing): {name}"
     yield name
-
-
-def remote_apdu(bench, apdu_hex: str, timeout: int = 15) -> tuple[bytes, int, int]:
-    """Send one APDU via the pcscd helper. Contact cards flake (the bench
-    ComSign eID is aged — SELECT times out ~1-in-3): retry with a fresh
-    connection each attempt."""
-    clean = apdu_hex.replace(" ", "").replace("\t", "")
-    if not re.match(r'^[0-9A-Fa-f]+$', clean):
-        pytest.fail(f"Invalid APDU hex: {apdu_hex!r}")
-    last_err = None
-    for attempt in range(1, CARD_CMD_ATTEMPTS + 1):
-        try:
-            result = bench.run(f"python3 {HELPER_DIR}/hil_apdu.py {shlex.quote(clean)}", timeout=timeout)
-        except subprocess.TimeoutExpired:
-            last_err = f"attempt {attempt}: timeout"
-            continue
-        if result.returncode == 0 and ":" in result.stdout:
-            output = result.stdout.strip()
-            data_hex, sw_hex = output.rsplit(":", 1)
-            data = bytes.fromhex(data_hex) if data_hex else b""
-            sw1, sw2 = int(sw_hex[:2], 16), int(sw_hex[2:4], 16)
-            return data, sw1, sw2
-        last_err = f"attempt {attempt}: rc={result.returncode} out={result.stdout.strip()[:120]}"
-    pytest.fail(f"APDU {clean} failed after {CARD_CMD_ATTEMPTS} attempts ({last_err})")

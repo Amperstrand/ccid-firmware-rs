@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+use crate::turnaround::TurnaroundStats;
 pub use card_interface::PresenceState;
+use card_interface::{CardBackend, NfcCardExt};
 
 /// NFC driver error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,25 @@ pub trait NfcDriver {
         false
     }
 
+    /// Issue #120 decomposition of the last `transmit_apdu`:
+    /// `(blocks, wtx_replies, recoveries, max_transceive_us)` — surfaced
+    /// through Escape 0xD2 words 4-8. `None` until an instrumented
+    /// backend records one (MFRC522 only for now).
+    fn exchange_decomposition(&self) -> Option<(u32, u32, u32, u32)> {
+        None
+    }
+
+    /// Escape 0xD3 probe: total µs for `reads` back-to-back register
+    /// reads over the NFC controller bus (the transceive poll-loop
+    /// transaction). `None` on backends without a reachable bus.
+    fn i2c_timing_probe(&mut self, _reads: u32) -> Option<u32> {
+        None
+    }
+
+    fn configured_fwt_ms(&self) -> u32 {
+        0
+    }
+
     /// Power on the NFC card and read its Answer-to-Reset (ATR)
     ///
     /// # Arguments
@@ -81,6 +102,75 @@ pub trait NfcDriver {
     }
 }
 
+/// Bridges firmware-local [`NfcDriver`] implementations to the shared
+/// CCID handler core (ccid-core, PERF_AND_DRY_STRATEGY §3.1), which is
+/// generic over the card-interface traits — one adapter instead of
+/// touching every driver impl.
+///
+/// The second field carries the issue #120 turnaround counters (Escape
+/// 0xD2): every card exchange passes through here, so this is the
+/// single point where the card-I/O half of the latency budget is
+/// stamped. The serve-loop half (RX byte → response flushed) is stamped
+/// in `main.rs` and written through the wrapper's passthrough.
+pub struct CardDriverAdapter<D>(pub D, pub TurnaroundStats);
+
+impl<D: NfcDriver> CardDriverAdapter<D> {
+    pub fn new(driver: D) -> Self {
+        Self(driver, TurnaroundStats::new())
+    }
+}
+
+impl<D: NfcDriver> CardBackend for CardDriverAdapter<D> {
+    type Error = D::Error;
+
+    fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.0.power_on(atr_buf)
+    }
+
+    fn power_off(&mut self) {
+        self.0.power_off()
+    }
+
+    fn is_card_present(&mut self) -> bool {
+        self.0.is_card_present()
+    }
+
+    fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error> {
+        let started_us = crate::t1::now_us();
+        let result = self.0.transmit_apdu(command, response);
+        // Host builds have no clock (now_us() == 0) — the zero sample is
+        // recorded harmlessly and does not disturb a nonzero max.
+        let elapsed_us = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
+        self.1.record_card_exchange_us(elapsed_us);
+        if let Some(d) = self.0.exchange_decomposition() {
+            self.1.record_exchange_decomposition(d.0, d.1, d.2, d.3);
+        }
+        result
+    }
+
+    fn reinit_count(&self) -> u32 {
+        self.0.reinit_count()
+    }
+}
+
+impl<D: NfcDriver> NfcCardExt for CardDriverAdapter<D> {
+    fn init(&mut self) -> Result<(), Self::Error> {
+        self.0.init()
+    }
+
+    fn poll_card_presence(&mut self) -> PresenceState {
+        self.0.poll_card_presence()
+    }
+
+    fn session_active(&self) -> bool {
+        self.0.session_active()
+    }
+
+    fn card_uid(&self) -> Option<&[u8]> {
+        self.0.card_uid()
+    }
+}
+
 /// Mock NFC driver for testing
 ///
 /// This mock driver simulates an NFC controller for host-side testing.
@@ -100,6 +190,8 @@ pub struct MockNfcDriver {
     uid: Vec<u8>,
     /// Test instrumentation: number of is_card_present() calls.
     poll_count: u32,
+    /// Test instrumentation: last APDU handed to transmit_apdu.
+    last_apdu: Vec<u8>,
 }
 
 impl MockNfcDriver {
@@ -118,12 +210,18 @@ impl MockNfcDriver {
             session_active: false,
             uid: Vec::new(),
             poll_count: 0,
+            last_apdu: Vec::new(),
         }
     }
 
     /// Test instrumentation: number of presence polls performed.
     pub fn poll_count(&self) -> u32 {
         self.poll_count
+    }
+
+    /// Test instrumentation: the last APDU forwarded to the card.
+    pub fn last_apdu(&self) -> &[u8] {
+        &self.last_apdu
     }
 
     pub fn set_uid(&mut self, uid: &[u8]) {
@@ -187,11 +285,7 @@ impl NfcDriver for MockNfcDriver {
         (!self.uid.is_empty()).then_some(&self.uid)
     }
 
-    fn transmit_apdu(
-        &mut self,
-        _command: &[u8],
-        response: &mut [u8],
-    ) -> Result<usize, Self::Error> {
+    fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error> {
         if !self.card_present {
             self.session_active = false;
             return Err(NfcError::NoCard);
@@ -200,6 +294,8 @@ impl NfcDriver for MockNfcDriver {
         if !self.session_active {
             return Err(NfcError::NotInitialized);
         }
+
+        self.last_apdu = command.to_vec();
 
         if response.len() < self.apdu_response.len() {
             return Err(NfcError::BufferOverflow);

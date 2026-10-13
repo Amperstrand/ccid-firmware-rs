@@ -15,9 +15,30 @@ path = "src/main.rs"
 test = false
 bench = false
 
+# Host-side handler characterization suites (lived unwired at the
+# workspace root since the root manifest is a pure virtual workspace —
+# resurrected for the DRY phase-2 port gate; they pin the pre-port
+# CcidMessageHandler wire bytes exercise-by-exercise).
+[[test]]
+name = "ccid_core_tests"
+path = "../../tests/ccid_core_tests.rs"
+
+[[test]]
+name = "comprehensive_test"
+path = "../../tests/comprehensive_test.rs"
+
+[[test]]
+name = "integration_test"
+path = "../../tests/integration_test.rs"
+
+[[test]]
+name = "replay_seedkeeper"
+path = "../../tests/replay_seedkeeper.rs"
+
 [dependencies]
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
+card-interface = { path = "../../crates/card-interface" }
 
 [target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]
 log = "0.4"

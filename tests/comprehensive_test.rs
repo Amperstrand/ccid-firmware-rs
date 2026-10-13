@@ -1,3 +1,10 @@
+//! Compiled into a per-binary test target via the ccid-firmware
+//! [[test]] wiring — per-binary unused imports are expected.
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 //! Comprehensive edge case tests for pinpad module
 //!
 //! These tests cover boundary conditions, error cases, and edge scenarios.
@@ -433,12 +440,13 @@ fn test_parse_params_empty() {
 
 #[test]
 fn test_parse_params_minimal_valid() {
-    // Exactly 16 bytes (minimum valid)
-    let mut data = [0u8; 16];
-    data[12] = 0x00; // CLA
-    data[13] = 0x20; // INS = VERIFY
-    data[14] = 0x00; // P1
-    data[15] = 0x81; // P2 = User PIN
+    // Exactly 18 bytes: fixed head + bTeoPrologue[3] + 4-byte APDU head
+    // (reference wire shape — pcsc-lite reader.h PIN_VERIFY_STRUCTURE)
+    let mut data = [0u8; 18];
+    data[14] = 0x00; // CLA
+    data[15] = 0x20; // INS = VERIFY
+    data[16] = 0x00; // P1
+    data[17] = 0x81; // P2 = User PIN
 
     let params = PinVerifyParams::parse(&data).unwrap();
     assert_eq!(params.pin_type, 0x81);
@@ -446,46 +454,48 @@ fn test_parse_params_minimal_valid() {
 
 #[test]
 fn test_parse_params_truncated_apdu() {
-    let mut data = [0u8; 15]; // Only 3 bytes for APDU (need 4)
-    data[12] = 0x00;
-    data[13] = 0x20;
+    // Only 3 bytes for APDU (need 4) after the 3-byte bTeoPrologue
+    let mut data = [0u8; 17];
     data[14] = 0x00;
+    data[15] = 0x20;
+    data[16] = 0x00;
 
     assert!(PinVerifyParams::parse(&data).is_none());
 }
 
 #[test]
 fn test_parse_params_various_pin_types() {
-    let mut data = [0u8; 20];
-    data[12] = 0x00;
-    data[13] = 0x20;
+    let mut data = [0u8; 18];
     data[14] = 0x00;
+    data[15] = 0x20;
+    data[16] = 0x00;
 
     // User PIN (PW1)
-    data[15] = 0x81;
+    data[17] = 0x81;
     assert_eq!(PinVerifyParams::parse(&data).unwrap().pin_type, 0x81);
 
     // Admin PIN (PW3)
-    data[15] = 0x83;
+    data[17] = 0x83;
     assert_eq!(PinVerifyParams::parse(&data).unwrap().pin_type, 0x83);
 
     // Other P2 values
-    data[15] = 0x82;
+    data[17] = 0x82;
     assert_eq!(PinVerifyParams::parse(&data).unwrap().pin_type, 0x82);
 }
 
 #[test]
 fn test_parse_params_extreme_lengths() {
-    let mut data = [0u8; 20];
-    data[12] = 0x00;
-    data[13] = 0x20;
+    let mut data = [0u8; 18];
     data[14] = 0x00;
-    data[15] = 0x81;
+    data[15] = 0x20;
+    data[16] = 0x00;
+    data[17] = 0x81;
 
-    // wPINMaxExtraDigit: max in low byte, min in high byte (DD-2: byte swap fix)
-    // Max = 255 (low byte), Min = 0 (high byte)
-    data[4] = 0; // min (high byte)
-    data[5] = 255; // max (low byte)
+    // wPINMaxExtraDigit wire order is [max, min] (LE u16 whose value
+    // hosts build as (min << 8) + max — pcsc-lite scardcontrol.c; the
+    // old "DD-2 byte swap fix" inverted it and the tests locked the bug)
+    data[4] = 255; // max (LSB, wire byte 4)
+    data[5] = 0; // min (MSB, wire byte 5)
 
     let params = PinVerifyParams::parse(&data).unwrap();
     assert_eq!(params.max_len, 255);

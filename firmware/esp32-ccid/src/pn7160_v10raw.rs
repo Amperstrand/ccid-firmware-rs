@@ -7,7 +7,23 @@
 
 use esp_idf_sys as sys;
 
-unsafe extern "C" fn dummy_isr(_arg: *mut core::ffi::c_void) {}
+// nci.c replica: the ISR must quench the level interrupt itself (the
+// PN7160 holds IRQ high until read); a no-op handler = interrupt storm
+// that starves the console/USB the moment the chip comes alive — on a
+// warm reset IRQ can already be high when the handler is added (Codex
+// #85, issue #112). Same contract as dummy_irq_isr in pn7160_i2c.rs.
+unsafe extern "C" fn dummy_isr(_arg: *mut core::ffi::c_void) {
+    unsafe { sys::gpio_intr_disable(IRQ) };
+}
+
+/// C's `vTaskDelay(ms / portTICK_PERIOD_MS)`: FreeRTOS task.h defines
+/// pdMS_TO_TICKS(ms) = ms * configTICK_RATE_HZ / 1000, but bindgen does
+/// not export the macro — expand it against the exported
+/// configTICK_RATE_HZ constant (=100 here). Raw vTaskDelay(10) at
+/// CONFIG_FREERTOS_HZ=100 sleeps 100 ms, not 10 ms (Codex #85, issue #112).
+fn delay_ticks(ms: u32) -> sys::TickType_t {
+    ms * sys::configTICK_RATE_HZ / 1000
+}
 
 const SDA: i32 = 4;
 const SCL: i32 = 5;
@@ -36,7 +52,7 @@ pub fn run() -> ! {
         log::warn!("v10raw: bus rc={}", rc_bus);
         if rc_bus != 0 {
             loop {
-                sys::vTaskDelay(5000);
+                sys::vTaskDelay(delay_ticks(5000));
             }
         }
 
@@ -61,11 +77,11 @@ pub fn run() -> ! {
 
         // nci.c:77-86 VEN cycle — delays via vTaskDelay, no logging inside
         sys::gpio_set_level(VEN, 1);
-        sys::vTaskDelay(10);
+        sys::vTaskDelay(delay_ticks(10));
         sys::gpio_set_level(VEN, 0);
-        sys::vTaskDelay(50);
+        sys::vTaskDelay(delay_ticks(50));
         sys::gpio_set_level(VEN, 1);
-        sys::vTaskDelay(50);
+        sys::vTaskDelay(delay_ticks(50));
 
         // nci.c:90 — probe IMMEDIATELY after the cycle
         let rc_probe = sys::i2c_master_probe(bus, 0x28, 50);
@@ -77,7 +93,7 @@ pub fn run() -> ! {
 
         let mut hb: u32 = 0;
         loop {
-            sys::vTaskDelay(5000);
+            sys::vTaskDelay(delay_ticks(5000));
             hb += 1;
             let rc = sys::i2c_master_probe(bus, 0x28, 50);
             log::warn!("v10raw[{}]: probe rc={}", hb, rc);

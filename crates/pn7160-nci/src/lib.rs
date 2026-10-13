@@ -66,7 +66,63 @@ pub const OID_RF_DEACTIVATE: u8 = 0x06;
 pub const NTF_RF_DISCOVER: u8 = 0x03;
 pub const NTF_RF_INTF_ACTIVATED: u8 = 0x05;
 pub const NTF_RF_DEACTIVATE: u8 = 0x06;
+
+/// CORE_CONN_CREDITS_NTF OID — NCI 1.0 §4.4.4, Table 102: CORE group
+/// (GID 0000b), OID 0110b (0x06). Payload = [Number of Entries (1),
+/// {Conn ID (1), Credits (1)}...]. UM11495 Rev 1.8 §5.3.1 Table 10:
+/// "the number of credits is limited to 1 on each logical connection"
+/// for the PN7160 — every DATA packet sent consumes the only credit, so
+/// fragmented TX gates each next fragment on one of these
+/// ([`reader::exchange`], [`is_conn_credits_ntf`]).
 pub const OID_CORE_CONN_CREDITS: u8 = 0x06;
+
+// --- NXP proprietary group (GID 0xF) — UM11495 Rev 1.8 ----------------------
+/// GID 0xF — the proprietary group (NCI §3.3 reserves it for vendor use;
+/// the PN7160's GID-0xF commands/notifications are listed in UM11495
+/// Annex B, Table 123).
+pub const GID_PROP: u8 = 0x0F;
+
+/// OID 0x17 in the proprietary group: `PH_NCI_OID_SYSTEM_WTX` (RF_WTX_NTF),
+/// wire header `6F 17 00`.
+///
+/// UM11495 Rev 1.8 §7.3.4, Table 74 (GID 1111b, OID 0x17, 0 parameters):
+/// "Notification indicating that RF communication is in phase of WTX(RTOX)
+/// REQ/RESP exchange for longer period of time." Sent with a period set by
+/// `READER_FWITOX_NTF_CFG` (Table 99, p.102: extended TLV `0xA0 0x65`,
+/// len 2, default 0x1000 × 4096/fc ≈ 302 µs ≈ **1.24 s**) while the remote
+/// endpoint keeps extending the waiting time during a DATA exchange.
+///
+/// Bench 2026-10-13 (issue #151): 12 of these (plen=0) over a 13 s stalled
+/// DATA exchange on marginal coupling — the NFCC honors every WTX request
+/// (ISO 14443-4 caps one WTX at FWT_MAX ≈ 4.95 s but puts NO limit on
+/// consecutive WTX; aborting is PCD/DH policy) and notifies the DH per
+/// period. NXP's own stacks answer by extending the DH-side response
+/// timer (`nfc_ncif_proc_rf_wtx_ntf`, linux_libnfc-nci nci_defs.h
+/// `NCI_MSG_RF_WTX`); this firmware instead consumes and ignores it —
+/// [`reader::exchange`](crate::reader::exchange) bounds the total wait
+/// DH-side. Note: UM11495 Tables 22/99 (all config params) contain NO
+/// chip-side ISO-DEP retry-count or total-WTX-budget TLV — the DH-side
+/// bound is the only deterministic mechanism (the only `NBR_RETRIES`
+/// field anywhere is `TechDet_NBR_RETRIES`, tag-detector/LPCD only).
+pub const NTF_PROP_RF_WTX: u8 = 0x17;
+
+/// Is this frame the PN7160 WTX advisory notification (`6F 17 00`)?
+/// See [`NTF_PROP_RF_WTX`] for the UM11495 Rev 1.8 citation; the frame
+/// carries no payload (Table 74: 0 parameters).
+pub fn is_wtx_ntf(f: &Frame) -> bool {
+    f.mt == MT_NTF && f.gid == GID_PROP && f.oid == NTF_PROP_RF_WTX
+}
+
+/// Is this frame a CORE_CONN_CREDITS_NTF (`60 06 ..`)? NCI 1.0 §4.4.4:
+/// "If the NFCC receives a Data Packet that was subject to credit-based
+/// flow control, it needs to tell the DH when the buffer is again
+/// available for use. It does this by sending CORE_CONN_CREDITS_NTF."
+/// The credit re-grant [`reader::exchange`] waits for between DATA
+/// fragments (PN7160: 1 credit per connection, UM11495 §5.3.1
+/// Table 10).
+pub fn is_conn_credits_ntf(f: &Frame) -> bool {
+    f.mt == MT_NTF && f.gid == GID_CORE && f.oid == OID_CORE_CONN_CREDITS
+}
 
 // --- DATA packet header bits (NCI §5.4.1; NXP nci_defs.h NCI_CID/PBF) ------
 pub const CID_MASK: u8 = 0x0F;
@@ -84,6 +140,33 @@ pub const DEACTIVATE_TYPE_SLEEP_AF: u8 = 0x02;
 /// bench 2026-10-10).
 pub const DEACTIVATE_TYPE_DISCOVERY: u8 = 0x03;
 
+// --- RF_DEACTIVATE_NTF reason codes (NCI v2.x §5.2.5.2, Table 81) ----------
+// NOTE (issue #109 item 1): the reason table is DISPUTED between sources.
+// All sources agree 0x00 = DH-requested deactivation (the answer to our
+// OWN RF_DEACTIVATE — never a removal). For RF-link-loss the candidates
+// diverge: NXP's production NCI 2.x constant header (nci_defs.h, shipped
+// in every Android NXP NFC stack — DH_REQ=0, ENDPOINT_REQ=1,
+// RF_LINK_LOSS=2, NFCB_BAD_AFI=3, DH_REQ_FAILED=4) puts it at 0x02, while
+// NCI 1.x-derived tables put it at 0x01. The PN7160 is NXP silicon, but
+// the bench has not yet captured a hand-verified removal NTF (that
+// exercise is exactly what this decode gates). Until that capture, BOTH
+// candidates decode as removal: on this firmware's NFC-A-only ISO-DEP
+// discovery map an ENDPOINT_REQ (card-emulation/P2P flow) and an
+// NFC-B bad-AFI cannot occur, so the wider accept risks no false
+// removal. Collapse to the captured value when the bench byte lands.
+pub const DEACTIVATE_REASON_DH_REQ: u8 = 0x00;
+/// RF-link-loss per NCI 1.x-derived reason tables.
+pub const DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X: u8 = 0x01;
+/// RF-link-loss per NXP's NCI 2.x nci_defs.h (ENDPOINT_REQ occupies 0x01).
+pub const DEACTIVATE_REASON_RF_LINK_LOSS_NXP: u8 = 0x02;
+
+/// Is this RF_DEACTIVATE_NTF reason a link-loss (physical removal)?
+/// See the block comment above the [`DEACTIVATE_REASON_DH_REQ`] constants
+/// for the disputed-table rationale.
+pub fn reason_is_link_loss(reason: u8) -> bool {
+    reason == DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X || reason == DEACTIVATE_REASON_RF_LINK_LOSS_NXP
+}
+
 /// One decoded NCI frame. GID and OID are kept separate, exactly as they
 /// sit on the wire (GID in octet0, OID as full octet1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,14 +174,22 @@ pub struct Frame {
     pub mt: u8,
     pub gid: u8,
     pub oid: u8,
+    /// Packet Boundary Flag (octet 0 bit 4): true = "The Packet contains
+    /// a segment of a Message which is not the last segment" (NCI 1.0
+    /// §3.4.3, Table 3). DATA-chain reassembly happens in
+    /// [`reader::exchange`].
+    pub pbf: bool,
     pub payload: [u8; 255],
     pub len: usize,
 }
 
 impl Frame {
-    /// Decode a full frame from wire bytes. Returns `None` on short buffer,
-    /// or when PBF is set (fragmented packets never occur for <=258B frames
-    /// on this link; NCI §3.3 reassembly is out of scope).
+    /// Decode a full frame from wire bytes. Returns `None` on a short
+    /// buffer or truncated payload. PBF-set (fragmented) packets are
+    /// ACCEPTED and flagged via [`Frame::pbf`] — NCI 1.0 §3.4.3/Table 3
+    /// makes them a legal DATA-packet shape, and the NFCC→DH direction
+    /// MAY use them at any payload length (§3.5). Reassembly of DATA
+    /// chains lives in [`reader::exchange`].
     ///
     /// On the wire, one NCI packet arrives as one I2C read sequence per
     /// UM11495 §4.2 (the C driver's nci_read: 3-byte header transaction,
@@ -107,10 +198,8 @@ impl Frame {
         if buf.len() < HEADER_LEN {
             return None;
         }
-        if (buf[0] & PBF_MASK) != 0 {
-            return None; // PBF set (octet 0 bit 4, NXP nci_defs.h): fragmented
-        }
         let mt = buf[0] & 0xE0;
+        let pbf = (buf[0] & PBF_MASK) != 0;
         let gid = buf[0] & 0x0F;
         let oid = buf[1];
         let plen = buf[2] as usize;
@@ -123,6 +212,7 @@ impl Frame {
             mt,
             gid,
             oid,
+            pbf,
             payload,
             len: plen,
         })
@@ -156,26 +246,33 @@ pub mod tx {
     /// CORE_INIT (NCI 2.0 §5.1.2: two parameter octets) — nci.c:214.
     pub const CORE_INIT: [u8; 5] = [MT_CMD, OID_CORE_INIT, 0x02, 0x00, 0x00];
 
-    /// CORE_SET_CONFIG setting TC1 = 0x00 (plain ISO-DEP: no DID, no NAD).
-    /// Payload [num_params=1, id=0x52(TC1), len=1, value=0] — NCI §5.1.3 and
-    /// Annex F (TC1 definition); nci.c:240.
-    pub const SET_CONFIG_TC1: [u8; 7] = [MT_CMD, OID_CORE_SET_CONFIG, 0x04, 0x01, 0x52, 0x01, 0x00];
-
-    /// CORE_SET_CONFIG TOTAL_DURATION (param id 0x0200) = 0x01FE — NCI
-    /// §5.1.3 / Table 90. Without it the PN7160 completes ONE discovery
-    /// cycle and stops emitting RF_DISCOVER_NTFs: the card is reported a
-    /// single time, then presence flaps and activation starves (bench
-    /// 2026-10-08). NOTE: the wallet's nci.c sends this MALFORMED (plen=5,
-    /// param TLV missing the LEN octet) — the NFCC answers num_applied=0;
-    /// harmless for its LISTEN mode, fatal for reader mode. Correct TLV:
-    /// [num=1][id=0x0200 LE][len=2][value=0x01FE].
-    pub const SET_CONFIG_TOTAL_DURATION: [u8; 9] = [
+    /// CORE_SET_CONFIG TOTAL_DURATION = 0x01FE ms. TLV per the NCI
+    /// configuration-parameter format [num_params][id][len][value] with
+    /// a ONE-octet param id — verified against the Linux kernel
+    /// (`struct set_config_param { __u8 id; __u8 len; ... }`,
+    /// include/net/nfc/nci.h), NXP's own stacks
+    /// (`NCI_PARAM_ID_TOTAL_DURATION 0x00` / `NCI_PARAM_LEN_TOTAL_DURATION 2`,
+    /// nci_defs.h in both linux_libnfc-nci and NFC_NCIHAL_libnfc-nci) and
+    /// UM11495 §6.2. The bytes are the wallet's proven TLV verbatim
+    /// (value 0x01FE LE). An earlier session misread this plen=5 form
+    /// as "missing the LEN octet" under a two-octet-id assumption and
+    /// rewrote it into a rejected 6-byte TLV with a trailing garbage
+    /// octet; with the true status octet parsed (ed0ed5e) the ladder
+    /// aborted at SET_CONFIG (actdiag 2026-10-11).
+    ///
+    /// PN7160 proprietary params do NOT use this one-octet-id form:
+    /// they ride the same CORE_SET_CONFIG as EXTENDED TLVs
+    /// `[Tag=0xA0XX, 2 bytes][Len, 1][Val]` (UM11495 Rev 1.8 §7.2,
+    /// Table 22, p.39 — e.g. `READER_FWITOX_NTF_CFG 0xA0 0x65`).
+    /// Full extracted param inventory + the definitive "no ISO-DEP
+    /// retry/WTX-bound TLV exists" negative: issue #151 research
+    /// (UM11495 §13.2 Tables 98–100).
+    pub const SET_CONFIG_TOTAL_DURATION: [u8; 8] = [
         MT_CMD,
         OID_CORE_SET_CONFIG,
-        0x06,
+        0x05,
         0x01,
         0x00,
-        0x02,
         0x02,
         0xFE,
         0x01,
@@ -233,6 +330,9 @@ pub trait Transport {
     fn transact(&mut self, cmd: &[u8]) -> Option<Frame>;
     /// Read one already-pending notification (no command sent).
     fn drain(&mut self) -> Option<Frame>;
+    /// Collect-wait hook (#125): no-op in host mocks; the ESP32 I2C
+    /// transport delays for real between power_on activation waits.
+    fn wait_ms(&mut self, _ms: u64) {}
 }
 
 /// NCI DATA packet framing — NCI §5.4.1: octet 0 = PBF(bit 4) | CONN_ID(bits
@@ -244,12 +344,38 @@ pub mod transport;
 pub mod data {
     use super::*;
 
+    /// Max payload of one DATA fragment on this link: 253 octets — the
+    /// NXP ISO-DEP alignment clamp (linux_libnfc-nci nci_defs.h
+    /// `NCI_ISO_DEP_MAX_INFO` = 253 = 256 − ISO-DEP prologue 1 − CRC
+    /// epilogue 2), tighter than both the structural NCI limit (LEN is
+    /// one octet, 0–255 — NCI 1.0 §3.4.3) and the PN7160's advertised
+    /// Max Data Packet payload 255 (UM11495 Rev 1.8 §5.3.1 Table 10;
+    /// RF_INTF_ACTIVATED_NTF carries 0xFF). A 253-octet fragment maps
+    /// onto one max-size ISO-DEP I-block (NCI 1.0 §8.3.1, Figure 17).
+    pub const MAX_DATA_FRAGMENT: usize = 253;
+
     pub fn encode(conn_id: u8, payload: &[u8], out: &mut Vec<u8, MAX_FRAME>) -> bool {
+        encode_fragment(conn_id, false, payload, out)
+    }
+
+    /// One DATA packet — NCI 1.0 §3.4.3 "Format of Data Packets": "Each
+    /// Data Packet SHALL have a 3-octet Packet Header" — octet 0 =
+    /// MT(000b) | PBF(bit 4) | Conn ID(bits 3:0), octet 1 = RFU (0),
+    /// octet 2 = Payload Length (0–255). PBF per Table 3: "1b: The
+    /// Packet contains a segment of a Message which is not the last
+    /// segment" — set on every fragment except the last.
+    pub fn encode_fragment(
+        conn_id: u8,
+        pbf: bool,
+        payload: &[u8],
+        out: &mut Vec<u8, MAX_FRAME>,
+    ) -> bool {
         out.clear();
         if payload.len() > 255 {
             return false;
         }
-        out.extend_from_slice(&[conn_id & CID_MASK, 0, payload.len() as u8])
+        let octet0 = (conn_id & CID_MASK) | if pbf { PBF_MASK } else { 0 };
+        out.extend_from_slice(&[octet0, 0, payload.len() as u8])
             .is_ok()
             && out.extend_from_slice(payload).is_ok()
     }
@@ -285,6 +411,10 @@ pub mod data {
 /// encodings are byte-exact against the nucula C driver.
 pub mod reader {
     use super::*;
+
+    /// The ladder's RF_DISCOVER command, re-exported for the presence
+    /// paths (power_off re-issue + one-shot probe, issue #125).
+    pub use super::tx::RF_DISCOVER_PASSIVE_A;
 
     /// RF_DEACTIVATE(IDLE) — byte-exact vs nci.c `nci_restart_discovery`
     /// stop[] = {NCI_MT_CMD | NCI_GID_RF, NCI_OID_RF_DEACTIVATE, 0x01, 0x00}.
@@ -412,11 +542,12 @@ pub mod reader {
     }
 
     /// What a presence drain saw (issue #88). `LinkLost` is the
-    /// RF_DEACTIVATE_NTF with reason RF-link-lost (NCI §5.2.5.2) — the
-    /// removal signal for an AUTO-ACTIVATED tag: while the tag sits in
-    /// the live RF interface, its physical removal tears the link and
-    /// the chip announces it. (Resting-in-discovery tags emit nothing on
-    /// removal — that absence-of-signal was the original #88 bug.)
+    /// RF_DEACTIVATE_NTF with reason RF-link-lost (NCI §5.2.5.2,
+    /// Table 81) — the removal signal for an AUTO-ACTIVATED tag: while
+    /// the tag sits in the live RF interface, its physical removal tears
+    /// the link and the chip announces it. (Resting-in-discovery tags
+    /// emit nothing on removal — that absence-of-signal was the original
+    /// #88 bug.)
     pub enum TagEvent {
         Tag(DiscoverNtf, Option<Vec<u8, 32>>),
         LinkLost,
@@ -424,8 +555,9 @@ pub mod reader {
 
     /// Classify ONE frame as a presence signal: a discovery NTF, an
     /// auto-activation NTF (with its ATS), or the link-loss deactivation
-    /// of an auto-activated tag (NCI §5.2.5.2). `None` = not a presence
-    /// signal (RSP frames, CORE_CONN_CREDITS, DH-requested deactivations).
+    /// of an auto-activated tag (NCI §5.2.5.2, Table 81). `None` = not a
+    /// presence signal (RSP frames, CORE_CONN_CREDITS, DH-requested
+    /// deactivations — reason 0x00, the answer to our own RF_DEACTIVATE).
     pub fn event_of(f: &Frame) -> Option<TagEvent> {
         if let Some(n) = DiscoverNtf::decode(f) {
             return Some(TagEvent::Tag(n, None));
@@ -437,7 +569,7 @@ pub mod reader {
             && f.gid == GID_RF
             && f.oid == NTF_RF_DEACTIVATE
             && f.len >= 2
-            && f.payload[1] == 0x00
+            && reason_is_link_loss(f.payload[1])
         {
             return Some(TagEvent::LinkLost);
         }
@@ -512,6 +644,13 @@ pub mod reader {
         let mut ats = Vec::new();
         ats.extend_from_slice(&f.payload[ats_len_pos + 1..ats_len_pos + 1 + ats_len])
             .ok()?;
+        // The activation tail is a nested TLV (bench fixture, P71:
+        // [outer=0x0A][inner=0x09][ATS..]) — the inner length byte
+        // rides along in the slice; strip it so the ATS starts at T0.
+        if ats.len() >= 2 && ats[0] as usize + 1 == ats.len() {
+            let stripped = Vec::from_slice(&ats[1..]).ok()?;
+            return Some(stripped);
+        }
         Some(ats)
     }
 
@@ -553,19 +692,114 @@ pub mod reader {
         Some(&activation.payload[6..6 + params_len])
     }
 
-    /// Exchange one APDU over the RF data connection. The reply must be a
-    /// DATA packet on the same connection (Frame::decode surfaces DATA
-    /// packets with mt == MT_DATA and gid == conn_id).
-    pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 255>> {
-        let mut frame = Vec::new();
-        if !data::encode(conn_id, apdu, &mut frame) {
-            return None;
+    /// Exchange one APDU over the RF data connection: TX fragmentation,
+    /// credit gating between fragments, RX reassembly of the reply
+    /// chain. The reply must be DATA packet(s) on the same connection
+    /// (Frame::decode surfaces DATA packets with mt == MT_DATA and
+    /// gid == conn_id).
+    ///
+    /// TX (NCI 1.0 §3.5 "Segmentation and Reassembly"): the APDU is
+    /// chunked at [`data::MAX_DATA_FRAGMENT`] = 253 octets — "For each
+    /// segment of a Data Message, the header of the Data Packet SHALL
+    /// contain the same MT and Conn ID" — with PBF=1 on every fragment
+    /// except the last (Table 3: "1b: The Packet contains a segment of a
+    /// Message which is not the last segment"). Between fragments the
+    /// exchange waits for a CORE_CONN_CREDITS_NTF (§4.4.4: "The DH SHALL
+    /// NOT send any Data Packet on a connection when the corresponding
+    /// NFCC_Credits_Avail is 0"): the PN7160 grants exactly 1 credit per
+    /// logical connection (UM11495 Rev 1.8 §5.3.1 Table 10), so every
+    /// DATA packet consumes the only credit and fragment 2 stalls the
+    /// NFCC until the re-grant arrives.
+    ///
+    /// RX (NCI 1.0 §3.5): "When an NFCC sends a Data Message to the DH,
+    /// regardless of the payload length, it MAY segment the Data Message
+    /// into smaller Data Packets for any internal reason" — DATA packets
+    /// on the connection are concatenated until one arrives with PBF=0
+    /// (§8.3.1.2: the last byte of a non-chaining I-block's payload
+    /// "SHALL be the last octet of the Data Packet with Packet Boundary
+    /// Flag set to 0b").
+    ///
+    /// Bench 2026-10-13: on marginal coupling the NFCC retries at the RF
+    /// layer for SECONDS before the DATA response arrives (a 13 s stall
+    /// with proprietary retry NTFs was observed mid-GP-auth) — the old
+    /// single 200 ms transact gave up instantly. Fire the request
+    /// (non-blocking send) and collect with a bounded wait: 12 × 200 ms
+    /// ≈ 2.4 s, under the serial host's 3 s read timeout
+    /// (libccidtwin DEFAULT_COM_READ_TIMEOUT), so the host always gets
+    /// our answer — success or a clean failure — before its select()
+    /// expires. That budget is shared across the WHOLE exchange
+    /// (fragment credit gates + reply collection). Non-matching frames
+    /// are consumed and ignored, matching the driver's neutral handling
+    /// — in practice the churn is the PN7160's WTX advisory `6F 17 00`
+    /// ([`is_wtx_ntf`]; UM11495 Rev 1.8 §7.3.4 Table 74 — sent about
+    /// every `READER_FWITOX_NTF_CFG` period, default ≈1.24 s, while the
+    /// WTX phase continues) plus CORE_CONN_CREDITS. NXP's own DH extends
+    /// its response timer on each WTX NTF; we deliberately do NOT — the
+    /// 2.4 s budget above is the bound (the chip offers no retry-bound
+    /// TLV to tighten, see [`NTF_PROP_RF_WTX`]).
+    pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 1024>> {
+        const DATA_COLLECT_ROUNDS: usize = 12;
+        const DATA_COLLECT_WAIT_MS: u64 = 200;
+        let mut budget = DATA_COLLECT_ROUNDS;
+
+        // TX: PBF-chained fragments, credit-gated (NCI 1.0 §3.5).
+        if apdu.is_empty() {
+            // "In the case of an 'empty' Data Message, only the Packet
+            // Header is sent" (NCI 1.0 §3.4.3 NOTE) — the historical
+            // single empty DATA packet.
+            let mut frame = Vec::new();
+            if !data::encode_fragment(conn_id, false, &[], &mut frame) || !t.send(&frame) {
+                return None;
+            }
         }
-        let rsp = t.transact(&frame)?;
-        if rsp.mt != MT_DATA || rsp.gid != conn_id || rsp.len == 0 {
-            return None;
+        let mut fragments = apdu.chunks(data::MAX_DATA_FRAGMENT).peekable();
+        while let Some(fragment) = fragments.next() {
+            let last = fragments.peek().is_none();
+            let mut frame = Vec::new();
+            if !data::encode_fragment(conn_id, !last, fragment, &mut frame) || !t.send(&frame) {
+                return None;
+            }
+            if last {
+                break;
+            }
+            // Credit gate: the fragment just sent consumed the PN7160's
+            // single credit (UM11495 §5.3.1 Table 10) — collect frames
+            // until the CORE_CONN_CREDITS_NTF re-grant (NCI 1.0 §4.4.4);
+            // churn (WTX advisories) is consumed while waiting.
+            let mut credited = false;
+            while budget > 0 {
+                if let Some(f) = t.poll_frame() {
+                    if is_conn_credits_ntf(&f) {
+                        credited = true;
+                        break;
+                    }
+                }
+                budget -= 1;
+                t.wait_ms(DATA_COLLECT_WAIT_MS);
+            }
+            if !credited {
+                return None;
+            }
         }
-        Vec::from_slice(&rsp.payload[..rsp.len]).ok()
+
+        // RX: collect DATA packets on the connection, reassembling the
+        // PBF chain (NCI 1.0 §3.5; last packet carries PBF=0).
+        let mut response: Vec<u8, 1024> = Vec::new();
+        while budget > 0 {
+            if let Some(f) = t.poll_frame() {
+                if f.mt == MT_DATA && f.gid == conn_id && f.len > 0 {
+                    if response.extend_from_slice(&f.payload[..f.len]).is_err() {
+                        return None; // reassembly overran the 1024-octet budget
+                    }
+                    if !f.pbf {
+                        return Some(response);
+                    }
+                }
+            }
+            budget -= 1;
+            t.wait_ms(DATA_COLLECT_WAIT_MS);
+        }
+        None
     }
 
     /// Deactivate to idle, then consume the DEACTIVATE notification —
@@ -602,6 +836,29 @@ pub mod reader {
         let _ = t.drain();
         Ok(())
     }
+
+    /// Re-issue RF_DISCOVER — kernel `nci_start_poll` semantics
+    /// (torvalds net/nfc/nci/rsp.c: the DH owns the polling loop). Bench
+    /// 2026-10-11 (#125): after a session teardown the bench PN7160 does
+    /// NOT resume polling on its own — not even a type-DISCOVERY
+    /// deactivation restarts it — so presence (GSS bStatus) reads absent
+    /// forever while the card sits on the coil. A fresh RF_DISCOVER puts
+    /// the NFCC back in the discovery loop; an ISO-DEP tag in the field
+    /// auto-activates and re-emits RF_INTF_ACTIVATED, re-latching
+    /// presence. ONE-SHOT per teardown: a per-cycle re-issue mutes the
+    /// chip after ~11 cycles (bench 2026-10-10, see
+    /// [`DEACTIVATE_TYPE_DISCOVERY`]).
+    pub fn restart_discovery<T: Transport>(t: &mut T) -> Result<(), &'static str> {
+        let cmd = RF_DISCOVER_PASSIVE_A;
+        let rsp = t.transact(&cmd).ok_or("no discover response")?;
+        if !rsp.is_rsp_to(&cmd) {
+            return Err("discover response mismatch");
+        }
+        if rsp.status() != Some(STATUS_OK) {
+            return Err("discover status != OK");
+        }
+        Ok(())
+    }
 }
 
 /// Bring-up steps, in C-driver order.
@@ -609,7 +866,6 @@ pub mod reader {
 pub enum Step {
     CoreReset,
     CoreInit,
-    SetConfigTc1,
     SetConfigTotalDuration,
     RfDiscoverMap,
     RfDiscover,
@@ -620,10 +876,33 @@ impl Step {
         match self {
             Step::CoreReset => &tx::CORE_RESET,
             Step::CoreInit => &tx::CORE_INIT,
-            Step::SetConfigTc1 => &tx::SET_CONFIG_TC1,
             Step::SetConfigTotalDuration => &tx::SET_CONFIG_TOTAL_DURATION,
             Step::RfDiscoverMap => &tx::RF_DISCOVER_MAP_ISO_DEP,
             Step::RfDiscover => &tx::RF_DISCOVER_PASSIVE_A,
+        }
+    }
+
+    /// Advisory steps set optional NFCC parameters. The bench PN7160
+    /// answers SET_CONFIG with status=REJECTED / num_applied=0
+    /// (actdiag 2026-10-11: I2C alive, ladder aborts at the first
+    /// SET_CONFIG once the status octet is read correctly — ed0ed5e)
+    /// and STILL runs ISO-DEP discovery; the reader worked for weeks
+    /// with the pre-ed0ed5e parser masking the rejection. Re-discovery
+    /// cadence is owned by the firmware re-arm state machine (5f702e4),
+    /// not TOTAL_DURATION, so a rejected config is survivable.
+    pub const fn advisory(self) -> bool {
+        matches!(self, Step::SetConfigTotalDuration)
+    }
+
+    /// Static error string for a failed load-bearing step — the generic
+    /// "step status != OK" hid WHICH step failed and cost a bench
+    /// session to find (actdiag 2026-10-11).
+    pub const fn status_err(self) -> &'static str {
+        match self {
+            Step::CoreInit => "CoreInit status != OK",
+            Step::RfDiscoverMap => "RfDiscoverMap status != OK",
+            Step::RfDiscover => "RfDiscover status != OK",
+            _ => "step status != OK",
         }
     }
 }
@@ -635,7 +914,13 @@ impl Step {
 ///     is tolerated the same way).
 ///  2. Flush up to three stale notifications before CORE_INIT (nci.c:218).
 ///  3. CORE_INIT — RSP status must be OK (nci.c:214-232).
-///  4. CORE_SET_CONFIG(TC1=0) — status OK (nci.c:240).
+///  4. NO CORE_SET_CONFIG: UM11495's TOTAL_DURATION example (510 ms)
+///     makes discovery SINGLE-SHOT — polling dies ~510 ms in and
+///     presence never re-arms after a power-off (bench 2026-10-11:
+///     pcscd "Card removed" while the card sat on the coil). The NXP
+///     default (perpetual discovery) is what a reader wants; the bench
+///     ran weeks on it. [`Step::SetConfigTotalDuration`] and the
+///     reference-locked TLV stay for documentation/tests only.
 ///  5. RF_DISCOVER_MAP(ISO-DEP) and RF_DISCOVER(passive A) — status OK.
 pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     // 1. CORE_RESET + notification drain.
@@ -648,33 +933,24 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
     let _ = t.drain(); // CORE_RESET_NTF (NCI 2.0 always follows; tolerate absence)
 
     // 3-5. Straight command/response ladder with status checks.
-    for step in [
-        Step::CoreInit,
-        Step::SetConfigTc1,
-        Step::SetConfigTotalDuration,
-        Step::RfDiscoverMap,
-        Step::RfDiscover,
-    ] {
+    for step in [Step::CoreInit, Step::RfDiscoverMap, Step::RfDiscover] {
         let rsp = t.transact(step.tx_bytes()).ok_or("transport ran dry")?;
         if !rsp.is_rsp_to(step.tx_bytes()) {
             return Err("response does not match command");
         }
-        // SET_CONFIG_RSP payload is [num_params, status, ...] (NCI §5.1.3):
-        // the status octet sits at index 1. Reading payload[0] compared the
-        // PARAMETER COUNT against STATUS_OK — the real PN7160 answers
-        // SET_CONFIG with num_params=1 → the ladder aborted every time
-        // after a fully successful CORE_INIT.
-        let status = if matches!(step, Step::SetConfigTc1 | Step::SetConfigTotalDuration) {
-            if rsp.len >= 2 {
-                Some(rsp.payload[1])
-            } else {
-                None
+        // NCI v2.x §5.1.3 (CORE_SET_CONFIG_RSP): payload =
+        // [status, num_params, param_id...]. ALL CORE responses lead
+        // with the status octet (see Frame::status() — same rule).
+        // The previous special case read payload[1] (num_params) as
+        // status and pushed mock payloads [0x01, 0x00] — modeling a
+        // REJECTED config as success. Codex PR 85 flagged it; the
+        // file's own doc (Frame::status, "SET_CONFIG_RSP … lead with
+        // status") contradicted the special case.
+        if rsp.status() != Some(STATUS_OK) {
+            if step.advisory() {
+                continue;
             }
-        } else {
-            rsp.status()
-        };
-        if status != Some(STATUS_OK) {
-            return Err("step status != OK");
+            return Err(step.status_err());
         }
     }
     Ok(())
@@ -792,19 +1068,51 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_short_and_fragmented() {
+    fn decode_rejects_short_accepts_pbf() {
         assert!(Frame::decode(&[0x40, 0x00]).is_none());
         assert!(Frame::decode(&[0x40, 0x00, 0x02, 0x11]).is_none()); // short payload
-        assert!(Frame::decode(&[0x50, 0x00, 0x00]).is_none()); // PBF set: octet 0 bit 4 (NXP nci_defs.h)
+                                                                     // NCI 1.0 §3.4.3/Table 3: PBF set (octet 0 bit 4) = "The Packet
+                                                                     // contains a segment of a Message which is not the last segment"
+                                                                     // — a legal DATA-packet shape now ACCEPTED (reassembly:
+                                                                     // reader::exchange). decode surfaces the flag instead of
+                                                                     // rejecting; the flag is what RX chaining keys on.
+        let frag = Frame::decode(&[0x50, 0x00, 0x00]).unwrap();
+        assert!(frag.pbf);
+        let complete = Frame::decode(&[0x40, 0x00, 0x00]).unwrap();
+        assert!(!complete.pbf);
+        // DATA-shaped fragment: octet0 = MT(000b)|PBF|ConnID.
+        let data_frag = Frame::decode(&[0x10, 0x00, 0x02, 0xAA, 0xBB]).unwrap();
+        assert!(data_frag.pbf);
+        assert_eq!(data_frag.mt, MT_DATA);
+        assert_eq!(data_frag.gid, 0);
+        assert_eq!(&data_frag.payload[..2], &[0xAA, 0xBB]);
     }
 
     #[test]
     fn tx_frames_match_c_driver_bytes() {
         assert_eq!(&tx::CORE_RESET, &[0x20, 0x00, 0x01, 0x01]);
         assert_eq!(&tx::CORE_INIT, &[0x20, 0x01, 0x02, 0x00, 0x00]);
+        // Reference: one-octet param id 0x00 (TOTAL_DURATION), len 2,
+        // value 0x01FE LE — wallet bytes, kernel struct + NXP nci_defs.h
+        // format (include/net/nfc/nci.h, NCI_PARAM_ID_TOTAL_DURATION).
         assert_eq!(
-            &tx::SET_CONFIG_TC1,
-            &[0x20, 0x02, 0x04, 0x01, 0x52, 0x01, 0x00]
+            &tx::SET_CONFIG_TOTAL_DURATION,
+            &[0x20, 0x02, 0x05, 0x01, 0x00, 0x02, 0xFE, 0x01]
+        );
+        // GREAT EXPECTATION (reference-locked bytes — do not "fix"
+        // without re-verifying against the cited references):
+        // bench-validated 2026-10-11 on the PN7160 (actdiag ladder OK,
+        // SET_CONFIG RSP [status=OK, 0 failed], RF_INTF_ACTIVATED at
+        // +943 ms with the card on coil). DISCOVER_MAP entry order is
+        // NCI 2.0 [protocol, interface, mode] — NOT the NCI 1.x / NXP
+        // legacy [protocol, mode, interface] order.
+        assert_eq!(
+            &tx::RF_DISCOVER_MAP_ISO_DEP,
+            &[0x21, 0x00, 0x04, 0x01, 0x04, 0x02, 0x01]
+        );
+        assert_eq!(
+            &tx::RF_DISCOVER_PASSIVE_A,
+            &[0x21, 0x03, 0x03, 0x01, 0x00, 0x01]
         );
     }
 
@@ -838,13 +1146,11 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass");
-        assert_eq!(t.sent.len(), 6);
+        assert_eq!(t.sent.len(), 4);
         assert_eq!(t.drained, 1);
     }
 
@@ -854,13 +1160,11 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
-        t.push_reply(&rsp(0x40, OID_CORE_SET_CONFIG, &[0x01, 0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
         t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
 
         run_ladder(&mut t).expect("ladder should pass with reset NTF");
-        assert_eq!(t.sent.len(), 6);
+        assert_eq!(t.sent.len(), 4);
         assert_eq!(t.drained, 1);
     }
 
@@ -870,7 +1174,24 @@ mod tests {
         t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
         t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x02]));
-        assert_eq!(run_ladder(&mut t), Err("step status != OK"));
+        assert_eq!(run_ladder(&mut t), Err("CoreInit status != OK"));
+    }
+
+    #[test]
+    fn ladder_tolerates_set_config_rejection() {
+        // Chip reality (actdiag 2026-10-11): the PN7160 answers both
+        // SET_CONFIGs with status=REJECTED / num_applied=0 and still
+        // runs discovery. Advisory steps must not abort the ladder.
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&rsp(0x40, OID_CORE_RESET, &[0x00]));
+        t.push_notification(&[0x60, OID_CORE_RESET, 0x01, 0x00]);
+        t.push_reply(&rsp(0x40, OID_CORE_INIT, &[0x00]));
+        t.push_reply(&rsp(0x41, OID_RF_DISCOVER_MAP, &[0x00]));
+        t.push_reply(&rsp(0x41, OID_RF_DISCOVER, &[0x00]));
+
+        run_ladder(&mut t).expect("SET_CONFIG rejection must not abort");
+        assert_eq!(t.sent.len(), 4);
+        assert_eq!(t.drained, 1);
     }
 
     #[test]
@@ -950,6 +1271,7 @@ mod tests {
             mt: MT_NTF,
             gid: GID_RF,
             oid,
+            pbf: false,
             payload: p,
             len: payload.len(),
         }
@@ -1044,6 +1366,238 @@ mod tests {
             &[0x01, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP],
         );
         assert_eq!(reader::activated_summary(&f), Some((0x01, 0x02, 0x04)));
+    }
+
+    #[test]
+    fn deactivate_ntf_reason_classification() {
+        // Issue #109 item 1: reason 0x00 = DH-requested deactivation (the
+        // answer to our own RF_DEACTIVATE) — neutral, never a removal.
+        // Both link-loss candidates (disputed Table 81, see the
+        // DEACTIVATE_REASON_* block comment) are removals.
+        let dh = ntf_frame(
+            NTF_RF_DEACTIVATE,
+            &[DEACTIVATE_TYPE_DISCOVERY, DEACTIVATE_REASON_DH_REQ],
+        );
+        assert!(reader::event_of(&dh).is_none(), "DH-request ≠ removal");
+
+        let loss_1x = ntf_frame(
+            NTF_RF_DEACTIVATE,
+            &[DEACTIVATE_TYPE_IDLE, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X],
+        );
+        assert!(matches!(
+            reader::event_of(&loss_1x),
+            Some(reader::TagEvent::LinkLost)
+        ));
+
+        let loss_nxp = ntf_frame(
+            NTF_RF_DEACTIVATE,
+            &[DEACTIVATE_TYPE_IDLE, DEACTIVATE_REASON_RF_LINK_LOSS_NXP],
+        );
+        assert!(matches!(
+            reader::event_of(&loss_nxp),
+            Some(reader::TagEvent::LinkLost)
+        ));
+
+        // Truncated NTF (no reason octet): neutral, not a removal.
+        let short = ntf_frame(NTF_RF_DEACTIVATE, &[DEACTIVATE_TYPE_IDLE]);
+        assert!(reader::event_of(&short).is_none());
+    }
+
+    #[test]
+    fn reason_is_link_loss_table() {
+        assert!(!reason_is_link_loss(DEACTIVATE_REASON_DH_REQ));
+        assert!(reason_is_link_loss(DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X));
+        assert!(reason_is_link_loss(DEACTIVATE_REASON_RF_LINK_LOSS_NXP));
+        // NXP tail codes (ENDPOINT_REQ is the 0x01 occupant there, but a
+        // bare 0x03 NFC-B bad-AFI / 0x04 DH-failure never reaches us on
+        // the NFC-A ISO-DEP-only discovery map): neutral today.
+        assert!(!reason_is_link_loss(0x03));
+        assert!(!reason_is_link_loss(0x04));
+        assert_eq!(DEACTIVATE_REASON_DH_REQ, 0x00);
+    }
+
+    #[test]
+    fn wtx_ntf_bytes_match_um11495_table_74() {
+        // GREAT EXPECTATION (reference-locked bytes — do not "fix"
+        // without re-verifying against the cited reference):
+        // bench capture 2026-10-13 (issue #151, 12× during a 13 s
+        // stalled DATA exchange) and UM11495 Rev 1.8 §7.3.4 Table 74 —
+        // PH_NCI_OID_SYSTEM_WTX: GID 1111b (0xF), OID 0x17, zero
+        // parameters → wire header exactly 6F 17 00.
+        let raw = [0x6F, 0x17, 0x00];
+        let f = Frame::decode(&raw).unwrap();
+        assert_eq!(f.mt, MT_NTF);
+        assert_eq!(f.gid, GID_PROP);
+        assert_eq!(f.oid, NTF_PROP_RF_WTX);
+        assert_eq!(f.len, 0);
+        assert!(is_wtx_ntf(&f));
+        // Pure advisory: not a presence signal, not a DATA packet —
+        // reader::event_of ignores it and exchange() consumes it as churn.
+        assert!(reader::event_of(&f).is_none());
+        // Discrimination: RF-group NTFs and GID-0xF *commands* must not
+        // classify as WTX (Table 123 keeps GID-0xF 0x17 out of the
+        // command set — it exists only as this notification).
+        let rf_ntf = ntf_frame(NTF_RF_DEACTIVATE, &[0x00, 0x00]);
+        assert!(!is_wtx_ntf(&rf_ntf));
+        let wrong_mt = Frame::decode(&[0x2F, 0x17, 0x00]).unwrap();
+        assert!(!is_wtx_ntf(&wrong_mt));
+    }
+
+    #[test]
+    fn exchange_consumes_wtx_ntf_churn_before_data() {
+        // Bench shape (issue #151): WTX advisories 6F 17 00 interleave
+        // with the DATA response; exchange must consume them and still
+        // deliver the DATA packet on the same connection.
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[0x6F, 0x17, 0x00]); // WTX churn first
+        t.push_notification(&[0x00, 0x00, 0x02, 0x90, 0x00]); // DATA on conn 0
+        let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
+            .expect("data must arrive after wtx churn");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+    }
+
+    #[test]
+    fn data_fragment_headers_pbf_chain() {
+        // NCI 1.0 §3.4.3 "Format of Data Packets": octet 0 =
+        // MT(000b)|PBF(bit 4)|Conn ID(bits 3:0), octet 1 = RFU (0),
+        // octet 2 = LEN. A 260-octet APDU (GP STORE DATA block) chunks
+        // 253 + 7 at MAX_DATA_FRAGMENT; Table 3: "1b: The Packet
+        // contains a segment of a Message which is not the last
+        // segment" — only the 253-octet first fragment carries PBF.
+        let mut apdu = [0u8; 260];
+        for (i, b) in apdu.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        let (head, tail) = apdu.split_at(data::MAX_DATA_FRAGMENT);
+        assert_eq!((head.len(), tail.len()), (253, 7));
+
+        let mut out = Vec::new();
+        assert!(data::encode_fragment(0, true, head, &mut out));
+        assert_eq!(out.len(), 3 + 253);
+        assert_eq!(&out[..3], &[PBF_MASK, 0x00, 0xFD]);
+        assert_eq!(&out[3..], head);
+
+        assert!(data::encode_fragment(0, false, tail, &mut out));
+        assert_eq!(out.len(), 3 + 7);
+        assert_eq!(&out[..3], &[0x00, 0x00, 0x07]);
+        assert_eq!(&out[3..], tail);
+
+        // The historical single-packet path stays byte-identical to the
+        // C driver (PBF clear) for payloads <= 255.
+        let mut one = Vec::new();
+        assert!(data::encode(0, &[0xAA, 0xBB], &mut one));
+        assert_eq!(one.as_slice(), &[0x00, 0x00, 0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn exchange_fragments_260_byte_apdu_into_pbf_chain() {
+        // GP STORE DATA shape: 260-octet APDU → two DATA packets
+        // (253 + 7), PBF=1 only on the first (NCI 1.0 §3.4.3/Table 3).
+        // The credit re-grant (CORE_CONN_CREDITS_NTF `60 06 ..`,
+        // §4.4.4; payload [num_entries=1, conn 0, +1 credit]) is
+        // scripted to land between the fragments — without consuming it
+        // the second send would overwrite the mock's pending reply and
+        // the DATA response would never surface.
+        let mut apdu = [0u8; 260];
+        for (i, b) in apdu.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7);
+        }
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&[0x60, 0x06, 0x03, 0x01, 0x00, 0x01]); // credits NTF
+        t.push_reply(&[0x00, 0x00, 0x02, 0x90, 0x00]); // DATA response
+        let rsp = reader::exchange(&mut t, 0, &apdu).expect("fragmented exchange");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+        assert_eq!(t.sent.len(), 2, "exactly two DATA packets");
+        let (f1, f2) = (&t.sent[0], &t.sent[1]);
+        assert_eq!(f1.len(), 3 + 253);
+        assert_eq!(&f1[..3], &[0x10, 0x00, 0xFD]); // PBF set, conn 0, LEN 253
+        assert_eq!(&f1[3..], &apdu[..253]);
+        assert_eq!(f2.len(), 3 + 7);
+        assert_eq!(&f2[..3], &[0x00, 0x00, 0x07]); // PBF clear, LEN 7
+        assert_eq!(&f2[3..], &apdu[253..]);
+    }
+
+    #[test]
+    fn exchange_gates_second_fragment_on_credits_ntf() {
+        // Ordering proof for the credit gate: the transport surfaces the
+        // credits NTF only on the FIRST poll and the DATA response only
+        // on the SECOND, recording the send/poll event order. NCI 1.0
+        // §4.4.4: "The DH SHALL NOT send any Data Packet on a
+        // connection when the corresponding NFCC_Credits_Avail is 0" —
+        // on the PN7160 (1 credit/connection, UM11495 §5.3.1 Table 10)
+        // fragment 1 consumes the only credit, so the event log must
+        // read send → credits → send → data; a back-to-back
+        // double-send would read send, send, credits, data.
+        struct GatedTransport {
+            sent: std::vec::Vec<std::vec::Vec<u8>>,
+            events: std::vec::Vec<&'static str>,
+            polls: usize,
+        }
+        impl Transport for GatedTransport {
+            fn send(&mut self, cmd: &[u8]) -> bool {
+                self.sent.push(cmd.to_vec());
+                self.events.push("send");
+                true
+            }
+            fn poll_frame(&mut self) -> Option<Frame> {
+                self.polls += 1;
+                match self.polls {
+                    1 => {
+                        self.events.push("credits");
+                        Frame::decode(&[0x60, 0x06, 0x03, 0x01, 0x00, 0x01])
+                    }
+                    2 => {
+                        self.events.push("data");
+                        Frame::decode(&[0x00, 0x00, 0x02, 0x90, 0x00])
+                    }
+                    _ => None,
+                }
+            }
+            fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
+                None
+            }
+            fn drain(&mut self) -> Option<Frame> {
+                None
+            }
+        }
+        let mut t = GatedTransport {
+            sent: std::vec::Vec::new(),
+            events: std::vec::Vec::new(),
+            polls: 0,
+        };
+        let rsp = reader::exchange(&mut t, 0, &[0u8; 260]).expect("gated exchange");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+        assert_eq!(t.sent.len(), 2);
+        assert_eq!(t.events, vec!["send", "credits", "send", "data"]);
+    }
+
+    #[test]
+    fn exchange_reassembles_pbf_chained_data_response() {
+        // NCI 1.0 §3.5: "When an NFCC sends a Data Message to the DH,
+        // regardless of the payload length, it MAY segment the Data
+        // Message into smaller Data Packets for any internal reason" —
+        // a PBF=1 DATA packet followed by PBF=0 concatenates into one
+        // response (the flag is Frame::pbf from decode).
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[0x10, 0x00, 0x02, 0xAA, 0xBB]); // segment, more follow
+        t.push_notification(&[0x00, 0x00, 0x03, 0xCC, 0xDD, 0xEE]); // last segment
+        let rsp =
+            reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00]).expect("reassembled response");
+        assert_eq!(rsp.as_slice(), &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+    }
+
+    #[test]
+    fn exchange_253_byte_apdu_stays_single_packet() {
+        // MAX_DATA_FRAGMENT boundary: a 253-octet APDU is exactly one
+        // DATA packet with PBF clear and needs no credit wait — payloads
+        // <= 253 keep the pre-fragmentation wire behavior.
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&[0x00, 0x00, 0x02, 0x90, 0x00]);
+        let rsp = reader::exchange(&mut t, 0, &[0xA5u8; 253]).expect("reply");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+        assert_eq!(t.sent.len(), 1);
+        assert_eq!(t.sent[0].len(), 3 + 253);
+        assert_eq!(&t.sent[0][..3], &[0x00, 0x00, 0xFD]);
     }
 
     #[test]

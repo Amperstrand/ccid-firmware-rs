@@ -24,16 +24,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 FIRMWARE="target/xtensa-esp32-espidf/release/esp32-ccid"
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
+error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
 # Detect the serial port from stable by-id identities — never hardcode
 # /dev/ttyUSBx: USB re-enumeration renumbers it (FTDI unbind/rebind, replug).
 # ESPFLASH_PORT always wins for explicit one-off targeting.
 detect_port() {
-    local p
+    local matches=() p
     for p in /dev/serial/by-id/usb-Hades2001_M5stack_*-if00-port0 \
              /dev/serial/by-id/usb-FTDI_*-if00-port0; do
-        [ -e "$p" ] && { echo "$p"; return 0; }
+        [ -e "$p" ] && matches+=("$p")
     done
-    return 1
+    case ${#matches[@]} in
+        1) echo "${matches[0]}"; return 0 ;;
+        0) return 1 ;;
+        *)
+            error "Ambiguous port detection (${#matches[@]} matches):"
+            for p in "${matches[@]}"; do error "  $p"; done
+            error "Set ESPFLASH_PORT=/dev/... explicitly."
+            return 1 ;;
+    esac
 }
 PORT="${ESPFLASH_PORT:-$(detect_port || true)}"
 if [ -z "${PORT}" ]; then
@@ -43,14 +60,6 @@ if [ -z "${PORT}" ]; then
 fi
 info "Serial port: ${PORT}"
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-info()  { echo -e "${GREEN}[INFO]${NC}  $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 build() {
     echo ""

@@ -7,6 +7,507 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
+
+`pn7160-nci` now speaks NCI §3.4.3/§3.5 segmentation: TX chunks APDUs
+at 253 octets into PBF-chained DATA packets, gated between fragments
+on `CORE_CONN_CREDITS_NTF` (the PN7160 grants exactly one credit per
+connection), and reassembles PBF-chained replies (responses up to
+1024 octets). Previously payloads >255 were rejected outright — GP
+STORE DATA blocks (260–268 B with SCP02 MAC) failed as SW `64 00` and
+`gp` needed a `--bs 200` workaround. Bench 2026-10-13: 260-byte APDU
+answered by the card (`6F00`), 117 KB SmartPGP CAP installs at default
+block size in 212 s, short-APDU path unchanged (67/67 crate tests).
+
+### Added — hardware test program (pytest, env-gated, no agent needed)
+
+- `tests/hardware/vpcd/` — link health (ping/OTA/netlog/reader/ATR),
+  OTA reflash round-trip, and the full SmartPGP lifecycle
+  (gp delete → verify gone → install → gpg card-status). Bench-green:
+  5/5 link tests.
+- `tests/hardware/perf/` — ACR1252-anchored benchmarks (ATR latency,
+  APDU RTT percentiles, throughput) with a JSONL results ledger and
+  markdown comparison report generator.
+- `tests/hardware/ota/` — rollback negative tests: bad-image taxonomy
+  (truncated, corrupted tail, checksum-invalid) with mandatory
+  good-image restore and documented USB-reflash last resort (13/13
+  image-crafting unit tests).
+- `tools/hil/` — labgrid enrollment: `ccid-nucula` / `ccid-m5stick`
+  places (OTA NetworkService seats), exporter config, place script,
+  and the bench-flock integration notes for the future conftest.
+
+### Added — wifi-vpcd: pcscd, GPG and GlobalPlatform over WiFi (#154)
+
+- `firmware/esp32-ccid/src/vpcd.rs` — vpcd protocol client in reversed
+  connection mode: the stock `libifdvpcd.so` stays in server mode
+  (listening on :35963) and the board connects out with 3 s
+  auto-reconnect. Bench-verified 2026-10-13 end-to-end over WiFi:
+  ATR, GPG `--card-status` (OpenPGP 3.4), and full GP
+  uninstall/install of SmartPGP (`gp --bs 200`, see runbook for the
+  NCI single-packet limitation).
+- `wifi_common.rs` / `wifi_vpcd.rs` — shared station bring-up ladder
+  and the vpcd firmware main. Credentials are build-time env vars
+  only (`NUCULA_WIFI_SSID` / `NUCULA_WIFI_PASS` / `NUCULA_VPCD_HOST`).
+- `docs/VPCD_WIFI_RUNBOOK.md` — host setup (reader.conf, pcscd
+  systemd overrides, ufw rules), GPG/GP configuration, and the
+  operational rules that each cost an hour to learn.
+- `docs/VPCD_ALIGNMENT_AUDIT.md` — stock-driver protocol alignment
+  audit.
+- `host-tools/ifd-nucula/` — research alternative: native network IFD
+  driver sketch with mock-board selftest (from the #154 transport
+  research decision matrix).
+
+### Fixed
+
+- netlog: subnet-directed broadcast — the bench AP does not forward
+  limited broadcasts between wireless stations.
+- ota: rollback hardening — app marked valid only after full
+  bring-up, short-write detection on the image stream.
+- pn7160: cold-cache wall-power re-activation in the driver,
+  bring-up step logging in the I2C shim.
+- wifi-ccid: bring-up deduplicated onto `wifi_common`.
+
+## [0.2.0] — 2026-10-12
+
+Hardware-verified release: all six bench readers card-level tested
+through pcscd, differential 16/16, GPG re-verified, pcscd-over-
+Bluetooth SPP new capability.
+
+### Changed — ESP-IDF v5.5.1 → v5.5.5 (Amperstrand unification)
+
+`esp_idf_version` bumped to `tag:v5.5.5`. esp-idf-svc STAYS at 0.52.1:
+0.53.0 requires the esp-idf-hal ^0.47 / esp-idf-sys ^0.38 generation,
+which conflicts with our vendored legacy-I2C esp-idf-hal 0.46.2 (links
+conflict) — taking it means porting off `legacy-i2c`, a separate
+follow-up lane (it would also bring the Bluedroid-advertising fix for
+esp32/c3/s3, candidate root cause for the parked C3 BLE `0x0c` wall,
+issue #66). svc 0.52.x is IDF-5.5.x-compatible per its changelog.
+Toolchain consequences (verified from
+v5.5.5 `tools.json` + `tool_version_check.cmake`):
+
+- **Crosstool**: IDF v5.5.2+ tools.json lists ONLY
+  `esp-14.2.0_20260121`; the check matches the full crosstool-NG
+  build string, so the `20241119` build of the same GCC 14.2.0 is
+  REJECTED at cmake configure (FATAL_ERROR). CI espup pin and the
+  bench moved to `-c 14.2.0_20260121`.
+- **CI cache**: generation prefix `v6` → `v7` (restore-keys must not
+  fall back across the IDF bump — documented poison class).
+- esp-idf-sys 0.37 / vendored esp-idf-hal 0.46.2 / esp-idf-svc 0.52.1
+  stay: all are the correct baseline for 5.5.x (hal 0.46.0 already
+  absorbs the IDF 5.5.2+ driver-signature changes).
+- Fixes picked up on the way (release-note verified): USB-Serial/JTAG
+  ~50 ms wake-print block, C3/S3 USB-DP-after-CPU-reset, I2C
+  multi-read-job data loss, esp_coredump `MAX_TASKS_NUM` honored,
+  Bluedroid GATT response-timeout + ATT UAF, mbedTLS 3.6.5. No
+  USB-Serial/JTAG reset-semantics change (C3 `rst:0x15` wall is
+  silicon, unchanged).
+### Added — STM32F469 known-good: full GP CAP lifecycle through our own reader (2026-10-12)
+
+### Changed — esp32 T=1 timing contract: G-04 + G-05 (2026-10-12, code landed; bench pending)
+
+G-04 (WTX detached from BWT): SetParameters T=1 is now parsed and applied —
+the shared core stores the accepted structure (GetParameters echoes it
+instead of static defaults; `applied_t1_timing()` getter) and the esp32
+handler feeds it to the T=1 endpoint (`set_host_timing`). WTX requests are
+sized from the BWT the host actually believes: m = ceil((elapsed + 100 ms) /
+BWT) clamped 2..59, BWT from the negotiated BWI via the now-shared
+`t1_bwt_ms` (moved to `ccid-protocol`, re-exported by the STM32's
+`smartcard_common` — one definition for both firmwares, fix-all-siblings).
+The flat 150 ms threshold and fixed m=2 are gone.
+
+G-05 (synthetic ATR declared no T=1): the m5stick/mfrc522 ATR is now
+`3B (80|K) 81 31 FE 45 <hist> TCK` — TA3 announces IFSC 254 (the host
+chains at ifsc=32 without it, per ifdhandler.c get_IFSC: 8× the round
+trips on this relay), TB3 advertises BWI=4/CWI=5, TCK legal. Semantic
+lock test parses the ATR back through the shared parser. The nucula's
+ATS-derived ATR (ACR-mirroring, d6b3877) is deliberately unchanged —
+own bench pass required.
+
+Tests: `wtx_m_sized_from_negotiated_bwt`, `set_parameters_applies_t1_timing_to_endpoint`,
+`synthetic_atr_semantically_locks_t1_timing`, relocated BWT unit tests.
+
+### Fixed — esp32 T=1 relay: G-03 chained-APDU truncation at 254 (2026-10-12)
+
+`xfr_via_t1` copied the T=1-assembled APDU into a `[u8; 254]` buffer with
+a silent `min()` clamp — any case-3/4 APDU above 254 bytes (GP STORE DATA
+during CAP install is exactly this class) reached the card mangled while
+the T=1 layer reported success. The relay buffer is now `[u8;
+t1::MAX_RELAY]`, derived from the assembler's own `Vec` capacity, so the
+two capacities cannot drift (fix-all-siblings protocol; the assembler
+already answers R(other-error) on chain overflow). Regression test
+`chained_apdu_over_254_reaches_card_untruncated` proves a 301-byte
+chained APDU reaches the card byte-complete; `MockNfcDriver` records the
+last forwarded APDU. Also locked: byte-literal PCB layout test
+(`r_pcb(1,0)==0x90` — ISO 7816-3 Table 45, the pre-7f136a0 bug class)
+and chain-overflow → R(other-error).
+
+### Docs — gap-table truth repairs (2026-10-12)
+
+`docs/T1_BEST_PRACTICES.md` gap table had gone stale against the tree:
+G-01/G-02 marked open though fixed by 7f136a0 (bench-verified), G-07
+marked fully open though the first-byte half landed in 46c4701. All rows
+now carry per-gap RESOLVED/PARTIALLY RESOLVED annotations with commit
+hashes. New `reference/README.md` indexes every tracked reference source
+with upstream pins, licenses, and specquotes wiring (#134). AGENTS.md
+gains the fix-all-siblings DRY protocol (owner directive) and the
+three-class vendoring policy.
+
+### Fixed — STM32 T=1 relay: honest-error contract kills the #132 orphaned-block race (2026-10-12)
+
+Root cause (full dig: `docs/t1_relay_132_rootcause.md`, issue #132):
+`transmit_raw`'s T=1 branch returned `Ok(short)` on a first-byte timeout —
+an empty "success" DataBlock — after a hardcoded 500 ms first-byte wait,
+while GetParameters advertises BWI=4 (~1.38 s BWT) to the host. A card
+answering inside BWT but outside 500 ms got its block orphaned (ORE-shredded
+by the next exchange), and libccid could mis-associate a valid card
+response with the wrong host exchange — the path-dependent SCP02
+"cryptogram mismatch" on the older bench P71. Introduced by perf commit
+13b17c8 (benchmarked only on the fast ComSign card).
+
+The fix (receive-layer only; the reader-role TPDU-pipe doctrine is
+untouched — host still owns T=1):
+- first-byte wait = the card's BWT (ISO 7816-3 §11.6.2.1) at the current
+  wire baud (`t1_bwt_ms`, host-tested), clamped 500 ms..5 s
+- first-byte timeout and truncated blocks now return `Err` (CCID error),
+  never a short success
+- `prepare_rx()` drain before every response read (echoes, orphaned tails)
+- ORE in `receive_byte_timeout` fails the exchange (`ProtocolError`)
+  instead of feeding the stale DR byte as a fresh prologue
+
+Bench (STM32F469, Cherry profile, reflashed): labgrid suite 14 passed +
+1 xfailed; content-fidelity hammer (SELECT+CPLC, 400 iterations) 0
+exceptions and 0 byte mismatches vs 54 exceptions/446 pre-fix — and 4.7×
+the iteration rate. Definitive #132 close-out (gp -l on card 50942720
+through the Cherry reader) pending a physical card move to the STM32 slot.
+Test updates: GET CHALLENGE accepts card-dependent clean SW (69xx on a
+JCOP ISD default-app card vs 6D/6E on ComSign); nucula battery exact-set
+xfail gains the card-absent signature (escapes-only — the #128 escape gap
+is card-independent).
+
+### Fixed — bench suite regressions + combined-suite collection (2026-10-12)
+
+`conformance_battery` pre-drain called pyserial's `in_waiting` property
+as a method (both call sites, introduced in 510b797) — every battery
+exchange died with TypeError; fixed. Bare `from conftest import ...` in
+test modules made combined-suite collection order-dependent
+(labgrid+nfc and nfc+labgrid both died with ImportError while the CI
+gate passed by traversal luck) — helpers moved to uniquely-named
+modules `labgrid/hil_helpers.py` + `nfc/cardlib.py`; conftests
+re-import, test modules repointed; every collection permutation and
+the CI gate verified green. Nucula direct-serial firmware gaps (first
+IccPowerOn blocks the serve loop >4 s; escapes silent after any
+power-on attempt; pcscd/broker surface unaffected) encoded as the
+exact-set xfail `NUCULA_KNOWN_GAPS` in the serial battery — any other
+failure combination stays a hard red (#128).
+
+### Changed — SSH HIL retired; labgrid is the de facto test mechanism
+
+`tests/hardware/labgrid/exporter-208.yaml` (remote-rig relic) removed;
+AGENTS.md SSH-HIL sections rewritten to the local labgrid doctrine; the
+`ai-legion-nfc` exporter converted from ad-hoc nohup to the systemd
+unit `labgrid-exporter-nfc.service` (bench host) and
+`/etc/labgrid/MANAGED_BY` rewritten to local truth. Bench docs gain
+the card/GP inventory (labgrid README): all five bench cards are NXP
+P71D321; AUTH triple verified on the ACR1252 card (full
+install→use→uninstall GP lifecycle proven with TeapotApplet, SmartPGP
+fixture preserved); three cards carry unknown pre-personalized ISD
+keys — fingerprints + retry budgets on #127, do not blind-retry.
+Soak README marked as targeting the retired rig with a localization
+checklist before any re-run.
+
+### Fixed — PIN verify/modify wire shape (audit P1, spec-verified)
+
+`wPINMaxExtraDigit` is a LE u16 hosts build as (min<<8)+max with wire
+bytes [max, min] (pcsc-lite scardcontrol.c) — we parsed min/max
+swapped. §6.1.11 APDU template starts after the 3-byte bTeoPrologue
+(offset 14, not 12). §6.1.12: libccid omits bMsgIndex2/3 per
+bNumberMessage, shifting prologue+APDU left — parse is now
+variant-aware (commands.c SecurePINModify). Reference-locked tests for
+verify + all three modify forms. Recommended follow-up: full
+SCardControl(FEATURE_VERIFY_PIN_DIRECT) HIL round-trip.
+
+### Added — pcscd over Bluetooth Classic SPP (m5stick)
+
+New `m5stick-spp` board: BT SPP acceptor (esp-idf-svc bt_spp_acceptor
+reference) wired to the SAME CcidSerialServer+CcidHandler as UART0 —
+zero protocol duplication. Host: `rfcomm bind 0 <bdaddr> 1` +
+reader.conf `/dev/rfcomm0:GemPCTwin`. Bench-verified end-to-end:
+pcscd enumerates `GemPC Twin BT (m5stick)`, card ATR + APDU relay
+over the air, 30/30 soak, p50 48ms/APDU. ota_0 slot @0x40000.
+
+### Fixed — differential AID probe + CI gates
+
+tests/hardware/nfc conftest gains the GP 2.1.1 ISD RID
+(`A000000151000000`) — the P71 JCOP twins answer it 9000 (the ISO
+prefix is 6A82 on these cards); the m5stick/nucula differential legs
+were selection-starved without it. Differential now 16/16. CI: lazy
+pyserial imports in the nucula conftest (python-collect minimal env),
+strict spec-quote coverage scoped to the fully-covered sources,
+cargo-target resolver OSError-guarded, fmt drift fixed.
+
+
+### Fixed — pn7160 pcscd ATR synthesis + PTY broker bring-up (#117, bench 2026-10-11)
+
+- **`ats_to_atr` produced a malformed ATR that pcscd rejects** (bench:
+  the broker wire log showed IccPowerOn answered, then pcscd sent NO
+  SetParameters/PPS and failed every connect with "Card is
+  unresponsive"): the raw ATS bytes were copied verbatim behind a `3B`,
+  so T0's low nibble (the ATS FSCI) was read as a historical-byte
+  count, TA1 carried an invalid ATR Fi/Di, and the absent TD1 claimed
+  T=0 for a T=1 card. The builder now parses the ATS interface-byte
+  mask (ISO 14443-4 §5.1.1, TD-chaining included) and synthesizes the
+  PC/SC Part 3 contactless shape byte-identical to the MFRC522
+  backend's bench-proven builder (`3B 8x 80 01 <hist> TCK` → T=1).
+  Bench-locked: the P71's activation ATS now yields
+  `3B 85 80 01 80 73 C8 21 10 0E` — byte-identical to the m5stick
+  relay's ATR for the same card.
+- **`activation_ats` included the nested TLV length byte** in the ATS
+  (the P71 activation tail is `[outer=0x0A][inner=0x09][ATS…]`), so
+  the parser saw the length as T0. The inner length is now stripped;
+  the delivered contract is the bare `[T0, interface bytes, history]`.
+- **`host-tools/nucula-ccid-broker.py` hardened + productionized**:
+  serving-gate before exposure (the `/dev/nucula-ccid` symlink is only
+  created after a framed GetSlotStatus answered — CDC-burst rule #1,
+  #119), drain-until-idle boot settle instead of a fixed sleep,
+  bidirectional wire tap for bench diagnostics, and a temporary
+  IccPowerOff suppression shim (`POWER_OFF_SHIM=1`, default on) that
+  answers power-offs locally so presence survives pcscd's init
+  power-off — the bench chip's re-arm probe is rejected with NCI
+  `DISCOVERY_ALREADY_STARTED` (0xA0) after a deactivation and the
+  HALTed ISO-DEP card never re-activates (#125 hardware gap, wire
+  evidence on #117). Remove the shim when #125 lands.
+- **`nucula-ccid-broker.service`** systemd unit (referenced by the
+  broker docstring since d7d25e6 but absent): runs the broker under
+  systemd, ordered `Before=pcscd.service`.
+- Bench-verified end-to-end 2026-10-11: `Nucula CCID` enumerates in
+  pcscd, 8/8 connect+ATR+SELECT(9000)+disconnect sessions through the
+  broker, stable enumeration over a 5.5-min watch, PTY-level GSS RTT
+  0.72 ms p50 over the 0.20 ms direct-serial floor (~0.5 ms broker
+  overhead). Remaining nucula gap: GP CAP-class installs (SmartPGP)
+  still fail at the first T=1 INSTALL block (card answers `9100`, gp
+  retries into a comm error) — same T=1/CAP-upload limitation class
+  as the m5stick, firmware lane.
+
+### Fixed — PN7160 presence recovery: RF_DISCOVER re-issue (#125, on top of af8641f)
+
+- **One-shot RF_DISCOVER probe in the presence re-arm** (#125 item 2):
+  an empty re-arm window right after a presence/session edge now writes
+  exactly ONE non-blocking RF_DISCOVER probe (new `RearmPhase::
+  DiscoverProbeRsp`) and opens a fresh tag-collect window — covering
+  the "NFCC sat down" mode beyond the power_off re-issue. The probe is
+  armed by presence edges (latch/clear/power_off) and consumed on
+  first use: never per-cycle (a per-cycle RF_DISCOVER re-issue mutes
+  the PN7160 after ~11 cycles, bench 2026-10-10). Probe RSP rejection
+  is survivable (phase gives up, presence unchanged).
+- **`reader::restart_discovery` helper**: validates the RF_DISCOVER RSP
+  shape + STATUS_OK (the raw transact in af8641f could not tell an OK
+  from a rejection); re-exports `tx::RF_DISCOVER_PASSIVE_A` via the
+  reader module so all presence paths share one constant path.
+- **Tests**: the #125 bench repro as a host test (present → IccPowerOff
+  → presence re-latch → power_on ATR, no select), wire-order lock
+  (deactivate then discover), probe one-shot + rejection survival, and
+  the re-arm helper/deferred-RSP tests updated to the new cycle budget
+  (deactivate+probe pair, still one write per poll).
+
+### Changed — DRY phase 2 (issue #121): STM32 firmware runs on the shared ccid-core handler
+
+- `crates/ccid-core` gains the contact-smartcard reader flavor and the
+  PC_to_RDR_Secure (PIN verify/modify) surface:
+  - New `ReaderProfile` type parameter (`SerialNfcProfile` default =
+    byte-identical pre-port ESP32 behavior; `ContactProfile` = the
+    STM32 contact wire behavior) keys the historical per-family
+    differences: IccPowerOn validation (dwLength, 5V/auto-only power
+    select, ICC_MUTE errors) with ATR-derived protocol, the host
+    parameter echo model for Get/Set/ResetParameters with libccid
+    quirk field validation, contact XfrBlock error shapes (0xFE
+    inactive / 0xFF card failure as SlotStatus), T=0 default
+    parameters, Abort-slot acknowledgment, driver power-off + secure
+    cancel on card removal, and no CLA=0xFF pseudo-APDU interception.
+  - New `secure` module: `PinVerifyParams`/`PinModifyParams`/
+    `PinResult`/`PinBuffer` (CCID §6.1.11/12 wire structures) moved
+    from the STM32 `pinpad` module — one reference-locked home for the
+    secure-Messaging wire formats. The handler arms `SecureState` and
+    exposes `take_secure_params`/`take_secure_modify_params`/
+    `complete_pin_entry`/`cancel_secure` events (the esp32
+    `take_card_reset`/`take_parameters_accepted` wiring pattern); the
+    PIN-pad capability is the runtime `pin_pad` knob (Cherry ST-2xxx
+    vendor id only).
+  - `card-interface` grows `SlotDriver` (presence poll + session
+    liveness + cached UID): blanket-implemented for every `NfcCardExt`,
+    implemented directly by the STM32 adapter. The core's driver bound
+    changes from `NfcCardExt` to `SlotDriver`.
+- `firmware/ccid-firmware/src/ccid_core.rs` (`CcidMessageHandler`,
+  1206 lines) is rewritten as a thin wrapper over
+  `CcidHandlerCore<_, ContactProfile>`: USB bulk framing, single-slot +
+  cmd-busy gating, the vendor escape set (0xD0 driver diagnostics,
+  Gemalto 0x6A), IccClock + SetDataRateAndClockFrequency (USART
+  specifics), and the display-feature PIN-result→APDU exchange stay
+  firmware-local; dispatch, parameters, XfrBlock, power lifecycle and
+  Secure delegate to the core. SetParameters acceptance reaches the
+  USART driver through the `take_parameters_accepted` event (so
+  ResetParameters now also applies protocol 0 to the driver — the
+  handler state always did, the driver is now told).
+- Resurrected the orphaned STM32 handler characterization suites
+  (`tests/ccid_core_tests.rs`, `comprehensive_test.rs`,
+  `integration_test.rs`, `replay_seedkeeper.rs` — unwired since the
+  root manifest became a pure virtual workspace) as `[[test]]` targets
+  of `ccid-firmware-rs`: 106 tests over the ported wrapper. Two stale
+  expectations fixed to the wire-correct frames the current handler
+  (and pcscd) produce: SetParameters frames now carry a bProtocolNum
+  matching the structure length and bmTCCKST1 without RFU bits (the
+  suites predated the issue #56/#57 validation fixes and had stopped
+  running before those landed).
+- Gates: `cargo test --workspace` 549 passed / 0 failed (ccid-core
+  suite 65 → 90; firmware lib 88 → 90; four resurrected suites +106);
+  both STM32 MCU builds and both clippy passes clean; fmt clean;
+  spec-quote drift check clean. Bench-verified the same day: labgrid
+  HIL 7/7 on the F469 (USB enum, pcscd + ComSign ATR, APDU relay,
+  PIN-pad features, Escape 0xD0).
+
+### Fixed — PN7160 SET_CONFIG TLV corrected per reference implementations (Reference-First founding incident)
+
+- **CORE_SET_CONFIG param IDs are ONE octet** — verified against the
+  Linux kernel (`struct set_config_param { __u8 id; __u8 len; ... }`,
+  `include/net/nfc/nci.h`), both NXP stacks (`NCI_PARAM_ID_TOTAL_DURATION
+  0x00`, `nci_defs.h` in linux_libnfc-nci AND NFC_NCIHAL_libnfc-nci) and
+  UM11495 §6.2. Our TLV claimed a two-octet id and carried a trailing
+  garbage octet the chip rejected (status=REJECTED, num_applied=0) —
+  masked for weeks by the pre-ed0ed5e status parse, then a hard ladder
+  abort once the parse was corrected. The wallet's plen=5 TLV was VALID
+  all along; our bytes are now wallet-verbatim:
+  `[20 02 05 01 00 02 FE 01]` → RSP `[OK, 0 failed]`, config APPLIED.
+- **Dropped the mislabeled `SET_CONFIG_TC1` step**: param 0x52 is
+  `NCI_PARAM_ID_LF_T3T_MAX` (listen-mode Felica, NXP nci_defs.h) —
+  cargo-culted from the wallet's card-emulation config and mislabeled
+  as ISO-DEP TC1 (no such CORE param exists). Ladder is 5 commands.
+- **Ladder treats SET_CONFIG as advisory** (non-OK tolerated): the
+  bench-proven behavior — the reader ran for weeks on chip-rejected
+  config; re-discovery cadence is owned by the firmware re-arm state
+  machine. Load-bearing steps (CoreInit/RfDiscoverMap/RfDiscover) fail
+  with per-step named errors (the generic "step status != OK" cost a
+  session to localize).
+- **Bench**: actdiag ladder OK, card auto-activates at ~+943 ms, ATR
+  `3B 78 77 91 02 80 73 C8 21…` + real card SW through the relay —
+  first nucula card-level PASS since the regression. Reference-locked
+  test `tx_frames_match_c_driver_bytes` now locks ALL ladder bytes
+  (incl. the NCI 2.0 [proto, intf, mode] DISCOVER_MAP order).
+
+### Fixed — clean-wire part 2: log-shim ring purged at ceiling time
+
+Lines queued in the shim ring BEFORE `set_max_level(Off)` (FWID,
+bring-up, presence events) rode out after later responses via
+`drain_into` and desynced pcscd permanently — libccidtwin's parser is
+a strict byte stream with no SYNC resync (bench evidence:
+`ReadSerial() Got 0x76/0x65/0x64…` = boot-log text mid-session,
+journal-correlated). `log_shim::purge()` empties ring + dropped
+counter at ceiling time; the `drain_into` doc's "intermixing is safe"
+claim corrected — it is safe ONLY for SYNC-scanning bench parsers,
+never for libccidtwin.
+
+### Documented — Reference-First Doctrine + nucula C3 hardware wall
+
+- AGENTS.md gains the owner-directive doctrine: no assumptions on wire
+  formats, references before bench iterations (zread/grep.app/web),
+  GREAT EXPECTATION annotations with reference-locked unit tests,
+  mocks model the reference not our bug, DRY single-place-to-be-right.
+  The WRONG session lesson ("wallet TLV malformed") is corrected.
+- **Nucula C3 pcscd enumeration is hardware-impossible** (register-
+  verified): the C3 USB-Serial/JTAG has no `CHIP_RST_DIS` bit (C6/C61
+  only) — every pcscd port-open chip-resets (`rst:0x15`). Bench
+  reader.conf disabled; direct-serial CCID (safe opener, ~300 ms/cmd
+  floor) is the nucula's test surface. Tracked as #117.
+
+### Fixed — CI: guard cargo-target path check (hosted runners)
+
+`board.py`'s `__post_init__` glob on `/root/.cargo-target/...` raised
+PermissionError during pytest collection on GitHub-hosted runners.
+
+### Changed — CCID handler unification, phase 1 (PERF_AND_DRY_STRATEGY §3.1)
+
+- **Extracted the ESP32 CCID message handler into `crates/ccid-core`**
+  (`ccid-core/src/handler.rs`, `CcidHandlerCore`): slot lifecycle,
+  bStatus assembly, Get/Set/ResetParameters, Escape (0xD0 diagnostics,
+  0xD1 snapshot arm, 0x02 firmware id, GemPC sync-mode), the APDU-level
+  pipeline (PPS echo, PC/SC pseudo-APDUs, CLA-rewrite relay semantics
+  #50) and the truncation/error accounting — transport-agnostic,
+  `no_std`, generic over the card-interface traits. Firmware identity
+  string (Escape 0x02) is injected per firmware.
+- **`firmware/esp32-ccid/src/ccid_handler.rs` is now a thin wrapper**:
+  delegates dispatch to the core, keeps the T=1 endpoint routing
+  (`t1.rs`) local, wired via two core events — `take_card_reset`
+  (disarm after successful IccPowerOn, #101) and
+  `take_parameters_accepted` (arm on accepted Set/ResetParameters).
+  New `CardDriverAdapter` in `nfc.rs` bridges the firmware-local
+  `NfcDriver` trait to the shared card-interface traits without
+  touching driver impls.
+- `card-interface`: `CardBackend::reinit_count` and
+  `NfcCardExt::card_uid` default methods (the shared handler's driver
+  contract; existing implementors unaffected).
+- Wire behavior is byte-identical (ESP32 host tests 137/137 unchanged
+  in content; ccid-core grows its own standalone suite, 37→65 tests).
+  STM32 port (PIN/Secure surface onto the shared core) is the phase-2
+  lane — the STM32 handler is untouched and still builds.
+
+### Fixed — pn7160 correctness cluster (issue #109)
+
+- **`RF_DEACTIVATE_NTF` reason decode**: the presence decode treated reason
+  `0x00` as RF-link-loss — but `0x00` is DH-requested deactivation (the
+  answer to our own `RF_DEACTIVATE`, never a removal), so real removals were
+  filtered out and our own teardown echoes could have cleared presence. The
+  NCI v2.x Table 81 reason table is disputed between sources (NXP's
+  production `nci_defs.h`: `RF_LINK_LOSS=0x02` with `ENDPOINT_REQ=0x01`;
+  NCI 1.x-derived tables: `RF_LINK_LOSS=0x01`), so BOTH candidates decode as
+  removal until the pending hand-verified bench card-removal capture picks
+  the final value (see the `DEACTIVATE_REASON_*` block comment in
+  `crates/pn7160-nci/src/lib.rs`). Mock fixtures that encoded the inverted
+  values were regenerated. Host tests added for the classification.
+- **Active-session removal unannounced (from #106 review)**: `is_card_present`
+  short-circuited on a live session without draining, so a mid-session
+  link-loss NTF was never observed and the session answered forever. The
+  session branch now drains (read-only, no writes/re-arm) and on link-loss
+  tears the whole session down (`session_active()=false`, `transmit_apdu`
+  → `NoCard`) — the serve layer's presence-transition detection then
+  announces the removal (NotifySlotChange where the board profile enables
+  it; fresh GetSlotStatus answers on the inline-poll nucula profile).
+- **`power_on` stale-activation reuse**: a link-loss NTF queued between
+  presence polls was consumed and discarded by the discovery drain while
+  the cached NTF/ATS survived, so a later `power_on` resurrected the
+  removed card into a phantom ATR. `power_on` now surfaces link-loss from
+  its drain, clears the cache, and answers `NoCard`. Host tests added.
+- *(item 3, IRQ-wait µs-vs-tick budget — already fixed in 3effa7f, verified
+  on this branch: `waited += RTOS_TICK_US` with `RTOS_TICK_US=10_000`.)*
+
+### Fixed — Codex review backlog (issue #114, from PRs 93/96/98/100/107)
+
+- **`conformance_battery.py` fuzz path**: a dead DUT port now FAILs the case
+  (AssertionError) instead of silently skipping it when `reopen()` fails, and a
+  successful reopen is followed by a GetSlotStatus resync proof (disarm-then-
+  probe, issue #101 discipline) before the battery continues.
+- **`conformance_battery.py` late responses**: `Reader.exchange` now keeps a
+  pending-response buffer keyed by seq — responses arriving after the read
+  window are read before `reset_input_buffer` can discard them and are found
+  by the next exchange, so in-budget recoveries no longer read as
+  "NO RECOVERY".
+- **`conformance_battery.py` labgrid doctrine**: the battery acquires the
+  `nucula-c3` and `m5stick` places before stopping pcscd or opening any port,
+  and releases them in teardown (failed acquire aborts with exit code 2
+  before pcscd is touched).
+- **UART mains presence starvation**: `serve_uart` polls card presence
+  (`poll_if_due`) after every response flush — with `inline_poll=false`,
+  hosts sending commands <500 ms apart previously starved the read-idle poll
+  entirely, so presence never refreshed under continuous traffic.
+- **SetParameters `bProtocolNum` validation (CCID Rev 1.1 §6.1.7)**: values >1
+  are now rejected with SlotStatus failed + `CMD_NOT_SUPPORTED` instead of
+  being stored, echoed, and silently fallen back from to T=1. Host test added.
+- **`log_shim` timestamp wrap**: facade stamp is u64 milliseconds (was u32 —
+  wrapped at 49.7 days of uptime).
+- **Doc accuracy**: `ESP32_CCID_SPEC_AUDIT.md` now states serial hosts get
+  libccidtwin's hardcoded `dwFeatures = 0x00010230` (the `0x00010270` USB
+  descriptor value is internal-only on the serial transport); the truncated-
+  input comment in `ccid_handler.rs` corrected (wire frames are never
+  truncated — the serial server's stall guard resets the parser before
+  dispatch; the check guards direct handler input).
+
 ### Changed — PPS baud application now opt-in after hardware regression; hot-path logs demoted, exchange cycle stamps added
 
 The round-2 attempt (PPS Di=8 wire speedup, `f5feb61`, reverted on main as `b11cda6`) broke the

@@ -98,7 +98,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: thumbv7em-none-eabihf
 
       - name: Install cargo-binutils
@@ -189,10 +189,11 @@ jobs:
             features: "pn7160-bringup,pn7160-verdict-b"
             no-default-features: true
             gate: false
-            # Pinned nightly: 2026-10-09 nightly (32dba69d6) ICEs on
-            # esp-idf-svc 0.52.1 (compare_impl_item on wifi::scan_n);
-            # 2026-09-29 (f3865b2a4) is the bench-verified compiler.
-            toolchain: nightly-2026-09-29
+            # One-Rust-version policy (2026-10-12): the C3 rides the
+            # PINNED esp fork (espup -v 1.98.1.0) like xtensa — same
+            # Rust version as stable, retires the dated upstream nightly
+            # (and its ICE-pinning maintenance) entirely.
+            toolchain: esp
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
@@ -206,7 +207,7 @@ jobs:
             features: "pn7160-ccid"
             no-default-features: true
             gate: false
-            toolchain: nightly-2026-09-29
+            toolchain: esp
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
@@ -229,7 +230,7 @@ jobs:
       - name: Install espup + espflash (xtensa only)
         if: matrix.toolchain == 'esp'
         run: |
-          cargo install espup espflash
+          cargo install espup
 
       # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
       # C framework + Rust std (-Z build-std) there — the dominant ~80% of
@@ -272,30 +273,30 @@ jobs:
           # within the SAME generation — a cross-generation fallback once
           # restored v5.2-era 13.2.0 tools against IDF v5.5.1 (which wants
           # esp-14.2.0_20241119) and the red run then SAVED that poison
-          # under a fresh exact key (2026-10-09). v6 evicts that.
-          key: espressif-${{ runner.os }}-v6-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
+          # under a fresh exact key (2026-10-09). v6 evicted that; v7 is
+          # the IDF v5.5.5 generation (2026-10-12, crosstool 20260121).
+          key: espressif-${{ runner.os }}-v7-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
           restore-keys: |
-            espressif-${{ runner.os }}-v6-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
-            espressif-${{ runner.os }}-v6-${{ matrix.name }}-
-            espressif-${{ runner.os }}-v6-
+            espressif-${{ runner.os }}-v7-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
+            espressif-${{ runner.os }}-v7-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v7-
 
-      - name: Install ESP toolchain (xtensa)
+      - name: Install ESP toolchain (pinned fork + crosstool, all esp32 entries)
         if: matrix.toolchain == 'esp'
         run: |
-          # Pin the crosstool GCC to what IDF v5.5.1's tool_version_check
-          # accepts ('esp-14.2.0_20241119'). espup installs the LATEST
-          # crosstool by default; its bin dir lands ahead of embuild's own
-          # copy in PATH, and a brand-new release (esp-16.2.0_20260914,
-          # 2026-10-09) made every xtensa matrix entry fail the IDF
-          # version check at cmake configure time.
-          espup install -c 14.2.0_20241119
+          # BOTH pins matter (one-Rust-version policy, 2026-10-12):
+          # - crosstool 'esp-14.2.0_20260121': what IDF v5.5.5's
+          #   tool_version_check accepts — it matches the FULL
+          #   crosstool-NG build string from `gcc --version`; the LATEST
+          #   install broke CI once already (esp-16.2.0_20260914).
+          # - fork '1.98.1.0' (-v): the esp toolchain is espup-LATEST by
+          #   default (a moving nightly-derived compiler). Pinning it to
+          #   v1.98.1.0 aligns BOTH esp32 targets (xtensa + C3) on the
+          #   same Rust version as the stable pin and retires the dated
+          #   upstream nightly entirely.
+          espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
-
-      - name: Install nightly toolchain (riscv/C3)
-        if: startsWith(matrix.toolchain, 'nightly')
-        run: |
-          rustup toolchain install ${{ matrix.toolchain }} --profile minimal --component rust-src
 
       - name: Build firmware (${{ matrix.name }})
         working-directory: firmware/esp32-ccid
@@ -341,7 +342,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: thumbv7em-none-eabihf
           components: rustfmt, clippy
       
@@ -365,6 +366,43 @@ jobs:
             firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig \
             firmware/esp32-ccid/build.sh
 
+  python-collect:
+    # Regression lock for the collection bug class (found live 2026-10-11:
+    # a duplicate --hil addoption made every combined-suite run die with
+    # ValueError; module-level pyscard imports and import-time sys.exit
+    # in collected scripts are the same class). py_compile can't see any
+    # of it — only real collection can.
+    #
+    # Deliberately MINIMAL env: pytest + stdlib, no pyscard/pyserial/
+    # labgrid. The documented no-hardware path (`pytest tests/hardware/
+    # -v`, everything skips without --hil) must collect there — hardware
+    # deps belong inside functions/fixtures, never at module scope of
+    # collected files.
+    needs: changes
+    if: needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest only
+        run: pip install pytest
+      - name: Collect tests/hardware (exit-code discipline)
+        run: |
+          set +e
+          python3 -m pytest tests/hardware/ --collect-only -q > collect.txt 2>&1
+          rc=$?
+          set -e
+          cat collect.txt
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::collection failed (pytest exit $rc) — duplicate addoption, module-level hardware import, or import-time sys.exit"
+            exit 1
+          fi
+          # Positive canary: a silently-empty tree would exit 0 too.
+          grep -q " tests collected" collect.txt || {
+            echo "::error::zero tests collected"; exit 1; }
+
   stm32-test:
     needs: changes
     if: needs.changes.outputs.stm32 == 'true'
@@ -379,7 +417,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
       
       - name: Install system dependencies
@@ -408,7 +446,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.92"
+          toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo dependencies

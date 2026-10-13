@@ -1,439 +1,262 @@
+//! Thin CCID handler wrapper (docs/PERF_AND_DRY_STRATEGY.md §3.1):
+//! command dispatch, slot lifecycle, escapes, parameters and the
+//! APDU-level pipeline live in the shared, transport-agnostic
+//! `ccid-core` handler ([`CcidHandlerCore`]); this wrapper keeps the
+//! ESP32-specific T=1 endpoint routing (`t1.rs`, the libccidtwin TPDU
+//! path) wired around it. Wire behavior is byte-identical to the
+//! pre-extraction monolith (conformance-battery gate, #92 fuzz suite).
+
 use crate::ccid_types::{
     build_bstatus, CcidHeader, SlotState, CCID_HEADER_SIZE, CMD_NOT_SUPPORTED,
-    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, HW_ERROR, ICC_NOT_ACTIVE, ICC_STATUS_NO_ICC,
-    PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF,
-    PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS,
-    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS,
+    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, ICC_NOT_ACTIVE, PC_TO_RDR_ESCAPE,
+    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE,
 };
-use crate::nfc::{NfcDriver, PresenceState};
-use crate::t1::{self, elapsed_ms_since, now_us};
-use ccid_core::params::default_params;
-use ccid_core::pps::is_pps_request;
+use crate::nfc::{CardDriverAdapter, NfcDriver, PresenceState};
+use crate::t1::{self, elapsed_ms_since, now_us, FeedResult, T1Endpoint, MAX_RELAY};
+use crate::turnaround::TurnaroundStats;
+use ccid_core::handler::CcidHandlerCore;
 use ccid_core::response::{write_message, write_slot_status};
 use ccid_core::Diagnostics;
 
 // GEMPC: idVendor: 0x08E6 iManufacturer: Gemplus idProduct: 0x3437 iProduct: USB SmartCard Reader
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
-// GEMPC: dwFeatures: 0x00010230 ....10 Automatic ICC clock frequency change according to
-// parameters ....20 Automatic baud rate change according to frequency and Fi, Di params
-// ..02.. NAD value other than 00 accepted (T=1) 01.... TPDU level exchange
 pub struct CcidHandler<D: NfcDriver> {
-    nfc: D,
-    slot_state: SlotState,
-    presence_state: PresenceState,
-    tx_buf: [u8; 271],
-    sync_notifications: bool,
-    diagnostic_snapshot_requested: bool,
-    current_protocol: u8,
-    t1: t1::T1Endpoint,
+    core: CcidHandlerCore<CardDriverAdapter<D>>,
+    t1: T1Endpoint,
     t1_armed: bool,
-    diagnostics: Diagnostics,
 }
 
 impl<D: NfcDriver> CcidHandler<D> {
     pub fn new(nfc: D) -> Self {
-        let mut handler = Self {
-            nfc,
-            slot_state: SlotState::Absent,
-            presence_state: PresenceState { present: false },
-            tx_buf: [0u8; 271],
-            sync_notifications: false,
-            diagnostic_snapshot_requested: false,
-            current_protocol: 1,
-            t1: t1::T1Endpoint::new(),
+        Self {
+            core: CcidHandlerCore::new(CardDriverAdapter::new(nfc), FIRMWARE_VERSION),
+            t1: T1Endpoint::new(),
             t1_armed: false,
-            diagnostics: Diagnostics::new(),
-        };
-        // Sync recovery history at construction (Codex reviews on #46/#42):
-        // startup retries may already have reinitialized the driver before
-        // the handler existed; without this the first 0xD0 query reports 0.
-        handler.diagnostics.reinit_count = handler.nfc.reinit_count();
-        handler
+        }
     }
 
-    /// Escape 0xD1 arms a diagnostic snapshot: the response is acked, the
-    /// serve loop consumes this flag AFTER the ack went out and panics
-    /// with a marker reason so the panic handler writes a flash coredump
-    /// for post-mortem retrieval (AGENTS.md "Crash dumps & snapshots").
+    /// Escape 0xD2 (issue #120): serve-loop stamp of the command
+    /// turnaround (last command byte received → response flushed).
+    pub fn record_turnaround_us(&mut self, us: u32) {
+        self.core.driver_mut().1.record_turnaround_us(us);
+    }
+
+    /// Snapshot of the Escape 0xD2 counters.
+    pub fn turnaround_stats(&self) -> TurnaroundStats {
+        self.core.driver().1
+    }
+
     pub fn take_snapshot_request(&mut self) -> bool {
-        core::mem::replace(&mut self.diagnostic_snapshot_requested, false)
+        self.core.take_snapshot_request()
     }
 
-    /// Refresh time-varying diagnostic fields. Called from the firmware's
-    /// poll loop; the handler stays host-testable by taking the tick count
-    /// as a parameter instead of reading the ESP-IDF timer itself.
     pub fn refresh_diagnostics(&mut self, uptime_ticks: u32) {
-        self.diagnostics.uptime_ticks = uptime_ticks;
-        self.diagnostics.reinit_count = self.nfc.reinit_count();
+        self.core.refresh_diagnostics(uptime_ticks)
     }
 
     pub fn diagnostics(&self) -> &Diagnostics {
-        &self.diagnostics
+        self.core.diagnostics()
     }
 
     pub fn driver_mut(&mut self) -> &mut D {
-        &mut self.nfc
+        &mut self.core.driver_mut().0
     }
 
     pub fn diagnostics_mut(&mut self) -> &mut Diagnostics {
-        &mut self.diagnostics
+        self.core.diagnostics_mut()
     }
 
     pub fn record_nak(&mut self) {
-        self.diagnostics.nak_count = self.diagnostics.nak_count.saturating_add(1);
+        self.core.record_nak()
+    }
+
+    pub fn check_card_change(&mut self) -> Option<bool> {
+        self.core.check_card_change()
+    }
+
+    pub fn slot_state(&self) -> SlotState {
+        self.core.slot_state()
+    }
+
+    pub fn current_protocol(&self) -> u8 {
+        self.core.current_protocol()
+    }
+
+    pub fn set_current_protocol(&mut self, protocol: u8) {
+        self.core.set_current_protocol(protocol)
+    }
+
+    pub fn presence_state(&self) -> PresenceState {
+        self.core.presence_state()
+    }
+
+    pub fn sync_notifications(&self) -> bool {
+        self.core.sync_notifications()
     }
 
     pub fn process_command(&mut self, ccid_msg: &[u8], response: &mut [u8]) -> usize {
-        let Some(header) = CcidHeader::parse(ccid_msg) else {
-            return 0;
-        };
-
-        let payload_len = header.length as usize;
-        if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
-            // Truncated transport frame — a protocol error worth counting
-            // (Codex reviews on #40/#38); this early return bypasses the
-            // post-dispatch status accounting below.
-            self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
-            return write_slot_status(
-                header.slot,
-                header.seq,
-                self.current_icc_status(),
-                COMMAND_STATUS_FAILED,
-                CMD_NOT_SUPPORTED,
-                0,
-                response,
-            );
+        // libccidtwin T=1 wall fix (#101): at TPDU exchange level the
+        // host's T=1 engine sends T=1 blocks (S-block IFSD requests,
+        // I-blocks) as XfrBlock payloads. While SetParameters has armed
+        // the route, they go through the local endpoint; the Relay path
+        // re-enters the SAME shared APDU pipeline so unwrapped APDUs get
+        // identical treatment. Everything else delegates to the core.
+        if let Some(header) = CcidHeader::parse(ccid_msg) {
+            if header.message_type == PC_TO_RDR_XFR_BLOCK
+                && self.t1_armed
+                && self.core.current_protocol() == 1
+            {
+                return self.xfr_via_t1(&header, ccid_msg, response);
+            }
+            // Escape 0xD2 (issue #120): turnaround counters, answered
+            // here instead of the core's escape dispatch so the surface
+            // stays local to the ESP32 serial profile (0xD0's 28-byte
+            // core format is untouched).
+            if header.message_type == PC_TO_RDR_ESCAPE
+                && header.length == 1
+                && ccid_msg.get(CCID_HEADER_SIZE) == Some(&0xD2)
+            {
+                let mut buf = [0u8; TurnaroundStats::SERIALIZED_SIZE];
+                self.core.driver().1.to_bytes(&mut buf);
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.core.slot_state().icc_status()),
+                    0,
+                    0,
+                    &buf,
+                    response,
+                );
+            }
+            // Escape 0xD3 (issue #120): I2C poll-cadence probe — times N
+            // back-to-back ComIrqReg reads (the exact transaction the
+            // MFRC522 transceive poll loop performs) and reports
+            // total_us, N, configured FWT. Payload out: 3 words LE.
+            if header.message_type == PC_TO_RDR_ESCAPE
+                && header.length == 2
+                && ccid_msg.get(CCID_HEADER_SIZE) == Some(&0xD3)
+            {
+                let reads = u32::from(ccid_msg.get(CCID_HEADER_SIZE + 1).copied().unwrap_or(0));
+                let (took_us, fwt_ms) = match self.core.driver_mut().0.i2c_timing_probe(reads) {
+                    Some(us) => (us, self.core.driver().0.configured_fwt_ms()),
+                    None => (u32::MAX, 0),
+                };
+                let payload = [
+                    took_us.to_le_bytes(),
+                    reads.to_le_bytes(),
+                    fwt_ms.to_le_bytes(),
+                ]
+                .concat();
+                let cmd_status = if took_us == u32::MAX {
+                    COMMAND_STATUS_FAILED
+                } else {
+                    COMMAND_STATUS_NO_ERROR
+                };
+                let b_error = if took_us == u32::MAX {
+                    CMD_NOT_SUPPORTED
+                } else {
+                    0
+                };
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(cmd_status, self.core.slot_state().icc_status()),
+                    b_error,
+                    0,
+                    &payload,
+                    response,
+                );
+            }
         }
 
-        let payload = &ccid_msg[CCID_HEADER_SIZE..CCID_HEADER_SIZE + payload_len];
+        let len = self.core.process_command(ccid_msg, response);
 
-        let len = match header.message_type {
-            PC_TO_RDR_ICC_POWER_ON => self.handle_power_on(&header, response),
-            PC_TO_RDR_ICC_POWER_OFF => self.handle_power_off(&header, response),
-            PC_TO_RDR_GET_SLOT_STATUS => self.handle_get_slot_status(&header, response),
-            PC_TO_RDR_XFR_BLOCK => self.handle_xfr_block(&header, payload, response),
-            PC_TO_RDR_GET_PARAMETERS => self.write_parameters(&header, response),
-            PC_TO_RDR_SET_PARAMETERS => self.handle_set_parameters(&header, response),
-            PC_TO_RDR_RESET_PARAMETERS => self.handle_reset_parameters(&header, response),
-            PC_TO_RDR_ESCAPE => self.handle_escape(&header, payload, response),
-            _ => write_slot_status(
-                header.slot,
-                header.seq,
-                self.current_icc_status(),
-                COMMAND_STATUS_FAILED,
-                CMD_NOT_SUPPORTED,
-                0,
-                response,
-            ),
-        };
-
-        if len > 7 && response[7] & 0x40 != 0 {
-            self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
+        if self.core.take_parameters_accepted() {
+            self.t1_armed = true;
+            // G-04: apply the negotiated T=1 timing to the endpoint —
+            // WTX requests are then sized against the BWT the host
+            // actually believes, and chain pieces up to the negotiated
+            // IFSC are accepted.
+            if let Some((bwi, _cwi, ifsc)) = self.core.applied_t1_timing() {
+                self.t1.set_host_timing(bwi, ifsc);
+            }
+        }
+        if self.core.take_card_reset() {
+            // Card reset invalidates the negotiated protocol (CCID
+            // spec §6.1.2: parameters do not survive ATR reset) — disarm
+            // the T=1 route so pcscd's post-reset PPS probe (`FF 01 FE`,
+            // sent BEFORE SetParameters) echoes as PPS instead of
+            // feeding a stale T=1 endpoint (which parses it as garbage
+            // and kills the session — bench-strace 2026-10-10: every
+            // second connect failed "Card is unresponsive" exactly
+            // here). SetParameters re-arms.
+            self.t1.reset();
+            self.t1_armed = false;
         }
 
         len
     }
 
-    pub fn check_card_change(&mut self) -> Option<bool> {
-        if self.nfc.session_active() {
-            self.presence_state = PresenceState { present: true };
-            self.slot_state = SlotState::PresentActive;
-            self.diagnostics.card_present = true;
-            return None;
-        }
-
-        let presence = self.nfc.poll_card_presence();
-        self.diagnostics.card_present = presence.present;
-        self.diagnostics.reinit_count = self.nfc.reinit_count();
-        if presence.present != self.presence_state.present {
-            self.presence_state = presence;
-            self.slot_state = if presence.present {
-                SlotState::PresentInactive
-            } else {
-                SlotState::Absent
-            };
-            Some(presence.present)
-        } else {
-            None
-        }
-    }
-
-    // CCID_SPEC: /* Section 6.1.1 */ struct ccid_pc_to_rdr_icc_power_on {
-    // struct ccid_header hdr; uint8_t bPowerSelect; uint8_t abRFU[2]; }
-    // __attribute__ ((packed)); /* Response: RDR_to_PC_DataBlock */
-    fn handle_power_on(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        if !self.presence_state.present {
+    fn xfr_via_t1(&mut self, header: &CcidHeader, ccid_msg: &[u8], response: &mut [u8]) -> usize {
+        let payload_len = header.length as usize;
+        if ccid_msg.len() < CCID_HEADER_SIZE + payload_len {
+            // Same direct-input truncation guard + single error count as
+            // the core dispatcher (issue #114, Codex on #93): the early
+            // return bypasses the post-dispatch status accounting.
+            self.core.record_protocol_error();
             return write_slot_status(
                 header.slot,
                 header.seq,
-                ICC_STATUS_NO_ICC,
+                self.core.slot_state().icc_status(),
                 COMMAND_STATUS_FAILED,
                 CMD_NOT_SUPPORTED,
                 0,
                 response,
             );
         }
+        let apdu = &ccid_msg[CCID_HEADER_SIZE..CCID_HEADER_SIZE + payload_len];
 
-        match self.nfc.power_on(&mut self.tx_buf) {
-            Ok(atr_len) => {
-                self.presence_state.present = true;
-                self.slot_state = SlotState::PresentActive;
-                // Card reset invalidates the negotiated protocol (CCID
-                // spec §6.1.2: parameters do not survive ATR reset) —
-                // disarm the T=1 route so pcscd's post-reset PPS probe
-                // (`FF 01 FE`, sent BEFORE SetParameters) echoes as PPS
-                // instead of feeding a stale T=1 endpoint (which parses
-                // it as garbage and kills the session — bench-strace
-                // 2026-10-10: every second connect failed "Card is
-                // unresponsive" exactly here). SetParameters re-arms.
-                self.t1.reset();
-                self.t1_armed = false;
-                write_message(
-                    RDR_TO_PC_DATABLOCK,
-                    header.slot,
-                    header.seq,
-                    build_bstatus(
-                        COMMAND_STATUS_NO_ERROR,
-                        SlotState::PresentActive.icc_status(),
-                    ),
-                    0,
-                    0,
-                    &self.tx_buf[..atr_len],
-                    response,
-                )
-            }
-            Err(e) => {
-                // Bring-up diagnostics (bench 2026-10-08): the NCI
-                // activation failure reason is otherwise invisible — the
-                // USB console carries it alongside the CCID frames.
-                log::warn!("power_on failed: {:?}", e);
-                // Don't poll after activation failure — the card may be in an
-                // uncertain ISO 14443-3A state (e.g. READY after a partial
-                // WUPA). Polling now could send WUPA from READY which keeps
-                // the card stuck, breaking the next PowerUp attempt.
-                // Instead, assume the card is still physically present and let
-                // the next scheduled poll cycle verify.
-                self.slot_state = SlotState::PresentInactive;
-                write_slot_status(
-                    header.slot,
-                    header.seq,
-                    self.current_icc_status(),
-                    COMMAND_STATUS_FAILED,
-                    HW_ERROR,
-                    0,
-                    response,
-                )
-            }
-        }
-    }
-
-    // CCID_SPEC: /* Section 6.1.2 */ struct ccid_pc_to_rdr_icc_power_off {
-    // struct ccid_header hdr; uint8_t abRFU[3]; } __attribute__ ((packed));
-    // /* Response: RDR_to_PC_SlotStatus */
-    fn handle_power_off(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        self.nfc.power_off();
-
-        // After DESELECT the card is in HALT state. Do NOT poll here —
-        // WUPA would move it to READY, and the next PowerUp's WUPA would
-        // fail (WUPA is only valid from IDLE/HALT, not READY).
-        // pcscd does PowerUp→PowerDown→PowerUp as a warm reset sequence,
-        // so the next PowerUp must succeed.
-        self.slot_state = SlotState::PresentInactive;
-
-        write_slot_status(
-            header.slot,
-            header.seq,
-            self.current_icc_status(),
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            0,
-            response,
-        )
-    }
-
-    // CCID_SPEC: /* Section 6.1.3 */ struct ccid_pc_to_rdr_get_slot_status {
-    // struct ccid_header hdr; uint8_t abRFU[3]; } __attribute__ ((packed));
-    // /* Response: RDR_to_PC_SlotStatus */
-    fn handle_get_slot_status(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        write_slot_status(
-            header.slot,
-            header.seq,
-            self.current_icc_status(),
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            0,
-            response,
-        )
-    }
-
-    // GEMPC: dwMaxCCIDMessageLength: 271 bytes
-    fn handle_xfr_block(&mut self, header: &CcidHeader, apdu: &[u8], response: &mut [u8]) -> usize {
         // ISO 7816-3 §11.5.2 (issue #101 design note): S-block requests
         // (RESYNC/IFS/ABORT/WTX negotiation) are the READER's own
         // link-layer duty — answer them even without an active card
         // session, so battery/verification tooling can probe T=1
         // liveness on an empty slot. pcscd is unaffected (it negotiates
         // T=1 only after connect). I-blocks still need the card below.
-        if self.t1_armed && self.current_protocol == 1 && t1::is_s_block_request(apdu) {
-            if let t1::FeedResult::Immediate(bytes) = self.t1.feed(apdu) {
-                return write_message(
+        if t1::is_s_block_request(apdu) {
+            if let FeedResult::Immediate(bytes) = self.t1.feed(apdu) {
+                let len = write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
-                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.core.slot_state().icc_status()),
                     0,
                     0,
                     &bytes,
                     response,
                 );
+                return self.account_failed_status(len, response);
             }
         }
 
-        if self.slot_state != SlotState::PresentActive {
-            return write_message(
+        if self.core.slot_state() != SlotState::PresentActive {
+            let len = write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
-                build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
+                build_bstatus(COMMAND_STATUS_FAILED, self.core.slot_state().icc_status()),
                 ICC_NOT_ACTIVE,
                 0,
                 &[],
                 response,
             );
+            return self.account_failed_status(len, response);
         }
 
-        // libccidtwin T=1 wall fix: at TPDU exchange level the host's
-        // T=1 engine sends T=1 blocks (S-block IFSD requests, I-blocks)
-        // as XfrBlock payloads. Route them through the endpoint when the
-        // host has selected T=1. The Relay path re-enters the SAME APDU
-        // pipeline (pseudo-APDUs, PPS, CLA rewrite) so unwrapped APDUs
-        // get identical treatment.
-        if self.t1_armed && self.current_protocol == 1 {
-            match self.t1.feed(apdu) {
-                t1::FeedResult::Immediate(bytes) => {
-                    return write_message(
-                        RDR_TO_PC_DATABLOCK,
-                        header.slot,
-                        header.seq,
-                        build_bstatus(
-                            COMMAND_STATUS_NO_ERROR,
-                            SlotState::PresentActive.icc_status(),
-                        ),
-                        0,
-                        0,
-                        &bytes,
-                        response,
-                    );
-                }
-                t1::FeedResult::Apdu(card_apdu) => {
-                    let mut apdu_buf = [0u8; 254];
-                    let an = card_apdu.len().min(apdu_buf.len());
-                    apdu_buf[..an].copy_from_slice(&card_apdu[..an]);
-                    let mut scratch = [0u8; 271];
-                    let started_us = now_us();
-                    let n = self.apdu_pipeline(&apdu_buf[..an], &mut scratch);
-                    let took = elapsed_ms_since(started_us);
-                    // The pipeline returns a full DataBlock message; T=1
-                    // INF carries only the APDU-level payload — strip the
-                    // 10-byte CCID header.
-                    let payload = &scratch[10.min(n)..n];
-                    let blocks = self.t1.card_response(payload, took);
-                    return write_message(
-                        RDR_TO_PC_DATABLOCK,
-                        header.slot,
-                        header.seq,
-                        build_bstatus(
-                            COMMAND_STATUS_NO_ERROR,
-                            SlotState::PresentActive.icc_status(),
-                        ),
-                        0,
-                        0,
-                        &blocks,
-                        response,
-                    );
-                }
-            }
-        }
-
-        self.apdu_pipeline(apdu, response)
-    }
-
-    fn answer_get_uid(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        let Some(uid) = self.nfc.card_uid() else {
-            return self.write_sw(header, &[0x63, 0x00], response);
-        };
-        let uid_len = uid.len();
-        self.tx_buf[..uid_len].copy_from_slice(uid);
-        self.tx_buf[uid_len] = 0x90;
-        self.tx_buf[uid_len + 1] = 0x00;
-        // Local reader-generated answer — no card I/O, so no rx counting
-        // (Codex review on #81: to/from-card semantics).
-        write_message(
-            RDR_TO_PC_DATABLOCK,
-            header.slot,
-            header.seq,
-            build_bstatus(
-                COMMAND_STATUS_NO_ERROR,
-                SlotState::PresentActive.icc_status(),
-            ),
-            0,
-            0,
-            &self.tx_buf[..uid_len + 2],
-            response,
-        )
-    }
-
-    fn write_sw(&mut self, header: &CcidHeader, sw: &[u8; 2], response: &mut [u8]) -> usize {
-        // Local reader-generated status word — no card I/O, no rx counting.
-        write_message(
-            RDR_TO_PC_DATABLOCK,
-            header.slot,
-            header.seq,
-            build_bstatus(
-                COMMAND_STATUS_NO_ERROR,
-                SlotState::PresentActive.icc_status(),
-            ),
-            0,
-            0,
-            sw,
-            response,
-        )
-    }
-
-    fn handle_set_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        self.current_protocol = header.specific[0];
-        self.t1_armed = true;
-        self.write_parameters(header, response)
-    }
-
-    fn handle_reset_parameters(&mut self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        // Reset restores T=1 (reader default) and re-arms the route.
-        self.current_protocol = 1;
-        self.t1_armed = true;
-        self.write_parameters(header, response)
-    }
-
-    /// APDU-level pipeline shared by the direct XfrBlock path and the
-    /// T=1 Relay path: pseudo-APDUs (0xFF), PPS echo, invalid-CLA
-    /// rewrite, card relay. Writes CCID DataBlock bytes into `out`
-    /// (10-byte header + payload) and returns the total length; T=1
-    /// callers extract the payload for block framing.
-    fn apdu_pipeline(&mut self, apdu: &[u8], out: &mut [u8]) -> usize {
-        let header = &CcidHeader {
-            message_type: 0,
-            length: 0,
-            slot: 0,
-            seq: 0,
-            specific: [0; 3],
-        };
-        let response = out;
-        if is_pps_request(apdu) {
-            log::info!("xfr_block: PPS request, echoing back: {:02X?}", apdu);
-            // PPS is handled locally (echoed), not forwarded to the card —
-            // per the Diagnostics field docs (APDUs to/from the card) it is
-            // deliberately NOT counted in apdu_tx/rx.
-            return write_message(
+        match self.t1.feed(apdu) {
+            FeedResult::Immediate(bytes) => write_message(
                 RDR_TO_PC_DATABLOCK,
                 header.slot,
                 header.seq,
@@ -443,31 +266,29 @@ impl<D: NfcDriver> CcidHandler<D> {
                 ),
                 0,
                 0,
-                apdu,
+                &bytes,
                 response,
-            );
-        }
-
-        // PC/SC pseudo-APDUs (CLA=0xFF) are answered by the reader itself,
-        // never forwarded to the card. CLA=0x00 (ISO 7816) and other CLA
-        // values still go to the card — the ACR1252 only intercepts 0xFF.
-        // A complete 4-byte header is required; shorter fragments are not
-        // routable and keep flowing to the card (issue #49, issue #50).
-        if apdu.first() == Some(&0xFF) && apdu.len() >= 4 {
-            return match (apdu[1], apdu[2], apdu[3]) {
-                (0xCA, 0x00, 0x00) => self.answer_get_uid(header, response),
-                (0xCA, _, _) => self.write_sw(header, &[0x6A, 0x86], response),
-                _ => self.write_sw(header, &[0x63, 0x00], response),
-            };
-        }
-
-        // Counted at the moment of actual card transfer (Codex reviews on
-        // #46/#43/#38): rejected/inactive requests and locally echoed PPS
-        // frames are not APDUs sent to the card.
-        self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
-        match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
-            Ok(resp_len) => {
-                self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
+            ),
+            FeedResult::Apdu(card_apdu) => {
+                // G-03: GP STORE DATA (CAP install) chains case-3/4
+                // APDUs past 254 — the old min() clamp at 254 corrupted
+                // them while reporting success. Sized from t1::MAX_RELAY
+                // (the assembler's Vec capacity), so truncation here is
+                // impossible by construction.
+                let mut apdu_buf = [0u8; MAX_RELAY];
+                apdu_buf[..card_apdu.len()].copy_from_slice(&card_apdu);
+                let an = card_apdu.len();
+                let mut scratch = [0u8; 271];
+                let started_us = now_us();
+                let n = self
+                    .core
+                    .apdu_pipeline(header, &apdu_buf[..an], &mut scratch);
+                let took = elapsed_ms_since(started_us);
+                // The pipeline returns a full DataBlock message; T=1
+                // INF carries only the APDU-level payload — strip the
+                // 10-byte CCID header.
+                let payload = &scratch[10.min(n)..n];
+                let blocks = self.t1.card_response(payload, took);
                 write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
@@ -478,138 +299,20 @@ impl<D: NfcDriver> CcidHandler<D> {
                     ),
                     0,
                     0,
-                    &self.tx_buf[..resp_len],
-                    response,
-                )
-            }
-            Err(_) => {
-                self.slot_state = SlotState::PresentInactive;
-                write_message(
-                    RDR_TO_PC_DATABLOCK,
-                    header.slot,
-                    header.seq,
-                    build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
-                    HW_ERROR,
-                    0,
-                    &[],
+                    &blocks,
                     response,
                 )
             }
         }
     }
 
-    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
-    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
-    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
-    fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
-        if payload.first() == Some(&0xD0) {
-            let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
-            self.diagnostics.to_bytes(&mut diag_buf);
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &diag_buf,
-                response,
-            );
+    /// Post-dispatch status accounting, identical to the core's: a
+    /// failed bStatus in the written response counts one protocol error.
+    fn account_failed_status(&mut self, len: usize, response: &[u8]) -> usize {
+        if len > 7 && response[7] & 0x40 != 0 {
+            self.core.record_protocol_error();
         }
-
-        // Dump-and-retrieve debugging: ack, then the serve loop panics with
-        // a marker reason after this response goes out — the panic handler
-        // writes the flash coredump (retrieve + decode: AGENTS.md).
-        if payload.first() == Some(&0xD1) {
-            self.diagnostic_snapshot_requested = true;
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[0xD1],
-                response,
-            );
-        }
-
-        // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
-        if payload.first() == Some(&0x02) {
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                FIRMWARE_VERSION,
-                response,
-            );
-        }
-
-        if payload == [0x1F, 0x02] {
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[],
-                response,
-            );
-        }
-
-        // CCID_SERIAL: perform a command to configure GemPC Twin reader card movement
-        // * notification to synchronous mode: the card movement is notified _after_
-        // * the host command and _before_ the reader answer
-        // CCID_SERIAL: unsigned char tx_buffer[] = { 0x01, 0x01, 0x01};
-        if payload.starts_with(&[0x01, 0x01, 0x01]) {
-            self.sync_notifications = true;
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[0x01, 0x01, 0x01],
-                response,
-            );
-        }
-
-        write_slot_status(
-            header.slot,
-            header.seq,
-            self.current_icc_status(),
-            COMMAND_STATUS_FAILED,
-            CMD_NOT_SUPPORTED,
-            0,
-            response,
-        )
-    }
-
-    fn write_parameters(&self, header: &CcidHeader, response: &mut [u8]) -> usize {
-        let (payload, protocol) = self.parameter_payload();
-        write_message(
-            RDR_TO_PC_PARAMETERS,
-            header.slot,
-            header.seq,
-            build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-            0,
-            protocol,
-            payload,
-            response,
-        )
-    }
-
-    fn current_icc_status(&self) -> u8 {
-        self.slot_state.icc_status()
-    }
-
-    fn parameter_payload(&self) -> (&[u8], u8) {
-        (default_params(self.current_protocol), self.current_protocol)
+        len
     }
 }
 
@@ -617,10 +320,10 @@ impl<D: NfcDriver> CcidHandler<D> {
 mod tests {
     use super::*;
     use crate::ccid_types::{
-        DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS, PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS,
-        PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
-        PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK,
-        RDR_TO_PC_SLOTSTATUS,
+        DEFAULT_T0_PARAMS, DEFAULT_T1_PARAMS, ICC_STATUS_NO_ICC, PC_TO_RDR_ESCAPE,
+        PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF,
+        PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SET_PARAMETERS,
+        RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
     };
     use crate::nfc::MockNfcDriver;
     use std::vec::Vec;
@@ -686,7 +389,7 @@ mod tests {
             ]
         );
         assert_eq!(payload, ATR);
-        assert_eq!(handler.slot_state, SlotState::PresentActive);
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
     }
 
     #[test]
@@ -705,7 +408,7 @@ mod tests {
             build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
         );
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
-        assert_eq!(handler.slot_state, SlotState::Absent);
+        assert_eq!(handler.slot_state(), SlotState::Absent);
     }
 
     #[test]
@@ -729,7 +432,7 @@ mod tests {
                 SlotState::PresentInactive.icc_status()
             )
         );
-        assert_eq!(handler.slot_state, SlotState::PresentInactive);
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
     }
 
     #[test]
@@ -751,7 +454,7 @@ mod tests {
                 SlotState::PresentInactive.icc_status()
             )
         );
-        assert_eq!(handler.slot_state, SlotState::PresentInactive);
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
     }
 
     #[test]
@@ -768,7 +471,7 @@ mod tests {
             header.specific[0],
             build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC)
         );
-        assert_eq!(handler.slot_state, SlotState::Absent);
+        assert_eq!(handler.slot_state(), SlotState::Absent);
     }
 
     #[test]
@@ -854,6 +557,93 @@ mod tests {
     }
 
     #[test]
+    fn escape_0xd2_returns_recorded_turnaround_bytes() {
+        let mut handler = new_handler(true);
+        handler.record_turnaround_us(3_200_000);
+        handler.record_turnaround_us(2_100_000);
+        handler.record_turnaround_us(1_500_000);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 40, &[0xD2]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(header.specific[0] & 0xC0, 0x00, "command status OK");
+        assert_eq!(payload.len(), TurnaroundStats::SERIALIZED_SIZE);
+        let mut expected = [0u8; TurnaroundStats::SERIALIZED_SIZE];
+        handler.turnaround_stats().to_bytes(&mut expected);
+        assert_eq!(payload, expected);
+        // last=1_500_000, max=3_200_000 in the first two LE words
+        assert_eq!(
+            u32::from_le_bytes(payload[0..4].try_into().unwrap()),
+            1_500_000
+        );
+        assert_eq!(
+            u32::from_le_bytes(payload[4..8].try_into().unwrap()),
+            3_200_000
+        );
+    }
+
+    #[test]
+    fn escape_0xd2_zeroed_before_any_recording() {
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 41, &[0xD2]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(payload.len(), TurnaroundStats::SERIALIZED_SIZE);
+        assert!(payload.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn escape_0xd2_only_matches_single_byte_payload() {
+        // A longer escape carrying 0xD2 first must NOT hit the counters —
+        // it falls through to the core dispatch (CMD_NOT_SUPPORTED).
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 42, &[0xD2, 0x00]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, _) = parse_response(&response[..len]);
+
+        assert_eq!(
+            header.message_type,
+            crate::ccid_types::RDR_TO_PC_SLOTSTATUS,
+            "multi-byte escape is not the 0xD2 query"
+        );
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn card_exchange_recorded_through_apdu_pipeline() {
+        // Host now_us() is a stub, so the adapter records a zero sample —
+        // but the recording must happen for EVERY transmit_apdu, which we
+        // observe through the stats snapshot staying consistent (a
+        // non-stamp would leave the counters at their previous value
+        // through a power-on + APDU exchange).
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.record_turnaround_us(999);
+        let before = handler.turnaround_stats();
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 43, &[0x00, 0xA4, 0x04, 0x00, 0x00]);
+        let mut response = [0u8; 271];
+        handler.process_command(&cmd, &mut response);
+
+        let after = handler.turnaround_stats();
+        assert_eq!(after.last_turnaround_us(), 999, "serve stamp untouched");
+        assert_eq!(
+            after.last_card_exchange_us(),
+            before.last_card_exchange_us(),
+            "host clock stub records zero"
+        );
+    }
+
+    #[test]
     fn test_escape_sync_notification_enables_sync_mode() {
         let mut handler = new_handler(false);
         let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 10, &[0x01, 0x01, 0x01]);
@@ -864,7 +654,7 @@ mod tests {
 
         assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
         assert_eq!(payload, [0x01, 0x01, 0x01]);
-        assert!(handler.sync_notifications);
+        assert!(handler.sync_notifications());
     }
 
     #[test]
@@ -891,13 +681,18 @@ mod tests {
 
         assert_eq!(handler.check_card_change(), None);
 
-        handler.nfc.set_card_present(true);
+        handler.driver_mut().set_card_present(true);
         assert_eq!(handler.check_card_change(), Some(true));
 
-        handler.slot_state = SlotState::PresentActive;
-        handler.nfc.set_card_present(false);
+        // full activation, then removal
+        let mut response = [0u8; 271];
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 30, &[]);
+        handler.process_command(&power_on, &mut response);
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
+
+        handler.driver_mut().set_card_present(false);
         assert_eq!(handler.check_card_change(), Some(false));
-        assert_eq!(handler.slot_state, SlotState::Absent);
+        assert_eq!(handler.slot_state(), SlotState::Absent);
     }
 
     #[test]
@@ -912,8 +707,8 @@ mod tests {
 
         assert_eq!(power_on_header.message_type, RDR_TO_PC_DATABLOCK);
         assert_eq!(power_on_payload, ATR);
-        assert_eq!(handler.slot_state, SlotState::PresentActive);
-        assert!(handler.nfc.session_active());
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
+        assert!(handler.driver_mut().session_active());
 
         let xfr = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 17, &[0x00, 0x84, 0x00, 0x00]);
         let xfr_len = handler.process_command(&xfr, &mut response);
@@ -921,8 +716,8 @@ mod tests {
 
         assert_eq!(xfr_header.message_type, RDR_TO_PC_DATABLOCK);
         assert_eq!(xfr_payload, APDU_RESPONSE);
-        assert_eq!(handler.slot_state, SlotState::PresentActive);
-        assert!(handler.nfc.session_active());
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
+        assert!(handler.driver_mut().session_active());
 
         let power_off = build_ccid_cmd(PC_TO_RDR_ICC_POWER_OFF, 0, 18, &[]);
         let power_off_len = handler.process_command(&power_off, &mut response);
@@ -930,8 +725,8 @@ mod tests {
 
         assert_eq!(power_off_header.message_type, RDR_TO_PC_SLOTSTATUS);
         assert!(power_off_payload.is_empty());
-        assert_eq!(handler.slot_state, SlotState::PresentInactive);
-        assert!(!handler.nfc.session_active());
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
+        assert!(!handler.driver_mut().session_active());
     }
 
     #[test]
@@ -944,8 +739,8 @@ mod tests {
         handler.process_command(&power_on, &mut response);
 
         assert_eq!(handler.check_card_change(), None);
-        assert_eq!(handler.slot_state, SlotState::PresentActive);
-        assert!(handler.presence_state.present);
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
+        assert!(handler.presence_state().present);
     }
 
     #[test]
@@ -956,7 +751,7 @@ mod tests {
         let mut response = [0u8; 271];
         let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 6, &[]);
         handler.process_command(&power_on, &mut response);
-        handler.nfc.power_off();
+        handler.driver_mut().power_off();
 
         let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00]);
         let len = handler.process_command(&cmd, &mut response);
@@ -971,7 +766,7 @@ mod tests {
                 SlotState::PresentInactive.icc_status()
             )
         );
-        assert_eq!(handler.slot_state, SlotState::PresentInactive);
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
     }
 
     #[test]
@@ -1008,7 +803,30 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_PARAMETERS);
         assert_eq!(header.specific[2], 0);
         assert_eq!(payload, DEFAULT_T0_PARAMS);
-        assert_eq!(handler.current_protocol, 0);
+        assert_eq!(handler.current_protocol(), 0);
+    }
+
+    #[test]
+    fn test_set_parameters_rejects_invalid_protocol_num() {
+        // CCID Rev 1.1 §6.1.7: bProtocolNum is 0 (T=0) or 1 (T=1);
+        // anything else must be rejected, not stored and echoed.
+        let mut handler = new_handler(true);
+        let cmd = build_set_parameters_cmd(0, 21, 2, &DEFAULT_T1_PARAMS);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_SLOTSTATUS);
+        assert_eq!(header.seq, 21);
+        assert!(payload.is_empty());
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
+        );
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+        assert_eq!(handler.current_protocol(), 1);
+        assert!(!handler.t1_armed);
     }
 
     #[test]
@@ -1025,7 +843,7 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_PARAMETERS);
         assert_eq!(header.specific[2], 1);
         assert_eq!(payload, DEFAULT_T1_PARAMS);
-        assert_eq!(handler.current_protocol, 1);
+        assert_eq!(handler.current_protocol(), 1);
     }
 
     #[test]
@@ -1065,11 +883,11 @@ mod tests {
         handler.check_card_change();
         assert!(!handler.diagnostics().card_present);
 
-        handler.nfc.set_card_present(true);
+        handler.driver_mut().set_card_present(true);
         handler.check_card_change();
         assert!(handler.diagnostics().card_present);
 
-        handler.nfc.set_card_present(false);
+        handler.driver_mut().set_card_present(false);
         handler.check_card_change();
         assert!(!handler.diagnostics().card_present);
     }
@@ -1087,7 +905,7 @@ mod tests {
         let cmd = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 30, &[]);
         let mut response = [0u8; 271];
         handler.process_command(&cmd, &mut response);
-        assert_eq!(handler.slot_state, SlotState::PresentActive);
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
     }
 
     #[test]
@@ -1238,7 +1056,7 @@ mod tests {
         // gated on the card.
         let mut handler = new_handler(false); // card NOT present
         handler.t1_armed = true;
-        handler.current_protocol = 1;
+        handler.set_current_protocol(1);
 
         let ifsd = [0x00u8, 0xC1, 0x01, 0xFE, 0x3E];
         let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 1, &ifsd);
@@ -1273,7 +1091,7 @@ mod tests {
         // lines 795-810 reject anything else.
         let mut handler = new_handler_with_uid(true);
         power_on(&mut handler);
-        handler.current_protocol = 1;
+        handler.set_current_protocol(1);
         handler.t1_armed = true;
         let ifsd = [0x00u8, 0xC1, 0x01, 0xFE, 0x3E];
         let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 1, &ifsd);
@@ -1285,18 +1103,13 @@ mod tests {
             &[0x00, 0xE1, 0x01, 0xFE, 0x1E][..],
             "S-block IFS response must be byte-exact"
         );
-        assert_eq!(
-            payload,
-            &[0x00, 0xE1, 0x01, 0xFE, 0x1E][..],
-            "S-block IFS response must be byte-exact"
-        );
     }
 
     #[test]
     fn t1_i_block_apdu_relays_and_returns_i_block() {
         let mut handler = new_handler_with_uid(true);
         power_on(&mut handler);
-        handler.current_protocol = 1;
+        handler.set_current_protocol(1);
         handler.t1_armed = true;
         let mut resp = [0u8; 512];
 
@@ -1319,13 +1132,89 @@ mod tests {
     }
 
     #[test]
+    fn chained_apdu_over_254_reaches_card_untruncated() {
+        // G-03 regression: GP STORE DATA during CAP install chains a
+        // case-3/4 APDU past 254 bytes; the relay used to clamp it to
+        // 254 silently while reporting success.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.set_current_protocol(1);
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let apdu: Vec<u8> = std::iter::once(0x80)
+            .chain(std::iter::repeat(0x5A).take(298))
+            .chain([0x90, 0x00].iter().copied())
+            .collect();
+        assert_eq!(apdu.len(), 301);
+
+        let chunks: Vec<&[u8]> = apdu.chunks(32).collect();
+        for (i, chunk) in chunks.iter().enumerate() {
+            let more = i < chunks.len() - 1;
+            let pcb = (0u8 << 6) | ((more as u8) << 5);
+            let mut blk = vec![0x00u8, pcb, chunk.len() as u8];
+            blk.extend_from_slice(chunk);
+            blk.push(blk.iter().fold(0u8, |a, b| a ^ b));
+
+            let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 2, &blk);
+            let n = handler.process_command(&msg, &mut resp);
+            assert!(n >= 10);
+            let (_hdr, payload) = parse_response(&resp[..n]);
+            if more {
+                assert_eq!(payload[1], 0x80, "chain piece ACKed with R(0, 0)");
+            } else {
+                let plen = payload[2] as usize;
+                assert_eq!(&payload[3..3 + plen], &[0x90, 0x00]);
+            }
+        }
+
+        assert_eq!(
+            handler.core.driver_mut().0.last_apdu(),
+            apdu.as_slice(),
+            "full 301-byte APDU must reach the card — G-03 truncation"
+        );
+    }
+
+    #[test]
+    fn set_parameters_applies_t1_timing_to_endpoint() {
+        // G-04: the negotiated BWI/IFSC must reach the endpoint, and
+        // GetParameters must echo the accepted set (what pcscd believes)
+        // instead of the static defaults.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.set_current_protocol(1);
+        handler.t1_armed = true;
+        let mut resp = [0u8; 512];
+
+        let mut params = DEFAULT_T1_PARAMS;
+        params[5] = 0xFE; // bIFSC 254 — what the host derives from our TA3
+        let cmd = build_set_parameters_cmd(0, 9, 1, &params);
+        let n = handler.process_command(&cmd, &mut resp);
+        let (header, payload) = parse_response(&resp[..n]);
+        assert_eq!(header.message_type, RDR_TO_PC_PARAMETERS);
+        assert_eq!(payload, params, "SetParameters must echo the accepted set");
+
+        // A 64-byte INF piece exceeds DEFAULT_HOST_IFSD (32) but fits
+        // the negotiated 254 — must be chain-ACKed, not bad_block'ed.
+        let piece = [0x5Au8; 64];
+        let pcb = (0u8 << 6) | (1u8 << 5);
+        let mut blk = vec![0x00u8, pcb, piece.len() as u8];
+        blk.extend_from_slice(&piece);
+        blk.push(blk.iter().fold(0u8, |a, b| a ^ b));
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 10, &blk);
+        let n = handler.process_command(&msg, &mut resp);
+        let (_hdr, payload) = parse_response(&resp[..n]);
+        assert_eq!(payload[1], 0x80, "chain piece within negotiated IFSC ACKed");
+    }
+
+    #[test]
     fn malformed_block_under_t1_demands_retransmit() {
         // At TPDU level the host engine sends ONLY T=1 blocks; a 4-byte
         // fragment is a malformed block (LEN says 4, only 1 INF byte
         // arrived) — the endpoint answers R(N(R), error) per §11.5.3.
         let mut handler = new_handler_with_uid(true);
         power_on(&mut handler);
-        handler.current_protocol = 1;
+        handler.set_current_protocol(1);
         handler.t1_armed = true;
         let mut resp = [0u8; 512];
 

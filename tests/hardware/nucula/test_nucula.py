@@ -19,12 +19,27 @@ import pytest
 from .console import ConsoleCapture, BootMarker
 
 
+
+
+def _opt_test_firmware():
+    """PR86 P1: pytest.config was removed — read options via the
+    registered conftest instead of the nonexistent global."""
+    import os
+    return os.environ.get("NUCULA_TEST_FIRMWARE", "").lower() in ("1", "true", "yes")
+
 @pytest.mark.hil
 def test_board_responsive(board):
-    """Board USB port exists (doesn't open it — avoids port conflicts)."""
+    """Board USB port exists AND the chip answers esptool (flash-id).
+
+    Stating the port proves nothing — a latched/braindead C3 keeps the
+    tty alive (PR-86 P2: probe the chip, not the filesystem)."""
     import os
     assert os.path.exists(board.port), (
         f"USB port not found: {board.port}. Is the board plugged in?"
+    )
+    assert board.is_responsive(), (
+        f"Board at {board.port} does not answer esptool flash-id — "
+        "see AGENTS.md reset/recovery ladder."
     )
 
 
@@ -55,8 +70,7 @@ def test_wallet_i2c_scan(flashed_wallet, console):
 
 @pytest.mark.hil
 @pytest.mark.skipif(
-    not pytest.config.getoption("--test-firmware", default=False)
-    if hasattr(pytest, "config") else True,
+    not _opt_test_firmware(),
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_pn7160_acks(flashed_firmware, console):
@@ -72,33 +86,46 @@ def test_our_firmware_pn7160_acks(flashed_firmware, console):
 
 @pytest.mark.hil
 @pytest.mark.skipif(
-    not pytest.config.getoption("--test-firmware", default=False)
-    if hasattr(pytest, "config") else True,
+    not _opt_test_firmware(),
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_nci_init(flashed_firmware, console):
-    """NCI init ladder completes (full PN7160 bring-up)."""
+    """NCI init ladder completes (full PN7160 bring-up).
+
+    Asserted against cumulative history, not the capture window: the
+    marker is one-shot per ladder run and can land in an earlier
+    test's window (Codex PR-86 P2)."""
     console._buffer.clear()
     text = console.capture_for(60, markers=[BootMarker.NCI_INIT_OK])
-    assert BootMarker.NCI_INIT_OK in text, (
-        f"NCI init ladder did not complete. Console: {text[-500:]}"
+    assert BootMarker.NCI_INIT_OK in console.history_text(), (
+        f"NCI init ladder did not complete. Window tail: {text[-500:]}"
     )
 
 
 @pytest.mark.hil
 @pytest.mark.skipif(
-    not pytest.config.getoption("--test-firmware", default=False)
-    if hasattr(pytest, "config") else True,
+    not _opt_test_firmware(),
     reason="need --test-firmware to flash our Rust firmware"
 )
 def test_our_firmware_sustained_acks(flashed_firmware, console):
-    """Sustained ACKs for 30 seconds (no flakiness)."""
+    """Sustained ACK health over the heartbeat cadence (no flakiness).
+
+    The boot probe logs 'ACK @0x28' exactly once; the mid-session
+    health check logs 'PN7160 still ACKing' every 60 s
+    (HEARTBEAT_PROBE_EVERY in pn7160_bringup.rs). Count both over a
+    130 s window — two heartbeat intervals regardless of phase
+    (PR-86 P2: the old test demanded 5x a once-per-boot marker)."""
     console._buffer.clear()
-    text = console.capture_for(30)
-    ack_count = text.count(BootMarker.PN7160_ACK)
-    nak_count = text.count(BootMarker.PN7160_NAK)
-    # Allow a few initial NAKs during boot/settling, but require sustained ACKs
-    assert ack_count >= 5, f"Only {ack_count} ACKs in 30s. NAKs: {nak_count}"
+    text = console.capture_for(130)
+    ack_count = (
+        text.count(BootMarker.PN7160_ACK)
+        + text.count(BootMarker.PN7160_STILL_ACKING)
+    )
+    nak_count = (
+        text.count(BootMarker.PN7160_NAK)
+        + text.count(BootMarker.PN7160_STOPPED_ACKING)
+    )
+    assert ack_count >= 2, f"Only {ack_count} ACKs in 130s. NAKs: {nak_count}"
     assert nak_count <= 5, f"Too many NAKs ({nak_count}) — unstable. ACKs: {ack_count}"
 
 
@@ -176,17 +203,20 @@ def test_escape_d1_snapshot_roundtrip(flashed_ccid_firmware):
     board.run_esptool("erase-region", COREDUMP_OFFSET, COREDUMP_SIZE)
 
 
-@pytest.mark.hil
-def test_log_shim_post_claim_output(flashed_ccid_firmware):
-    """Issue #91 regression: after the USB-CDC driver claim, log lines
-    must still reach the wire (ring-drained by the serving loop) and
-    framed CCID commands must get LRC-valid answers amid the log text.
 
-    Capture discipline (AGENTS.md "Session Lessons: Log-Shim Bench
-    Verify"): one serial session, DTR/RTS held low (a DTR-asserted
-    holder latches boot:0x5 download mode across resets), RTS pulse for
-    a fresh boot, aggressive reconnect through the CDC re-enumeration
-    (the reset kills our own fd)."""
+@pytest.mark.hil
+def test_wire_silence_after_banner(flashed_ccid_firmware):
+    """Clean-wire regression (issue #131, retires the #91 log_shim):
+    after the pre-claim boot banner, the CCID wire must carry framed
+    protocol ONLY — zero unsolicited bytes (no log text, no C-level
+    output, no ring-drained ASCII). Framed commands must still get
+    LRC-valid answers. Strictly stronger than the old log_shim test:
+    it asserts the wire is CLEAN, not that logs eventually arrive.
+
+    Capture discipline (AGENTS.md "Session Lessons"): one serial
+    session, DTR/RTS held low (a DTR-asserted holder latches
+    boot:0x5 download mode across resets), RTS pulse for a fresh boot,
+    aggressive reconnect through the CDC re-enumeration."""
     import serial as pyserial
 
     board = flashed_ccid_firmware
@@ -226,21 +256,26 @@ def test_log_shim_post_claim_output(flashed_ccid_firmware):
     text = bytes(buf).decode("utf-8", "replace")
 
     assert "FWID pn7160-ccid" in text, (
-        f"pre-claim FWID missing from boot console: {text[-300:]!r}"
+        f"boot banner missing from boot console: {text[-300:]!r}"
     )
-    assert "USB-CDC ready" in text, (
-        f"post-claim line not ring-drained (issue #91 regression): "
-        f"{text[-300:]!r}"
-    )
-    assert any(
-        marker in text for marker in ("pn7160_i2c", "init attempt", "PN7160")
-    ), f"PN7160 bring-up ladder not visible post-claim: {text[-300:]!r}"
 
-    # Framed GetSlotStatus over the same open port: the response must be
-    # SYNC-anchored and LRC-valid despite the interleaved log text.
-    # Host line-state wiggling at reconnect can fire the C3's reset
-    # magic — a second boot may still be running its ladder here, so
-    # wait for the serve loop, then retry the frame a few times.
+    # THE assertion: after the banner's last line ("rust main ALIVE"),
+    # nothing but framed CCID may appear. No frames have been sent yet,
+    # so the tail must contain no bytes at all — control bytes included
+    # (Codex #145 P2: libccidtwin consumes ANY byte as protocol data;
+    # only CR/LF/TAB line-terminator bytes are tolerated).
+    marker = "rust main ALIVE"
+    idx = text.rfind(marker)
+    assert idx >= 0, f"banner terminator missing: {text[-300:]!r}"
+    tail = text[idx + len(marker):]
+    stray = [c for c in tail if c not in "\r\n\t"]
+    assert not stray, (
+        f"unsolicited bytes after the boot banner (clean-wire violation, "
+        f"#131): {tail[-300:]!r}"
+    )
+
+    # Framed GetSlotStatus over the same open port: echo + LRC-valid
+    # response (the serve loop works; the wire carries frames fine).
     gss = bytes([0x65, 0, 0, 0, 0, 0, 42, 0, 0, 0])
     frame = bytes([0x03, 0x06]) + gss
     lrc = 0
@@ -256,12 +291,6 @@ def test_log_shim_post_claim_output(flashed_ccid_firmware):
             except (pyserial.SerialException, OSError):
                 break
         return bytes(got)
-
-    ready_deadline = time.time() + 8
-    while time.time() < ready_deadline:
-        tail = read_available(time.time() + 0.5)
-        if b"CCID loop starting" in tail:
-            break
 
     wire = bytearray()
     for _ in range(3):
@@ -291,5 +320,5 @@ def test_log_shim_post_claim_output(flashed_ccid_firmware):
             valid = x == 0
         i = stream.find(needle, i + 1)
     assert valid, (
-        f"no LRC-valid GetSlotStatus answer amid log text: {stream.hex()}"
+        f"no LRC-valid GetSlotStatus answer on the clean wire: {stream.hex()}"
     )

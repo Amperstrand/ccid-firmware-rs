@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-Read F746 diagnostic buffer via CCID Escape command (0x6B).
+Read CCID diagnostic counters via the Escape 0xD0 vendor query.
 
-Sends PC_to_RDR_Escape and decodes the TLV diagnostic data
-returned in the RDR_to_PC_Escape (0x83) response.
+Sends PC_to_RDR_Escape (0x6B) carrying escape code 0xD0 and decodes the
+28-byte little-endian Diagnostics struct returned in the RDR_to_PC_Escape
+(0x83) response (crates/ccid-core diagnostics.rs). Works against any of
+our USB CCID readers (STM32 F469/F746, all device profiles).
 
 Usage:
-    python3 scripts/read_diag.py [bus device]
-    python3 scripts/read_diag.py        # auto-detect first CCID device
+    python3 scripts/read_diag.py                    # auto-detect (Cherry, then Gemalto VIDs)
+    python3 scripts/read_diag.py --vid 08e6         # narrow to a vendor
+    python3 scripts/read_diag.py --bus 1 --address 4  # pin exact device
 
 Requires: pip install pyusb
 """
 
+import argparse
 import struct
 import sys
 import usb.core
@@ -23,11 +27,16 @@ RDR_TO_PC_ESCAPE = 0x83
 
 
 
-def find_ccid_device(bus=None, addr=None):
-    # CCID is an interface class (0x0B), not device class. Search by known VIDs.
+def find_ccid_device(vid=None, pid=None, bus=None, addr=None):
+    # CCID is an interface class (0x0B), not device class. Search by known
+    # VIDs unless --vid narrows it; --pid further filters within the VID.
     VIDS = [0x046a, 0x08e6]
-    for vid in VIDS:
-        dev = usb.core.find(idVendor=vid)
+    vids = [vid] if vid is not None else VIDS
+    for v in vids:
+        find_kwargs = {"idVendor": v}
+        if pid is not None:
+            find_kwargs["idProduct"] = pid
+        dev = usb.core.find(**find_kwargs)
         if dev:
             if bus is not None and (dev.bus != bus or dev.address != addr):
                 continue
@@ -92,57 +101,20 @@ def format_hex(data):
     return " ".join(f"{b:02X}" for b in data)
 
 
-def interpret_tag(tag, payload):
-    name = TAG_NAMES.get(tag, f"UNKNOWN(0x{tag:02X})")
-
-    if tag == DTAG_IO_READBACK:
-        high_ok = payload[0] if len(payload) > 0 else "?"
-        low_ok = payload[1] if len(payload) > 1 else "?"
-        verdict = "OK" if high_ok == 1 and low_ok == 1 else "FAIL"
-        return f"{name}: high={high_ok} low={low_ok} [{verdict}]"
-
-    if tag == DTAG_ATR:
-        atr_hex = format_hex(payload)
-        return f"{name} ({len(payload)} bytes): {atr_hex}"
-
-    if tag == DTAG_TX_SINGLE:
-        before = payload[0] if len(payload) > 0 else "?"
-        after = payload[1] if len(payload) > 1 else "?"
-        result = payload[2] if len(payload) > 2 else "?"
-        result_str = {0: "CARD_RESPONDED", 1: "TIMEOUT", 2: "ERROR"}.get(result, f"UNKNOWN({result})")
-        return f"{name}: before_high={before} after_high={after} result={result_str}"
-
-    if tag == DTAG_TX_BYTE_ERR:
-        byte_val = payload[0] if len(payload) > 0 else "?"
-        low_ok = payload[1] if len(payload) > 1 else "?"
-        high_ok = payload[2] if len(payload) > 2 else "?"
-        return f"{name}: byte=0x{byte_val:02X} low_ok={low_ok} high_ok={high_ok}"
-
-    if tag == DTAG_DWT_STAMP:
-        if len(payload) >= 4:
-            stamp = struct.unpack_from("<I", payload)[0]
-            us = stamp / 216.0
-            return f"{name}: cyccnt={stamp} (~{us:.0f}us)"
-        return f"{name}: {format_hex(payload)}"
-
-    if tag == DTAG_END:
-        return f"{name}"
-
-    return f"{name}: {format_hex(payload)}"
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Read the 0xD0 diagnostic counters from a CCID reader")
-    parser.add_argument("--vid", type=lambda x: int(x, 16), default=0x046A,
-                        help="USB vendor ID (default 046A Cherry)")
+    parser.add_argument("--vid", type=lambda x: int(x, 16), default=None,
+                        help="USB vendor ID (default: try 046A Cherry, "
+                             "then 08E6 Gemalto)")
     parser.add_argument("--pid", type=lambda x: int(x, 16), default=None,
                         help="USB product ID (optional)")
     parser.add_argument("--bus", type=int, default=None)
     parser.add_argument("--address", type=int, default=None)
     args = parser.parse_args()
 
-    dev = find_ccid_device(args.bus, args.address)
+    dev = find_ccid_device(vid=args.vid, pid=args.pid,
+                           bus=args.bus, addr=args.address)
     if dev is None:
         print("ERROR: device not found")
         sys.exit(1)

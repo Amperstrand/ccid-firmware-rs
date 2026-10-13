@@ -16,6 +16,9 @@ import subprocess
 try:
     from smartcard.System import readers
 except ImportError:
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip("pyscard not installed", allow_module_level=True)
     print("Install pyscard: pip install pyscard", file=sys.stderr)
     sys.exit(1)
 

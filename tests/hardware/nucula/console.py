@@ -9,12 +9,18 @@ Uses the by-id path (follows the device regardless of tty number) and
 reconnects aggressively during the re-enumeration window.
 """
 
+# Lazy pyserial discipline (the python-collect CI gate runs with pytest +
+# stdlib ONLY): this module is imported at collection time by
+# test_nucula.py — `import serial` stays INSIDE the methods that use it,
+# and the annotations stay lazy via `from __future__ import annotations`
+# (the documented rule: hardware imports never at module scope of a
+# collected file's import graph).
+from __future__ import annotations
+
 import re
 import time
 from pathlib import Path
 from typing import Callable, Optional
-
-import serial
 
 
 class ConsoleCapture:
@@ -23,28 +29,56 @@ class ConsoleCapture:
     def __init__(self, port: str, baud: int = 115200):
         self.port = port
         self.baud = baud
+        # _buffer: the current capture window (cleared at each
+        # capture_for entry). _history: everything drained since this
+        # capture was created, never cleared — one-shot boot markers
+        # (e.g. 'NCI INIT LADDER OK') can land in an earlier test's
+        # window, and per-window asserts never see them again
+        # (Codex PR-86 P2).
         self._buffer = bytearray()
+        self._history = bytearray()
         self._serial: Optional[serial.Serial] = None
+        _ACTIVE_CAPTURES.append(self)
 
     def _connect(self) -> bool:
-        """Try to open the serial port. Returns True on success."""
+        """Try to open the serial port. Returns True on success.
+
+        DTR/RTS are deasserted immediately after open: pyserial asserts
+        DTR by default and the C3's USB-Serial/JTAG peripheral latches
+        host line state across soft resets — a DTR-asserted holder turns
+        every later reset into a boot:0x5 download-mode latch (AGENTS.md
+        bench lessons, 2026-10-09/10).
+        """
+        import serial  # lazy: module is imported at collection time (CI gate)
         try:
             if self._serial and self._serial.is_open:
                 return True
             self._serial = serial.Serial(self.port, self.baud, timeout=0.1)
+            self._serial.setDTR(False)
+            self._serial.setRTS(False)
             return True
         except (serial.SerialException, OSError):
             self._serial = None
             return False
 
+    def connect(self) -> bool:
+        """Open the serial fd now instead of lazily in capture_for.
+
+        flash_and_boot opens the capture BEFORE issuing a reset so boot
+        output is not lost to connect latency.
+        """
+        return self._connect()
+
     def _drain(self):
         """Read all available data into the buffer."""
+        import serial  # lazy: module is imported at collection time (CI gate)
         if not self._serial:
             return
         try:
             data = self._serial.read(65536)
             if data:
                 self._buffer.extend(data)
+                self._history.extend(data)
         except (serial.SerialException, OSError):
             self._serial = None
 
@@ -77,10 +111,33 @@ class ConsoleCapture:
         text = self._buffer.decode("utf-8", errors="replace")
         return re.search(pattern, text)
 
+    def history_text(self) -> str:
+        """Full console text since capture creation (never cleared).
+
+        One-shot boot markers can land in an earlier test's capture
+        window; asserting against history is immune to per-test buffer
+        clears (Codex PR-86 P2)."""
+        return self._history.decode("utf-8", errors="replace")
+
     def close(self):
         if self._serial and self._serial.is_open:
             self._serial.close()
         self._serial = None
+
+
+# Live captures. board._free_port() suspends all of them before its
+# `fuser -k`: an fd held by THIS process (the session console fixture
+# holds the port across tests) turns the kill into a pytest self-kill —
+# empirically SIGKILL, rc 137 (Codex PR-86 P2). Captures reconnect
+# lazily on their next capture_for/send_line, so suspending is
+# transparent to tests.
+_ACTIVE_CAPTURES: list[ConsoleCapture] = []
+
+
+def suspend_all_captures() -> None:
+    """Close every live capture's fd (they reconnect lazily)."""
+    for cap in _ACTIVE_CAPTURES:
+        cap.close()
 
 
 class BootMarker:
@@ -106,6 +163,10 @@ class BootMarker:
     # Success/failure markers
     PN7160_ACK = "ACK @0x28"
     PN7160_NAK = "no-ack"
+    # Mid-session health heartbeat (HEARTBEAT_PROBE_EVERY = 60 s):
+    # success and failure twins — "still" vs "stopped", no overlap.
+    PN7160_STILL_ACKING = "PN7160 still ACKing"
+    PN7160_STOPPED_ACKING = "PN7160 stopped ACKing"
     NCI_INIT_OK = "NCI INIT LADDER OK"
     KEYBOARD_ACK = "keyboard @0x20 rc=0"
     BUS_PRIMED = "bus primed"

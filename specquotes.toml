@@ -10,14 +10,23 @@
 #   CCID_SERIAL — libccid's GemPC Twin serial driver (framing, echo,
 #                 escape commands, descriptor values)
 #   GEMPC       — the authoritative GemPC Twin serial reader descriptor
+#   PCSC        — pcsc-lite's host-side PIN structures: what pcscd
+#                 actually puts in PC_to_RDR_Secure payloads
+#   LIBCCID     — libccid's PC/SC → CCID byte translation loops (the
+#                 on-wire field order/omission rules)
+#   ISO7816     — osmo's ISO 7816-3 tables (@implements annotations),
+#                 the Fi/Di/fmax authority for ATR parsing
 #
-# All three live in git submodules under reference/ (CI checks out with
+# All live in git submodules under reference/ (CI checks out with
 # submodules: true; locally run `git submodule update --init` first).
 #
 # Comment marker syntax in Rust source:
 #   // CCID_SPEC:   <verbatim quote from ccid_proto.h>
 #   // CCID_SERIAL: <verbatim quote from ccid_serial.c>
 #   // GEMPC:       <verbatim quote from GemPCTwinSerial.txt>
+#   // PCSC:        <verbatim quote from reference/CCID/MacOSX/reader.h>
+#   // LIBCCID:     <verbatim quote from reference/CCID/src/commands.c>
+#   // ISO7816:     <verbatim quote from iso7816_3.c>
 #
 # Run (from repo root):
 #   python3 -m greatspectations check --config specquotes.toml \
@@ -42,3 +51,18 @@ comment_marker = "CCID_SERIAL"
 format = "markdown"
 file = "reference/CCID/readers/GemPCTwinSerial.txt"
 comment_marker = "GEMPC"
+
+[sources.PCSC]
+format = "markdown"
+file = "reference/CCID/MacOSX/reader.h"
+comment_marker = "PCSC"
+
+[sources.LIBCCID]
+format = "markdown"
+file = "reference/CCID/src/commands.c"
+comment_marker = "LIBCCID"
+
+[sources.ISO7816]
+format = "markdown"
+file = "reference/osmo-ccid-firmware/ccid_common/iso7816_3.c"
+comment_marker = "ISO7816"

@@ -588,21 +588,23 @@ fn test_t0_apdu_command_rejected_not_supported() {
 // uint8_t bPINOperation; uint8_t abPNDataStructure[0]; }
 // __attribute__ ((packed));
 
-/// Minimal valid PIN-verify data structure (CCID Rev 1.1 §6.1.11):
-/// 16 bytes = 12-byte PIN probe header + 4-byte APDU head.
-fn pin_verify_data() -> [u8; 16] {
+/// PIN-verify data structure in the pcscd wire shape (CCID Rev 1.1
+/// §6.1.11, reference-locked in ccid-core secure.rs tests): 18 bytes =
+/// 11-byte fixed head + wPINMaxExtraDigit `[max, min]` + bTeoPrologue[3]
+/// + 4-byte APDU head.
+fn pin_verify_data() -> [u8; 18] {
     [
         30,   // bTimerOut (s)
         0x00, // bmFormatString
         0x00, // bmPINBlockString
         0x00, // bmPINLengthFormat
-        4,    // wPINMaxExtraDigit lo = min length
-        8,    // wPINMaxExtraDigit hi = max length
+        8,    // wPINMaxExtraDigit LSB = max length
+        4,    // wPINMaxExtraDigit MSB = min length
         0x02, // bEntryValidationCondition (key press)
         1,    // bNumberMessage
         0x09, 0x04, // wLangId (en-US)
         0x00, // bMsgIndex
-        0x00, // bTeoPrologue
+        0x00, 0x00, 0x00, // bTeoPrologue[3]
         // abPINApdu head (VERIFY template)
         0x00, 0x20, 0x00, 0x00,
     ]
@@ -628,9 +630,11 @@ fn test_secure_pin_verify_rejected_on_non_pinpad_vendor() {
     );
 
     // When: the host sends PC_to_RDR_Secure with a PIN-verify operation
-    let mut msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x55, [0x00, 0, 0], &[]);
-    msg.push(0x00); // bPINOperation = PIN verification
-    msg.extend_from_slice(&pin_verify_data());
+    // (frame is dwLength-correct; the pre-port handler read rx_len, but
+    // every real host — pcscd — sends dwLength-correct frames)
+    let mut secure_payload = vec![0x00u8]; // bPINOperation = PIN verification
+    secure_payload.extend_from_slice(&pin_verify_data());
+    let msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x55, [0x00, 0, 0], &secure_payload);
     let resp = exchange(&mut h, &msg);
 
     // Then: a DataBlock response with CMD_NOT_SUPPORTED is queued
@@ -805,9 +809,9 @@ fn test_card_removal_mid_pin_entry_resets_secure_state() {
         &mut h,
         &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
     );
-    let mut msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x77, [0x00, 0, 0], &[]);
-    msg.push(0x00);
-    msg.extend_from_slice(&pin_verify_data());
+    let mut secure_payload = vec![0x00u8];
+    secure_payload.extend_from_slice(&pin_verify_data());
+    let msg = ccid_request(PC_TO_RDR_SECURE, 0, 0x77, [0x00, 0, 0], &secure_payload);
     exchange(&mut h, &msg);
     assert!(h.is_pin_verify_active());
 

@@ -140,20 +140,22 @@ cargo espflash flash --monitor target/xtensa-esp32-espidf/release/esp32-ccid
 ## ESP-IDF Rust toolchain and bring-up builds (verified on ai-legion, 2026-10)
 
 The esp-idf targets (`riscv32imc-esp-espidf`, `xtensa-esp32-espidf`) have **no
-precompiled std** — esp-idf-sys builds std from source via `-Zbuild-std`, so
-`rustup target add` is not applicable. Per-target toolchains:
-
-- **ESP32-C3 / Nucula (RISC-V):** `RUSTUP_TOOLCHAIN=nightly` with `rustup component add rust-src`
-- **ESP32 / M5Stick (Xtensa):** `RUSTUP_TOOLCHAIN=esp` (installed by `espup install --targets esp32,esp32c3`, which also writes `~/export-esp.sh`)
+precompiled std** — esp-idf-sys builds std from source via `-Z build-std`, so
+`rustup target add` is not applicable. One-Rust-version policy (2026-10-12):
+BOTH esp32 targets ride the **pinned esp fork `v1.98.1.0`** (`espup install
+-c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3`) — the same Rust
+version number as the stable pin, and the fork (a nightly-derived but frozen
+vendor release) is the only compiler with xtensa espidf codegen anyway. The
+dated upstream nightly is retired.
 
 ```bash
-source ~/export-esp.sh   # LIBCLANG_PATH (esp-clang) + Xtensa GCC
+source ~/export-esp.sh   # LIBCLANG_PATH (esp-clang) + GCC
 cd firmware/esp32-ccid
 
 # C3 / Nucula PN7160 bring-up
 # ESP_IDF_GLOB_* injects partitions-ota.csv into the embuild project dir
 # before cmake configure (or just use build.sh, which sets all of this)
-RUSTUP_TOOLCHAIN=nightly \
+RUSTUP_TOOLCHAIN=esp \
 ESP_IDF_SDKCONFIG=$PWD/sdkconfig.full \
 ESP_IDF_GLOB_PARTCSV_BASE=$PWD \
 ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv" \
@@ -249,6 +251,91 @@ Notes:
   standard builds (FWID lands on the console there; in ble builds it
   goes to the BLE ring). See AGENTS.md "BLE Debug Console".
 
+## pcscd over Bluetooth Classic SPP (`spp` feature)
+
+The `spp` build swaps the transport: instead of UART0/FTDI, the GemPC
+serial CCID server rides a **Bluetooth Classic SPP** (RFCOMM) connection.
+SPP is a real serial line to libccidtwin — on the host, BlueZ's `rfcomm`
+exposes the connection as `/dev/rfcomm0`, pcscd opens it with the stock
+`libccidtwin.so`, and **no daemon and no custom host code** is needed.
+The serving core (`ccid_serial_server` + `ccid_handler`) is reused
+verbatim; only the byte pipe changes (`src/spp_server.rs`, REFERENCE:
+esp-idf-svc `examples/bt_spp_acceptor.rs`).
+
+```
+Host (Linux)                       ESP32 (m5stick)                NFC Card
+─────────────                 ────────────────────                ──────────
+pcscd/libccidtwin.so           spp_server (GemPC Twin             MFRC522
+  ↕ /dev/rfcomm0  ←rfcomm←    protocol over RFCOMM,   ──I2C──>   (ISO 14443A)
+  (BlueZ SPP)                   BT Classic acceptor)
+```
+
+Firmware differences from the UART build:
+
+- **UART0 is free** — console and Rust logs stay enabled there (the CCID
+  wire is RFCOMM; console output cannot reach it).
+- WiFi/OTA and the `ble` console are compiled out (one Bluetooth modem —
+  `ble` + `spp` is a compile error).
+- ESP32 silicon only (BR/EDR); requires `sdkconfig-xtensa-spp.full`
+  (classic-only Bluedroid + SPP). A mismatched sdkconfig/feature pair
+  fails to compile, same loud-pairing rule as `ble`.
+
+Build + flash:
+
+```bash
+./build.sh m5stick-spp --flash /dev/serial/by-id/<m5stick-port>
+# boot proof on the UART0 console (115200):
+#   FWID esp32-ccid rev=<git> build=<ts> transport=spp device="GemPC Twin ESP32"
+#   spp: server started (scn 1) — discoverable
+```
+
+### Host setup (bluez + pcscd)
+
+```bash
+sudo apt install pcscd libccid pcsc-tools bluez
+
+# 1. Bring the host adapter up
+sudo rfkill unblock bluetooth && sudo hciconfig hci0 up
+
+# 2. Pair (SSP numeric compare — accept on the host; the firmware
+#    auto-accepts its side; legacy fallback PIN is 1234)
+bluetoothctl
+  [bluetooth]# scan on
+  ... "GemPC Twin ESP32" appears ...
+  [bluetooth]# pair <BD_ADDR>        # accept the numeric compare
+  [bluetooth]# trust <BD_ADDR>       # auto-reconnect without re-prompting
+  [bluetooth]# exit
+
+# 3. Expose the SPP service as /dev/rfcomm0
+#    Channel 1 is the ESP32 SPP default; confirm via `sdptool browse <BD_ADDR>`
+#    (look for the "Serial Port" service SCN).
+sudo rfcomm watch hci0 1
+#   (on connect: "Connection from <BD_ADDR> to /dev/rfcomm0")
+
+# 4. Point pcscd at it
+sudo cp firmware/esp32-ccid/reader.conf.rfcomm /etc/reader.conf.d/GemPCTwin-rfcomm.conf
+sudo systemctl restart pcscd
+
+# 5. Verify
+pcsc_scan        # "GemPCTwin rfcomm" + ATR once a card is on the coil
+```
+
+Cleanup: `sudo rfcomm release hci0 1` (and stop the `rfcomm watch` process).
+
+### Notes + limitations
+
+- **Latency**: expect RFCOMM scheduling latency on top of the serial path
+  (Escape 0xD2 decomposes it — firmware turnaround vs link turnaround —
+  once a card is back on the coil). The 0xD2/0xD0/0xD1 escapes work over
+  SPP exactly as over UART; 0xD1 coredumps settle 100 ms before the panic
+  so the ack drains (Cb-mode writes are queued, not flushed).
+- **Single client** — one RFCOMM connection at a time (a second client is
+  refused by the profile); pcscd is the only intended consumer.
+- **Congestion** is handled: responses park and retry on
+  `ESP_SPP_CONG_EVT`, order-preserving (see `spp_server::SppLink`).
+- **m5stick-ble is unaffected** — `ble` and `spp` remain mutually
+  exclusive builds.
+
 ## Host setup
 
 ### 1. Install pcscd and drivers
@@ -319,7 +406,7 @@ The included `setup.sh` automates the host setup:
 |--------|---------------|
 | `main.rs` | Entry point, UART0 (115200 8N2) and peripheral initialization, main loop |
 | `serial_framing.rs` | GemPC Twin serial framing: SYNC/CTRL/CCID/LRC, echo handling |
-| `ccid_handler.rs` | CCID command dispatch (IccPowerOn, XfrBlock, etc.), init handshake |
+| `ccid_handler.rs` | Thin wrapper: delegates CCID dispatch to the shared `ccid-core` handler, keeps the T=1 endpoint routing (t1.rs) local (PERF_AND_DRY_STRATEGY §3.1) |
 | `ccid_types.rs` | CCID message structs, RDR_to_PC slot status, data rates |
 | `pn532_driver.rs` | PN532 SPI driver: SAM configuration, InListPassiveTarget, InDataExchange (PN532 backend) |
 | `mfrc522_driver.rs` | MFRC522 NFC driver: ISO 14443-4 APDU via iso14443 crate (MFRC522 backend) |
@@ -328,7 +415,7 @@ The included `setup.sh` automates the host setup:
 | `pn7160_bringup.rs` | PN7160 bring-up mains: NCI init ladder + card heartbeat (target-only) |
 | `pn7160_ccid.rs` | nucula CCID main: serves CCID over the USB-Serial/JTAG CDC port (target-only) |
 | `ccid_serial_server.rs` | Host-testable GemPC serial CCID serving core: echo, framed response, interval-gated card polling (shared by the USB-CDC main) |
-| `log_shim.rs` | USB-CDC log shim (issue #91): pure host-tested log ring + target-gated shell that captures logs after the driver claim (`esp_log_set_vprintf` sink for `ESP_LOGx`, `log` facade routing) and drains them onto the claimed CDC from the serving loop |
+| `log_shim.rs` | REMOVED 2026-10-12 (issue #131): the #91 USB-CDC log ring/drain is retired — the clean-wire ceiling now lands before the driver claim (one boot banner, then framed CCID only; see `docs/LOGGING_DOCTRINE.md` at the repo root) |
 | `ble_console.rs` | BLE debug console facade (issue #66): logger install + Bluedroid GATT bring-up + C-log silencing, one `init`/`drain` pair per main (target-only, `ble` feature) |
 | `ble_debug.rs` | NUS-lookalike BLE GATT server for the debug console (target-only, `ble` feature) |
 | `ble_logger.rs` | `log` crate sink queueing records for the BLE console (target-only, `ble` feature) |
@@ -378,4 +465,12 @@ cargo test --target x86_64-unknown-linux-gnu
 - **Single slot** — only one card at a time
 - **Short APDU only** — extended APDU not supported
 - **115200 baud fixed** — no auto-baudrate negotiation
+- **Per-block MFRC522 latency (~40 ms/APDU class)** — CAP-scale uploads
+  (GlobalPlatform installs) through the m5stick reader stall; pcscd-level
+  APDU relay and T=1 are unaffected
+- **Nucula (C3) pcscd impossible** — the C3 USB-Serial/JTAG chip-resets on
+  the DTR/RTS patterns libccidtwin uses; no disable bit on this silicon
+  (issue #117). Direct-serial GemPC probing with the safe opener
+  (`dtr=False; rts=False` BEFORE `open()`, settle ≥4 s) is the supported
+  test surface; expect ~300 ms/command CDC latency floor (issue #119)
 - **Target-specific LED driver** — the M5Stack Atom LED matrix is driven on Xtensa hardware builds; host tests use a stubbed implementation so shared state and pattern logic stay testable without ESP32 hardware

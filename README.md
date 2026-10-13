@@ -7,25 +7,87 @@ This repository now carries two firmware products on the same `main` branch:
 
 Current supported hardware combinations:
 
-| MCU | Card frontend | Status | Notes |
-|-----|---------------|--------|-------|
-| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | Primary | Wired CCID over USB |
-| ESP32 (M5Stack Atom Matrix) | MFRC522 over I2C | Primary | NFC CCID over GemPC Twin serial protocol |
-| ESP32 dev boards | PN532 over SPI | Secondary | Kept supported, but current focus is MFRC522 |
-| ESP32-C3 (nucula board) | PN7160 over I2C | Experimental | CCID protocol layer verified over USB-CDC (13/13 on-target tests, `pn7160-ccid`); card-level NFC blocked on PN7160 hardware inspection (issue #63) |
+| MCU | Card frontend | pcscd | Status | Notes |
+|-----|---------------|-------|--------|-------|
+| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | ✓ USB CCID | Primary | Wired CCID over USB, T=0/T=1 + PIN, ~43 ms/APDU, labgrid HIL 7/7 |
+| STM32F746-DISCO | GPIO bit-bang (ISO 7816-3 in software) | ✓ USB CCID | Supported | Same CCID core, software physical layer |
+| ESP32 classic (M5Stick/M5Atom) | MFRC522 over I2C | ✓ serial (libccidtwin) | Primary (NFC) | GemPC Twin serial framing, T=1 endpoint, pcscd + APDU relay verified; CAP-scale transfers limited by per-block MFRC522 latency |
+| ESP32 dev boards | PN532 over SPI | ✓ serial | Secondary | Kept supported, current focus is MFRC522 |
+| ESP32-C3 (nucula board) | PN7160 over I2C | **✗ hardware wall** | Card-level verified (direct-serial only) | ATR + APDU relay PASS over the CDC with the safe opener. pcscd/libccidtwin enumeration is impossible on C3 silicon (chip-resets on every port-open, no disable bit — issue #117); ~300 ms/command CDC latency floor (#119) |
 
-Near-term direction:
+## Status (2026-10-12): what works, what doesn't, what's tested
 
-- keep one repository and one `main` branch for both products
-- keep target-specific hardware initialization separate
-- shared CCID core crates now extracted under `crates/` (protocol, response builders, serial framing)
-- remaining work: evaluate usbd-ccid as USB transport, board pin config trait, NFC crate extraction
+**Works, hardware-tested (bench evidence 2026-10-11/12):**
+
+- All six pcscd readers card-level verified in one session: Cherry
+  (STM32, ours), GemPCTwin serial (m5stick, ours), Nucula via the PTY
+  broker (ours), CardMan/ACR1252/NR7101 (references). ATR + APDU relay
+  on every one; sustained soak 30/30 rounds, 0 errors.
+- **pcscd over Bluetooth** (new): `m5stick-spp` — RFCOMM/SPP transport
+  for the same GemPC server; card ATR + APDUs over the air, p50 48ms.
+- Differential suite 16/16 (ATR + AID + read-only APDU agreement).
+- Full `gpg --card-status` on the ACR1252 SmartPGP card (keys,
+  fingerprints, counters).
+- Cherry latency 42.75ms p50 (n=60) post-DRY-handler-port —
+  non-regression proven on hardware. Nucula card path 16ms/command.
+- PIN verify/modify parse fixed to the pcscd wire shape (reference-
+  locked tests; HIL round-trip is the recommended follow-up).
+
+**Doesn't work / gated (tracked):**
+
+- GPG applet install *through our own readers*: CAP-scale uploads need
+  the m5stick perf pass (#120); the nucula GP-install flow is untested
+  pending the #125 tail.
+- Satochip/SeedKeeper lanes: no card on the bench + the `pysatochip`
+  sdist is currently broken on this host (#126).
+- Nucula BLE (C3 is BLE-only): needs the GATT↔PTY bridge (#118);
+  pcscd-over-BT is m5stick-only for now.
+- PSO signature format quirk on the SmartPGP card (#123, card-side).
+- STM32F746 USB bring-up still needs the physical plug (bench table).
+
+**Blockers are logistics, not protocol**: cards (Satochip, identical
+differential card), silicon (C3 pcscd wall → broker path shipped), and
+two perf/finish lanes (#120, #122).
+
+## Roadmap
+
+1. **#120** m5stick perf → SmartPGP install through our reader → GPG
+   on all three of our readers (matrix complete).
+2. **#125 tail** nucula GP-install + gpg through the broker.
+3. **#122** STM32 latency round 3 (42.8 → ~11ms target).
+4. **#118** nucula BLE GATT bridge (pcscd-over-BT for C3).
+5. **#123** PSO signature quirk; Satochip once a card lands.
+6. Soak + release-cadence: tag per hardware-verified bench state.
 
 The practical architecture is a shared CCID core with interchangeable axes:
 
 - MCU target: STM32 or ESP32
 - card frontend: wired contact or NFC
 - transport: USB CCID or serial CCID
+
+## Current state & roadmap (2026-10-12)
+
+**Known-good states** (regression-locked by `pytest tests/hardware/labgrid/ -v --hil` — currently 15 passed + 1 xfailed):
+
+| Hardware | State |
+|---|---|
+| **STM32F469-DISCO** (Cherry profile, contact) | **Fully known-good**: pcscd + ATR/APDU relay, reflash cycle, hardened TPDU-level T=1 pipe (0 corruption in 400-exchange fidelity), and the **full GlobalPlatform CAP lifecycle through our own reader** — SCP02 auth, install → use (byte-exact) → uninstall → card power-cycle reset (`test_gp_lifecycle_hil.py`, factory card CPLC 50796920, #132 closed) |
+| Bench (labgrid, 5 places) | All-green; all five readers serve pcscd simultaneously |
+| m5stick (ESP32 + MFRC522, serial CCID) | Serving pcscd (GemPCTwin) + full conformance battery green; CAP installs pending serve-loop hardening (#101) + perf (#59) |
+| nucula (ESP32-C3 + PN7160) | Serving pcscd via the PTY broker; known gaps: #125 (re-arm after power-off), #128 (direct-serial serve) |
+| STM32F746 | Bring-up pending — bench-distinct iSerial landed, needs the physical USB plug + labgrid place |
+
+**Roadmap** (priority order — the issue tracker is the source of truth):
+
+1. **m5stick CAP-install unlock** — #142 G-04/G-05 (WTX + relay), #59 (MFRC522 per-block perf), #101 (serve-loop RX hardening)
+2. **nucula known-good** — #125 (IccPowerOff re-arm), #128 (direct-serial serve gaps)
+3. **STM32 polish** — #135 (smartcard framing: STOP/GT/PE-ORE→0xFD), #136 (libccid conformance residuals), #141 (PC/SC contract audit)
+4. **Infrastructure** — #133 (observability; after the `sisyphus/idf-555-unify` merge), #143 (capture corpus + byte-diff), #139 (GP lane)
+5. **F746 bring-up** — distinct iSerial ready; needs USB + place + T=1 card check
+
+Card & GP doctrine: see AGENTS.md "Card-Handling Doctrine" — never hammer
+secure-channel-class commands; #144 records the one card lost learning
+this; GP keys and the per-card retry ledger live on #127.
 
 ## Repository layout
 
@@ -76,7 +138,7 @@ This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
 | IccPowerOn | 6.1.1 | ✅ Full | dwLength validated |
 | IccPowerOff | 6.1.2 | ✅ Full | |
 | GetSlotStatus | 6.1.3 | ✅ Full | |
-| XfrBlock | 6.1.4 | ✅ Full | Short APDU level |
+| XfrBlock | 6.1.4 | ✅ Full | TPDU exchange level — T=1 blocks relayed untouched (host/libccid owns the protocol + secure channel); T=0 procedure bytes handled on-device per CCID TPDU level |
 | GetParameters | 6.1.5 | ✅ Full | T=0 and T=1 |
 | SetParameters | 6.1.7 | ✅ Full | With libccid quirk handling |
 | ResetParameters | 6.1.6 | ✅ Full | |
@@ -92,7 +154,7 @@ This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
 
 The stubbed commands are intentional:
 - **Escape**: 0xD0 vendor extension returns diagnostic counters (28 bytes LE). 0x6A returns firmware-features (Gemalto IDBridge convention). Other escape codes return CMD_NOT_SUPPORTED.
-- **T0APDU**: TPDU-level control, we use Short APDU level
+- **T0APDU**: we are TPDU exchange level (see `device_profile.rs`); stays CMD_NOT_SUPPORTED
 - **Mechanical**: No mechanical card eject/capture hardware
 - **Abort**: Single-slot synchronous reader, no async operations to abort
 
@@ -229,6 +291,5 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
 - Firmware entrypoint: `firmware/ccid-firmware/src/main.rs`
 - Smartcard transport: `firmware/ccid-firmware/src/smartcard.rs`
 - CCID protocol handling: `firmware/ccid-firmware/src/ccid.rs`
-- Unit-testable protocol helpers: `firmware/ccid-firmware/src/protocol_unit.rs`
-- Unit tests inspired by osmo test files: `firmware/ccid-firmware/src/protocol_unit.rs` (`#[cfg(test)]` module)
+- Unit-testable protocol helpers: `firmware/ccid-firmware/src/protocol_unit.rs` (re-exports the shared `ccid-protocol` crate; the crate's own test suites are the authoritative ones)
 - Pinout: `PINOUT.md`

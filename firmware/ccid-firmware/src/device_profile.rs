@@ -559,6 +559,22 @@ pub const CURRENT_PROFILE: DeviceProfile = PROFILE_GEMALTO_IDBRIDGE_CT30;
 #[cfg(feature = "profile-gemalto-idbridge-k30")]
 pub const CURRENT_PROFILE: DeviceProfile = PROFILE_GEMALTO_IDBRIDGE_K30;
 
+/// iSerial this build enumerates with on USB.
+///
+/// Identical to the active profile's serial, EXCEPT on the
+/// `stm32f746` + Cherry build: the bench runs the F469 and F746 boards
+/// simultaneously behind the SAME Cherry profile identity (046A:003E),
+/// and pcscd + labgrid distinguish readers by USB serial
+/// (DUTs-disjoint-by-identity doctrine, AGENTS.md "Labgrid bench
+/// doctrine"). The reference files do not constrain iSerial
+/// (CherrySmartTerminalST2XXX.txt has no serial field), so the F746
+/// carries the bench-distinct `ST2XXX-F746` while the F469 keeps
+/// `ST2XXX-001`.
+#[cfg(all(feature = "stm32f746", feature = "profile-cherry-smartterminal-st2xxx"))]
+pub const USB_SERIAL_NUMBER: &str = "ST2XXX-F746";
+#[cfg(not(all(feature = "stm32f746", feature = "profile-cherry-smartterminal-st2xxx")))]
+pub const USB_SERIAL_NUMBER: &str = CURRENT_PROFILE.serial_number;
+
 // Compile error if no profile feature is selected.
 // Use `--features profile-cherry-smartterminal-st2xxx` (default) or another profile.
 #[cfg(not(any(
@@ -676,6 +692,25 @@ mod tests {
                 FEAT_AUTO_CLOCK | FEAT_AUTO_BAUD | FEAT_NAD_OTHER | FEAT_LEVEL_TPDU
             );
         }
+    }
+
+    #[test]
+    fn test_profile_serial_numbers() {
+        // Reference serials (bench DUT identity markers — labgrid matches
+        // ID_SERIAL_SHORT against these). The F746 Cherry build overrides
+        // USB_SERIAL_NUMBER to "ST2XXX-F746" (cfg above) so the two STM32
+        // boards can coexist on one bench; host CI builds the F469 default,
+        // where USB_SERIAL_NUMBER must equal the profile serial.
+        assert_eq!(
+            PROFILE_CHERRY_SMARTTERMINAL_ST2XXX.serial_number,
+            "ST2XXX-001"
+        );
+        assert_eq!(PROFILE_GEMALTO_IDBRIDGE_CT30.serial_number, "CT30-001");
+        assert_eq!(PROFILE_GEMALTO_IDBRIDGE_K30.serial_number, "K30-001");
+        assert_eq!(
+            USB_SERIAL_NUMBER, CURRENT_PROFILE.serial_number,
+            "F469 default build must keep the profile iSerial"
+        );
     }
 
     #[test]

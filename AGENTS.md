@@ -34,7 +34,7 @@ ccid-firmware-rs/
 ├── crates/                     # shared, host-buildable libraries
 │   ├── ccid-protocol/          # CCID protocol types, constants, ATR parsing
 │   ├── card-interface/         # card frontend trait + PresenceState (no_std)
-│   ├── ccid-core/              # CCID response builders, PPS validation (21 tests)
+│   ├── ccid-core/              # CCID response builders, PPS validation, shared handler (65 tests)
 │   └── ccid-transport-serial/  # GemPC Twin serial framing (25 tests)
 ├── firmware/
 │   ├── ccid-firmware/          # STM32 USB CCID firmware (default-members)
@@ -125,6 +125,16 @@ Reference: `reference/CCID/readers/*.txt` (authoritative device specifications).
 > K30 has `bPINSupport=0x00`, `wLcdLayout=0x0000`, and uses TPDU exchange level
 > (`dwFeatures=0x00010230`), not Short APDU (`0x00020472`).
 
+> **Bench-distinct iSerial (2026-10-11, commit 0af0fb0):** the F746 Cherry
+> build enumerates with iSerial `ST2XXX-F746`; the F469 keeps `ST2XXX-001`.
+> Both boards share the Cherry USB identity (046A:003E) — pcscd and the
+> labgrid DUTs-disjoint-by-identity doctrine need distinct serials when both
+> are connected. The reference files do not constrain iSerial
+> (CherrySmartTerminalST2XXX.txt has no serial field), so the override is
+> doctrine-justified. Single definition point:
+> `device_profile::USB_SERIAL_NUMBER` (cfg-gated on
+> `stm32f746`+`profile-cherry-smartterminal-st2xxx`).
+
 ### ESP32 backend selection
 
 ESP32 firmware lives in `firmware/esp32-ccid/` and has its own feature set:
@@ -134,10 +144,332 @@ ESP32 firmware lives in `firmware/esp32-ccid/` and has its own feature set:
 | `backend-mfrc522` | MFRC522 | I2C (M5Stack Atom Matrix) | ✓ |
 | `backend-pn532` | PN532 | SPI | (secondary, still supported) |
 
+## Reader-Role vs Standalone-Role T=1 Doctrine (owner directive 2026-10-12)
+
+**Two roles, deliberately different T=1/protocol ownership — never mix them
+on one wire path.**
+
+1. **Reader role (pcscd-facing CCID, STM32 USB)**: the HOST owns the T=1
+   protocol and the secure channel; the reader is a transparent TPDU-level
+   block relay. Implemented and locked by the reference-first profiles:
+   all three device profiles advertise TPDU exchange level (Cherry
+   reference `dwFeatures=0x000100BA` → TPDU; CT30/K30 `0x00010230` →
+   TPDU) and `smartcard.rs` `transmit_raw` forwards complete T=1 blocks
+   untouched — only T=0 procedure-byte handling is on-device (standard
+   for CCID TPDU level, `libccid` sends the full T=0 TPDU and expects
+   the full response). **Rule: in the reader role we never inspect,
+   reassemble, re-frame, or answer T=1 content** — a host-card secure
+   channel (GP SCP02/03) must pass through byte-transparent. Issue #132
+   (card-specific SCP02 mismatch through our path) is a bug in this
+   relay's electrical/receive layers, NOT license to add protocol logic.
+2. **Standalone role (device-driven card provisioning)**: firmware itself
+   flashes/personalizes cards (GP install flows, wallet-style use). Here
+   the device legitimately terminates protocols and runs GP client logic.
+   This must live in a SEPARATE main/feature (like the pn7160-actdiag /
+   bring-up mains), never inside the pcscd serving path.
+3. **ESP32 serial GemPC-Twin emulation**: `t1.rs` answers S-blocks locally
+   and reassembles I-block INF to APDUs — that is what the REAL GemPC
+   Twin does and what `libccidtwin` expects; reference-justified, but it
+   is the #101 RX-hardening weak spot. The USB-CDC nucula path
+   (`ccid_serial_server`) stays APDU-level relay (NFC ISO-DEP handles
+   blocks below us).
+
+Stale-doc note: the repo README's "XfrBlock: Short APDU level" line
+predates the descriptor correction — the profiles are TPDU level.
+
+## Card-Handling Doctrine (2026-10-12 ISD-lock incident — never repeat)
+
+**What happened:** a transport-fidelity hammer sent ~450 INITIALIZE UPDATE
+commands in a few minutes against the SmartPGP card (CPLC 50947320) to
+stress the T=1 relay. INIT_UPDATE is the FIRST step of the GP secure
+channel: it makes the ISD issue a challenge. JCOP counts every
+abandoned/failed authentication attempt against a SMALL non-renewable
+error budget. The hammer exhausted it; the card now answers `69FF` to all
+secure-channel-class commands, survives VCC power-off (persistent EEPROM
+state — commercial-reader-verified, not a relay artifact), and the only
+standard recovery path (a successful authentication resetting the counter)
+is impossible because INIT_UPDATE itself is refused. **Effectively
+permanent loss of GP management on that card** (applets on it remain
+fully usable; only install/delete/re-personalize died). Incident record:
+#127/#132.
+
+**Rules:**
+
+1. **Never send SC-class commands in loops.** SC-class = anything that
+   initiates or feeds the GP secure channel: INITIALIZE UPDATE (80 50),
+   EXTERNAL AUTHENTICATE (84 82), and SC-gated GET DATA (e.g. 00E0).
+   Each one is a budget-bearing authentication event on JCOP-class cards.
+2. **Load/stress/fidelity tests use the zero-risk set ONLY:** SELECT by
+   AID (00 A4 04 00), GET DATA CPLC (80 CA 9F7F 00), and applet-level
+   reads of already-selected applications. These are pure reads — no
+   security state, no counters.
+3. **GP authentication attempts are budgeted and ledgered.** Track every
+   attempt per CPLC serial on #127 (current: 50947320 ISD locked;
+   50972320 at 3 attempts; 50942720 at 2 mismatches + working AUTH
+   triple; nucula-coil card unprobed). One aimed attempt per NEW keyset
+   with provenance — never speculative retries.
+4. **Any new hammer/soak design gets checked against this table before
+   its first run** — including "read-only-looking" GP tooling: `gp -l`,
+   `gp -i`, `gp --info` ALL attempt authentication and burn budget on
+   failure.
+5. **There is NO master-key recovery once the ISD lockout trips** —
+   researched 2026-10-12 (#144): the 69FF refusal is pre-authentication
+   (identical at key-ver 00/01 — the card refuses before key-set lookup),
+   so knowing the correct keys does not help; every GP reset path needs
+   a successful authentication first, which needs INIT_UPDATE, which is
+   the refused command. Only NXP vendor re-personalization could undo
+   it. Card **50947320 is the permanent record of this** (#144): a
+   perfectly good SmartPGP single-applet card forever — applet fixture
+   only, no GP install/delete.
+
+**Safe/unsafe table for test design:**
+
+| APDU / tool | Class | Loopable? |
+|---|---|---|
+| SELECT by AID | pure read | ✅ unlimited |
+| GET DATA CPLC (80CA 9F7F) | pure read | ✅ unlimited |
+| Applet GET DATA / app commands (e.g. OpenPGP 00CA 004F) | applet read | ✅ unlimited (mind PIN rules) |
+| Raw INIT_UPDATE (80 50 …) — "no auth, just probing" | **SC initiation** | ❌ **NEVER in a loop** |
+| `gp -l` / `-i` / `--info` / `--list` with wrong keys | full auth attempt | ❌ budgeted singles only |
+| INIT_UPDATE + EXT_AUTH with correct keys | completes session (resets counters on some masks) | ⚠️ fine, but pointless in a loop |
+
+## Reference-First Doctrine (owner directive 2026-10-11)
+
+**We do not reinvent wire formats, timings, or protocol bytes by trial
+and error. Before writing or "fixing" any protocol-facing constant:
+find the reference, verify against it, and lock it with a unit test.**
+
+The founding incident: our PN7160 CORE_SET_CONFIG TLV was wrong for
+WEEKS (trailing garbage octet the chip rejected) because a session
+guessed the TLV format instead of checking the kernel/NXP references —
+and wrote the wrong story into this file, which later sessions trusted
+(the #110 lesson again: docs lie until re-verified against the tree).
+
+### The rules
+
+1. **No assumptions on wire formats.** Every protocol byte we emit or
+   parse must trace to a citation: spec section, kernel struct, NXP
+   header, or bench-proven reference bytes. "I think it's 2 octets" is
+   a bug, not a fact.
+2. **Check references BEFORE bench iterations.** Tools: z.ai zread
+   (`zread_read_file`/`zread_search_doc` on GitHub repos), grep.app
+   (literal code search across public repos), web search, and the
+   in-repo `reference/` + `docs/nfc_citation_map.md`. One reference
+   lookup beats ten flash-and-probe cycles.
+3. **GREAT EXPECTATION annotations.** Reference-derived byte sequences
+   carry an inline annotation near the constant AND a unit test that
+   locks the bytes (`tx_frames_match_c_driver_bytes` style). If the
+   test breaks, the breaker must re-verify against the citation —
+   never "fix" the test to match new unverified bytes.
+4. **Mocks must model the reference, not our bug** (mock/hardware
+   divergence is this repo's #1 bug class).
+5. **DRY = single place to be right.** Shared logic lives in
+   `crates/` (ccid-core handler, pn7160-nci, transport-serial). A wire-
+   format fact must exist in ONE place — where it is already
+   reference-locked and tested.
+6. **Known-good states + known unknowns are tracked as GitHub issues**
+   (checklists, `- [ ]`, with commit hashes). When hardware misbehaves,
+   check the issue tracker + the bench table below BEFORE assuming a
+   hardware defect — and use the documented full-reflash ladder to get
+   back to a known good state.
+
+### Fix-all-siblings protocol (owner directive 2026-10-12)
+
+DRY is the FIX protocol, not just a new-code rule. The tree serves the
+same protocol through several sibling paths — STM32 USB (`firmware/ccid-firmware`
+ccid_core wrapper), esp32 serial (`ccid_handler` + `CcidSerialServer`,
+shared by m5stick/nucula/SPP mains), shared crates (`crates/ccid-core`,
+`ccid-transport-serial`), and per-firmware escape bolt-ons. When a bug
+is fixed anywhere:
+
+1. **Before writing the fix, grep the sibling paths for the same
+   pattern** — same constant, same silent clamp (`.min(` on a copy),
+   same parse, same timeout, same escape-code handling. The known
+   sibling-groups: relay/APDU buffer capacities (now derived from
+   `t1::MAX_RELAY`), escape tables, diagnostics extensions, presence
+   retry patterns, T=1 block builders.
+2. **If the logic can live in a shared crate without mixing the
+   reader-role vs standalone-role doctrines** (see the T=1 doctrine
+   above), REFACTOR it there and point every path at it — one fix
+   lands everywhere. Prefer exporting the existing constant/function
+   over duplicating its value at a second site.
+3. **If the paths must legitimately differ** (electrical frontends,
+   USB vs UART transport, role doctrine), fix EVERY sibling in the
+   SAME session and cross-reference them in the commit/issue.
+4. **Never leave a known-fixed bug alive in a sibling path** — a fix
+   that only lands on one board is how the mock/hardware-divergence
+   bug class breeds (G-03 was exactly this shape: one handler, but the
+   capacity constant lived separately from the assembler's).
+
+### Vendoring policy (three classes)
+
+Three distinct things get called "vendoring" — only two are allowed:
+
+1. **Quote-only reference copies** (`reference/…`, never compiled,
+   never linked): ALLOWED and encouraged. Pin provenance (upstream repo
+   + commit) in `reference/README.md`, keep upstream license headers,
+   trim to what we quote; full upstream repos stay git submodules.
+   PDF-only authorities get verbatim-quote markdown under
+   `docs/quote-sources/` with section/page cites (the specquotes.toml
+   approach). The index of all tracked sources: `reference/README.md`.
+2. **Build-path vendored code** (`vendor/…`, compiled): ONLY when we
+   patch it and the patch cannot live in a fork/git dep
+   (`vendor/synopsys-usb-otg` is the one legal case). Un-patched
+   vendored copies were deliberately removed (issues #19, #6) — do not
+   reintroduce that class; linkable code goes through canonical git
+   deps/forks.
+3. **C headers as build dependencies**: NOT vendored — our HAL comes
+   from the Amperstrand Rust fork. C headers (ST HAL smartcard,
+   ST USB middleware) are vendored ONLY as class-1 quote sources.
+
+### The reference library (verified useful)
+
+| Topic | Reference | Where |
+|---|---|---|
+| NCI core (SET/GET_CONFIG, INIT, DISCOVER) | `include/net/nfc/nci.h`, `net/nfc/nci/core.c` | torvalds/linux (grep.app or zread) |
+| NCI param IDs, status codes, TLV walker | `nci_defs.h` (1-octet param IDs!) | NXPNFCLinux/linux_libnfc-nci, NXPNFCProject/NFC_NCIHAL_libnfc-nci |
+| PN7160 specifics, TOTAL_DURATION example | UM11495 §6.2 | docs/nucula-campaign/nfc_citation_map.md |
+| C3 USB-Serial/JTAG registers (no RST_DIS on C3) | `usb_serial_jtag_reg.h` | espressif/esp-idf, components/soc/esp32c3 |
+| CCID Rev 1.1 | DWG_Smart-Card_CCID_ReV110 | docs/CCID_SPEC_AUDIT.md + `// CCID_SPEC:` markers |
+| T=1 (ISO 7816-3 §11) | Table 45 PCB bits | firmware/esp32-ccid/src/t1.rs citations |
+| Reader identities | reference/CCID/readers/*.txt | authoritative device specs |
+
+### Clean-wire doctrine (inviolable)
+
+The CCID wire carries CCID frames ONLY. libccidtwin's parser is a
+strict byte stream with NO resync — any ASCII between frames desyncs
+pcscd for the whole session. Since 2026-10-12 (issue #131) this is
+enforced by CONSTRUCTION, not discipline: the log ceiling
+(`set_max_level(Off)`) is set BEFORE the protocol driver claim, right
+after the one allowed boot banner (FWID + "rust main ALIVE", which
+ends before serving starts). The #91 log-shim (ring + drain + purge)
+is RETIRED — deleted, not fixed: keeping logs alive on a protocol wire
+was machinery that itself became the bug (its 5.5.5 drain breakage was
+the port's only regression). Debug output goes to: Escape 0xD0
+counters, Escape 0xD1 coredumps (dump-and-retrieve), a `ble` build, a
+`pn7160-actdiag` diagnostic build, or WiFi netlog — never unsolicited
+on the CCID wire. Enforcement: `test_wire_silence_after_banner`
+(tests/hardware/nucula) asserts zero printable ASCII after the banner.
+Full analysis + alternatives matrix: `docs/LOGGING_DOCTRINE.md`.
+
+### Debug-channel lesson (2026-10-12, #131 — read before adding ANY
+### diagnostics to a time-sensitive path)
+
+When troubleshooting feels hard because the debug channel interferes
+with the thing being debugged, DELETE the channel — do not build
+machinery to route around the interference. Rules for the future:
+
+1. A protocol wire is not a debug channel; strict parsers treat
+   unsolicited bytes as corruption (correctly).
+2. Diagnostics are PULL (in-band escape queries) or POST-MORTEM
+   (coredumps) — never push.
+3. Logging perturbs timing at the moment it matters (print-path
+   stalls, console starvation during busy-waits, driver-claim
+   semantics) — for timing bugs the observation must not perturb the
+   observed (dump-and-retrieve).
+4. Live logs belong on dedicated diagnostic surfaces: a diagnostic
+   BUILD (actdiag pattern), a separate wire (RTT/JTAG, dedicated
+   UART), or a non-protocol radio channel (ble/netlog).
+5. If a workaround subsystem grows (rings, drains, purges, flush
+   ordering) to keep observation alive inside a protocol path, that
+   is the architecture telling you the channel should not exist.
+   Complexity added to preserve observation becomes the next
+   incident (log_shim: 619 lines, multiple bench sessions, and it
+   still broke first on the IDF bump).
+6. Lock the invariant with a wire-silence regression test — CI
+   failure beats reviewer vigilance.
+
+### Nucula C3 hardware wall (register-verified 2026-10-11)
+
+The ESP32-C3 USB-Serial/JTAG peripheral chip-resets (`rst:0x15
+USB_UART_CHIP_RESET`) on the host DTR/RTS patterns that pcscd's
+libccidtwin uses on every serial-reader open/handshake. The C3
+register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
+`CHIP_RST_DIS` — that bit exists only on C6/C61 silicon). Therefore:
+
+- **The nucula cannot serve as a pcscd/libccidtwin serial reader by
+  DIRECT CDC opens** — but since 2026-10-11 it DOES serve pcscd through
+  the PTY broker (`host-tools/nucula-ccid-broker.py`, systemd service
+  `nucula-ccid-broker`, reader.conf entry `nucula-broker`): the broker
+  is the only CDC opener (safe opener, serving-gated symlink), pcscd
+  talks to the PTY where DTR/RTS is a no-op. Bench-verified: enumerate,
+  connect+ATR+SELECT sessions, >5.5 min stability, ~0.5 ms broker
+  overhead (#117).
+  Every pcscd port-open resets the chip; the boot banner races the
+  handshake; the reader error-loops (bench-verified end-to-end
+  2026-10-11). The bench reader.conf is disabled
+  (`/etc/reader.conf.d/nucula-ccid.disabled`) to stop the reset vortex.
+- **Direct-serial CCID WORKS and is the nucula's test surface**: GemPC
+  framing over the CDC with the safe opener (construct `Serial()`,
+  set `dtr=False; rts=False` BEFORE `open()`), ~300 ms/command CDC
+  latency floor. ATR + APDU relay bench-verified.
+- Paths to a pcscd-capable nucula-class device: C6/S3 silicon (has
+  `USB_UART_CHIP_RST_DIS`), an external USB-UART bridge (FTDI, like
+  the m5stick), or USB-OTG class CCID (S2/S3 only).
+
 ## CI Testing Protocol
 
-CI lives in `.github/workflows/ci.yml`. Toolchain is pinned to **Rust 1.92**.
-All jobs check out with `submodules: true` (required — see Gotchas).
+
+CI lives in `.github/workflows/ci.yml`. All jobs check out with
+`submodules: true` (required — see Gotchas).
+
+### Rust toolchain policy (2026-10-12) — the map and the why
+
+House stance: **stable-first, early adoption by deliberate bumps,
+nightlies ONLY where upstream forces them.** Every pin is exact and
+carries its reason.
+
+| Context | Toolchain | Why |
+|---|---|---|
+| Host crates, STM32 firmware, all `cargo install` tooling | **Stable, exact-pinned: 1.99.0** — the root `rust-toolchain.toml` is the single authority (rustfmt + clippy + `thumbv7em-none-eabihf` declared) | nothing we ship needs unstable features; the exact pin keeps CI, the release Docker build (#115), and every bench checkout bit-identical. 1.92.0 was retired when modern tooling (espflash 4.x class) stopped building under it |
+| ESP32 — BOTH targets (xtensa m5stick/m5atom AND C3 nucula) | **pinned esp fork `v1.98.1.0`** + crosstool `esp-14.2.0_20260121` — `espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3` | upstream rustc has no xtensa-espidf backend (fork is the only compiler there), and no `-Zbuild-std`-capable stable exists for espidf std — so BOTH targets ride the fork (2026-10-12 one-Rust-version change: same version NUMBER as the stable pin, one vendor-frozen compiler instead of fork + dated upstream nightly). `-v` is load-bearing: espup installs the LATEST fork by default (a moving nightly-derived compiler) |
+| CI mirrors | exact same strings: dtolnay `1.99.0`, `cargo +esp`, espup pins `-c 14.2.0_20260121 -v 1.98.1.0` | one authority; the strings must match the toml + bench EXACTLY |
+
+**Rules:**
+
+1. **Stable by default; bumps are deliberate, not accidental.** Track
+   current stable; move the pin when tooling stops building under the
+   old one, or on a planned cadence. A bump must pass the full gate
+   before landing: `cargo fmt --all --check`, BOTH STM32 clippy passes
+   (`-D warnings`: f469 default + f746 bitbang), STM32 release build,
+   workspace host tests. (2026-10-12's 1.92→1.99 migration surfaced
+   zero new lints because the gate ran first.)
+2. **Nightly-class only under a hard upstream constraint** — esp-idf's
+   std story (see below). Since 2026-10-12 there are ZERO upstream
+   nightlies in the fleet: both esp32 targets ride the pinned fork.
+   Never a floating nightly or an unpinned espup (the `-v 1.98.1.0`
+   pin is as load-bearing as the crosstool `-c` pin).
+
+   Why a nightly-CLASS compiler is structural for esp-idf targets
+   (bench-verified 2026-10-12 — this recurs, don't re-derive):
+   `*-espidf` std links against ESP-IDF's newlib libc, which only
+   exists inside an IDF build tree, so no stable-channel std exists
+   (`rustup target add` has nothing to offer; the fork's rustlib
+   carries only host+src — everything build-stds). Std comes either
+   from `-Z build-std` (unstable) or Espressif's precompiled std for
+   their fork — a nightly-derived vendor release. There is no
+   supported upstream-stable path. RESOLUTION (2026-10-12, later the
+   same day): the dated upstream nightly is RETIRED — both esp32
+   targets now ride the PINNED fork (v1.98.1.0 via espup -v), one
+   compiler, same version number as stable. Zero upstream nightlies.
+   Future option if we ever want C3 on true upstream stable: espup's
+   `-b/--stable-version` RISC-V model (stable + espup-installed
+   precompiled std) — requires config restructuring ([unstable]
+   build-std is crate-global) and was not needed for the consolidation.
+3. **Exact version strings everywhere.** `1.99` and `1.99.0` are
+   DISTINCT rustup toolchains. The 2026-10-12 CI outage was exactly
+   this mismatch: main's toml said `1.92.0`, ci.yml's dtolnay pin said
+   `1.92` — the toml override shadowed the action's install with a
+   component-less twin (no cargo-fmt → lint dead; no thumbv7em →
+   builds dead).
+4. **One authority per domain.** Root toml owns host+STM32.
+   build.sh/CI `+toolchain` owns the per-board ESP32 split (env and
+   explicit `+toolchain` beat the toml by design). No per-directory
+   tomls inside `firmware/esp32-ccid/` — a single file cannot express
+   the xtensa/C3 split and would fight build.sh.
+5. **CI tool installs run under the toml's stable** (`cargo install
+   espup ldproxy` …): keep installed tools stable-compatible or pin
+   their versions — the espflash-under-1.92 breakage was this class.
 
 ### Jobs
 
@@ -148,6 +480,32 @@ All jobs check out with `submodules: true` (required — see Gotchas).
 | `stm32-test` | Host-side workspace tests | `cargo test --workspace --target x86_64-unknown-linux-gnu` |
 | `esp32-host-test` | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
 | `iso14443-host-test` | Vendored iso14443 crate tests | `cargo test --features std --target x86_64-unknown-linux-gnu` (from `vendor/iso14443-rs/`) |
+| `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) | `python3 -m pytest tests/hardware/ --collect-only -q` |
+
+**Why `python-collect` exists** (found live 2026-10-11): a duplicate
+`--hil` `addoption` in `labgrid/conftest.py` made every combined-suite
+invocation die with `ValueError` — and module-level pyscard imports plus
+import-time `sys.exit(1)` in collected scripts are the same class.
+`py_compile` (the old stm32-lint step) cannot see any of it; only real
+collection can. The gate runs with pytest + stdlib ONLY, deliberately:
+the documented no-hardware path (`pytest tests/hardware/ -v`, everything
+skips without `--hil`) must collect without any hardware deps. Rule:
+**hardware imports belong inside functions/fixtures, never at module
+scope of a collected file** — a script named `test_*.py` that needs
+pyscard up front uses the `if "pytest" in sys.modules:
+pytest.skip(..., allow_module_level=True)` guard (see
+`tests/hardware/test_ccid_apdu.py`).
+
+Second rule of the same class (found live 2026-10-12): **test modules
+never bare-import their conftest** (`from conftest import ...`). When
+two suite directories are collected together, whichever conftest.py
+claims the bare `conftest` module name first wins and the other suite
+dies with ImportError — empirically both
+`pytest tests/hardware/labgrid/ tests/hardware/nfc/` and the reverse
+order broke collection while the single-dir and full-tree runs passed
+by traversal luck. Shared helpers live in uniquely-named modules:
+`labgrid/bench.py`, `labgrid/hil_helpers.py`, `nfc/cardlib.py` —
+conftests re-import from there, tests import the module directly.
 
 ### stm32-build matrix (4 entries)
 
@@ -337,7 +695,7 @@ If you see an ESP32 boot panic with a stack-overflow backtrace pointing into
 the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
-## Known-Good Bench State (2026-10-09)
+## Known-Good Bench State (2026-10-09, re-verified 2026-10-12)
 
 The per-board verification matrix — run these probes after acquiring a
 place or whenever bench reality is in doubt. **A place you don't hold is
@@ -345,11 +703,13 @@ a board you don't own**: the bench is shared with micronuts/bolty-rs,
 and the m5stick was re-flashed by a micronuts session within ~30 min of
 a release the same day.
 
-| Board | Identity probe (run this) | State 2026-10-10 ~17:3x |
+| Board | Identity probe (run this) | State 2026-10-11 ~22:3x |
 |---|---|---|
-| nucula | RTS-reset, read console: `FWID pn7160-ccid rev=<git>`; then pcscd shows `Nucula CCID` | OURS @main 13b17c8 (5f702e4 re-arm fix flashed by the parallel session ~17:0x); MY 335a404 run: FWID pass, host 47/47+128/128, but **pcscd retention FAILED at T+95 s** — chip died via `rst:0x15 USB_UART_CHIP_RESET` → `boot:0x5` download latch while pcscd held the port (see "Nucula reader-retirement issue" + PR #107 comment 6098890356). Card gate blocked: P71 sits on the ACR1252 coil |
-| m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters | OURS @0365936 re-flashed 2026-10-10 16:33 (bl@0x1000+PT@0x8000+app@0x40000+otadata erase): Escape 0x02 + GetSlotStatus + 0xD0 verified, `GemPCTwin serial` enumerates; **#59 CAP install BLOCKED — bench P71 card physically on the ACR1252 coil** (moved for the 09:10 GPG HIL). Ready-to-fire: `/tmp/opencode/gp59_install.sh` (ISD keys inside); earlier T=1/#101/#89 verifications stand |
-| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working, labgrid HIL 7/7 (now under the #65 place framework) |
+| **IDF 5.5.5 unification (2026-10-12, branch `sisyphus/idf-555-unify` @91653fc)** — all three ESP-IDF repos (ccid/bolty/micronuts) bumped v5.5.1/v5.2.4→v5.5.5, crosstool `esp-14.2.0_20260121` on bench+CI, embuild 0.33.5, vendored-hal sd.rs backport (upstream 0.47.0 fix, field added in 5.5.5). Bench-verified: m5stick conformance battery (fuzz 87/0 wedges, pcscd restart 10/10, soak 1000/1000) + card-level differential FULL PASS (ATR/AID/APDU + ACR1252 agreement); nucula D1 coredump round-trip + fuzz 87/0 + soak 998/1000 + broker serving; stm32 HIL 7/7. **Hardware scorecard @67bcfbc (one-Rust-version toolchain, 2026-10-12 close):** nucula C3 — fork v1.98.1.0 image flashed, wire-silence PASS, D1 coredump PASS, broker serving through /opt/bench copy (service ExecStart moved out of the checkout after a sibling tree-loss crash-looped it 1500+ times); STM32 — HIL 7/7 (stable 1.99.0, no IDF); m5stick — fork image flashed, Escape 0x02 identity PASS, conformance battery in flight (log: /tmp/opencode/idf555/battery-final.log). **One open 5.5.5 item**: `log_shim` post-claim ring drain delivers nothing on the wire (bench-reproduced: serve loop + framing + D1 all fine, log lines never drain — suspect the 5.5.2 USJ-console tx changes) — **RESOLVED-BY-RETIREMENT the same day (#131)**: the shim was deleted, the ceiling moved before the driver claim, and `test_wire_silence_after_banner` now locks the clean wire. esp-idf-svc stays 0.52.1 (0.53.0 = hal 0.47/sys 0.38 generation, conflicts with the vendored legacy-I2C hal — follow-up lane). | | |
+| nucula | pcscd: `Nucula CCID 00 00/01 00` via the PTY broker (`systemctl status nucula-ccid-broker`, journal = wire tap); identity probe: connect → ATR `3B 85 80 01 80 73 C8 21 10 0E` → SELECT ISD `9000` | OURS @3c74d74-era flashed 2026-10-11 ~23:0x (PT@0x8000 + app@0x40000): **pcscd WORKS through `host-tools/nucula-ccid-broker.py`** (PTY relay defeats the rst:0x15 wall — direct CDC opens still chip-reset, safe opener only). Broker = systemd service, symlink `/dev/nucula-ccid` gated on serving. Bench-verified 2026-10-11: 8/8 connect+ATR+SELECT sessions, >5.5 min stable enumeration, PTY GSS RTT 0.72 ms p50 (direct floor 0.20 ms). **Known gaps**: (1) after a host IccPowerOff the re-arm probe is rejected NCI `DISCOVERY_ALREADY_STARTED` (0xA0) and the HALTed card never re-activates (#125 hardware gap) — the broker's `POWER_OFF_SHIM=1` answers power-offs locally until fixed; (2) GP CAP installs fail at the first T=1 INSTALL (card answers `9100`, gp retries into comm error — m5stick-class T=1/CAP limitation). reader.conf `nucula-broker` DISABLED when idle (`mv` to re-enable + `flock /run/lock/bench-pcscd.lock systemctl restart pcscd`). Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
+| m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters; Escape 0xD2 → turnaround split + exchange decomposition (issue #120, 32-byte LE: last/max turnaround µs, last/max card-exchange µs, blocks/wtx/recoveries/max_transceive_us; probe: `tests/hardware/nfc/turnaround_probe.py`); Escape 0xD3 [D3,N] → I2C poll-cadence probe (total µs for N ComIrqReg reads + configured FWT) | OURS @e473682-era flashed 2026-10-11 ~23:1x (bl@0x1000+PT@0x8000+app@0x40000): **P71 BACK ON COIL, 0xD2 32B + 0xD3 live, bSeq fix landed** (XfrBlock DataBlock answers now echo bSeq, CCID §6.2-1 — pcscd tolerated the old seq=0, strict parsers didn't). **#120 CLOSED as card-bound**: minimal card answer 18–25 ms (P71 FWI=9, fwt=164 ms — the card advertises up to ~155 ms), reader floor ~3 ms (8 I2C ops × 277 µs legacy-driver cadence, 0xD3-proven); single block, wtx=0, rec=0 always — transport exonerated. **CAP install (#59/#101) root-caused by PTY wire tap** (`tap.py` pattern, /tmp/opencode/tap.log): gp dies at the first chained I-block (INSTALL[FOR LOAD] 33 B > ifsc=32) because the serve loop BLOCKS in card exchanges, host retries arrive at a blocked loop, the reader's echo comes back TRUNCATED (UART RX loss) and the T=1 state desyncs into dead air (see #101 comment 2026-10-11; libccid serial timeout is 3 s — BWT was never the killer; after one WTX pcscd's t1->wtx persists → lost response = infinite hang). Fix = serve-loop RX hardening + retry-idempotent t1 endpoint — NOT latency. At ~30 ms/APDU a 470-block upload ≈ 15–20 s card time — fits the 10-min budget once the relay stops dying |
+| STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7. **2026-10-12: T=1 relay hardening landed** (#132 fix — BWT-derived first-byte wait, honest-error contract, pre-read drain, ORE hygiene; root cause `docs/t1_relay_132_rootcause.md`; suite 14+1 green + fidelity hammer 0 anomalies vs 54 pre-fix; definitive card-50942720 gp proof pending its move into our slot). **Bench lesson**: INIT_UPDATE hammering locked the SmartPGP card's ISD management state (69FF on SC-class commands, survives power cycle; applet unaffected — #127) — NEVER hammer SC-class commands (INIT_UPDATE/EXT_AUTH/GET DATA 00E0); fidelity hammers use SELECT+CPLC only. |
+| STM32 F746 | NOT ON USB (no second 0483 device ever appeared 2026-10-11 session; **bring-up needs the physical USB plug**) | PREP COMPLETE 2026-10-11: bench-distinct iSerial `ST2XXX-F746` landed (commit 0af0fb0, cfg-gated on `stm32f746`+Cherry — F469 keeps `ST2XXX-001`; the reference files constrain no iSerial, CherrySmartTerminalST2XXX.txt has no serial field); release binary cached at `/tmp/opencode/ccid-firmware-f746.bin` (both clippy passes + 562 host tests green). NEXT: plug USB → flash via probe-rs (chip STM32F746xx) or st-flash → verify pcscd shows BOTH Cherrys distinctly (iSerial ST2XXX-001 + ST2XXX-F746) → add labgrid place `stm32-f746` to `exporter-ai-legion-nfc.yaml` (match `ID_SERIAL_SHORT=ST2XXX-F746`) + environment.yaml + exporter restart per doctrine → T=1 card check per CHANGELOG [0.1.1] (bitbang TPDU pipe, 74.4 ms RTT class) |
 | ACR1252 ref | pcscd ATR | P71 card activates fine (reference oracle) |
 
 **Why the m5stick has no FWID probe**: the UART main applies the
@@ -357,6 +717,22 @@ clean-wire log ceiling BEFORE its FWID log line — identity on the CCID
 wire must be ON-DEMAND (the Escape 0x02 string is today's identity;
 folding the git rev into it is the tracked improvement). Never put an
 unsolicited FWID on the UART0 wire — libccidtwin is strict.
+
+**2026-10-12 session verification (post-migration)**: bench_inventory
+all-green; all five project readers serve pcscd SIMULTANEOUSLY
+(GemPCTwin serial, Nucula CCID via broker, CardMan 3121, Cherry
+ST2XXX-001, ACR1252 PICC+SAM — NR7101 canary intact after every
+restart); labgrid suite `pytest tests/hardware/labgrid/ -v --hil
+--firmware-bin=<fresh build>` = 14 passed + 1 xfailed (STM32 st-flash
+reflash + re-enumeration included); differential 12 passed / 4
+card-gated skips. Bench card/GP inventory + key state: issue #127 —
+AUTH triple verified on the ACR1252 card (full install→use→uninstall
+lifecycle proven with TeapotApplet, SmartPGP fixture preserved); three
+cards carry unknown pre-personalized ISD keys (retry budgets: OmniKey
+3, Cherry 2, m5stick 2 of ~5-15 — no blind retries). Nucula
+direct-serial gaps encoded as the exact-set xfail `NUCULA_KNOWN_GAPS`
+(#128). `nucula-broker` reader.conf left ENABLED (serving state) —
+disable when idle per the nucula row above.
 
 ### Recovery events (2026-10-09, all resolved)
 
@@ -445,6 +821,141 @@ unsolicited FWID on the UART0 wire — libccidtwin is strict.
    - The bench NFC card is **P71D321 silicon** (CPLC `ICType=D321`,
      fabricator 4790=NXP) — "J3R180" is NXP's JCOP4 R-series PRODUCT
      name on that silicon.
+
+### Codex review feedback — ALWAYS check before/during/after PR work
+
+Every PR on this repo gets an automated Codex-bot review (user
+`chatgpt-codex-connector[bot]`) with P1/P2/P3-badged findings. These
+are HIGH-SIGNAL: the 2026-10-11 sweep found **53 items across 13
+merged PRs — 38 had never been addressed**, including real protocol
+bugs (CORE_SET_CONFIG status byte, PCB bit layout, ICC status decode)
+that host tests missed because the mocks modeled the wrong behavior.
+
+**The rules:**
+1. **Before opening a PR**: read the Codex feedback on the last 3-5
+   merged PRs touching the same area — patterns repeat.
+2. **After a PR merges**: check its Codex comments within the same
+   session. Reply to each finding with what was done or why it was
+   skipped (commit hash or rationale) — the reply IS the audit trail.
+3. **When picking up work in an area**: grep the tracking issues
+   (#112/#113/#114 and successors) for backlog items in that area
+   before writing new code — don't duplicate or contradict.
+4. **The triage file** `docs/CODEX_PR_FEEDBACK_TRIAGE.md` is the
+   canonical sweep output; re-run the sweep when it goes stale.
+
+**How to sweep** (from the 2026-10-11 session):
+```bash
+# 1. Dump all Codex comments from merged PRs
+for pr in $(gh pr list --state merged --json number --jq '.[].number'); do
+  gh api repos/Amperstrand/ccid-firmware-rs/pulls/$pr/comments \
+    --jq '.[] | select(.user.login | test("codex")) | .body' > /tmp/pr-sweep/$pr.txt
+done
+
+# 2. Read each file, verify against the tree (NOT keyword-grep — read
+#    the flagged code), classify ADDRESSED/UNADDRESSED with evidence
+
+# 3. Reply on each PR + create tracking issues for remaining items
+```
+
+**Why this matters**: without the check-reply cycle, Codex feedback
+accumulates silently. The P1 findings compound: the ICC-status decode
+bug made the conformance battery's GetSlotStatus cases meaningless
+(absent cards passed, active cards failed) — exactly the kind of
+test-infrastructure rot that wastes bench sessions.
+
+### Review-quality protocol (how to review + be reviewed)
+
+**Reviewing others' work:**
+1. **Read the diff, not the description** — verify every claim the
+   PR/commit makes against the actual code. A commit message saying
+   "fixes X" is a lead, not evidence.
+2. **Run the tests yourself** — `cargo test --workspace --target
+   x86_64-unknown-linux-gnu` from the repo root, plus the esp32 crate.
+   A green CI badge is the floor, not the ceiling.
+3. **Check the spec** — if the change touches protocol behavior (CCID,
+   NCI, ISO 7816, ISO 14443), cite the section. The `// CCID_SPEC:`
+   markers + specquotes.toml enforce this for comments; apply the same
+   standard to code.
+4. **Look for the second-order effects**: does this change break the
+   conformance battery? The perf baseline? The clean-wire rule? Check
+   `docs/PERF_AND_DRY_STRATEGY.md` for cross-cutting invariants.
+5. **Review the tests too** — a new feature without a regression test
+   is half-done; a test that asserts the bug (not the fix) is worse
+   than no test.
+6. **Size matters**: >300-line diffs get a second pass. If you can't
+   hold the whole change in your head, split the review.
+
+**Being reviewed (Codex or human):**
+- Every finding gets a REPLY — done (commit hash) or skipped (reason).
+  The reply IS the audit trail; silence = the finding compounds.
+
+**Issue truth (2026-10-11 lesson, #110):** issues lag reality — 3 of 5
+items in #110 were already fixed when picked up, wasting triage time
+and risking duplicate fixes. Rules: (1) before working an issue,
+re-verify each item against the tree (`git log -- <file>`) — an issue
+body is a lead, not evidence; (2) when a PR/commit fixes an issue item,
+cross-reference it on the issue in the SAME session (check off the
+checklist line or comment the commit hash) so the next session starts
+from truth; (3) write issue bodies as checklists (`- [ ]`) so partial
+completion is visible at a glance.
+- P1 findings get fixed before merge when possible; if deferred, a
+  tracking issue MUST be created in the same session.
+- Mock-only fixes don't count until verified against the hardware —
+  the "mock/hardware divergence" class is this repo's #1 bug source
+  (see the Session Lessons section).
+
+### Testing through labgrid (how hardware verification works)
+
+**The five places own the hardware.** Any test that touches a physical
+device (flashing, pcscd enumeration, ATR capture, APDU relay, GPG
+flows) must acquire the device's labgrid place first:
+
+```bash
+labgrid-client -p stm32-ccid acquire    # or nucula-c3, m5stick, ref-acr1252
+# ... your hardware work ...
+labgrid-client -p stm32-ccid release
+```
+
+**What each place provides:**
+
+| Place | Device | Test path |
+|---|---|---|
+| `stm32-ccid` | F469-DISCO contact DUT | `pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` (7 tests: USB enum, pcscd, ATR, APDU relay ×2, pinpad, escape 0xD0) |
+| `nucula-c3` | ESP32-C3 + PN7160 DUT | `pytest tests/hardware/nucula/test_nucula.py -v --hil` (responsive, wallet boots, I2C scan, fw ACKs, NCI init, sustained) |
+| `m5stick` | M5Stack MFRC522 DUT | via the differential/battery suites |
+| `ref-acr1252` | ACR1252 reference NFC | differential oracle (`tests/hardware/nfc/`) |
+| `ref-cardman` | CardMan 3121 reference contact | perf baseline |
+
+**The test pyramid (bottom to top):**
+1. **Host tests** (no hardware): `cargo test --workspace --target
+   x86_64-unknown-linux-gnu` — run from repo root, every commit.
+2. **Conformance battery** (no card): `python3
+   tests/hardware/nfc/conformance_battery.py` — framing fuzz, GetSlotStatus
+   soak, pcscd restart resilience. Run per firmware flash.
+3. **Card-level differential** (card on coil): `pytest
+   tests/hardware/nfc/test_differential.py -v --hil` — same card through
+   every reader, ATR + AID + read-only APDU agreement.
+4. **GPG HIL** (OpenPGP card on coil): `pytest
+   tests/hardware/nfc/test_gpg.py -v --hil` — enumerate → AID SELECT →
+   `gpg --card-status` per reader.
+5. **Performance benchmark**: `python3
+   tests/hardware/perf/benchmark_readers.py -n 300` — percentile latency
+   per reader; run before/after any perf-touching change.
+
+**Bench coordination rules:**
+- **One hardware holder at a time** — acquire the place or don't touch
+  the device. Concurrent sessions race ports and corrupt each other's
+  results (paid for repeatedly, see Session Lessons).
+- **pcscd serialization** — any pcscd stop/start must go through
+  `flock /run/lock/bench-pcscd.lock`; the conformance battery stops
+  pcscd, so no other test can hold it during a battery run.
+- **Cards move** — verify coupling (`present` flag via Escape 0xD0)
+  before any card-level conclusion; a cardless reader on a known-good
+  build after a hard reset is a PHYSICAL issue, not firmware.
+- **Clean-wire is inviolable** — no unsolicited log output on the CCID
+  wire; diagnostics go through Escape 0xD0/0xD1 or a `ble` build.
+- **Verify what booted** — every flash must be proven via FWID marker
+  or boot behavior, never trusted from the flash log alone.
 
 ### Working-tree coordination
 
@@ -539,22 +1050,26 @@ drains fast enough not to need it.
 
 ### espup crosstool pin (CI, 2026-10-09)
 
-CI pins `espup install -c 14.2.0_20241119` (the GCC IDF v5.5.1's
-`tool_version_check` accepts). espup defaults to the LATEST crosstool
+CI pins `espup install -c 14.2.0_20260121` (the crosstool build IDF
+v5.5.5's `tool_version_check` accepts — the check matches the FULL
+crosstool-NG build string from `gcc --version`, so IDF v5.5.2+
+REJECTS the 20241119 build of the very same GCC 14.2.0). espup
+defaults to the LATEST crosstool
 and its bin dir lands ahead of embuild's own copy in PATH — the day's
 `esp-16.2.0_20260914` release failed every xtensa matrix entry at cmake
 configure. The SAME day exposed a second failure mode: the
 espressif-cache restore-key chain fell back across toolchain
 generations and restored v5.2-era `esp-13.2.0` embuild tools against
 IDF v5.5.1 — the red run then SAVED that poison under a fresh exact
-key. The cache key/restore-keys now carry a generation prefix (`v6`)
+key. The cache key/restore-keys now carry a generation prefix (`v7`,
+the IDF v5.5.5 generation)
 that only falls back within the current generation; **bump it whenever
 the toolchain/IDF world moves** (ci.yml carries the same note).
-**Bench landmine**: this machine's espup crosstool is
-`esp-15.2.0_20250920` and works only because the bench's cmake
-configure is cache-stamped; a FRESH bench configure (stamp loss, new
-checkout) would fail the same check — pin the bench espup too if it
-bites. Also: pushes touching `.github/workflows/` must go over SSH
+**Bench**: espup re-pinned to `esp-14.2.0_20260121` on 2026-10-12
+(the v5.5.5 unification) — bench and CI now match. Historical note:
+before that the bench ran `esp-15.2.0_20250920`, which only passed
+because the cmake configure was cache-stamped (a fresh configure
+would have failed the tool_version_check). Also: pushes touching `.github/workflows/` must go over SSH
 (`git push git@github.com:…`) — the OAuth tokens here lack the
 `workflow` scope.
 
@@ -768,6 +1283,17 @@ answered "no response" on every case until RTS-pulse-recovered —
 pre-open dtr/rts deassert in the battery's `Reader` is the tracked
 hardening item alongside PR #107.
 
+### pcscd over Bluetooth (m5stick, 2026-10-11 — bench-verified)
+
+The `m5stick-spp` board (build.sh entry, sdkconfig-xtensa-spp.full) serves
+the SAME GemPC CCID protocol over BT-Classic SPP instead of UART0. Host:
+`rfcomm bind 0 4C:75:25:CB:92:9E 1` + reader.conf `DEVICENAME
+/dev/rfcomm0:GemPCTwin` — pcscd enumerates `GemPC Twin BT (m5stick)`,
+card-level verified (ATR + APDU, 30/30 soak, p50 48ms/APDU). Recipe in
+firmware/esp32-ccid/README.md; bench conf archived at
+/root/reader-conf-backup/m5stick-spp.bench. NOTE: this board flashes the
+ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
+
 ### Debug-channel matrix (per board)
 
 | Board | CCID wire | Debug channel |
@@ -775,7 +1301,7 @@ hardening item alongside PR #107.
 | STM32F469/F746 | USB CCID | defmt + RTT via probe-rs (separate from USB) |
 | M5Stick/M5Atom (standard) | UART0 | console NONE by default; netlog (UDP :4567) with WiFi creds |
 | M5Stick/M5Atom (`ble` build, experimental) | UART0 | BLE NUS notifications (`m5stick-ble`) |
-| nucula standard | USB-CDC | console on the same CDC (parser tolerates log noise) |
+| nucula standard | USB-CDC | clean-wire (#131): boot banner only, then framed CCID only — diagnostics via Escape 0xD0/0xD1, coredumps, or actdiag/ble/netlog builds |
 | nucula (`ble` build) | USB-CDC | blocked — no `c3-ccid-ble` board until the C3 adv quirk is root-caused |
 
 ## Labgrid Bench Doctrine (ai-legion NFC/CCID testbed, 2026-10-09)
@@ -830,6 +1356,83 @@ labgrid build only supports STRING udev matches
 `/dev/serial/by-id/` paths contain colons (MAC bytes). Use the resolved
 `/dev/ttyACM0`-style path (see /etc/reader.conf.d/nucula-ccid).
 
+## ai-legion Host Hygiene (issue #108)
+
+Two standing rules from the 2026-10-10 disk-full incident. The disk
+filled to 78G+ on `/root/.cargo-target` while several worktrees held
+unpushed fix branches that existed nowhere else.
+
+### 1. Shared CARGO_TARGET_DIR: prune on a cadence
+
+`/root/.cargo/config.toml` pins `target-dir = /root/.cargo-target` for
+**every cargo project on the host** (this repo's runbook pattern, and
+the root of several build gotchas above). Nothing evicts from it
+automatically — without a pruning cadence it only grows.
+
+Measured 2026-10-11 (79G total): `debug/` 42G (19G deps + 17G
+incremental), `x86_64-unknown-linux-gnu/` 20G (host test artifacts),
+`release/` 4.2G, `.embuild/espressif` 11G (tools 6.7G + IDF copies +
+1.1G dist tarballs).
+
+**Safe-to-prune (owner-executed; nothing here is unique):**
+
+| Path | Size | Why |
+|---|---|---|
+| `debug/incremental/` | 17G | always regenerated; delete freely |
+| `.embuild/espressif/dist/` | 1.1G | toolchain tarballs, re-downloadable |
+| `.embuild/espressif/esp-idf/v5.2.3/` | 546M | stale — manifest pins v5.5.5 (v5.5.1 clones are also prunable post-migration) |
+| `x86_64-unknown-linux-gnu/` + `release/` | ~24G | rebuildable; `cargo sweep --time 30` trims by mtime |
+| other projects' binaries (`cln-*`, `cashud`, `decode-vls`, ...) | varies | the dir is HOST-WIDE — coordinate with those lanes before bulk deletion |
+
+**Keep:** the top-level cached bench binaries (`esp32-ccid-m5stick.bin`
+etc. — the m5stick recovery image), `.embuild/espressif/tools/` (the
+actual toolchains; re-downloadable but a 10+ min stall mid-session),
+`esp-idf/v5.5.5` (current pin), and the riscv/xtensa esp-idf-sys build
+dirs while `/root/src/ccid-firmware-rs` (the checkout they cache-stamp
+against) is live.
+
+`cargo-sweep` 0.8.0 is installed (`/root/.cargo/bin/cargo-sweep`).
+Cadence: run `cargo sweep --time 30` from the workspace root monthly or
+at any disk-pressure signal; a full `rm -rf /root/.cargo-target/debug/
+incremental` is safe any time no build is running. NOTE: `cargo sweep
+--time` works per target dir, so run it once from this repo AND once
+from the other active checkouts (their artifacts share the dir).
+
+**The audit is code, not prose** (2026-10-11): run
+`python3 scripts/host_hygiene.py` for the one-shot report —
+disk pressure (85% warn / 90% action), prunable candidates vs the
+manifest IDF pin, and the worktree-farm unpushed-work classification.
+Read-only by design (pruning is owner-executed); `--json` for tooling,
+exit 1 only when something needs action NOW (unpushed work, disk ≥90%).
+`bench_inventory.py` additionally carries the disk-pressure check
+(85%/90%) so the daily bench health run surfaces it.
+
+Repo-side: `.gitignore` already covers `/target/` + `**/target/` and
+`.cargo/config.toml` sets no target-dir — the pin lives host-level in
+`/root/.cargo/config.toml` and is deliberately NOT tracked here.
+
+### 2. Worktree farm: close lanes by pushing, then removing
+
+ccid sessions spawn parallel worktrees under `/tmp/opencode` (39 dirs
+at the 2026-10-11 survey). Unpushed branches in scratch worktrees are
+**fixes that exist only on this disk** — the 2026-10-10 audit found
+five (stm32-perf-fix, nucula-rearm-fix, sisyphus/ccid-49-50,
+sisyphus/presence-ttl, sisyphus/pn7160-drvab) sitting unpushed for
+days. The pattern recurred on 2026-10-11 (`triage-refresh` held one
+unpushed docs commit).
+
+**Rule — at lane close, in order:**
+
+```bash
+git -C <worktree> push origin <branch>   # every branch that carries work
+git worktree remove <worktree>           # then the worktree itself
+git branch -d <merged-branch>            # labels already on origin/main
+```
+
+Before any disk cleanup that touches `/tmp/opencode`, audit for
+unpushed work: for each worktree, `git log origin/main..<branch>` must
+be empty (or the branch pushed) before that worktree is deletable.
+
 ## Session Lessons: PN7160 Card Path + Reader Fuzzing (2026-10-09)
 
 ### Mock/hardware divergence — the #1 firmware-bug class this week
@@ -840,12 +1443,20 @@ hardware starved. **Rule: mocks must model the transport's filtering
 semantics, not just the happy reply queue.** When hardware fails where
 the mock passes, diff the transport contract first.
 
-### The wallet firmware is a reference, not a gospel
-Its TOTAL_DURATION SET_CONFIG TLV is malformed (missing LEN octet,
-plen=5 for a 4-byte param body → NFCC answers num_applied=0). Harmless
-for its LISTEN mode, fatal for reader mode (single-shot discovery).
-Byte-copying wallet sequences requires validating the RSP payload, not
-just the transport status: check `num_applied` on every SET_CONFIG.
+### The wallet firmware's TLVs were RIGHT; our "fix" was wrong (corrected 2026-10-11)
+> **This lesson previously said the wallet's TOTAL_DURATION TLV was
+> malformed (missing LEN octet). That was OUR misreading, not the
+> wallet's bug — kept here because the correction is the doctrine's
+> founding incident (see "Reference-First Doctrine").**
+The wallet's plen=5 payload `[num=1][id=0x00][len=2][val=FE 01]` is a
+VALID NCI CORE_SET_CONFIG TLV: param IDs are ONE octet (kernel
+`struct set_config_param { __u8 id; __u8 len; ... }`,
+NXP `NCI_PARAM_ID_TOTAL_DURATION 0x00`). An earlier session read it
+under a two-octet-id assumption, called it malformed, and "fixed" it
+into a 6-byte TLV with a trailing garbage octet — the chip rejected
+it (num_applied=0) for weeks while the pre-ed0ed5e parser masked the
+rejection. The corrected bytes (wallet-verbatim) apply cleanly:
+RSP `[status=OK, 0 failed params]`, bench-validated 2026-10-11.
 
 ### Edge-triggered discovery NTFs — SUPERSEDED by the auto-activation model (2026-10-10, #88)
 The "one RF_DISCOVER_NTF per ARRIVAL" model was wrong for the bench card
@@ -867,7 +1478,7 @@ RF_INTF_ACTIVATED instead of RF_DISCOVER. Correct model, now in the driver:
   (~TOTAL_DURATION after discovery start) — anything reading earlier sees
   nothing; don't "fix" the wait.
 
-### Main-loop logging dies after the USB-CDC driver claim — FIXED by `log_shim` (issue #91, bench-verified 2026-10-09)
+### Main-loop logging dies after the USB-CDC driver claim — was "fixed" by `log_shim` (#91) — RETIRED 2026-10-12 (#131)
 esp-idf logs flow until `UsbSerialDriver::new` takes the peripheral;
 after that the CCID serving loop's log output silently drops. **Fix
 (bench-verified)**: `log_shim::install()` after the claim routes logs
@@ -1580,8 +2191,8 @@ same HAL fork) and the wider Amperstrand STM32 ecosystem.
 | Diagnostics | `crates/ccid-core/src/diagnostics.rs` | Runtime counter struct (apdu_tx/rx, nak, error, reinit, card_present, uptime). 28-byte LE serialization. 12 tests (incl. byte-exact golden ported from amp-diagnostics before archival). |
 | SmartcardConfig | `firmware/ccid-firmware/src/smartcard_common.rs` | Replaces 10 hardcoded `const SC_*` with a configurable struct. Values unchanged. |
 | Self-Healing | `firmware/ccid-firmware/src/main.rs` (SmartcardWrapper), `firmware/esp32-ccid/src/mfrc522_driver.rs` | Re-init peripheral after 3 consecutive failures. `reinit_count` tracked. |
-| Escape 0xD0 | `firmware/ccid-firmware/src/ccid_core.rs`, `firmware/esp32-ccid/src/ccid_handler.rs` | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |
-| HIL Harness | `tests/hardware/labgrid/` | Pytest SSH-based HIL tests. 6 tests: USB enum, pcscd, ATR, APDU relay, pinpad. |
+| Escape 0xD0 | `crates/ccid-core/src/handler.rs` (shared dispatch), fed by `firmware/ccid-firmware/src/ccid_core.rs` + `firmware/esp32-ccid/src/ccid_handler.rs` (thin wrapper) | Vendor-neutral CCID Escape diagnostic query. Payload `[0xD0]` → 28-byte Diagnostics struct. |
+| HIL Harness | `tests/hardware/labgrid/` | Labgrid-native local HIL suite (2026-10-09 migration removed the old SSH style): bench flock + place acquire + identity probes + per-place suites. |
 
 ### SmartcardDriver Trait
 
@@ -1593,14 +2204,19 @@ SmartcardWrapper (F469) overrides to return `reinit_count` + `card_present`.
 `firmware/esp32-ccid/src/nfc.rs` — added default `fn reinit_count()` method.
 MFRC522 driver overrides to return actual count.
 
-### HIL Testbed
+### HIL Testbed (local labgrid — SSH HIL retired 2026-10-09)
 
-The STM32F469I-DISCO on `192.168.13.208` is managed via labgrid (coordinator on
-`.221:20408`). Security: ufw active (SSH + labgrid from `.221` only), SSH key-only.
+The bench is the local host (ai-legion, 192.168.13.208): all five devices
+(stm32-ccid, nucula-c3, m5stick, ref-acr1252, ref-cardman) hang off it and
+tests run ON it as local subprocesses through labgrid places. There is no
+SSH anywhere in the harness; the old `--ssh-host` remote-HIL style and the
+`exporter-208.yaml` remote-rig config were removed in the 2026-10-09
+labgrid migration. See "Labgrid Bench Doctrine" + "Testing through labgrid"
+above, and `tests/hardware/labgrid/README.md`.
 
-Run HIL tests:
+Run HIL tests (bench host):
 ```bash
-pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil --ssh-host=192.168.13.208
+pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil
 ```
 
 ### libccid Configuration

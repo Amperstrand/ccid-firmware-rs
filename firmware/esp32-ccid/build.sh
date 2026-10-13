@@ -41,7 +41,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|m5stick|m5stick-ble|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|m5stick|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
@@ -54,6 +54,11 @@ Boards:
                notifications (sdkconfig-xtensa-ble.full, +ble feature),
                UART0 carries CCID only. Capture:
                tests/hardware/ble/ble_log_capture.py
+  m5stick-spp  as m5stick + pcscd over Bluetooth Classic SPP: RFCOMM replaces
+               UART0 as the GemPC CCID wire, console/logs move to UART0
+               (sdkconfig-xtensa-spp.full, +spp feature). Host side:
+               rfcomm watch -> /dev/rfcomm0 + reader.conf.rfcomm
+               (README "pcscd over Bluetooth SPP"). Classic BT = ESP32 only.
   m5atom       ESP32 M5Stack Atom, MFRC522 CCID (as m5stick, default features)
 
 Note: there is no c3-ccid-ble yet — the C3 controller rejects LE Set
@@ -108,7 +113,7 @@ done
 
 case "${BOARD}" in
     c3)
-        TOOLCHAIN="nightly-2026-09-29"  # pinned: 2026-10-09 nightly ICEs on esp-idf-svc (see ci.yml)
+        TOOLCHAIN="esp"  # pinned esp fork v1.98.1.0 (espup -v). NOT v1.99.0.0: its rust-src/libc pairing breaks -Zbuild-std on espidf (libc AT_FDCWD, rustix#1652 / rust-lang#160170). Retires the dated upstream nightly
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
@@ -119,7 +124,7 @@ case "${BOARD}" in
         FLASH_BAUD="460800"
         ;;
     c3-ccid)
-        TOOLCHAIN="nightly-2026-09-29"  # pinned: 2026-10-09 nightly ICEs on esp-idf-svc (see ci.yml)
+        TOOLCHAIN="esp"  # pinned esp fork v1.98.1.0 (espup -v). NOT v1.99.0.0: its rust-src/libc pairing breaks -Zbuild-std on espidf (libc AT_FDCWD, rustix#1652 / rust-lang#160170). Retires the dated upstream nightly
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
@@ -128,6 +133,43 @@ case "${BOARD}" in
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
+        ;;
+    wifi-ccid)
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula")
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
+    wifi-vpcd)
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula")
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
+    m5stick-vpcd)
+        # m5stick + MFRC522 (Grove I2C) running the vpcd reversed-connection
+        # firmware — the computer-USB-power proof: no wall adapter involved.
+        # Console returns to UART0 (the USB bridge): the CCID serial wire is
+        # unused by vpcd, and netlog keeps carrying the same lines over UDP.
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa-vpcd.full"
+        TRIPLE="xtensa-esp32-espidf"
+        PROFILE="release"
+        RELEASE_ARGS=(--release)
+        FEATURE_ARGS=(--no-default-features --features wifi-vpcd,backend-mfrc522,board-m5stick)
+        CHIP="esp32"
+        FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
+        FLASH_BAUD="115200"
         ;;
     m5stick)
         TOOLCHAIN="esp"
@@ -151,6 +193,17 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
         ;;
+    m5stick-spp)
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa-spp.full"
+        TRIPLE="xtensa-esp32-espidf"
+        PROFILE="release"
+        RELEASE_ARGS=(--release)
+        FEATURE_ARGS=(--no-default-features --features backend-mfrc522,board-m5stick,spp)
+        CHIP="esp32"
+        FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
+        FLASH_BAUD="115200"
+        ;;
     m5atom)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa.full"
@@ -163,7 +216,7 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, m5stick, m5stick-ble, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, m5stick, m5stick-ble, m5stick-spp, or m5atom)" >&2
         exit 1
         ;;
 esac
@@ -213,7 +266,23 @@ fi
 # c3-ccid vs c3-ccid-ble, m5stick vs m5atom) share one esp-idf-sys cmake
 # cache; a per-board stamp would let e.g. a non-BT cache silently serve a
 # `-ble` build after switching boards (issue #66 pairing rule).
+#
+# The stamp ALSO records the manifest's esp_idf_version (Codex #85 P1,
+# issue #112): cmake caches the IDF checkout identity too, so bumping
+# [package.metadata.esp-idf-sys] esp_idf_version in Cargo.toml with an
+# unchanged sdkconfig needs the same cache drop — previously that case
+# silently kept building the OLD ESP-IDF until a manual cargo clean.
+IDF_VER="$(sed -n 's/^[[:space:]]*esp_idf_version[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' "${SCRIPT_DIR}/Cargo.toml" | head -n1)"
+if [ -z "${IDF_VER}" ]; then
+    warn "could not parse esp_idf_version from Cargo.toml — stamping as 'unknown'"
+    IDF_VER="unknown"
+fi
 STAMP="${TARGET_DIR}/sdkconfig.${TRIPLE}.${PROFILE}.stamp"
+# Stamp body = IDF version header + the applied sdkconfig content.
+stamp_body() {
+    printf '# esp_idf_version: %s\n' "${IDF_VER}"
+    cat "${SDKCONFIG}"
+}
 if [ "${DRY_RUN}" -eq 0 ]; then
     STALE=0
     if [ ! -f "${STAMP}" ]; then
@@ -221,7 +290,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
         for cache in "${TARGET_DIR}/${TRIPLE}"/*/build/esp-idf-sys*/out/build/CMakeCache.txt; do
             [ -f "${cache}" ] && STALE=1
         done
-    elif ! cmp -s "${SDKCONFIG}" "${STAMP}"; then
+    elif ! stamp_body | cmp -s - "${STAMP}"; then
         STALE=1
     fi
     if [ "${STALE}" -eq 1 ]; then
@@ -281,7 +350,7 @@ run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
 # provenance is not known to match this sdkconfig.
 if [ "${DRY_RUN}" -eq 0 ]; then
     mkdir -p "${TARGET_DIR}"
-    cp "${SDKCONFIG}" "${STAMP}"
+    stamp_body > "${STAMP}"
 fi
 
 # esptool cannot flash a raw cargo ELF ("will not fit in flash") — convert first.
@@ -292,7 +361,13 @@ if [ -n "${FLASH_PORT}" ]; then
     # #67/#73): a board still carrying a factory/single-app table would
     # otherwise lack the ota slots (and the c3 coredump partition) that this
     # build assumes. Idempotent — safe to reflash every time.
-    PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
+    # Location: inside the esp-idf-sys out dir (esp-idf-sys-<hash>/out/
+    # build/partition_table/) — the hash dir changes with fingerprints, so
+    # resolve by newest match; fall back to the legacy flat path.
+    PART_TABLE="$(ls -t "${TARGET_DIR}/${TRIPLE}"/${PROFILE}/build/esp-idf-sys*/out/build/partition_table/partition-table.bin 2>/dev/null | head -1)"
+    if [ -z "${PART_TABLE}" ]; then
+        PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
+    fi
     # Codex review on #82: writing ota_0 while otadata still points at
     # ota_1 leaves the bootloader on the OLD image after a "successful"
     # flash. Erasing otadata resets boot selection to the first valid

@@ -1,8 +1,10 @@
 //! Bit-bang I2C probe — the wire-level ground-truth instrument for the
 //! #63/#80 mystery. Drives START + 0x28-write + STOP with raw GPIO
 //! open-drain bit-banging (no I2C peripheral, no driver), samples the
-//! ACK bit, and also reports idle line levels. Run BEFORE any driver
-//! claims the bus. Outcomes:
+//! ACK bit, and also reports idle line levels. The PN7160 is woken with
+//! a VEN cycle first (a powered-down chip NAKs everything — the probe
+//! would be meaningless on a cold boot). Run BEFORE any driver claims
+//! the bus. Outcomes:
 //!   idle SDA/SCL both high + bit-bang ACK  → chip reachable; BOTH hw
 //!     drivers misdrive the bus in this binary → driver/peripheral layer
 //!   idle lines low                         → bus held (parasite)
@@ -13,6 +15,7 @@ use esp_idf_hal::peripherals::Peripherals;
 
 const SDA: i32 = 4;
 const SCL: i32 = 5;
+const VEN: i32 = 7;
 
 const HALF_US: u32 = 5; // 100 kHz
 
@@ -27,10 +30,12 @@ fn gpio_output_od(pin: i32) {
     }
 }
 
-fn sda(v: i32) {
+// esp_idf_sys: gpio_set_level(gpio_num_t = c_int, level: u32) — pin ids
+// are i32 (matches gpio_num_t), drive levels are u32.
+fn sda(v: u32) {
     unsafe { esp_idf_sys::gpio_set_level(SDA, v) };
 }
-fn scl(v: i32) {
+fn scl(v: u32) {
     unsafe { esp_idf_sys::gpio_set_level(SCL, v) };
 }
 fn read_sda() -> i32 {
@@ -43,10 +48,51 @@ fn half() {
     unsafe { esp_idf_sys::esp_rom_delay_us(HALF_US) };
 }
 
+/// Release SCL and wait for the line to actually rise before sampling:
+/// a slave may stretch the clock by holding SCL low (I2C-bus spec,
+/// UM10204 §3.1.9 "clock synchronization"). Open-drain means scl(1)
+/// only releases the line — the rise must be observed, not assumed.
+/// Bounded (~64 half-periods ≈ 320 µs at 100 kHz) so a stuck line
+/// reports as NAK + a log line instead of hanging the probe (Codex #85,
+/// issue #112).
+fn scl_high_bounded() -> bool {
+    scl(1);
+    for _ in 0..64 {
+        if read_scl() == 1 {
+            return true;
+        }
+        half();
+    }
+    log::warn!("bitbang: SCL stretched/stuck low — treating as NAK");
+    false
+}
+
+/// VEN wake sequence before any probing: on cold boot the PN7160 sits in
+/// power-down and NAKs every address, which would make the probe's
+/// verdict meaningless (Codex #85, issue #112). Same raw sequence as
+/// pn7160_v10raw (nci.c:77-86): high 10 ms, low 50 ms, high 50 ms.
+fn ven_wake() {
+    let mut ven_cfg: esp_idf_sys::gpio_config_t = unsafe { core::mem::zeroed() };
+    ven_cfg.pin_bit_mask = 1u64 << VEN;
+    ven_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT;
+    unsafe {
+        esp_idf_sys::gpio_config(&ven_cfg);
+        esp_idf_sys::gpio_set_level(VEN, 1);
+        esp_idf_sys::esp_rom_delay_us(10_000);
+        esp_idf_sys::gpio_set_level(VEN, 0);
+        esp_idf_sys::esp_rom_delay_us(50_000);
+        esp_idf_sys::gpio_set_level(VEN, 1);
+        esp_idf_sys::esp_rom_delay_us(50_000);
+    }
+    log::warn!("bitbang: VEN cycled — chip out of power-down");
+}
+
 fn bitbang_probe(addr7: u8) -> bool {
     // idle
     sda(1);
-    scl(1);
+    if !scl_high_bounded() {
+        return false;
+    }
     half();
     half();
     // START: SDA falls while SCL high
@@ -57,17 +103,22 @@ fn bitbang_probe(addr7: u8) -> bool {
     // 8 address bits, MSB first (write = R/W 0)
     let byte = (addr7 as u8) << 1;
     for i in (0..8).rev() {
-        sda(((byte >> i) & 1) as i32);
+        sda(((byte >> i) & 1) as u32);
         half();
-        scl(1);
+        if !scl_high_bounded() {
+            return false;
+        }
         half();
         scl(0);
         half();
     }
-    // 9th clock: release SDA, sample ACK
+    // 9th clock: release SDA, sample ACK (UM10204 §3.1.4 — only after
+    // SCL is observed high)
     sda(1);
     half();
-    scl(1);
+    if !scl_high_bounded() {
+        return false;
+    }
     half();
     let ack = read_sda() == 0;
     scl(0);
@@ -75,7 +126,9 @@ fn bitbang_probe(addr7: u8) -> bool {
     // STOP: SDA rises while SCL high
     sda(0);
     half();
-    scl(1);
+    if !scl_high_bounded() {
+        return false;
+    }
     half();
     sda(1);
     half();
@@ -84,12 +137,18 @@ fn bitbang_probe(addr7: u8) -> bool {
 
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
+    // The log facade is a no-op until a sink is installed — without this
+    // the probe's findings never print (Codex #85, issue #112). Same
+    // pattern as pn7160_v10raw; safe here because this diagnostic main
+    // never pairs with the `ble` feature's logger.
+    esp_idf_svc::log::EspLogger::initialize_default();
     log::warn!("bitbang: wire-level probe — no I2C peripheral involved");
 
     let _peripherals = Peripherals::take().expect("peripherals");
 
     gpio_output_od(SDA);
     gpio_output_od(SCL);
+    ven_wake();
     sda(1);
     scl(1);
     unsafe { esp_idf_sys::esp_rom_delay_us(10_000) };

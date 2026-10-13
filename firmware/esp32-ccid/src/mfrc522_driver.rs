@@ -42,6 +42,12 @@ impl InitRecoveryTracker {
 ))]
 const CARD_ABSENT_THRESHOLD: u8 = 3;
 
+/// Field-off dwell for the antenna cycle in `reset_activation_frontend`
+/// (see there for the wedged-PICC rationale).
+const FIELD_OFF_DWELL_MS: u32 = 50;
+/// Field-on settle before the first REQA/WUPA after the cycle.
+const FIELD_ON_SETTLE_MS: u32 = 5;
+
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub struct Mfrc522NfcDriver;
 
@@ -102,6 +108,70 @@ use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
 ))]
+use iso14443::type_a::vec::FrameVec;
+use iso14443::type_a::{Frame, PcdTransceiver};
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+use crate::turnaround::OutgoingBlockKind;
+
+/// Escape 0xD2 word 4-8 counters (issue #120 decomposition): wraps the
+/// raw transceiver for the duration of one `session.exchange` and
+/// classifies every outgoing block by its PCB.
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+struct CountingTransceiver<'a, I2C: I2c> {
+    inner: &'a mut mfrc522_pcd::Mfrc522Transceiver<I2C>,
+    blocks: u32,
+    wtx_replies: u32,
+    recoveries: u32,
+    max_transceive_us: u32,
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+impl<I2C: I2c> PcdTransceiver for CountingTransceiver<'_, I2C> {
+    type Error = mfrc522_pcd::Mfrc522Error<I2C::Error>;
+
+    fn transceive(&mut self, frame: &Frame) -> Result<FrameVec, Self::Error> {
+        let started_us = crate::t1::now_us();
+        let result = self.inner.transceive(frame);
+        let took_us = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
+        self.blocks = self.blocks.saturating_add(1);
+        if let Some(pcb) = frame.data().first() {
+            match OutgoingBlockKind::from_pcb(*pcb) {
+                Some(OutgoingBlockKind::SBlock) => {
+                    self.wtx_replies = self.wtx_replies.saturating_add(1)
+                }
+                Some(OutgoingBlockKind::RBlock) => {
+                    self.recoveries = self.recoveries.saturating_add(1)
+                }
+                _ => {}
+            }
+        }
+        self.max_transceive_us = self.max_transceive_us.max(took_us);
+        result
+    }
+
+    fn try_enable_hw_crc(&mut self) -> Result<(), Self::Error> {
+        self.inner.try_enable_hw_crc()
+    }
+
+    fn try_set_timeout_ms(&mut self, ms: u32) -> Result<(), ()> {
+        self.inner.try_set_timeout_ms(ms)
+    }
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CardLifecycle {
     NoCard,
@@ -124,6 +194,8 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
     // ISO 14443-3A UIDs are 4/7/10 bytes (single/double/triple cascade)
     cached_uid: [u8; 10],
     cached_uid_len: usize,
+    last_exchange: Option<(u32, u32, u32, u32)>,
+    configured_fwt_ms: u32,
 }
 
 #[cfg(all(
@@ -145,6 +217,8 @@ where
             init_tracker: InitRecoveryTracker::new(),
             cached_uid: [0u8; 10],
             cached_uid_len: 0,
+            last_exchange: None,
+            configured_fwt_ms: 0,
         }
     }
 
@@ -176,6 +250,24 @@ where
     }
 
     fn reset_activation_frontend(&mut self) -> Result<(), NfcError> {
+        // ISO 14443 field reset: a PICC whose ISO-14443-4 layer wedged
+        // mid-chain (e.g. a stalled host transfer) keeps answering
+        // WUPA but ignores RATS until the field de-energizes it. Bolty
+        // cycles the antenna before every activation
+        // (`prepare_for_activation`); this adds the field-off dwell
+        // (50 ms) a charge-pump-powered JavaCard needs to fully reset.
+        // Only ever runs with no response pending (poll idle /
+        // power_on) — never on the latency path.
+        self.transceiver
+            .raw()
+            .rmw_register(mfrc522::Register::TxControlReg, |b| b & !0b11)
+            .map_err(|_| NfcError::CommunicationError)?;
+        FreeRtos::delay_ms(FIELD_OFF_DWELL_MS);
+        self.transceiver
+            .raw()
+            .rmw_register(mfrc522::Register::TxControlReg, |b| b | 0b11)
+            .map_err(|_| NfcError::CommunicationError)?;
+        FreeRtos::delay_ms(FIELD_ON_SETTLE_MS);
         self.transceiver
             .reset_frontend()
             .map_err(|_| NfcError::CommunicationError)?;
@@ -282,17 +374,28 @@ fn build_pcsc_atr_from_historical(
     historical: &[u8],
     atr_buf: &mut [u8],
 ) -> Result<usize, NfcError> {
+    // G-05: declare T=1 with TA3 (IFSC=254) + TB3 (BWI=4, CWI=5).
+    // Without TA3 the host chains every block at ifsc=32 (ifdhandler.c
+    // get_IFSC → t1_set_param IFSC — 8× the round trips on this slow
+    // UART/I2C relay); without TB3 it guesses BWT from defaults. TCK is
+    // legal now that a protocol ≠ T=0 is offered. Byte layout:
+    // TS, T0(Y1=TD1|K), TD1=0x81, TD2=0x31 (TA3+TB3, T=1), TA3=0xFE,
+    // TB3, historical(K), TCK. (TD1 carries the T=1 nibble because the
+    // shared parser — like several host stacks — reads the protocol
+    // from TD1.)
     let n = historical.len();
-    let atr_len = 5 + n;
+    let atr_len = 7 + n;
     if atr_buf.len() < atr_len {
         return Err(NfcError::BufferOverflow);
     }
 
     atr_buf[0] = 0x3B;
     atr_buf[1] = 0x80 | (n as u8 & 0x0F);
-    atr_buf[2] = 0x80;
-    atr_buf[3] = 0x01;
-    atr_buf[4..4 + n].copy_from_slice(historical);
+    atr_buf[2] = 0x81;
+    atr_buf[3] = 0x31;
+    atr_buf[4] = 0xFE;
+    atr_buf[5] = ccid_protocol::atr::t1_tb3(4, 5);
+    atr_buf[6..6 + n].copy_from_slice(historical);
 
     let mut tck: u8 = 0;
     for &b in &atr_buf[1..atr_len - 1] {
@@ -361,6 +464,31 @@ where
 
     fn session_active(&self) -> bool {
         self.lifecycle == CardLifecycle::ActiveSession
+    }
+
+    fn exchange_decomposition(&self) -> Option<(u32, u32, u32, u32)> {
+        self.last_exchange
+    }
+
+    /// Escape 0xD3 probe (issue #120): time `reads` back-to-back
+    /// ComIrqReg register reads — the exact I2C transaction the
+    /// transceive poll loop performs — so the host can derive the
+    /// per-poll cadence and separate I2C wait from card wait.
+    fn i2c_timing_probe(&mut self, reads: u32) -> Option<u32> {
+        let n = reads.clamp(1, 256);
+        let started_us = crate::t1::now_us();
+        for _ in 0..n {
+            self.transceiver
+                .raw()
+                .read_register(mfrc522::Register::ComIrqReg)
+                .ok()?;
+        }
+        let took = (crate::t1::now_us() - started_us).clamp(0, u32::MAX as i64) as u32;
+        Some(took)
+    }
+
+    fn configured_fwt_ms(&self) -> u32 {
+        self.configured_fwt_ms
     }
 
     fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
@@ -505,6 +633,7 @@ where
             .set_timeout_ms(fwt_ms)
             .map_err(|_| NfcError::CommunicationError)?;
         session.set_base_fwt_ms(fwt_ms);
+        self.configured_fwt_ms = fwt_ms;
 
         self.session = Some(session);
         self.cached_ats = Some(ats.clone());
@@ -563,7 +692,24 @@ where
             );
         }
 
-        let resp = match session.exchange(&mut self.transceiver, command) {
+        let resp = {
+            let mut counting = CountingTransceiver {
+                inner: &mut self.transceiver,
+                blocks: 0,
+                wtx_replies: 0,
+                recoveries: 0,
+                max_transceive_us: 0,
+            };
+            let result = session.exchange(&mut counting, command);
+            self.last_exchange = Some((
+                counting.blocks,
+                counting.wtx_replies,
+                counting.recoveries,
+                counting.max_transceive_us,
+            ));
+            result
+        };
+        let resp = match resp {
             Ok(resp) => resp,
             Err(err) => {
                 log::error!("transmit_apdu: exchange failed: {:?}", err);
@@ -636,16 +782,16 @@ mod tests {
     fn test_build_pcsc_atr_no_historical_bytes() {
         let mut buf = [0u8; 33];
         let len = build_pcsc_atr_from_historical(&[], &mut buf).unwrap();
-        assert_eq!(len, 5);
-        assert_eq!(&buf[..5], &[0x3B, 0x80, 0x80, 0x01, 0x01]);
+        assert_eq!(len, 7);
+        assert_eq!(&buf[..7], &[0x3B, 0x80, 0x81, 0x31, 0xFE, 0x45, 0x8B]);
     }
 
     #[test]
     fn test_build_pcsc_atr_one_historical_byte() {
         let mut buf = [0u8; 33];
         let len = build_pcsc_atr_from_historical(&[0x80], &mut buf).unwrap();
-        assert_eq!(len, 6);
-        assert_eq!(&buf[..6], &[0x3B, 0x81, 0x80, 0x01, 0x80, 0x80]);
+        assert_eq!(len, 8);
+        assert_eq!(&buf[..8], &[0x3B, 0x81, 0x81, 0x31, 0xFE, 0x45, 0x80, 0x0A]);
     }
 
     #[test]
@@ -653,12 +799,27 @@ mod tests {
         let mut buf = [0u8; 33];
         let hist = &[0x80, 0x5A, 0x01, 0x02];
         let len = build_pcsc_atr_from_historical(hist, &mut buf).unwrap();
-        assert_eq!(len, 9);
+        assert_eq!(len, 11);
         assert_eq!(buf[0], 0x3B);
         assert_eq!(buf[1], 0x84);
-        assert_eq!(&buf[4..8], hist);
-        let expected_tck = 0x84 ^ 0x80 ^ 0x01 ^ 0x80 ^ 0x5A ^ 0x01 ^ 0x02;
-        assert_eq!(buf[8], expected_tck);
+        assert_eq!(&buf[6..10], hist);
+        let expected_tck = 0x84 ^ 0x81 ^ 0x31 ^ 0xFE ^ 0x45 ^ 0x80 ^ 0x5A ^ 0x01 ^ 0x02;
+        assert_eq!(buf[10], expected_tck);
+    }
+
+    #[test]
+    fn synthetic_atr_semantically_locks_t1_timing() {
+        // G-05 semantic lock: parse our own ATR with the shared parser
+        // and see exactly what ifdhandler.c would — protocol T=1,
+        // IFSC 254 (TA3), BWI=4/CWI=5 (TB3).
+        let mut buf = [0u8; 33];
+        let hist = &[0x80, 0x73, 0xC8, 0x21, 0x10];
+        let len = build_pcsc_atr_from_historical(hist, &mut buf).unwrap();
+        let p = ccid_protocol::atr::parse_atr(&buf[..len]);
+        assert_eq!(p.protocol, 1);
+        assert_eq!(p.ifsc, 254);
+        assert_eq!((p.bwi, p.cwi), (4, 5));
+        assert!(ccid_protocol::atr::verify_atr_tck(&buf[..len], 1));
     }
 
     #[test]

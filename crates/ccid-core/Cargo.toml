@@ -12,3 +12,6 @@ std = []
 [dependencies]
 ccid-protocol = { path = "../ccid-protocol" }
 card-interface = { path = "../card-interface" }
+# default-features off: the crate builds for no_std targets (STM32) where
+# no logger is installed — the macros compile to no-ops there.
+log = { version = "0.4", default-features = false }

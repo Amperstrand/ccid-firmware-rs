@@ -7,6 +7,10 @@
 
 use ccid_firmware_rs::device_profile::CURRENT_PROFILE;
 
+/// USB Serial Number: profile serial, except the F746 build carries the
+/// bench-distinct ST2XXX-F746 (see device_profile::USB_SERIAL_NUMBER).
+pub use ccid_firmware_rs::device_profile::USB_SERIAL_NUMBER;
+
 /// USB Vendor ID from active device profile
 pub const USB_VENDOR_ID: u16 = CURRENT_PROFILE.vendor_id;
 
@@ -18,6 +22,3 @@ pub const USB_MANUFACTURER: &str = CURRENT_PROFILE.manufacturer;
 
 /// USB Product string from active device profile
 pub const USB_PRODUCT: &str = CURRENT_PROFILE.product;
-
-/// USB Serial Number from active device profile
-pub const USB_SERIAL_NUMBER: &str = CURRENT_PROFILE.serial_number;

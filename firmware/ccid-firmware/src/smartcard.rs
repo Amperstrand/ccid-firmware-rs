@@ -6,11 +6,16 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::pps_fsm::{PpsFsm, PpsState};
+// Canonical path (5426c51 moved the ISO 7816-3 §11.6.2.1 BWT math to the
+// shared crate): imported at the source, NOT via a smartcard_common
+// re-export — the re-export was cfg-asymmetric (dead in the f746 pass
+// where this file is compiled out → unused_imports under -D warnings).
 use crate::smartcard_common::{
     detect_protocol_from_atr, do_ifs_negotiation_t1, parse_atr, t1_block_total_len,
     transmit_apdu_t0, verify_atr_tck, Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo,
     DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
+use ccid_protocol::atr::t1_bwt_ms;
 
 use crate::t1_engine::T1Transport;
 use ccid_firmware_rs::dwt_watchdog::DwtWatchdog;
@@ -48,6 +53,9 @@ pub struct SmartcardUart {
     protocol: u8, // 0 = T=0, 1 = T=1
     ifsc: u8,     // T=1 card's IFSC (from IFS negotiation)
     t1_ns: u8,    // T=1 send sequence number (alternates 0/1 across APDUs)
+    /// BWI of the active T=1 card (ATR TB3 high nibble; parser default 4) —
+    /// drives the first-prologue-byte wait via `t1_first_byte_timeout_ms`.
+    t1_bwi: u8,
     pclk1_hz: u32,
     card_clk_hz: u32,
     /// True while the wire runs at a PPS-negotiated baud above the ATR
@@ -87,6 +95,7 @@ impl SmartcardUart {
             protocol: 0,
             ifsc: 32,
             t1_ns: 0,
+            t1_bwi: 4,
             pclk1_hz: pclk1,
             card_clk_hz: 0,
             pps_speedup_active: false,
@@ -392,6 +401,7 @@ impl SmartcardUart {
                 let atr_slice = &self.atr.raw[..self.atr.len];
                 defmt::info!("ATR len={} hex={=[u8]:x}", self.atr.len, atr_slice);
                 let params = parse_atr(&self.atr.raw[..self.atr.len]);
+                self.t1_bwi = params.bwi;
                 self.protocol = detect_protocol_from_atr(&self.atr.raw[..self.atr.len]);
                 defmt::info!("Detected protocol T={} from ATR", self.protocol);
 
@@ -651,6 +661,12 @@ impl SmartcardUart {
         }
         let tx_cyc = stamp.elapsed_cycles();
 
+        // #132/H3: purge stale RX before reading the response. Late tails
+        // of an earlier exchange (or send echoes) left in DR/ORE would
+        // shift the next prologue read and shred the block stream.
+        // (Explicit trait path: SmartcardIo also has a prepare_rx.)
+        T1Transport::prepare_rx(self);
+
         let mut total_len = 0usize;
 
         // T=1: the card answers each exchange with exactly one block
@@ -659,7 +675,7 @@ impl SmartcardUart {
         // byte instead of waiting out a fixed inter-byte drain timeout
         // after the last byte (was a flat +50ms on every APDU).
         if self.protocol == 1 && response.len() >= 4 {
-            let mut timeout_ms = 500u32; // first byte: card processing time
+            let mut timeout_ms = self.t1_first_byte_timeout_ms();
             let mut frx_cyc = 0u32;
             while total_len < 3 {
                 match self.receive_byte_timeout(timeout_ms) {
@@ -671,7 +687,14 @@ impl SmartcardUart {
                         }
                         timeout_ms = 50;
                     }
-                    Err(SmartcardError::Timeout) => return Ok(total_len),
+                    // #132/H1: a first-byte timeout is an honest error.
+                    // Returning Ok(0) here once handed libccid an empty
+                    // "success" DataBlock while the card's legal
+                    // BWT-class answer was still in flight — the engine
+                    // retried, the late block arrived unread (ORE-shredded
+                    // by the next TX), and a valid card response got
+                    // mis-associated with the wrong host exchange.
+                    Err(SmartcardError::Timeout) => return Err(SmartcardError::Timeout),
                     Err(e) => return Err(e),
                 }
             }
@@ -683,7 +706,16 @@ impl SmartcardUart {
                         response[total_len] = byte;
                         total_len += 1;
                     }
-                    Err(SmartcardError::Timeout) => break, // truncated block
+                    // #132: a truncated T=1 block is a protocol error, not
+                    // a short success — the host engine owns the retry.
+                    Err(SmartcardError::Timeout) => {
+                        defmt::warn!(
+                            "T1 block truncated {}/{} — reporting protocol error",
+                            total_len,
+                            expected
+                        );
+                        return Err(SmartcardError::ProtocolError);
+                    }
                     Err(e) => return Err(e),
                 }
             }
@@ -721,15 +753,38 @@ impl SmartcardUart {
         Ok(total_len)
     }
 
+    /// First-prologue-byte wait budget for a T=1 exchange: the card's BWT
+    /// (ISO 7816-3 §11.6.2.1) at the CURRENT wire baud — PPS speed-up
+    /// included — floored at the historical 500 ms and capped at the 5 s
+    /// procedure timeout. We echo BWI to the host in GetParameters, so the
+    /// reader must stay at least as patient as the window it advertises
+    /// (#132: a hardcoded 500 ms raced legal BWT-class answers).
+    fn t1_first_byte_timeout_ms(&self) -> u32 {
+        let baud = if self.pps_speedup_active && self.negotiated_baud > 0 {
+            self.negotiated_baud
+        } else {
+            self.card_clk_hz / self.config.default_etu.max(1)
+        };
+        t1_bwt_ms(self.t1_bwi, baud).clamp(500, 5_000)
+    }
+
     pub fn receive_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError> {
         let mut wd = DwtWatchdog::from_ms(timeout_ms, SYSCLK_HZ);
         wd.start();
         let mut safety_net: u32 = timeout_ms.saturating_mul(28_000).max(1_000_000);
         loop {
             let sr = self.usart.sr().read().bits();
-            if (sr & (1 << 5)) != 0 || (sr & (1 << 3)) != 0 {
+            if (sr & (1 << 3)) != 0 {
+                // #132/H3: ORE means bytes were lost and DR holds only the
+                // oldest one. Returning it as a fresh prologue byte shifts
+                // the whole stream — fail the exchange honestly instead.
+                let _ = self.usart.dr().read().dr().bits();
+                defmt::warn!("USART ORE — stream shredded, failing exchange");
+                return Err(SmartcardError::ProtocolError);
+            }
+            if (sr & (1 << 5)) != 0 {
                 let byte = self.usart.dr().read().dr().bits() as u8;
-                if (sr & 0x0F) != 0 {
+                if (sr & 0x07) != 0 {
                     defmt::warn!("USART err SR=0x{:04X} byte=0x{:02X}", sr, byte);
                 }
                 return Ok(byte);

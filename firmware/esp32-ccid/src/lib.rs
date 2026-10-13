@@ -19,6 +19,9 @@ pub mod nfc;
 pub mod pn532_driver;
 pub mod serial_framing;
 pub mod t1;
+#[cfg(test)]
+pub mod t1_fuzz;
+pub mod turnaround;
 
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;
@@ -68,19 +71,58 @@ pub mod pn7160_actdiag;
 pub mod pn7160_ccid;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
+    feature = "wifi-ccid",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod wifi_ccid;
+
+#[cfg(all(
+    any(feature = "wifi-ccid", feature = "wifi-vpcd"),
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod wifi_common;
+
+#[cfg(all(
+    feature = "wifi-vpcd",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod wifi_vpcd;
+
+#[cfg(all(
+    any(
+        feature = "pn7160-bringup",
+        feature = "backend-mfrc522",
+        feature = "wifi-ccid",
+        feature = "wifi-vpcd"
+    ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod netlog;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
+    any(
+        feature = "pn7160-bringup",
+        feature = "backend-mfrc522",
+        feature = "wifi-ccid",
+        feature = "wifi-vpcd"
+    ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod ota;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522"),
+    feature = "wifi-vpcd",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+pub mod vpcd;
+
+#[cfg(all(
+    any(
+        feature = "pn7160-bringup",
+        feature = "backend-mfrc522",
+        feature = "wifi-ccid",
+        feature = "wifi-vpcd"
+    ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod wifi;
@@ -90,10 +132,14 @@ pub mod led;
 
 /// Host-testable log ring shared by the USB-CDC log shim (issue #91);
 /// the esp-idf sink/drain shell is target-gated inside the module.
-pub mod log_shim;
 
 /// Host-testable log ring shared by the BLE debug logger shells.
 pub mod ble_log_queue;
+
+/// pcscd-over-Bluetooth-SPP transport: pure serving glue (host-tested,
+/// always compiled — `ble_log_queue` pattern) + a target shell gated on
+/// the `spp` feature inside the module.
+pub mod spp_server;
 
 #[cfg(feature = "ble")]
 pub mod ble_debug;

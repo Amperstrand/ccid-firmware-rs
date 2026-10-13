@@ -1,0 +1,28 @@
+# labgrid exporter for the ccid-firmware OTA seats (nucula, m5stick).
+#
+# Installed as a systemd --USER unit (the bench's other exporters run as
+# system units from /etc/systemd/system — do not duplicate them; this one
+# is repo-owned and user-scoped on purpose):
+#   mkdir -p ~/.config/systemd/user
+#   cp tools/hil/labgrid-exporter.service \
+#      ~/.config/systemd/user/labgrid-exporter-ccid.service
+#   # adjust the yaml path below if the checkout moved (worktrees are
+#   # ephemeral — point at a stable checkout for boot persistence)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now labgrid-exporter-ccid
+#
+# NOTE: user units start with the user manager; root's manager runs while
+# root is logged in. For boot persistence without a login session:
+#   loginctl enable-linger root   # optional, not enabled by default
+[Unit]
+Description=labgrid exporter — ccid-firmware OTA seats (nucula, m5stick)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/labgrid-exporter -c 127.0.0.1:20408 -n ai-legion-ccid /tmp/opencode/ccid-idf555/tools/hil/labgrid-exporter.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          submodules: true
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install ARM toolchain
@@ -139,6 +140,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          submodules: true
           ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Download all artifacts
@@ -182,6 +184,8 @@ jobs:
           | \`cherry-smartterminal-st2xxx-f746\` | Cherry ST-2xxx identity on STM32F746-DISCO (GPIO bit-bang ISO 7816) | \`046a:003e\` | Yes |
 
           Device specifications: \`reference/CCID/readers/*.txt\` (authoritative).
+          The K30 is a basic reader (\`bPINSupport = 0x00\`, \`wLcdLayout = 0\`)
+          despite the "keypad" marketing name.
 
           ### Files per variant
 
@@ -217,13 +221,14 @@ jobs:
 
           All variants were built in Docker with:
           - \`SOURCE_DATE_EPOCH=1704067200\`
-          - Rust 1.92 (Docker image \`rust:1.92-slim-bookworm\`)
+          - Rust 1.99.0 (pinned by \`rust-toolchain.toml\`; base image \`rust:1.99-slim-bookworm\`)
 
           To reproduce a build locally:
           \`\`\`bash
           git clone https://github.com/Amperstrand/ccid-firmware-rs.git
           cd ccid-firmware-rs
           git checkout $TAG
+          git submodule update --init vendor/synopsys-usb-otg
 
           # Build a specific variant (default = Cherry ST-2xxx on F469)
           docker build --build-arg PROFILE=default -t ccid-builder .
@@ -254,7 +259,7 @@ jobs:
           echo "This release was built with:" >> $GITHUB_STEP_SUMMARY
           echo "- Docker container for isolation" >> $GITHUB_STEP_SUMMARY
           echo "- SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Rust 1.92 via the rust:1.92-slim-bookworm Docker image" >> $GITHUB_STEP_SUMMARY
+          echo "- Rust 1.99.0 pinned by rust-toolchain.toml (base image rust:1.99-slim-bookworm)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "All four variants verified reproducible:" >> $GITHUB_STEP_SUMMARY
           echo "- cherry-smartterminal-st2xxx (default)" >> $GITHUB_STEP_SUMMARY

@@ -90,10 +90,13 @@ def probe_m5stick() -> dict:
 
 
 def probe_nucula() -> dict:
-    """Escape 0x02 over the USB-CDC GemPC wire (same firmware identity)."""
+    """Escape 0x02 over the USB-CDC GemPC wire. All serial mains route
+    through the shared ccid_handler, so the nucula answers the SAME
+    FIRMWARE_VERSION string as the m5stick — assert it, don't accept any
+    non-empty payload (issue #110: a wrong string must fail loudly)."""
     port = resolve("nucula")
     frames = [f for f in serial_exchange(port, escape_frame(b"\x02")) if f[0] >= 0x80]
-    ok = bool(frames) and frames[0][0] == 0x83 and len(frames[0][1]) > 0
+    ok = bool(frames) and frames[0][0] == 0x83 and GEMPC_VERSION_STRING in frames[0][1]
     return {"ok": ok, "detail": frames[0][1][:40] if frames else "no response"}
 
 

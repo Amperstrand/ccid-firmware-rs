@@ -20,9 +20,18 @@ against):
 - Wire battery: `tests/hardware/nfc/conformance_battery.py`
 
 **Firmware identity**: emulated GemPC Twin (Gemplus 0x08E6:0x3437 identity,
-`dwFeatures = 0x00010270`, `dwMaxCCIDMessageLength = 271`), recognized by
-`pcscd`/`libccidtwin` without custom drivers. All mains route through the single
-`CcidSerialServer` serving core since the #90 consolidation.
+`dwMaxCCIDMessageLength = 271`), recognized by `pcscd`/`libccidtwin` without
+custom drivers. All mains route through the single `CcidSerialServer` serving
+core since the #90 consolidation.
+
+**`dwFeatures` labeling** (issue #114, Codex on #93): there is no USB
+descriptor on the serial transport — nothing transmits `dwFeatures` to the
+host. Serial hosts get **libccidtwin's hardcoded `0x00010230`** (auto clock
++ auto baud + NAD≠0 + TPDU level; `docs/LIBCCID_DRIVER_AUDIT_REPORT.md` §5.2),
+NOT the USB descriptor value `0x00010270` of the reference reader — that
+value lives on only as the unused-internal constant
+`ccid_types::FEATURES` (its 0x40 automatic-PPS bit is honored in behavior by
+the reader's local PPS echo, §6.1.4 XfrBlock note 2).
 
 ---
 
@@ -55,8 +64,8 @@ cases per reader, each followed by a valid GetSlotStatus resync proof. Run
 against BOTH bench readers (nucula `pn7160-ccid`, m5stick MFRC522): nucula
 87/87; m5stick 86/87 — the one flagged case (truncated header `03 06 65 01`)
 recovers with a valid response under generous probe timing, so it is suspected
-to be a battery timing false positive, not a parser stall (open investigation:
-#89).
+to be a battery timing false positive, not a parser stall (later **confirmed**
+a false positive — issue #89 closed via the #107 reader-retirement forensics).
 
 **Wire-behavior profiles** (`ccid_serial_server.rs::ServeConfig`): UART mains
 NAK malformed frames and emit in-stream `NotifySlotChange` (libccidtwin
@@ -81,7 +90,7 @@ catch-all (`ccid_handler.rs:115`): `RDR_to_PC_SlotStatus` with
 | 6.1.4 | XfrBlock | 0x6F | ✅ implemented | `handle_xfr_block` (:256) → DataBlock | battery (no-card FAIL path), host tests, fuzz | see XfrBlock notes below (#49/#50, PPS echo, inactive-slot `bError=0x05`) |
 | 6.1.5 | GetParameters | 0x6C | ✅ implemented | `write_parameters` (:484) → Parameters | host tests (T=0 + T=1), fuzz | returns static defaults (`ccid_core::params::default_params`), NOT ATR-derived (contrast STM32 audit) |
 | 6.1.6 | ResetParameters | 0x6D | ✅ implemented | `handle_reset_parameters` (:387) → Parameters (T=1 defaults) | host tests, fuzz | resets to T=1 (contactless default), not spec T=0 default — deliberate for NFC |
-| 6.1.7 | SetParameters | 0x61 | ⚠️ partial | `handle_set_parameters` (:382) → Parameters | battery (as "GetParameters (no card)" case, 0x61), host tests, fuzz | records `bProtocolNum` only (`header.specific[0]`); `abProtocolDataStructure` payload neither validated nor stored — response always echoes defaults (store-and-ack semantics) |
+| 6.1.7 | SetParameters | 0x61 | ⚠️ partial | `handle_set_parameters` → Parameters | battery (as "GetParameters (no card)" case, 0x61), host tests, fuzz | `bProtocolNum` validated (≤1; >1 → SlotStatus failed + `CMD_NOT_SUPPORTED` per §6.1.7 — issue #114); `abProtocolDataStructure` payload neither validated nor stored — response always echoes defaults (store-and-ack semantics) |
 | 6.1.8 | Escape | 0x6B | ⚠️ partial (vendor) | `handle_escape` (:395) → RDR_to_PC_Escape | battery (0x02, 0x010101 cases), host tests, bench 0xD0/0xD1 | see Escape table below |
 | 6.1.9 | IccClock | 0x6E | ⚠️ stub | catch-all (:115) → SlotStatus failed + CMD_NOT_SUPPORTED | fuzz (all-msg-types rounds) | NFC field clock not controllable; intentional |
 | 6.1.10 | T0APDU | 0x6A | ⚠️ stub | catch-all | fuzz | TPDU-level control; intentional |
@@ -178,7 +187,7 @@ the shared crate only.
 | Wire conformance battery (`conformance_battery.py`, both bench readers, 2026-10-09) | 7-case card-absent command battery, structural nucula↔m5stick agreement | **7/7 both readers, AGREE** |
 | Wire fuzz battery (same script) | 87 cases/reader (7 fixed + 80 seeded-random) + resync proof after each | nucula **87/87**; m5stick **86/87** (one timing-suspect flag, #89) |
 | pcscd restart + GetSlotStatus soaks (same script) | 10 restarts, 1000 status round-trips/reader | clean |
-| On-target CCID tests, nucula `pn7160-ccid` over USB-CDC (`tests/test_ccid.py`, see `docs/nucula-campaign/RUNBOOK.md`) | full protocol battery on hardware | **13/13** (68 s, ai-legion) |
+| On-target CCID tests, nucula `pn7160-ccid` over USB-CDC (historical path `tests/test_ccid.py`, since restructured — today's equivalent is `tests/hardware/nucula/test_nucula.py`; campaign log in `docs/nucula-campaign/RUNBOOK.md`) | full protocol battery on hardware | **13/13** (68 s, ai-legion) |
 | pcscd/libccidtwin interop | readers enumerate (`GemPCTwin serial`, `Nucula CCID`), ATRs served | bench known-good 2026-10-09 (AGENTS.md matrix) |
 
 Battery case list (7): Escape(0x02), Escape(0x01 01 01), GetSlotStatus,
@@ -201,9 +210,10 @@ all-msg-types rounds.
    handshake), 0xD0 (diagnostics), 0xD1 (coredump snapshot) diverge from the
    plain spec's "escape is optional/vendor" model; 0x6A (Gemalto
    firmware-features) is STM32-only.
-4. **SetParameters store-and-ack** — protocol number recorded, structure
-   payload not validated/stored; defaults always echoed. Invisible to
-   libccidtwin (it sets parameters once after ATR).
+4. **SetParameters store-and-ack** — protocol number validated (≤1,
+   >1 rejected with `CMD_NOT_SUPPORTED` per §6.1.7) then recorded,
+   structure payload not validated/stored; defaults always echoed.
+   Invisible to libccidtwin (it sets parameters once after ATR).
 5. **GetParameters static** — defaults, not ATR-derived (NFC backend has fixed
    Fi/Di; ISO 14443-4 handles framing).
 6. **bPowerSelect ignored** on IccPowerOn while `VOLTAGE_SUPPORT=0x07` is
@@ -212,14 +222,19 @@ all-msg-types rounds.
    Table 6.2-2 code (GemPC-lineage convention).
 8. **Slot byte echoed verbatim** — no runtime rejection of non-zero slots
    (single-slot descriptor, `MAX_SLOT_INDEX=0`); fuzz proves no wedge.
-9. **TPDU-level `dwFeatures` claim (0x00010270)** — inherited GemPC Twin
-   declaration with local PPS echo (bit 0x40); the handler is a transparent
-   APDU relay. Host-visible behavior validated by battery + pcscd interop.
+9. **`dwFeatures` host-visible value** — serial hosts get libccidtwin's
+   hardcoded **`0x00010230`**, not `ccid_types::FEATURES = 0x00010270` (the
+   reference reader's USB descriptor value, unused-internal here — no
+   descriptor exists on the serial transport; see the labeling note up top
+   and `docs/LIBCCID_DRIVER_AUDIT_REPORT.md` §5.2). The handler is a
+   transparent APDU relay with local PPS echo backing the negotiation bit
+   in behavior. Host-visible behavior validated by battery + pcscd interop.
 10. **Bench-known NFC gaps (not CCID-dispatch bugs)**: m5stick marginal-coupling
     activation flakiness — mitigated in `9fd1626` (power_on retries 4× with
     frontend reset, bench-verified 20/20); nucula presence stickiness (#88) —
-    TTL re-arm landed in `9fd1626`, negative case bench-verified, positive case
-    (card placed on coil) pending.
+    **resolved** (closed 2026-10-10): the PN7160 auto-activates a single
+    ISO-DEP target during discovery; presence = live auto-activation, ATR +
+    APDU relay bench-verified with the card on the coil.
 
 ---
 

@@ -1,0 +1,54 @@
+## ccid-firmware bench exporter: the two ESP32 OTA seats.
+##
+## Run by systemd --user unit labgrid-exporter-ccid.service (see
+## tools/hil/README.md) against the ai-legion coordinator 127.0.0.1:20408.
+## Exporter name: ai-legion-ccid (bolty-rs tools/hil lineage; the bench's
+## serial/USB-identity exporter ai-legion-nfc stays untouched).
+##
+## DTR HAZARD — read before adding matches. '#' lines are Jinja statements
+## in exporter configs (labgrid line_statement_prefix); comment with '##'.
+##
+## USBSerialPort is ser2net-served ON ACQUIRE (labgrid 26.0
+## SerialPortExport): acquiring a place that matches one OPENS the port,
+## and opening /dev/ttyACM0 chip-resets the nucula
+## (docs/VPCD_WIFI_RUNBOOK.md: "USB serial is only needed for recovery").
+## The ccid-nucula / ccid-m5stick places therefore match NetworkService
+## ONLY; the USBSerialPort entries below are enrollment records for
+## future console places (add the match only when the bench is free and
+## a console session is intended — under the bench flock, README §4).
+##
+## The same physical ports are ALSO exported as pure acquisition tokens
+## by the system exporter ai-legion-nfc (groups nucula-c3 / m5stick-usb,
+## plain SerialPort class — no ser2net on acquire). Two token families
+## for one port do NOT exclude each other via labgrid; cross-session
+## exclusivity is the bench flock, /tmp/amperstrand-bench.lock
+## (tests/hardware/labgrid/bench.py bench_lock, AB-BA: flock first).
+##
+## Paths are /dev/serial/by-id — stable across reboots and replug seat
+## changes (busnum/devnum and ttyNX names drift). Verified live
+## 2026-10-13: ttyACM0 -> Espressif 90:DA:72:9A:50:18 (nucula USB JTAG),
+## ttyUSB0 -> Hades2001 M5stack 49D6163EBE (CP210x).
+
+nucula:
+  ## ESP-IDF OTA endpoint (VPCD_WIFI_RUNBOOK: rollback-hardened, :3232).
+  ## username is a required NetworkService field but inert here — the OTA
+  ## service is not SSH; 'ota' marks intent. The vpcd link (:35963) is
+  ## OUTBOUND — the board connects to the host listener — so it needs no
+  ## exporter-side resource; documented in tools/hil/README.md §6 instead.
+  NetworkService:
+    address: 192.168.13.230
+    port: 3232
+    username: ota
+  USBSerialPort:
+    port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
+    speed: 115200
+
+m5stick:
+  ## Same firmware family, own OTA endpoint and vpcd slot (:35964).
+  NetworkService:
+    address: 192.168.13.234
+    port: 3232
+    username: ota
+  USBSerialPort:
+    port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0
+    speed: 115200

@@ -24,8 +24,15 @@ use ccid_protocol::types::{
 // * Table 5.1-1 Smart Card Device Class descriptors */
 // struct usb_ccid_class_descriptor {
 pub const CCID_CLASS_DESCRIPTOR_DATA: [u8; 52] = CURRENT_PROFILE.ccid_descriptor();
-pub const CLOCK_FREQUENCY_KHZ: [u8; 4] = [0x40, 0x0F, 0x00, 0x00];
-pub const DATA_RATE_BPS: [u8; 4] = [0x00, 0x2A, 0x00, 0x00];
+
+// Class-specific control GET_CLOCK_FREQUENCIES / GET_DATA_RATES payloads
+// (CCID Rev 1.1 §5.3): dwClockFrequency in kHz / dwDataRate in bps, LE.
+// Derived from the device profile so each build advertises its own
+// reference values (Cherry 4 MHz / 10752 bps; CT30+K30 4.8 MHz /
+// 12903 bps per reference/CCID/readers/*.txt) instead of one hardcoded
+// pair for every profile.
+pub const CLOCK_FREQUENCY_KHZ: [u8; 4] = CURRENT_PROFILE.default_clock_khz.to_le_bytes();
+pub const DATA_RATE_BPS: [u8; 4] = CURRENT_PROFILE.default_data_rate.to_le_bytes();
 
 pub use ccid_firmware_rs::ccid_core::SlotState;
 pub use ccid_firmware_rs::driver::SmartcardDriver;

@@ -86,6 +86,13 @@ impl WifiManager {
         self.wifi.set_configuration(&wifi_configuration)?;
         log::warn!("wifi: starting");
         self.wifi.start()?;
+        // Power save OFF for the CCID-serving lifetime: MIN_MODEM dozes the
+        // radio between DTIMs (bench-measured 55-240 ms RTT vs the 7 ms
+        // floor) and T=1 BWT/WTX margins can violate under that — ruled out
+        // by bench decision 2026-10-12.
+        let ps_rc =
+            unsafe { esp_idf_sys::esp_wifi_set_ps(esp_idf_sys::wifi_ps_type_t_WIFI_PS_NONE) };
+        log::warn!("wifi: power save OFF (rc={})", ps_rc);
         log::warn!("wifi: associating with {}", ssid);
         self.wifi.connect()?;
         for _ in 0..60 {

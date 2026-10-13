@@ -327,6 +327,13 @@ mod sdcard {
                     all(esp_idf_version_major = "5", esp_idf_version_minor = "3"),
                 )))] // For ESP-IDF v5.4 and later
                 is_slot_set_to_uhs1: None,
+                // Field added in ESP-IDF v5.5.5 (sdmmc_host_t); value 0 = driver
+                // default — ported verbatim from upstream esp-idf-hal v0.47.0 sd.rs.
+                #[cfg(any(
+                    esp_idf_version_at_least_6_0_1,
+                    esp_idf_version_patch_at_least_5_5_5
+                ))]
+                unaligned_multi_block_rw_max_chunk_size: 0,
             };
 
             let mut card: alloc::boxed::Box<sdmmc_card_t> = Default::default();
@@ -431,6 +438,13 @@ mod sdcard {
                     all(esp_idf_version_major = "5", esp_idf_version_minor = "3"),
                 )))] // For ESP-IDF v5.4 and later
                 is_slot_set_to_uhs1: None,
+                // Field added in ESP-IDF v5.5.5 (sdmmc_host_t); value 0 = driver
+                // default — ported verbatim from upstream esp-idf-hal v0.47.0 sd.rs.
+                #[cfg(any(
+                    esp_idf_version_at_least_6_0_1,
+                    esp_idf_version_patch_at_least_5_5_5
+                ))]
+                unaligned_multi_block_rw_max_chunk_size: 0,
             };
 
             let mut card: alloc::boxed::Box<sdmmc_card_t> = Default::default();

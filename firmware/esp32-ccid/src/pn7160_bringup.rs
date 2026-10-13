@@ -193,7 +193,7 @@ pub fn run() -> ! {
                         // probes 50ms after the VEN cycle. Fix: re-cycle VEN
                         // and probe IMMEDIATELY after it.
                         log::warn!("health[{}]: VEN re-cycle + immediate probe", hb);
-                        t.ven_cycle();
+                        ven_retrigger(t);
                         match t.probe() {
                             Ok(()) => {
                                 log::warn!(

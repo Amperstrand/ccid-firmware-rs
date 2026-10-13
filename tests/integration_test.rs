@@ -1,3 +1,10 @@
+//! Compiled into a per-binary test target via the ccid-firmware
+//! [[test]] wiring — per-binary unused imports are expected.
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
+
 //! Integration tests for pinpad module
 //!
 //! These tests verify the complete PIN entry flow from CCID parsing to APDU construction.
@@ -12,19 +19,21 @@ use ccid_firmware_rs::{
 fn test_full_pin_entry_flow_user_pin() {
     // Simulate a complete PIN entry flow for User PIN
 
-    // 1. Parse CCID PIN verification parameters
-    let ccid_data: [u8; 17] = [
+    // 1. Parse CCID PIN verification parameters (reference wire shape:
+    // wPINMaxExtraDigit [max, min], bTeoPrologue[3], APDU head at 14 —
+    // pcsc-lite reader.h PIN_VERIFY_STRUCTURE)
+    let ccid_data: [u8; 19] = [
         30,   // bTimerOut = 30 seconds
         0x82, // bmFormatString = ASCII, left justified
         0x00, // bmPINBlockString
         0x00, // bmPINLengthFormat
-        6,    // wPINMaxExtraDigit high byte = min 6 (DD-2: byte swap)
-        8,    // wPINMaxExtraDigit low byte = max 8 (DD-2: byte swap)
+        8,    // wPINMaxExtraDigit LSB = max 8
+        6,    // wPINMaxExtraDigit MSB = min 6
         0x02, // bEntryValidationCondition = validation key
         1,    // bNumberMessage
         0x09, 0x04, // wLangId = 0x0409 (English)
         0,    // bMsgIndex
-        0,    // bTeoPrologue
+        0, 0, 0, // bTeoPrologue[3]
         // APDU template
         0x00, // CLA
         0x20, // INS = VERIFY
@@ -74,18 +83,18 @@ fn test_full_pin_entry_flow_user_pin() {
 fn test_full_pin_entry_flow_admin_pin() {
     // Simulate a complete PIN entry flow for Admin PIN
 
-    // Create params for Admin PIN
-    let mut ccid_data = [0u8; 20];
+    // Create params for Admin PIN (reference wire shape: APDU at 14)
+    let mut ccid_data = [0u8; 19];
     ccid_data[0] = 30;
     ccid_data[1] = 0x82;
-    ccid_data[4] = 8; // max
-    ccid_data[5] = 8; // min (Admin PIN is always 8)
+    ccid_data[4] = 8; // max (LSB, wire byte 4)
+    ccid_data[5] = 8; // min (MSB, wire byte 5 — Admin PIN is always 8)
     ccid_data[6] = 0x02;
-    ccid_data[12] = 0x00; // CLA
-    ccid_data[13] = 0x20; // INS = VERIFY
-    ccid_data[14] = 0x00; // P1
-    ccid_data[15] = 0x83; // P2 = Admin PIN
-    ccid_data[16] = 0x08; // Lc
+    ccid_data[14] = 0x00; // CLA
+    ccid_data[15] = 0x20; // INS = VERIFY
+    ccid_data[16] = 0x00; // P1
+    ccid_data[17] = 0x83; // P2 = Admin PIN
+    ccid_data[18] = 0x08; // Lc
 
     let params = PinVerifyParams::parse(&ccid_data).expect("Failed to parse params");
     assert_eq!(params.pin_type, 0x83);

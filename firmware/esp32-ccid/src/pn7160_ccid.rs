@@ -28,12 +28,30 @@ static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
-    // Issue #91: the shim logger replaces EspLogger (the log crate takes
-    // exactly one global sink, first installer wins). Pre-claim lines go
-    // to the console exactly as EspLogger's did; after log_shim::install()
-    // they route into the drained ring.
+    // Silence C-level ESP_LOGx IMMEDIATELY (before any PN7160 I2C
+    // activity): the driver's persistent-retry NACK messages from
+    // ESP-IDF's i2c.master bypass the Rust `log` crate and pollute
+    // the CCID wire before the serve loop's own Off ceiling takes
+    // effect. pcscd's serial handshake reads them as garbage and the
+    // reader never enumerates. The FWID below still prints (it's
+    // the first line, before the PN7160 bring-up runs).
     #[cfg(not(feature = "ble"))]
-    crate::log_shim::init(log::LevelFilter::Info);
+    {
+        use esp_idf_sys::{esp_log_level_set, esp_log_level_t_ESP_LOG_NONE};
+        unsafe { esp_log_level_set(b"*\0".as_ptr().cast(), esp_log_level_t_ESP_LOG_NONE) };
+    }
+
+    // Clean-wire (the #91 shim is RETIRED, issue #131): EspLogger
+    // prints the pre-claim boot banner below; the OFF ceiling lands
+    // right after the banner, BEFORE the USB-CDC driver claim, so
+    // nothing unsolicited is ever written to the CCID wire. Never call
+    // EspLogger::initialize_default() under `ble` (BleConsole installs
+    // the global sink there — first installer wins).
+    #[cfg(not(feature = "ble"))]
+    {
+        use esp_idf_svc::log::EspLogger;
+        EspLogger::initialize_default();
+    }
 
     let peripherals = Peripherals::take().expect("peripherals already taken");
 
@@ -54,6 +72,15 @@ pub fn run() -> ! {
     );
     log::warn!("pn7160-ccid: rust main ALIVE");
 
+    // Universal clean-wire ceiling (issue #131): the banner above is
+    // the LAST unsolicited output — everything after this point (driver
+    // claim, PN7160 bring-up, serve loop) is silent on the CCID wire by
+    // construction. C-level ESP_LOGx was already silenced at the top of
+    // main; this gates the Rust `log` facade. Diagnostics live in
+    // Escape 0xD0 counters, 0xD1 coredumps, and the ble/actdiag builds.
+    #[cfg(not(feature = "ble"))]
+    log::set_max_level(log::LevelFilter::Off);
+
     // USB-CDC: CCID serial transport. In non-ble builds the console
     // shares this port too (frame parser ignores logs); in ble builds
     // it is CCID-only by construction.
@@ -65,10 +92,10 @@ pub fn run() -> ! {
     )
     .expect("USB-CDC init failed");
     let mut usb = usb;
-    // Issue #91: from here on direct console writes are dropped (the
-    // driver claim takes the peripheral) — route logs into the ring and
-    // drain them onto the claimed driver from the serving loop.
-    crate::log_shim::install();
+    // The #91 ring/drain machinery is retired (issue #131): after the
+    // pre-claim ceiling above, the app writes only framed CCID to this
+    // port. "USB-CDC ready" survives only in `ble` builds (it lands in
+    // the BLE ring there; it is filtered to nothing here).
     log::warn!("pn7160-ccid: USB-CDC ready");
 
     let bus = BusPins {
@@ -118,7 +145,12 @@ pub fn run() -> ! {
     let mut server = CcidSerialServer::new(CcidHandler::new(driver), poll_interval, unsafe {
         esp_idf_sys::xTaskGetTickCount()
     });
-    let mut byte_buf = [0u8; 1];
+    // Issue #119: burst reads. The old 1-byte buffer cost one usb.read
+    // call PER BYTE (13 calls for a 13-byte GetSlotStatus frame, ~23 ms
+    // each → flat ~300 ms/command). 64 bytes = one full-speed CDC bulk
+    // packet; usb.read returns whatever the driver ring holds (up to the
+    // buffer length), so a whole frame lands in one call.
+    let mut burst_buf = [0u8; 64];
     let timeout_ticks = TickType::new_millis(UART_RX_TIMEOUT_MS as u64).ticks();
 
     // Purge boot-log bytes so CCID starts clean
@@ -131,44 +163,39 @@ pub fn run() -> ! {
         }
     }
     log::warn!("pn7160-ccid: CCID loop starting");
-    // Clean-wire rule (bench 2026-10-10): the #91 shim's live logs
-    // (presence/auto-activation events from the #88/#105 firmware)
-    // race pcscd's strict serial handshake — it reads the noise and
-    // fails "Get firmware" permanently for the session. Boot output
-    // (FWID for HIL verify) has already been purged above; from here
-    // the CDC carries CCID frames only. Diagnostics: Escape 0xD0/0xD1
-    // or a `ble` build.
-    #[cfg(not(feature = "ble"))]
-    log::set_max_level(log::LevelFilter::Off);
 
     loop {
-        match usb.read(&mut byte_buf, timeout_ticks) {
-            Ok(1) => {
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                if server.feed_byte(byte_buf[0], now) == ServeAction::Respond {
-                    let write_timeout = TickType::new_millis(100).ticks();
-                    // GemPC Twin: echo the received frame, then the response
-                    let _ = usb.write(server.echo(), write_timeout);
-                    let _ = usb.write(server.response(), write_timeout);
-                    // Logs queued since the last drain ride out after the
-                    // response; host parsers scan for SYNC-anchored frames.
-                    crate::log_shim::drain_into(&mut usb);
-                    #[cfg(feature = "ble")]
-                    if let Some(ble) = ble_console.as_ref() {
-                        ble.drain();
-                    }
-                    // Dump-and-retrieve: escape 0xD1 ack went out — panic
-                    // now so the panic handler writes the flash coredump.
-                    if server.take_snapshot_request() {
-                        panic!("escape 0xD1: diagnostic snapshot requested");
+        match usb.read(&mut burst_buf, timeout_ticks) {
+            Ok(n) if n > 0 => {
+                // Feed every byte through the same per-byte path. A
+                // Respond fires only on the LAST byte of a frame (the
+                // parser completes on LRC and the echo holds the whole
+                // received frame), so any bytes after it in this burst
+                // are the START of the next host frame — flush the
+                // response first, then keep feeding.
+                for &byte in &burst_buf[..n] {
+                    let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                    if server.feed_byte(byte, now) == ServeAction::Respond {
+                        let write_timeout = TickType::new_millis(100).ticks();
+                        // GemPC Twin: echo the received frame, then the response
+                        let _ = usb.write(server.echo(), write_timeout);
+                        let _ = usb.write(server.response(), write_timeout);
+                        #[cfg(feature = "ble")]
+                        if let Some(ble) = ble_console.as_ref() {
+                            ble.drain();
+                        }
+                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
+                        // now so the panic handler writes the flash coredump.
+                        if server.take_snapshot_request() {
+                            panic!("escape 0xD1: diagnostic snapshot requested");
+                        }
                     }
                 }
             }
             _ => {
-                // Read idle — background card poll + log drain (issue #91)
+                // Read idle — background card poll
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 server.poll_if_due(now);
-                crate::log_shim::drain_into(&mut usb);
                 #[cfg(feature = "ble")]
                 if let Some(ble) = ble_console.as_ref() {
                     ble.drain();

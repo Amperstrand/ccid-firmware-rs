@@ -1,0 +1,19 @@
+# pcscd serial reader configuration for the ESP32 GemPC Twin emulator over
+# Bluetooth Classic SPP (firmware `spp` feature, build.sh m5stick-spp).
+#
+# Install to: /etc/reader.conf.d/GemPCTwin-rfcomm.conf
+# Then restart pcscd: sudo systemctl restart pcscd
+#
+# PREREQUISITE: /dev/rfcomm0 must exist — created by BlueZ on the incoming
+# SPP connection:
+#   sudo rfcomm watch hci0 1     # RFCOMM channel 1 (ESP32 SPP default SCN)
+# See firmware/esp32-ccid/README.md "pcscd over Bluetooth SPP" for the full
+# pairing + watch recipe.
+#
+# /dev/rfcomm0 has no colons in its path, so the DEVICENAME device:reader
+# split on the FIRST colon is safe here (unlike /dev/serial/by-id CDC paths).
+
+FRIENDLYNAME      "GemPCTwin rfcomm"
+DEVICENAME        /dev/rfcomm0:GemPCTwin
+LIBPATH           /usr/lib/pcsc/drivers/serial/libccidtwin.so
+CHANNELID         0x00000001

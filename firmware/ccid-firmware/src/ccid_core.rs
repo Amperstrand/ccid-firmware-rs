@@ -1,92 +1,147 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(clippy::identity_op)]
-#![allow(clippy::manual_is_multiple_of)]
+//! Thin STM32 wrapper over the shared `ccid-core` handler (DRY phase 2,
+//! issue #121 / PERF_AND_DRY_STRATEGY §3.1).
+//!
+//! Command dispatch, slot lifecycle, bStatus assembly, the contact
+//! parameter model (ATR-derived + host-supplied echo with libccid quirk
+//! validation), the XfrBlock pipeline and the PC_to_RDR_Secure PIN
+//! surface live in `ccid_core::handler::CcidHandlerCore<ContactProfile>`;
+//! this module keeps what is genuinely firmware-local:
+//!
+//! - the USB bulk framing state (feed/message_ready/take_response,
+//!   single-slot + cmd-busy gating)
+//! - the vendor/transport escape set (0xD0 driver diagnostics, Gemalto
+//!   0x6A firmware features)
+//! - the smartcard-USART specifics (IccClock, SetDataRateAndClockFrequency)
+//! - the display-feature PIN-result → VERIFY/CHANGE APDU exchange
+//!
+//! Wire behavior is byte-identical to the pre-port `CcidMessageHandler`
+//! (firmware host suites + ccid-core contact-profile tests pin it).
 
 use crate::driver::SmartcardDriver;
-use crate::pinpad::{
-    ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, VerifyApduBuilder,
-};
-use crate::protocol_unit::{di_from_ta1_low, fi_from_ta1_high, parse_atr, AtrParams};
-use ::ccid_core::response::{write_data_block, write_message, write_parameters, write_slot_status};
+use crate::pinpad::{ModifyApduBuilder, PinBuffer, PinResult, PinVerifyParams, VerifyApduBuilder};
+use ::ccid_core::handler::{CcidHandlerCore, ContactProfile};
+use ::ccid_core::response::{write_message, write_slot_status};
+use card_interface::{CardBackend, PresenceState, SlotDriver};
 use ccid_protocol::status::build_bstatus;
 pub use ccid_protocol::types::*;
-
-#[derive(Clone)]
-pub enum SecureState {
-    Idle,
-    WaitingForPinVerify { seq: u8, params: PinVerifyParams },
-    WaitingForPinModify { seq: u8, params: PinModifyParams },
-}
 
 /// Cherry SmartTerminal ST-2xxx vendor id — the only device profile with a
 /// PIN pad (bPINSupport != 0). device_profile is ARM-only, so the handler
 /// gates PC_to_RDR_Secure on the wired vendor id, mirroring the
 /// is_gemalto Escape check.
+///
+/// 046A = Cherry GmbH (reference/CCID/readers/CherrySmartTerminalST2XXX.txt).
 const PIN_PAD_VENDOR_ID: u16 = 0x046A;
 
-pub struct CcidMessageHandler<D: SmartcardDriver> {
+/// CardBackend/SlotDriver adapter over the firmware's SmartcardDriver:
+/// the core's slot contract (presence = card-detect GPIO, no session
+/// short-circuit) with an optional test-only presence override.
+struct SmartcardCoreAdapter<D: SmartcardDriver> {
     driver: D,
+    forced_presence: Option<bool>,
+}
+
+impl<D: SmartcardDriver> CardBackend for SmartcardCoreAdapter<D> {
+    type Error = D::Error;
+
+    fn power_on(&mut self, atr_buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
+        let atr = self.driver.power_on()?;
+        let len = atr.len().min(atr_buf.len());
+        atr_buf[..len].copy_from_slice(&atr[..len]);
+        Ok(len)
+    }
+
+    fn power_off(&mut self) {
+        self.driver.power_off();
+    }
+
+    fn is_card_present(&mut self) -> bool {
+        match self.forced_presence {
+            Some(p) => p,
+            None => self.driver.is_card_present(),
+        }
+    }
+
+    fn transmit_apdu(
+        &mut self,
+        command: &[u8],
+        response: &mut [u8],
+    ) -> core::result::Result<usize, Self::Error> {
+        self.driver.transmit_apdu(command, response)
+    }
+}
+
+impl<D: SmartcardDriver> SlotDriver for SmartcardCoreAdapter<D> {
+    fn poll_card_presence(&mut self) -> PresenceState {
+        PresenceState {
+            present: self.is_card_present(),
+        }
+    }
+
+    fn session_active(&self) -> bool {
+        false
+    }
+}
+
+pub struct CcidMessageHandler<D: SmartcardDriver> {
+    core: CcidHandlerCore<SmartcardCoreAdapter<D>, ContactProfile>,
     rx_buffer: [u8; MAX_CCID_MESSAGE_LENGTH],
     rx_len: usize,
     tx_buffer: [u8; MAX_CCID_MESSAGE_LENGTH],
     tx_len: usize,
-    slot_state: SlotState,
     cmd_busy: bool,
-    card_present_last: bool,
-    current_protocol: u8,
-    atr_params: AtrParams,
-    /// Host-supplied parameter set from PC_to_RDR_SetParameters:
-    /// (bProtocolNum, raw abProtocolDataStructure). Takes precedence over
-    /// the ATR-derived values in GetParameters/SetParameters responses
-    /// until the next power-on or ResetParameters.
-    host_params: Option<(u8, [u8; 7])>,
-    secure_state: SecureState,
-    response_buffer: [u8; 261],
     vendor_id: u16,
+    response_buffer: [u8; 261],
     #[cfg(feature = "display")]
     pin_result_pending: Option<(u8, PinResult, PinBuffer, PinVerifyParams)>,
     #[cfg(feature = "display")]
-    pin_modify_result_pending: Option<(u8, PinResult, PinBuffer, PinBuffer, PinModifyParams)>,
+    pin_modify_result_pending: Option<(
+        u8,
+        PinResult,
+        PinBuffer,
+        PinBuffer,
+        crate::pinpad::PinModifyParams,
+    )>,
 }
 
 impl<D: SmartcardDriver> CcidMessageHandler<D> {
     pub fn new(driver: D, vendor_id: u16) -> Self {
+        let present = driver.is_card_present();
+        ccid_info!("CCID init: card_present={}", present);
         let mut this = Self {
-            driver,
+            core: CcidHandlerCore::with_profile(
+                SmartcardCoreAdapter {
+                    driver,
+                    forced_presence: None,
+                },
+                b"",
+                vendor_id == PIN_PAD_VENDOR_ID,
+            ),
             rx_buffer: [0u8; MAX_CCID_MESSAGE_LENGTH],
             rx_len: 0,
             tx_buffer: [0u8; MAX_CCID_MESSAGE_LENGTH],
             tx_len: 0,
-            slot_state: SlotState::Absent,
             cmd_busy: false,
-            card_present_last: false,
-            current_protocol: 0,
-            atr_params: AtrParams::default(),
-            host_params: None,
-            secure_state: SecureState::Idle,
-            response_buffer: [0u8; 261],
             vendor_id,
+            response_buffer: [0u8; 261],
             #[cfg(feature = "display")]
             pin_result_pending: None,
             #[cfg(feature = "display")]
             pin_modify_result_pending: None,
         };
-        let present = this.driver.is_card_present();
-        ccid_info!("CCID init: card_present={}", present);
-        if present {
-            this.card_present_last = true;
-            this.slot_state = SlotState::PresentInactive;
-        }
+        // Construction-time presence sync (the pre-port handler sampled
+        // is_card_present() in new()): a card in the slot starts
+        // PresentInactive without a change notification.
+        let _ = this.core.check_card_change();
         this
     }
 
     pub fn driver(&self) -> &D {
-        &self.driver
+        &self.core.driver().driver
     }
 
     pub fn driver_mut(&mut self) -> &mut D {
-        &mut self.driver
+        &mut self.core.driver_mut().driver
     }
 
     pub fn feed(&mut self, data: &[u8]) {
@@ -144,42 +199,56 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.cmd_busy = true;
 
         match msg_type {
-            PC_TO_RDR_GET_SLOT_STATUS => self.handle_get_slot_status(seq),
-            PC_TO_RDR_ICC_POWER_ON => self.handle_power_on(seq),
-            PC_TO_RDR_ICC_POWER_OFF => self.handle_power_off(seq),
-            PC_TO_RDR_XFR_BLOCK => self.handle_xfr_block(seq),
-            PC_TO_RDR_GET_PARAMETERS => self.handle_get_parameters(seq),
-            PC_TO_RDR_SET_PARAMETERS => self.handle_set_parameters(seq),
-            PC_TO_RDR_RESET_PARAMETERS => {
-                self.handle_reset_parameters(seq);
+            PC_TO_RDR_ICC_CLOCK => self.handle_icc_clock(seq),
+            PC_TO_RDR_SET_DATA_RATE_AND_CLOCK_FREQ => {
+                self.handle_set_data_rate_and_clock(seq);
             }
             PC_TO_RDR_ESCAPE => self.handle_escape(seq),
-            PC_TO_RDR_ICC_CLOCK => {
-                self.handle_icc_clock(seq);
+            PC_TO_RDR_XFR_BLOCK if self.declared_length() > 261 => {
+                // Oversize (Extended APDU) rejection happens on the
+                // DECLARED dwLength, before the core's frame validation —
+                // the pre-port byte shape (pinned by the firmware suite).
+                ccid_warn!("CCID: XfrBlock Extended APDU rejected");
+                self.send_slot_status(seq, COMMAND_STATUS_FAILED, ICC_STATUS_PRESENT_ACTIVE, 0x07);
             }
             PC_TO_RDR_T0_APDU => {
                 ccid_debug!("CCID: T0APDU command (stub - TPDU level sufficient)");
                 self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
             }
-            PC_TO_RDR_SECURE => {
-                self.handle_secure(seq);
-            }
             PC_TO_RDR_MECHANICAL => {
                 ccid_debug!("CCID: Mechanical command (stub - no mechanical parts)");
                 self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
             }
-            PC_TO_RDR_ABORT => {
-                ccid_debug!("CCID: Abort command (stub - single-slot sequential execution)");
-                self.send_slot_status(seq, COMMAND_STATUS_NO_ERROR, self.get_icc_status(), 0);
-            }
-            PC_TO_RDR_SET_DATA_RATE_AND_CLOCK_FREQ => {
-                self.handle_set_data_rate_and_clock(seq);
-            }
-            _ => {
-                ccid_warn!("CCID: unknown message type 0x{:02X}", msg_type);
-                self.send_err_resp(msg_type, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            }
+            _ => self.delegate_to_core(),
         }
+
+        // The accepted-protocol event (the esp32 t1-armed pattern):
+        // SetParameters/ResetParameters acceptance re-programs the
+        // smartcard USART for the negotiated protocol.
+        if self.core.take_parameters_accepted() {
+            let protocol = self.core.current_protocol();
+            self.core.driver_mut().driver.set_protocol(protocol);
+        }
+    }
+
+    fn delegate_to_core(&mut self) {
+        self.tx_len = self
+            .core
+            .process_command(&self.rx_buffer[..self.rx_len], &mut self.tx_buffer);
+        if self.tx_len == 0 {
+            // Deferred response (PC_to_RDR_Secure PIN entry): no bytes
+            // go out until complete_pin_entry writes the DataBlock.
+            ccid_debug!("CCID: response deferred (PIN entry)");
+        }
+    }
+
+    fn declared_length(&self) -> usize {
+        u32::from_le_bytes([
+            self.rx_buffer[1],
+            self.rx_buffer[2],
+            self.rx_buffer[3],
+            self.rx_buffer[4],
+        ]) as usize
     }
 
     pub fn take_response(&mut self) -> (usize, &[u8]) {
@@ -191,41 +260,28 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     pub fn check_card_presence(&mut self) -> Option<bool> {
-        let present_now = self.driver.is_card_present();
-        if present_now != self.card_present_last {
-            ccid_info!(
-                "Card state change: {} -> {}",
-                self.card_present_last,
-                present_now
-            );
-            self.card_present_last = present_now;
-            if !present_now {
-                ccid_info!("Card removed, powering off driver");
-                self.driver.power_off();
-                self.slot_state = SlotState::Absent;
-                self.cmd_busy = false;
-                self.rx_len = 0;
-                self.secure_state = SecureState::Idle;
-                #[cfg(feature = "display")]
-                {
-                    self.pin_result_pending = None;
-                }
-            } else {
-                self.slot_state = SlotState::PresentInactive;
+        let changed = self.core.check_card_change().map(|_| true);
+        if changed.is_some() && !self.core.presence_state().present {
+            ccid_info!("Card removed, powering off driver");
+            self.rx_len = 0;
+            self.cmd_busy = false;
+            #[cfg(feature = "display")]
+            {
+                self.pin_result_pending = None;
+                self.pin_modify_result_pending = None;
             }
-            return Some(true);
         }
-        None
+        changed
     }
 
     pub fn get_icc_status(&self) -> u8 {
-        match self.slot_state {
-            SlotState::PresentActive => ICC_STATUS_PRESENT_ACTIVE,
-            SlotState::PresentInactive => ICC_STATUS_PRESENT_INACTIVE,
-            SlotState::Absent => ICC_STATUS_NO_ICC,
-        }
+        self.core.slot_state().icc_status()
     }
 
+    /// bmSlotCCState per CCID Rev 1.1 §6.3.1: bit 2n = slot n card present,
+    /// bit 2n+1 = change since last notification (single slot: bits 0/1).
+    /// The serial twin of this encoding is CARD_PRESENT=0x03 /
+    /// CARD_ABSENT=0x02 (present/absent + changed) in ccid-transport-serial.
     pub fn notify_slot_change_bytes(&self, card_present: bool, changed: bool) -> [u8; 2] {
         let mut bits: u8 = 0;
         if card_present {
@@ -241,39 +297,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         let icc = self.get_icc_status();
         let status = build_bstatus(COMMAND_STATUS_FAILED, icc);
         match msg_type {
-            PC_TO_RDR_ICC_POWER_ON | PC_TO_RDR_XFR_BLOCK | PC_TO_RDR_SECURE => {
-                self.tx_len = write_message(
-                    RDR_TO_PC_DATABLOCK,
-                    0,
-                    seq,
-                    status,
-                    error,
-                    0,
-                    &[],
-                    &mut self.tx_buffer,
-                );
-            }
-            PC_TO_RDR_ICC_POWER_OFF
-            | PC_TO_RDR_GET_SLOT_STATUS
-            | PC_TO_RDR_ICC_CLOCK
-            | PC_TO_RDR_T0_APDU
-            | PC_TO_RDR_MECHANICAL
-            | PC_TO_RDR_ABORT
-            | PC_TO_RDR_SET_DATA_RATE_AND_CLOCK_FREQ => {
-                self.send_slot_status(seq, COMMAND_STATUS_FAILED, icc, error);
-            }
-            PC_TO_RDR_GET_PARAMETERS | PC_TO_RDR_RESET_PARAMETERS | PC_TO_RDR_SET_PARAMETERS => {
-                self.tx_len = write_message(
-                    RDR_TO_PC_PARAMETERS,
-                    0,
-                    seq,
-                    status,
-                    error,
-                    0,
-                    &[],
-                    &mut self.tx_buffer,
-                );
-            }
             PC_TO_RDR_ESCAPE => {
                 self.tx_len = write_message(
                     RDR_TO_PC_ESCAPE,
@@ -287,111 +310,15 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 );
             }
             _ => {
-                self.send_slot_status(seq, COMMAND_STATUS_FAILED, icc, CCID_ERR_CMD_NOT_SUPPORTED);
+                self.send_slot_status(seq, COMMAND_STATUS_FAILED, icc, error);
             }
         }
     }
 
-    // CCID_SPEC: /* Section 6.1.1 */ enum ccid_power_select { CCID_PWRSEL_AUTO = 0x00,
-    // CCID_PWRSEL_5V0 = 0x01, CCID_PWRSEL_3V0 = 0x02, CCID_PWRSEL_1V8 = 0x03, };
-    fn handle_power_on(&mut self, seq: u8) {
-        let data_len = u32::from_le_bytes([
-            self.rx_buffer[1],
-            self.rx_buffer[2],
-            self.rx_buffer[3],
-            self.rx_buffer[4],
-        ]);
-        if data_len != 0 {
-            ccid_warn!("CCID: IccPowerOn with non-zero dwLength={}", data_len);
-            self.send_slot_status(
-                seq,
-                COMMAND_STATUS_FAILED,
-                self.get_icc_status(),
-                CCID_ERR_CMD_NOT_SUPPORTED,
-            );
-            return;
-        }
-
-        if !self.driver.is_card_present() {
-            self.send_slot_status(
-                seq,
-                COMMAND_STATUS_FAILED,
-                ICC_STATUS_NO_ICC,
-                CCID_ERR_ICC_MUTE,
-            );
-            return;
-        }
-
-        let power_select = if self.rx_len > 7 {
-            self.rx_buffer[7]
-        } else {
-            0
-        };
-        if power_select == 0x02 || power_select == 0x03 {
-            self.send_slot_status(
-                seq,
-                COMMAND_STATUS_FAILED,
-                ICC_STATUS_PRESENT_INACTIVE,
-                CCID_ERR_CMD_NOT_SUPPORTED,
-            );
-            return;
-        }
-
-        match self.driver.power_on() {
-            Ok(atr) => {
-                self.slot_state = SlotState::PresentActive;
-                self.atr_params = parse_atr(atr);
-                self.current_protocol = self.atr_params.protocol;
-                self.host_params = None;
-                let atr_len = atr.len().min(MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE);
-                self.tx_len = write_data_block(
-                    0,
-                    seq,
-                    ICC_STATUS_PRESENT_ACTIVE,
-                    COMMAND_STATUS_NO_ERROR,
-                    0,
-                    0,
-                    &atr[..atr_len],
-                    &mut self.tx_buffer,
-                );
-                ccid_info!("CCID: PowerOn success, ATR len={}", atr_len);
-            }
-            Err(_e) => {
-                ccid_error!("CCID: PowerOn failed");
-                self.slot_state = SlotState::PresentInactive;
-                self.send_slot_status(
-                    seq,
-                    COMMAND_STATUS_FAILED,
-                    ICC_STATUS_PRESENT_INACTIVE,
-                    CCID_ERR_ICC_MUTE,
-                );
-            }
-        }
-    }
-
-    fn handle_reset_parameters(&mut self, seq: u8) {
-        self.atr_params = AtrParams::default();
-        self.current_protocol = 0;
-        self.host_params = None;
-        let params = [
-            0x11, // bmFindexDindex (Fi=372, Di=1)
-            0x00, // bmTCCKST0
-            0x00, // bGuardTimeT0
-            0x00, // bWaitingIntegerT0
-            0x00, // bClockStop
-        ];
-        self.tx_len = write_parameters(
-            0,
-            seq,
-            self.get_icc_status(),
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            self.current_protocol,
-            &params,
-            &mut self.tx_buffer,
-        );
-    }
-
+    // CCID_SPEC: /* Section 6.1.14 */ struct ccid_pc_to_rdr_set_rate_and_clock {
+    // struct ccid_header hdr; uint8_t abRFU[3]; uint32_t dwClockFrequency;
+    // uint32_t dwDataRate; } __attribute__ ((packed));
+    // /* Response: RDR_to_PC_DataRateAndClockFrequency */
     fn handle_set_data_rate_and_clock(&mut self, seq: u8) {
         const MIN_LEN: usize = 10 + 8;
         if self.rx_len < MIN_LEN {
@@ -415,7 +342,12 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             self.rx_buffer[16],
             self.rx_buffer[17],
         ]);
-        match self.driver.set_clock_and_rate(clock_hz, rate_bps) {
+        match self
+            .core
+            .driver_mut()
+            .driver
+            .set_clock_and_rate(clock_hz, rate_bps)
+        {
             Ok((actual_clock, actual_rate)) => {
                 let payload = [
                     actual_clock.to_le_bytes()[0],
@@ -449,6 +381,11 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         }
     }
 
+    // CCID_SPEC: /* Section 6.1.9 */ enum ccid_clock_command {
+    // CCID_CLOCK_CMD_RESTART = 0x00, CCID_CLOCK_CMD_STOP = 0x01, };
+    // struct ccid_pc_to_rdr_icc_clock { struct ccid_header hdr;
+    // uint8_t bClockCommand; uint8_t abRFU[2]; } __attribute__ ((packed));
+    // /* response: RDR_to_PC_SlotStatus */
     fn handle_icc_clock(&mut self, seq: u8) {
         let icc = self.get_icc_status();
         if icc != ICC_STATUS_PRESENT_ACTIVE {
@@ -461,280 +398,20 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             0
         };
         let enable = clock_command == 0;
-        self.driver.set_clock(enable);
+        self.core.driver_mut().driver.set_clock(enable);
         let b_clock_status: u8 = if enable { 0x00 } else { 0x01 };
         self.send_slot_status_with_clock(seq, COMMAND_STATUS_NO_ERROR, icc, 0, b_clock_status);
     }
 
-    fn handle_power_off(&mut self, seq: u8) {
-        self.driver.power_off();
-        self.slot_state = SlotState::PresentInactive;
-        self.current_protocol = 0;
-        self.tx_len = write_slot_status(
-            0,
-            seq,
-            ICC_STATUS_PRESENT_INACTIVE,
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            0,
-            &mut self.tx_buffer,
-        );
-        ccid_info!("CCID: PowerOff");
-    }
-
-    fn handle_get_slot_status(&mut self, seq: u8) {
-        let icc_status = self.get_icc_status();
-        ccid_debug!(
-            "GetSlotStatus: slot_state={} icc={}",
-            self.slot_state as u8,
-            icc_status
-        );
-        self.send_slot_status(seq, COMMAND_STATUS_NO_ERROR, icc_status, 0);
-    }
-
-    fn intercept_xfr_special(&mut self, data: &[u8], data_len: usize, seq: u8) -> bool {
-        if (3..=5).contains(&data_len) && data[0] == 0xFF {
-            let pps0 = data[1];
-            if (pps0 & 0xE0) == 0x00 && pps0 != 0x00 {
-                ccid_info!("CCID: XfrBlock PPS request intercepted");
-                self.tx_len = write_data_block(
-                    0,
-                    seq,
-                    ICC_STATUS_PRESENT_ACTIVE,
-                    COMMAND_STATUS_NO_ERROR,
-                    0,
-                    0,
-                    &data[..data_len],
-                    &mut self.tx_buffer,
-                );
-                return true;
-            }
-        }
-
-        false
-    }
-
-    fn handle_xfr_block(&mut self, seq: u8) {
-        if self.slot_state != SlotState::PresentActive {
-            self.send_slot_status(seq, COMMAND_STATUS_FAILED, self.get_icc_status(), 0xFE);
-            return;
-        }
-
-        let data_len = u32::from_le_bytes([
-            self.rx_buffer[1],
-            self.rx_buffer[2],
-            self.rx_buffer[3],
-            self.rx_buffer[4],
-        ]) as usize;
-
-        if data_len > 261 || data_len > MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE {
-            ccid_warn!("CCID: XfrBlock Extended APDU rejected");
-            self.send_slot_status(seq, COMMAND_STATUS_FAILED, ICC_STATUS_PRESENT_ACTIVE, 0x07);
-            return;
-        }
-
-        let data_start = CCID_HEADER_SIZE;
-        let data_end = CCID_HEADER_SIZE + data_len;
-        let mut apdu_buf = [0u8; 261];
-        let copy_len = data_len.min(261);
-        apdu_buf[..copy_len].copy_from_slice(&self.rx_buffer[data_start..data_end]);
-
-        if self.intercept_xfr_special(&apdu_buf[..copy_len], copy_len, seq) {
-            return;
-        }
-
-        ccid_debug!("CCID: XfrBlock APDU len={}", copy_len,);
-        let mut response_buf = [0u8; MAX_CCID_MESSAGE_LENGTH - CCID_HEADER_SIZE];
-        let resp_len: usize;
-
-        match self
-            .driver
-            .transmit_apdu(&apdu_buf[..copy_len], &mut response_buf)
-        {
-            Ok(len) => {
-                resp_len = len;
-                ccid_debug!("CCID: XfrBlock OK resp_len={}", resp_len);
-            }
-            Err(_e) => {
-                ccid_error!("CCID: XfrBlock failed (card timeout or protocol error)");
-                self.send_slot_status(seq, COMMAND_STATUS_FAILED, ICC_STATUS_PRESENT_ACTIVE, 0xFF);
-                return;
-            }
-        }
-
-        let resp_len = resp_len.min(response_buf.len());
-        self.tx_len = write_data_block(
-            0,
-            seq,
-            ICC_STATUS_PRESENT_ACTIVE,
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            0,
-            &response_buf[..resp_len],
-            &mut self.tx_buffer,
-        );
-        ccid_debug!("CCID: XfrBlock success, resp_len={}", resp_len);
-    }
-
-    fn handle_get_parameters(&mut self, seq: u8) {
-        let (params, params_len) = self.build_params_array();
-        self.tx_len = write_parameters(
-            0,
-            seq,
-            self.get_icc_status(),
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            self.current_protocol,
-            &params[..params_len],
-            &mut self.tx_buffer,
-        );
-    }
-
-    fn handle_set_parameters(&mut self, seq: u8) {
-        let data_len = u32::from_le_bytes([
-            self.rx_buffer[1],
-            self.rx_buffer[2],
-            self.rx_buffer[3],
-            self.rx_buffer[4],
-        ]) as usize;
-
-        let length_implied_protocol = match data_len {
-            5 => 0,
-            7 => 1,
-            _ => {
-                ccid_error!("CCID: SetParameters invalid dwLength={}", data_len);
-                self.send_slot_status(seq, COMMAND_STATUS_FAILED, self.get_icc_status(), 0x07);
-                return;
-            }
-        };
-
-        let mut raw = [0u8; 7];
-        raw[..data_len]
-            .copy_from_slice(&self.rx_buffer[CCID_HEADER_SIZE..CCID_HEADER_SIZE + data_len]);
-
-        // bProtocolNum (header byte 7) must agree with the structure length;
-        // bmTCCKST1: only the EDC bit is meaningful; bIFSC: 0x10..=0xFE;
-        // bNadValue: shall be 0 (NAD not supported); bmTCCKST0: only the
-        // convention bit. bError 0x08 (bad parameter) has no constant in
-        // ccid_proto.h (quote gap, asserted as a literal).
-        let requested_protocol = self.rx_buffer[7];
-        let valid = requested_protocol == length_implied_protocol
-            && if requested_protocol == 1 {
-                (raw[1] & !0x01) == 0 && (16..=254).contains(&raw[5]) && raw[6] == 0
-            } else {
-                (raw[1] & !0x80) == 0
-            };
-        if !valid {
-            ccid_error!(
-                "CCID: SetParameters bad parameter (proto={})",
-                requested_protocol
-            );
-            self.send_err_resp(PC_TO_RDR_SET_PARAMETERS, seq, 0x08);
-            return;
-        }
-
-        self.driver.set_protocol(requested_protocol);
-        self.current_protocol = requested_protocol;
-        self.host_params = Some((requested_protocol, raw));
-
-        // Keep AtrParams coherent with the accepted set so any consumer of
-        // the negotiated values (Fi/Di, BWI/CWI, IFSC, EDC, guard time)
-        // sees the host-requested configuration, overriding ATR defaults.
-        let p = &mut self.atr_params;
-        p.has_ta1 = true;
-        p.ta1 = raw[0];
-        p.fi = fi_from_ta1_high(raw[0] >> 4);
-        p.di = di_from_ta1_low(raw[0] & 0x0F);
-        p.guard_time_n = raw[2];
-        if requested_protocol == 1 {
-            p.bwi = raw[3] >> 4;
-            p.cwi = raw[3] & 0x0F;
-            p.edc_type = raw[1] & 1;
-            p.ifsc = raw[5];
-        }
-
-        let (params, params_len) = self.build_params_array();
-        self.tx_len = write_parameters(
-            0,
-            seq,
-            self.get_icc_status(),
-            COMMAND_STATUS_NO_ERROR,
-            0,
-            self.current_protocol,
-            &params[..params_len],
-            &mut self.tx_buffer,
-        );
-    }
-
-    fn handle_secure(&mut self, seq: u8) {
-        if self.vendor_id != PIN_PAD_VENDOR_ID {
-            ccid_debug!(
-                "CCID: SECURE rejected for non-PIN-pad vendor 0x{:04X}",
-                self.vendor_id
-            );
-            self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            return;
-        }
-
-        if self.slot_state != SlotState::PresentActive {
-            self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_SLOT_BUSY);
-            return;
-        }
-
-        if self.rx_len <= 10 {
-            self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            return;
-        }
-
-        let pin_operation = self.rx_buffer[10];
-
-        match pin_operation {
-            0x00 => {
-                let pin_data = &self.rx_buffer[11..self.rx_len];
-
-                match PinVerifyParams::parse(pin_data) {
-                    Some(params) => {
-                        self.secure_state = SecureState::WaitingForPinVerify { seq, params };
-                        ccid_debug!("CCID: PIN Verify - waiting for PIN entry");
-                    }
-                    None => {
-                        ccid_warn!("CCID: PIN Verify parse failed");
-                        self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-                    }
-                }
-            }
-            0x01 => {
-                let pin_data = &self.rx_buffer[11..self.rx_len];
-
-                match PinModifyParams::parse(pin_data) {
-                    Some(params) => {
-                        self.secure_state = SecureState::WaitingForPinModify { seq, params };
-                        ccid_debug!("CCID: PIN Modify - waiting for PIN entry");
-                    }
-                    None => {
-                        ccid_warn!("CCID: PIN Modify parse failed");
-                        self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-                    }
-                }
-            }
-            _ => {
-                ccid_warn!("CCID: Unknown PIN operation: {}", pin_operation);
-                self.send_err_resp(PC_TO_RDR_SECURE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            }
-        }
-    }
-
+    // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
+    // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
+    // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     fn handle_escape(&mut self, seq: u8) {
-        let data_len = u32::from_le_bytes([
-            self.rx_buffer[1],
-            self.rx_buffer[2],
-            self.rx_buffer[3],
-            self.rx_buffer[4],
-        ]) as usize;
+        let data_len = self.declared_length();
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0xD0 {
             ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
-            let diag = self.driver.diagnostics();
+            let diag = self.driver().diagnostics();
             let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
             diag.to_bytes(&mut diag_buf);
             self.tx_len = write_message(
@@ -763,6 +440,9 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
+            // Gemalto IDBridge firmware-features convention (b0 = 'vendor
+            // feature support'; readers/Gemalto_IDBridge_CT30.txt family):
+            // a 15-byte TLV-style capability bitmap, all other bits clear.
             let firmware_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
             self.tx_len = write_message(
                 RDR_TO_PC_ESCAPE,
@@ -784,104 +464,45 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     pub fn is_pin_entry_active(&self) -> bool {
-        matches!(
-            self.secure_state,
-            SecureState::WaitingForPinVerify { .. } | SecureState::WaitingForPinModify { .. }
-        )
+        self.core.is_pin_entry_active()
     }
 
     pub fn is_pin_verify_active(&self) -> bool {
-        matches!(self.secure_state, SecureState::WaitingForPinVerify { .. })
+        self.core.is_pin_verify_active()
     }
 
     pub fn is_pin_modify_active(&self) -> bool {
-        matches!(self.secure_state, SecureState::WaitingForPinModify { .. })
+        self.core.is_pin_modify_active()
     }
 
-    pub fn take_secure_params(&mut self) -> Option<(u8, PinVerifyParams)> {
-        if let SecureState::WaitingForPinVerify { seq, params } =
-            core::mem::replace(&mut self.secure_state, SecureState::Idle)
-        {
-            Some((seq, params))
-        } else {
-            None
-        }
+    pub fn take_secure_params(&mut self) -> Option<(u8, crate::pinpad::PinVerifyParams)> {
+        self.core.take_secure_params()
     }
 
-    pub fn take_secure_modify_params(&mut self) -> Option<(u8, PinModifyParams)> {
-        if let SecureState::WaitingForPinModify { seq, params } =
-            core::mem::replace(&mut self.secure_state, SecureState::Idle)
-        {
-            Some((seq, params))
-        } else {
-            None
-        }
+    pub fn take_secure_modify_params(&mut self) -> Option<(u8, crate::pinpad::PinModifyParams)> {
+        self.core.take_secure_modify_params()
     }
 
     pub fn complete_pin_entry(&mut self, seq: u8, result: PinResult, apdu_response: Option<&[u8]>) {
         ccid_debug!(
-            "CCID: PIN entry complete - seq={}, result={:?}",
+            "CCID: PIN entry complete - seq={}, result={}",
             seq,
-            result
+            result.as_str()
         );
-
-        let icc_status = self.get_icc_status();
-
-        match result {
-            PinResult::Success => {
-                if let Some(resp) = apdu_response {
-                    self.send_data_block_response(
-                        seq,
-                        resp,
-                        COMMAND_STATUS_NO_ERROR,
-                        icc_status,
-                        0,
-                    );
-                } else {
-                    self.send_data_block_response(seq, &[], COMMAND_STATUS_NO_ERROR, icc_status, 0);
-                }
-            }
-            PinResult::Cancelled => {
-                ccid_warn!("CCID: PIN entry cancelled by user");
-                self.send_data_block_response(
-                    seq,
-                    &[],
-                    COMMAND_STATUS_FAILED,
-                    icc_status,
-                    CCID_ERR_PIN_CANCELLED,
-                );
-            }
-            PinResult::Timeout => {
-                ccid_warn!("CCID: PIN entry timed out");
-                self.send_data_block_response(
-                    seq,
-                    &[],
-                    COMMAND_STATUS_FAILED,
-                    icc_status,
-                    CCID_ERR_PIN_TIMEOUT,
-                );
-            }
-            PinResult::InvalidLength => {
-                ccid_warn!("CCID: Invalid PIN length");
-                self.send_data_block_response(
-                    seq,
-                    &[],
-                    COMMAND_STATUS_FAILED,
-                    icc_status,
-                    CCID_ERR_CMD_ABORTED,
-                );
-            }
-        }
-
-        self.secure_state = SecureState::Idle;
+        self.tx_len = self
+            .core
+            .complete_pin_entry(seq, result, apdu_response, &mut self.tx_buffer);
     }
 
     pub fn is_card_present(&self) -> bool {
-        self.driver.is_card_present()
+        self.core
+            .driver()
+            .forced_presence
+            .unwrap_or_else(|| self.driver().is_card_present())
     }
 
     pub fn is_card_active(&self) -> bool {
-        self.slot_state == SlotState::PresentActive
+        self.core.slot_state() == SlotState::PresentActive
     }
 
     #[cfg(feature = "display")]
@@ -893,9 +514,9 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         params: PinVerifyParams,
     ) {
         ccid_debug!(
-            "CCID: Storing PIN result - seq={}, result={:?}, pin_len={}",
+            "CCID: Storing PIN result - seq={}, result={}, pin_len={}",
             seq,
-            result,
+            result.as_str(),
             buffer.len()
         );
         self.pin_result_pending = Some((seq, result, buffer, params));
@@ -908,9 +529,9 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         };
 
         ccid_debug!(
-            "CCID: Processing PIN result - seq={}, result={:?}, min_len={}, max_len={}",
+            "CCID: Processing PIN result - seq={}, result={}, min_len={}, max_len={}",
             seq,
-            result,
+            result.as_str(),
             params.min_len,
             params.max_len
         );
@@ -939,6 +560,8 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                         let apdu_len = 5 + pin_len;
                         ccid_debug!("CCID: Transmitting APDU, len={}", apdu_len);
                         match self
+                            .core
+                            .driver_mut()
                             .driver
                             .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
                         {
@@ -966,7 +589,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 }
             }
             PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
-                ccid_debug!("CCID: PIN entry failed with {:?}", result);
+                ccid_debug!("CCID: PIN entry failed with {}", result.as_str());
                 self.complete_pin_entry(seq, result, None);
             }
         }
@@ -979,12 +602,12 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         result: PinResult,
         old_buffer: PinBuffer,
         new_buffer: PinBuffer,
-        params: PinModifyParams,
+        params: crate::pinpad::PinModifyParams,
     ) {
         ccid_debug!(
-            "CCID: Storing PIN modify result - seq={}, result={:?}, old_len={}, new_len={}",
+            "CCID: Storing PIN modify result - seq={}, result={}, old_len={}, new_len={}",
             seq,
-            result,
+            result.as_str(),
             old_buffer.len(),
             new_buffer.len()
         );
@@ -1000,9 +623,9 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         };
 
         ccid_debug!(
-            "CCID: Processing PIN modify result - seq={}, result={:?}, min_len={}, max_len={}",
+            "CCID: Processing PIN modify result - seq={}, result={}, min_len={}, max_len={}",
             seq,
-            result,
+            result.as_str(),
             params.min_len,
             params.max_len
         );
@@ -1036,6 +659,8 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                         let apdu_len = 5 + old_len + new_len;
                         ccid_debug!("CCID: Transmitting CHANGE APDU, len={}", apdu_len);
                         match self
+                            .core
+                            .driver_mut()
                             .driver
                             .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
                         {
@@ -1063,50 +688,10 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 }
             }
             PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
-                ccid_debug!("CCID: PIN modify entry failed with {:?}", result);
+                ccid_debug!("CCID: PIN modify entry failed with {}", result.as_str());
                 self.complete_pin_entry(seq, result, None);
             }
         }
-    }
-
-    fn send_data_block_response(
-        &mut self,
-        seq: u8,
-        data: &[u8],
-        cmd_status: u8,
-        icc_status: u8,
-        error: u8,
-    ) {
-        let data_len = data.len() as u32;
-        let max_payload_len = self.tx_buffer.len().saturating_sub(CCID_HEADER_SIZE);
-        let payload = if data.len() <= max_payload_len {
-            data
-        } else {
-            ccid_warn!("CCID: DataBlock response truncated");
-            &data[..max_payload_len]
-        };
-
-        self.tx_len = write_data_block(
-            0,
-            seq,
-            icc_status,
-            cmd_status,
-            error,
-            0,
-            payload,
-            &mut self.tx_buffer,
-        );
-        if payload.len() != data.len() {
-            self.tx_buffer[1..5].copy_from_slice(&data_len.to_le_bytes());
-        }
-
-        ccid_trace!(
-            "CCID: Sending DataBlock seq={}, len={}, status={}, error={}",
-            seq,
-            self.tx_len,
-            self.tx_buffer[7],
-            error
-        );
     }
 
     fn send_slot_status(&mut self, seq: u8, cmd_status: u8, icc_status: u8, error: u8) {
@@ -1132,51 +717,11 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         );
     }
 
-    fn build_params_array(&self) -> ([u8; 7], usize) {
-        if let Some((proto, raw)) = self.host_params {
-            if proto == self.current_protocol {
-                return (raw, if proto == 1 { 7 } else { 5 });
-            }
-        }
-        let p = &self.atr_params;
-        if self.current_protocol == 1 {
-            (
-                [
-                    if p.has_ta1 { p.ta1 } else { 0x11 },
-                    (p.edc_type & 1) << 4,
-                    p.guard_time_n,
-                    (p.bwi << 4) | (p.cwi & 0x0F),
-                    0x00,
-                    p.ifsc.min(254),
-                    0x00,
-                ],
-                7,
-            )
-        } else {
-            (
-                [
-                    if p.has_ta1 { p.ta1 } else { 0x11 },
-                    0x00,
-                    p.guard_time_n,
-                    // T=0 waiting integer (plain WI, 0x00 default) — not the
-                    // T=1 (BWI<<4)|CWI packing.
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x00,
-                ],
-                5,
-            )
-        }
-    }
-
     pub fn set_card_present(&mut self, present: bool) {
-        self.card_present_last = present;
-        if present {
-            self.slot_state = SlotState::PresentInactive;
-        } else {
-            self.slot_state = SlotState::Absent;
-        }
+        // Test/harness hook: force the presence the adapter reports, then
+        // resync the core slot state through the normal change path.
+        self.core.driver_mut().forced_presence = Some(present);
+        let _ = self.core.check_card_change();
     }
 
     pub fn set_rx_data(&mut self, data: &[u8]) {
@@ -1193,11 +738,11 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     }
 
     pub fn slot_state(&self) -> SlotState {
-        self.slot_state
+        self.core.slot_state()
     }
 
     pub fn current_protocol(&self) -> u8 {
-        self.current_protocol
+        self.core.current_protocol()
     }
 
     pub fn cmd_busy(&self) -> bool {

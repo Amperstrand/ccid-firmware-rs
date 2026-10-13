@@ -22,6 +22,12 @@ pub type EspPn7160NfcDriver = Pn7160NfcDriver<EspPn7160Transport>;
 
 const XFER_TIMEOUT_MS: i32 = 500;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
+/// One FreeRtos tick in µs — `CONFIG_FREERTOS_HZ=100` (sdkconfig.full), so
+/// `FreeRtos::delay_ms(1)` rounds UP to one full 10 ms tick. The wait budget
+/// must count what actually elapses, not what was requested (Codex #85,
+/// issue #112): counting 1000 µs/iteration silently stretched the 200 ms
+/// RSP budget to ~2 s of wall time.
+const RTOS_TICK_US: u32 = 10_000;
 const NTF_SLOTS: usize = 4;
 /// Fire-and-forget write bound for the non-blocking presence re-arm
 /// (2026-10-10 serve-loop stall fix): a 4-byte NCI command is ~0.5 ms on
@@ -35,6 +41,18 @@ pub(crate) static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 =
     core::sync::atomic::AtomicI32::new(-999);
 pub(crate) static ISR_ADD_RC: core::sync::atomic::AtomicI32 =
     core::sync::atomic::AtomicI32::new(-999);
+
+/// Consecutive failed I2C writes (mute detector, bench 2026-10-12): a
+/// PN7160 that NAKs writes stays wedged until a VEN power cycle — no
+/// runtime recovery existed before this. `send` maintains the streak;
+/// the serve loop samples it and replays the bring-up ladder on
+/// threshold.
+static I2C_SEND_FAILURES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Consecutive-failed-I2C-write streak for the serve loop's mute detector.
+pub fn i2c_send_failure_streak() -> u32 {
+    I2C_SEND_FAILURES.load(core::sync::atomic::Ordering::Relaxed)
+}
 
 unsafe extern "C" fn dummy_irq_isr(_arg: *mut core::ffi::c_void) {
     // nci.c replica: the ISR must quench the level interrupt itself (the
@@ -51,6 +69,12 @@ pub struct EspPn7160Transport {
     ntf_head: usize,
     ntf_count: usize,
 }
+
+// SAFETY: the raw I2C handles are only accessed from the single thread
+// that owns this transport (the vpcd or CCID serve thread). The ESP32-C3
+// I2C driver is not internally thread-safe, but our architecture guarantees
+// exclusive access by construction (one driver, one thread).
+unsafe impl Send for EspPn7160Transport {}
 
 /// Decomposed board pins for the NFC block: the bring-up main splits
 /// `Peripherals` once (modem + nvs to WiFi, the rest here) because
@@ -87,6 +111,11 @@ impl EspPn7160Transport {
     #[cfg(feature = "pn7160-ven-never")]
     pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(p)?;
+        // Codex PR 85: the constructor configures VEN as OUTPUT but
+        // never sets the level — the chip stays in power-down and the
+        // ven-never experiment always fails. Drive VEN high before the
+        // device is added to the bus.
+        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
         t.add_pn_device()?;
         Ok(t)
     }
@@ -315,9 +344,11 @@ impl Transport for EspPn7160Transport {
             esp_idf_sys::i2c_master_transmit(self.dev, cmd.as_ptr(), cmd.len(), SEND_TIMEOUT_MS)
         };
         if rc != 0 {
+            I2C_SEND_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             log::error!("send: i2c write err: {}", rc);
             return false;
         }
+        I2C_SEND_FAILURES.store(0, core::sync::atomic::Ordering::Relaxed);
         true
     }
 
@@ -363,8 +394,16 @@ impl Transport for EspPn7160Transport {
             // console task for the whole ladder: console output dies
             // while the app + chip keep working (AGENTS.md hazard).
             FreeRtos::delay_ms(1);
-            waited += 1000;
+            waited += RTOS_TICK_US;
         }
+    }
+
+    fn wait_ms(&mut self, ms: u64) {
+        // FreeRtos (not Ets): the ROM busy-wait starves the WiFi and
+        // console tasks for the whole power_on collect window — the
+        // truncated-console-line / TCP-stall hazard the transact
+        // comment documents (same class).
+        FreeRtos::delay_ms(ms as u32);
     }
 
     fn drain(&mut self) -> Option<Frame> {

@@ -13,7 +13,7 @@ import struct
 
 import pytest
 
-from conftest import EXPECTED_ATR, remote_apdu
+from hil_helpers import EXPECTED_ATR, remote_apdu
 
 pytestmark = pytest.mark.hil
 
@@ -48,7 +48,11 @@ def test_apdu_select_mf_returns_sw(pcsc_reader_name, cherry_reader):
 
 def test_apdu_get_challenge_returns_class_not_supported(pcsc_reader_name, cherry_reader):
     _, sw1, sw2 = remote_apdu(cherry_reader, "0084000008")
-    assert sw1 in (0x6D, 0x6E), f"Expected 6D/6E (unsupported), got {sw1:02X} {sw2:02X}"
+    # Clean status word proves the relay; the value is card-dependent:
+    # ComSign eID answers 6D/6E (class/INS unsupported), a JCOP ISD as
+    # default app answers 69xx (e.g. 69FF while its management state is
+    # locked — bench 2026-10-12, see #127/#132 context).
+    assert sw1 in (0x6D, 0x6E, 0x69), f"Expected clean SW, got {sw1:02X} {sw2:02X}"
 
 
 def test_reader_advertises_pinpad(helpers, pcscd_running):

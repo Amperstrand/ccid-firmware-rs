@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["backend-mfrc522", "board-m5atom"]
-backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "esp-idf-hal/legacy-i2c"]
+backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "esp-idf-hal/legacy-i2c"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 # Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
 #   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
@@ -35,6 +35,15 @@ pn7160-verdict-b = []
 pn7160-ven-never = []
 pn7160-verdict-c = []
 pn7160-ccid = ["backend-pn7160", "board-nucula"]
+# WiFi TCP transport — the board's application port (#117 workaround by
+# design): GemPC CCID over TCP :29443, host bridges with socat PTY↔TCP.
+wifi-ccid = ["backend-pn7160", "board-nucula"]
+# vpcd reversed-connection transport (the primary wifi path) — composes
+# with any backend+board pair; no NFC backend of its own:
+#   nucula:  wifi-vpcd,backend-pn7160,board-nucula   (build.sh wifi-vpcd)
+#   m5atom:  wifi-vpcd,backend-mfrc522,board-m5atom
+#   m5stick: wifi-vpcd,backend-mfrc522,board-m5stick (build.sh m5stick-vpcd)
+wifi-vpcd = []
 # Wire-level instrument + NCI-over-GPIO fallback (issues #63/#80).
 pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 # M1 milestone: minimal bus+probe, nothing else (issues #63/#80).
@@ -42,6 +51,12 @@ pn7160-m1 = ["backend-pn7160", "board-nucula"]
 pn7160-v10raw = ["backend-pn7160", "board-nucula"]
 pn7160-actdiag = ["backend-pn7160", "board-nucula"]
 ble = []
+# pcscd over Bluetooth Classic SPP: RFCOMM replaces UART0 as the GemPC CCID
+# wire (console moves to UART0, logs stay on). REQUIRES the classic-BT+SPP
+# sdkconfig (`sdkconfig-xtensa-spp.full`) — a mismatched pair fails loudly
+# at the esp-idf-svc `bt::spp` imports, same compile-loud pairing rule as
+# `ble`. ESP32 silicon only (BR/EDR). Mutually exclusive with `ble` (modem).
+spp = []
 
 [dependencies]
 card-interface = { path = "../../crates/card-interface" }
@@ -54,7 +69,10 @@ log = "0.4"
 nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
 iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "268db79", features = ["alloc"], optional = true }
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9" }
+# Transceiver bridge + bus recovery shared with bolty-rs; only the
+# backend-mfrc522 feature pulls it (dep: wiring keeps PN7160/PN532 builds
+# from compiling — and warning about — an unused git dependency.
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9", optional = true }
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
@@ -66,8 +84,12 @@ esp-idf-hal = "0.46"
 esp-idf-svc = "0.52.1"
 
 [build-dependencies]
-embuild = { version = "0.32", features = ["espidf"] }
+embuild = { version = "0.33", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
-esp_idf_version = "tag:v5.5.1"
+# v5.5.5 (2026-10-12 unification bump from v5.5.1): requires crosstool
+# esp-14.2.0_20260121 (exact build-string tool_version_check). esp-idf-svc
+# stays 0.52.1: 0.53.0 requires the hal-0.47/sys-0.38 generation, which
+# conflicts with the vendored legacy-I2C hal 0.46.2 (follow-up lane).
+esp_idf_version = "tag:v5.5.5"
 

@@ -16,6 +16,13 @@ pub trait CardBackend {
         command: &[u8],
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error>;
+
+    /// Count of driver-level reinitializations since boot (self-healing
+    /// after consecutive failures), surfaced through diagnostics
+    /// (CCID Escape 0xD0). Drivers without self-healing keep the 0.
+    fn reinit_count(&self) -> u32 {
+        0
+    }
 }
 
 pub trait ContactCardExt: CardBackend {
@@ -38,6 +45,48 @@ pub trait NfcCardExt: CardBackend {
     fn init(&mut self) -> core::result::Result<(), Self::Error>;
     fn poll_card_presence(&mut self) -> PresenceState;
     fn session_active(&self) -> bool;
+
+    /// Cached UID of the present card, read during activation
+    /// (anticollision). Serves reader-level pseudo-APDUs (PC/SC GET UID)
+    /// without card communication. `None` when no UID is known.
+    fn card_uid(&self) -> Option<&[u8]> {
+        None
+    }
+}
+
+/// The slot-bookkeeping contract of the shared CCID handler core
+/// (`ccid-core` `CcidHandlerCore`, PERF_AND_DRY_STRATEGY §3.1): presence
+/// polling, session liveness and the optional cached UID. This is the
+/// transport/card-axis-neutral slice of [`NfcCardExt`] — every NFC driver
+/// satisfies it via the blanket impl below, and contact drivers
+/// (STM32 smartcard USART) implement it directly:
+/// `poll_card_presence()` maps to the card-detect GPIO, `session_active()`
+/// returns false so the core always polls (contact slots have no
+/// activation short-circuit).
+pub trait SlotDriver: CardBackend {
+    fn poll_card_presence(&mut self) -> PresenceState;
+    fn session_active(&self) -> bool;
+
+    /// Cached UID of the present card (contactless anticollision);
+    /// `None` on contact drivers — the core's CLA=0xFF pseudo-APDU
+    /// interception is disabled for contact reader profiles anyway.
+    fn card_uid(&self) -> Option<&[u8]> {
+        None
+    }
+}
+
+impl<D: NfcCardExt> SlotDriver for D {
+    fn poll_card_presence(&mut self) -> PresenceState {
+        NfcCardExt::poll_card_presence(self)
+    }
+
+    fn session_active(&self) -> bool {
+        NfcCardExt::session_active(self)
+    }
+
+    fn card_uid(&self) -> Option<&[u8]> {
+        NfcCardExt::card_uid(self)
+    }
 }
 
 #[cfg(test)]

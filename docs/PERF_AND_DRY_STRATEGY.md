@@ -11,7 +11,7 @@ handling into one shared core. Update it as lanes land.
 |---|---|---|---|---|---|
 | ACR1252 (reference) | full GPG | 8.8 ms | 8.9 | 39 ms | — |
 | CardMan 3121 (reference) | full | 10.9 ms | 11.0 | 39 ms | — |
-| **Cherry/STM32F469 (ours)** | works | 95.3 → **42.8 ms** (round 2 running) | 43.0 | 1507 → **504 ms** | fixed per-exchange cost, agent iterating (a8fef3b) |
+| **Cherry/STM32F469 (ours)** | works | **42.9 ms** (42.8 pre-port; dry-phase2 shared-core build re-measured 2026-10-11, n=300: non-regressing) | 45.9 | 503 ms | fixed per-exchange cost, agent iterating (a8fef3b) |
 | **GemPCTwin/m5stick (ours)** | works, cardless | ~10–30 ms (T=1 relay) | — | ~300 ms | card off coil (physical); CAP-upload relay latency |
 | **Nucula (ours)** | **fixed 2026-10-10** | **5.1 ms** p50, max 8.3 | — | — | ~~2.0 s stalls~~ ELIMINATED (5f702e4); 10-min pcscd soak 20/20 clean; cardless (physical) |
 
@@ -56,6 +56,41 @@ Port order: move the ESP32 handler (younger, fuzz-hardened) → teach it
 the STM32's PIN/secure surface → point the STM32 USB transport at it.
 Gate: battery byte-identical + perf non-regressing + HIL 7/7.
 
+**Phase 1 DONE (2026-10-11, `handler-unify` branch)**: the ESP32
+dispatch lives in `crates/ccid-core/src/handler.rs`
+(`CcidHandlerCore`, no_std, generic over card-interface's
+`CardBackend`+`NfcCardExt`). `esp32-ccid/src/ccid_handler.rs` is a
+thin wrapper keeping the T=1 endpoint routing (`t1.rs`) local, wired
+via two core events (`take_card_reset` disarm / `take_parameters_
+accepted` arm) plus the pub `apdu_pipeline` for the T=1 relay path.
+ESP32 wrapper tests byte-identical (137/137); ccid-core carries its
+own standalone suite. Remaining: teach the core the STM32's
+PIN/Secure surface + point the STM32 USB transport at it (phase 2).
+
+**Phase 2 DONE (2026-10-11, issue #121)**: `CcidHandlerCore` is
+generic over a `ReaderProfile` (`SerialNfcProfile` default = the
+esp32 bytes; `ContactProfile` = the STM32 bytes) and the core's
+driver bound is the new `card_interface::SlotDriver` (blanket-implied
+by `NfcCardExt`). The PIN/Secure surface (§6.1.11/12 wire structs in
+`ccid-core/src/secure.rs`, secure-state arm/complete/cancel events,
+runtime `pin_pad` knob) and the contact parameter model (ATR-derived
+params, host-set echo + validation, contact error shapes) live in the
+core. `firmware/ccid-firmware`'s `CcidMessageHandler` is a thin
+wrapper (USB framing, vendor escapes, IccClock/SetDataRate, display
+PIN processing); SetParameters acceptance reaches the USART via the
+`take_parameters_accepted` event. Both wire behaviors are pinned by
+tests on both sides (esp32 137/137 byte-identical; firmware suites +
+the resurrected root characterization suites over the wrapper;
+ccid-core contact-profile tests). **HIL verified 7/7 on the bench
+(2026-10-11, dry-phase2 build sha256 8393464e…)**: USB enum, pcscd
+detection + ComSign ATR, APDU relay, PIN-pad feature advertisement,
+Escape 0xD0 counters — and the §2 refactor gate closed: perf
+non-regressing (42.89 ms mean n=300 vs 42.8 baseline, connect 503 vs
+504 ms). ESP32 byte-identity is pinned by the 137/137 host suite
+(phase-1 precedent — the serial profile branches are compile-time
+const-off there; the serial conformance battery additionally needs the
+m5stick/nucula places, held by sibling lanes at measurement time).
+
 ### 3.2 What osmo-ccid-firmware teaches (reference study)
 
 Their layout: one `ccid_common/` — `iso7816_3.c` (the single ETU/guard/
@@ -95,7 +130,7 @@ block↔APDU logic) and moves to ccid-core unchanged.
 | 2 | STM32 95 ms root-cause | **round 1 landed** (a8fef3b): 95.3→42.8 ms; round 2 running | STM32 on-par |
 | 3 | card placement (m5stick + nucula coils) | **human** — both verified cardless via known-good + power-cycle | #87 differential, GPG-through-our-readers |
 | 4 | differential rerun (#87 close) | blocked on 3 | card-level correctness across readers |
-| 5 | handler unification (3.1) | blocked on 1+2 landing + battery gate | the big DRY |
+| 5 | handler unification (3.1) | **DONE**: phase 1 ESP32 extraction + phase 2 STM32 port onto the core (issue #121); HIL 7/7 on the bench | — |
 | 6 | m5stick CAP-upload perf | blocked on 3 (need a card to test) | install-through-our-reader |
 
 ## 5. Card-safety rules (standing)

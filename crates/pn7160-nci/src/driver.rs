@@ -33,10 +33,12 @@ pub enum RearmPhase {
     /// RSP was STATUS_OK — discovery restarted natively (NCI v2.3
     /// §5.2.5: type DISCOVERY returns the NFCC to the discovery loop; no
     /// RF_DISCOVER re-issue, which mutes the PN7160 after ~11 cycles,
-    /// bench 2026-10-10). Tag NTFs are expected within TOTAL_DURATION
-    /// (~0.5 s, CORE_SET_CONFIG TLV 0x0202) and land via the normal
-    /// per-poll event drains.
+    /// bench 2026-10-10). `polls` counts the tag-collect window; expiry
+    /// counts one empty re-arm cycle toward [`ABSENT_REARMS_TO_CLEAR`].
     AwaitNtf { polls: u8 },
+    /// RF_DISCOVER probe written (the one-shot #125 recovery), RSP not
+    /// collected yet. Same poll-bounded shape as [`RearmPhase::AwaitRsp`].
+    DiscoverProbeRsp { polls: u8 },
 }
 
 pub struct Pn7160Driver<T: Transport> {
@@ -54,12 +56,31 @@ pub struct Pn7160Driver<T: Transport> {
     /// 2026-10-10). `None` for plain DISCOVER-NTF tags (ATS arrives
     /// with the select response there).
     last_auto_ats: Option<heapless::Vec<u8, 32>>,
+    collect_rounds: u8,
     /// #88 TTL re-arm bookkeeping: polls since the last discovery
     /// notification, and consecutive re-arm cycles that saw no tag.
     polls_since_ntf: u32,
     absent_rearms: u8,
     /// In-flight split re-arm step (see [`RearmPhase`]).
     rearm: Option<RearmPhase>,
+    /// One-shot RF_DISCOVER probe allowance (issue #125): armed on every
+    /// presence/session edge (tag latch/clear, power_off), consumed by
+    /// the first empty re-arm window. Keeps the recovery probe off the
+    /// steady-state cadence — a per-cycle RF_DISCOVER re-issue mutes the
+    /// PN7160 after ~11 cycles (bench 2026-10-10).
+    probe_armed: bool,
+    /// Park-in-discovery state (bench 2026-10-12): the DEACTIVATE re-arm
+    /// cadence itself semi-mutes the PN7160 after ~11 cycles under WiFi
+    /// load — I2C keeps ACKing but the NFCC stops answering RSPs. Once
+    /// absence is confirmed the driver parks: the NFCC sits in perpetual
+    /// discovery (its natural state), where an arriving tag
+    /// auto-activates and raises its NTF without host cycling.
+    discovery_parked: bool,
+    /// Re-arm writes ACKed but never answered (semi-mute signal): a
+    /// healthy NFCC answers RF_DEACTIVATE in milliseconds; three
+    /// silent re-arms mean the chip wedged — only a VEN power cycle
+    /// recovers it.
+    silent_rearms: u8,
 }
 
 /// Presence re-arm cadence in polls (issue #88): at the firmware's 500 ms
@@ -94,9 +115,13 @@ impl<T: Transport> Pn7160Driver<T> {
             uid_len: 0,
             last_ntf: None,
             last_auto_ats: None,
+            collect_rounds: 0,
             polls_since_ntf: 0,
             absent_rearms: 0,
             rearm: None,
+            probe_armed: false,
+            discovery_parked: false,
+            silent_rearms: 0,
         }
     }
 
@@ -112,13 +137,27 @@ impl<T: Transport> Pn7160Driver<T> {
     pub fn rearm_phase(&self) -> Option<RearmPhase> {
         self.rearm
     }
+
+    /// Consecutive ACKed-but-unanswered re-arm writes (semi-mute
+    /// detector): the serve loop VEN-cycles the PN7160 on threshold.
+    pub fn silent_rearm_streak(&self) -> u8 {
+        self.silent_rearms
+    }
 }
 
 impl<T: Transport> Pn7160Driver<T> {
     /// NCI bring-up ladder (CORE_RESET → CORE_INIT → SET_CONFIG →
     /// DISCOVER_MAP → DISCOVER). Call once after VEN power-cycle.
     pub fn init(&mut self) -> Result<(), Error> {
-        super::run_ladder(&mut self.transport).map_err(Error::BringUp)
+        super::run_ladder(&mut self.transport).map_err(Error::BringUp)?;
+        // Boot-NTF recovery (bench regression: a tag on the coil at boot
+        // has its activation NTF consumed by the bring-up exchanges and
+        // presence stays absent until the first re-arm — see
+        // boot_ntf_eaten_by_bringup_rediscovered_by_rearm). Force the
+        // FIRST presence poll to re-arm discovery immediately instead of
+        // after PRESENCE_REARM_POLLS quiet polls.
+        self.polls_since_ntf = PRESENCE_REARM_POLLS;
+        Ok(())
     }
 
     /// Check whether a tag is in the field (consumes pending notifications).
@@ -153,6 +192,25 @@ impl<T: Transport> Pn7160Driver<T> {
     /// first empty re-arm.
     pub fn is_card_present(&mut self) -> bool {
         if self.active {
+            // Issue #109 item 2: a live session must not blind the
+            // driver. The chip announces a mid-session removal as an
+            // RF_DEACTIVATE_NTF (reason RF-link-loss — NCI §5.2.5.2,
+            // Table 81); that frame surfaces via the plain drain (on the
+            // I2C link, `transact` stashes NTFs that arrive mid-exchange),
+            // and this poll turns it into the presence transition the
+            // serve layer announces to the host. Strictly non-blocking
+            // (drain only): no writes, no re-arm — an active RF interface
+            // must not be torn down behind the session's back.
+            match reader::wait_for_event(&mut self.transport) {
+                Some(reader::TagEvent::LinkLost) => {
+                    self.teardown_on_link_loss();
+                    return false;
+                }
+                // A tag-shaped NTF while active (re-emitted activation)
+                // just refreshes the cache; the session continues.
+                Some(reader::TagEvent::Tag(n, ats)) => self.latch_tag(n, ats),
+                None => {}
+            }
             return true;
         }
         self.step_rearm();
@@ -181,7 +239,7 @@ impl<T: Transport> Pn7160Driver<T> {
             // power cycle), and the cycles yield no fresh NTFs anyway.
             return true;
         }
-        if self.rearm.is_none() {
+        if self.rearm.is_none() && !self.discovery_parked {
             self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
             if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
                 self.polls_since_ntf = 0;
@@ -204,6 +262,7 @@ impl<T: Transport> Pn7160Driver<T> {
             RearmPhase::AwaitRsp { polls } => {
                 match self.transport.poll_frame() {
                     Some(f) if f.is_rsp_to(&reader::RF_DEACTIVATE_DISCOVERY) => {
+                        self.silent_rearms = 0;
                         self.rearm = if f.status() == Some(STATUS_OK) {
                             Some(RearmPhase::AwaitNtf { polls: 0 })
                         } else {
@@ -235,12 +294,47 @@ impl<T: Transport> Pn7160Driver<T> {
                         self.last_ntf = None;
                         self.last_auto_ats = None;
                         self.absent_rearms = 0;
+                        // Park: absence confirmed — the cadence stops
+                        // here; perpetual discovery sees the next arrival.
+                        self.discovery_parked = true;
+                    }
+                    // #125 recovery: an empty window right after a
+                    // presence/session edge may mean the NFCC sat down
+                    // (session teardown stops polling on the bench
+                    // PN7160 even with a card in the field). One
+                    // non-blocking RF_DISCOVER probe, then a fresh NTF
+                    // window — never per-cycle (chip mute, ~11 cycles).
+                    if self.probe_armed && self.transport.send(&reader::RF_DISCOVER_PASSIVE_A) {
+                        self.probe_armed = false;
+                        self.rearm = Some(RearmPhase::DiscoverProbeRsp { polls: 0 });
                     }
                 } else {
                     self.rearm = Some(RearmPhase::AwaitNtf { polls: polls + 1 });
                 }
             }
+            RearmPhase::DiscoverProbeRsp { polls } => match self.transport.poll_frame() {
+                Some(f) if f.is_rsp_to(&reader::RF_DISCOVER_PASSIVE_A) => {
+                    self.rearm = if f.status() == Some(STATUS_OK) {
+                        Some(RearmPhase::AwaitNtf { polls: 0 })
+                    } else {
+                        None
+                    };
+                }
+                Some(f) => match reader::event_of(&f) {
+                    Some(ev) => self.absorb_event(ev),
+                    None => self.advance_probe_or_give_up(polls),
+                },
+                None => self.advance_probe_or_give_up(polls),
+            },
         }
+    }
+
+    fn advance_probe_or_give_up(&mut self, polls: u8) {
+        self.rearm = if polls + 1 >= REARM_RSP_POLLS {
+            None
+        } else {
+            Some(RearmPhase::DiscoverProbeRsp { polls: polls + 1 })
+        };
     }
 
     fn advance_or_give_up(&mut self, polls: u8) {
@@ -248,6 +342,7 @@ impl<T: Transport> Pn7160Driver<T> {
             // RSP never arrived within the granted polls (NCI v2.3
             // §5.2.5 allows the NFCC to defer it behind RF activity):
             // abandon the re-arm, keep last known presence.
+            self.silent_rearms = self.silent_rearms.saturating_add(1);
             None
         } else {
             Some(RearmPhase::AwaitRsp { polls: polls + 1 })
@@ -269,6 +364,9 @@ impl<T: Transport> Pn7160Driver<T> {
         self.polls_since_ntf = 0;
         self.absent_rearms = 0;
         self.rearm = None;
+        self.probe_armed = true;
+        self.discovery_parked = false;
+        self.silent_rearms = 0;
     }
 
     fn clear_tag(&mut self) {
@@ -277,6 +375,21 @@ impl<T: Transport> Pn7160Driver<T> {
         self.polls_since_ntf = 0;
         self.absent_rearms = 0;
         self.rearm = None;
+        self.probe_armed = true;
+        self.discovery_parked = false;
+    }
+
+    /// Session teardown on mid-session link-loss (issue #109 item 2):
+    /// the tag physically left the field while the CCID session was
+    /// live. Clears EVERYTHING a later `power_on` could resurrect —
+    /// the cached NTF and the auto-activation ATS included — so no
+    /// stale activation answers for a card that is gone, and the
+    /// session ends (`transmit_apdu` → NoCard) without a wire write:
+    /// the chip already tore the RF interface down itself.
+    fn teardown_on_link_loss(&mut self) {
+        self.active = false;
+        self.uid_len = 0;
+        self.clear_tag();
     }
 
     /// Discover, select, and activate a tag; copies the ATS (from the
@@ -290,14 +403,99 @@ impl<T: Transport> Pn7160Driver<T> {
     /// comes from the activation NTF itself (its tail TLV) and the
     /// established connection serves APDUs directly.
     pub fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Error> {
-        let (fresh_ntf, fresh_ats) = match reader::wait_for_tag(&mut self.transport) {
-            Some((n, ats)) => {
-                self.last_ntf = Some(n);
-                self.last_auto_ats = ats.clone();
-                (Some(n), ats)
+        // #125 collect-wait: after a power_off the re-issued discovery
+        // auto-activates the tag within ~1 s — a single non-blocking
+        // drain returned NoCard immediately and pcscd's connect (which
+        // power-offs at open) always failed. Bounded wait: 8 x 150 ms
+        // via Transport::wait_ms (no-op in host mocks).
+        // The budget is PER-CALL: without this reset it was a one-time
+        // consumable and every power_on after the first ~2 connects did
+        // zero waiting — the "present but unresponsive" bench state.
+        self.collect_rounds = 0;
+        let (fresh_ntf, fresh_ats) = loop {
+            match reader::wait_for_event(&mut self.transport) {
+                Some(reader::TagEvent::Tag(n, ats)) => {
+                    self.last_ntf = Some(n);
+                    self.last_auto_ats = ats.clone();
+                    break (Some(n), ats);
+                }
+                // The tag left the field since the last presence poll:
+                // the cached NTF/ATS is stale and must NOT be
+                // resurrected into a phantom ATR (issue #109 item 2).
+                Some(reader::TagEvent::LinkLost) => {
+                    self.clear_tag();
+                    return Err(Error::NoCard);
+                }
+                None => {}
             }
-            None => (None, None),
+            if self.collect_rounds >= 8 {
+                break (None, None);
+            }
+            self.collect_rounds += 1;
+            self.transport.wait_ms(150);
         };
+        // Phantom-latch guard (bench 2026-10-13): discovery is running
+        // (the preceding power_off restarted it) — a present tag
+        // re-activates within the collect window. Nothing fresh AND no
+        // cached AUTO-activation means the tag left while its plain
+        // discovery NTF stayed latched: selecting against that stale
+        // id fails forever and traps pcscd in a connect-retry loop
+        // that churns the chip into send-mute. Clear and fail clean;
+        // a real re-arrival raises a fresh NTF.
+        if fresh_ntf.is_none() && self.last_auto_ats.is_none() && self.last_ntf.is_some() {
+            self.clear_tag();
+            return Err(Error::NoCard);
+        }
+        // Wall-power re-activation (bench 2026-10-13): the card coupled
+        // during boot, the activation NTF was consumed by the first
+        // presence poll, and a later exchange failure cleared the cache.
+        // The NFCC still holds the RF interface open (auto-activated)
+        // but won't re-fire the NTF. Force a fresh activation cycle:
+        // deactivate to discovery, then collect again — the present
+        // tag re-activates within ~0.5 s.
+        if fresh_ntf.is_none() && self.last_ntf.is_none() {
+            let _ = reader::deactivate_to_discovery(&mut self.transport);
+            self.collect_rounds = 0;
+            let (ntf2, ats2) = loop {
+                match reader::wait_for_event(&mut self.transport) {
+                    Some(reader::TagEvent::Tag(n, ats)) => {
+                        self.last_ntf = Some(n);
+                        self.last_auto_ats = ats.clone();
+                        break (Some(n), ats);
+                    }
+                    Some(reader::TagEvent::LinkLost) => {
+                        self.clear_tag();
+                        return Err(Error::NoCard);
+                    }
+                    None => {}
+                }
+                if self.collect_rounds >= 8 {
+                    break (None, None);
+                }
+                self.collect_rounds += 1;
+                self.transport.wait_ms(150);
+            };
+            if ntf2.is_none() {
+                return Err(Error::NoCard);
+            }
+            let ntf = ntf2.unwrap();
+            let ats: heapless::Vec<u8, 32> = match ats2 {
+                Some(a) => a,
+                None => return Err(Error::Select("re-activation carried no ATS")),
+            };
+            if let Some(uid) = reader::nfca_uid(&ntf) {
+                self.uid_len = uid.len().min(10);
+                self.uid[..self.uid_len].copy_from_slice(&uid[..self.uid_len]);
+            }
+            let atr_bytes = crate::transport::ats_to_atr(&ats)
+                .ok_or(Error::Select("ATS too short for ATR construction"))?;
+            if atr.len() < atr_bytes.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            atr[..atr_bytes.len()].copy_from_slice(&atr_bytes);
+            self.active = true;
+            return Ok(atr_bytes.len());
+        }
         let ntf = fresh_ntf.or(self.last_ntf).ok_or(Error::NoCard)?;
         let auto_ats = fresh_ats.or_else(|| self.last_auto_ats.clone());
         if let Some(uid) = reader::nfca_uid(&ntf) {
@@ -329,14 +527,49 @@ impl<T: Transport> Pn7160Driver<T> {
         Ok(atr_bytes.len())
     }
 
-    /// Deactivate the RF interface back to idle.
+    /// Deactivate the RF interface and return the reader to POLLING.
     pub fn power_off(&mut self) {
-        let _ = reader::deactivate_idle(&mut self.transport);
+        // CCID power-off semantics: the card powers down but the reader
+        // keeps polling — that is how the next insertion is seen. Going
+        // to IDLE instead left no RF_DISCOVER running, so the
+        // auto-activation NTF never re-fired and presence (GSS bStatus)
+        // read absent forever after a host IccPowerOff (bench
+        // 2026-10-11: pcscd "Card removed" after its open-sequence
+        // power-off; bStatus 01 → 02 stuck while the card sat on the
+        // coil).
+        // Lazy teardown (bench 2026-10-13): pcscd's connect sequence
+        // ALWAYS power-offs immediately before power-on — deactivating
+        // the auto-activated tag destroys the only good activation a
+        // marginal card gives per field cycle, and its re-activation
+        // after teardown is not reliable. Keep the RF interface: mark
+        // the session logically off and let the next power_on rebuild
+        // from the cached auto-ATS (no select, no re-activation). The
+        // interface frees on link-lost, or on a power_off with no
+        // cached activation (the eager path below).
+        if self.last_auto_ats.is_some() {
+            self.active = false;
+            self.probe_armed = true;
+            self.discovery_parked = false;
+            return;
+        }
+        // Eager path: only a SELECTED session holds an RF interface
+        // without a cached auto-ATS — tear that one down (single
+        // transact; the re-issue is refused 0xA0 when discovery is
+        // already running). A plain discovery-NTF latch has no
+        // interface: no chip writes at all.
+        if self.active {
+            if reader::deactivate_to_discovery(&mut self.transport).is_err() {
+                let _ = reader::restart_discovery(&mut self.transport);
+            }
+        }
         self.active = false;
         self.uid_len = 0;
         self.last_ntf = None;
         self.last_auto_ats = None;
         self.rearm = None;
+        self.probe_armed = true;
+        self.discovery_parked = false;
+        self.silent_rearms = 0;
     }
 
     /// Exchange one APDU with the activated tag (connection 0).
@@ -345,6 +578,15 @@ impl<T: Transport> Pn7160Driver<T> {
             return Err(Error::NoCard);
         }
         let rsp = reader::exchange(&mut self.transport, 0, command).ok_or(Error::ExchangeFailed)?;
+        // Stale-ACTIVE guard (bench 2026-10-13): every real APDU response
+        // carries SW (>= 2 bytes) — an EMPTY exchange means the tag faded
+        // without a link-lost NTF and the lazy-teardown cache is holding a
+        // phantom session. Clear the latch so presence reads absent and
+        // discovery re-arms for the next real coupling.
+        if rsp.is_empty() {
+            self.clear_tag();
+            return Err(Error::ExchangeFailed);
+        }
         if response.len() < rsp.len() {
             return Err(Error::BufferTooSmall);
         }
@@ -367,36 +609,23 @@ mod tests {
     use super::*;
     use crate::mock::MockTransport;
     use crate::{
-        DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF, MT_RSP, NCI_INTERFACE_ISO_DEP,
-        NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER, NTF_RF_INTF_ACTIVATED,
-        OID_CORE_INIT, OID_CORE_RESET, OID_CORE_SET_CONFIG, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
+        DEACTIVATE_REASON_DH_REQ, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+        DEACTIVATE_REASON_RF_LINK_LOSS_NXP, DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF,
+        MT_RSP, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER,
+        NTF_RF_INTF_ACTIVATED, OID_CORE_INIT, OID_CORE_RESET, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
         OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
     };
 
     // A realistic ISO-DEP ATS (per ISO 14443-4: TL, T0, TA1, TB1)
     // Proper ATS: TL=5, T0=0x75, TA1=0x77, TB1=0x81, TC1=0x02
-    const TEST_ATS: [u8; 5] = [0x05, 0x75, 0x77, 0x81, 0x02];
+    const TEST_ATS: [u8; 6] = [0x75, 0x77, 0x81, 0x02, 0x80, 0x73];
     // PC/SC ATR constructed from the ATS: 0x3B replaces TL, body follows
-    const TEST_ATR: [u8; 5] = [0x3B, 0x75, 0x77, 0x81, 0x02];
+    const TEST_ATR: [u8; 9] = [0x3B, 0x82, 0x81, 0x31, 0xFE, 0x45, 0x80, 0x73, 0x7A];
 
     fn script_ladder(t: &mut MockTransport) {
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
         t.push_notification(&[MT_NTF, OID_CORE_RESET, 0x01, 0x00]);
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_INIT, 0x01, STATUS_OK]);
-        t.push_reply(&[
-            MT_RSP | GID_CORE,
-            OID_CORE_SET_CONFIG,
-            0x02,
-            0x01,
-            STATUS_OK,
-        ]);
-        t.push_reply(&[
-            MT_RSP | GID_CORE,
-            OID_CORE_SET_CONFIG,
-            0x02,
-            0x01,
-            STATUS_OK,
-        ]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_MAP, 0x01, STATUS_OK]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
     }
@@ -420,7 +649,7 @@ mod tests {
         t.push_notification(&[
             MT_NTF | GID_RF,
             NTF_RF_INTF_ACTIVATED,
-            0x0B,
+            0x0C,
             0x01,
             NCI_INTERFACE_ISO_DEP,
             NCI_PROTOCOL_ISO_DEP,
@@ -432,6 +661,7 @@ mod tests {
             TEST_ATS[2],
             TEST_ATS[3],
             TEST_ATS[4],
+            TEST_ATS[5],
         ]);
     }
 
@@ -549,6 +779,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transmit_fragmented_apdu_reassembles_response() {
+        // GP STORE DATA shape through the driver layer: a 260-octet
+        // command fragments 253 + 7 at the NCI layer (PBF chain, credit
+        // gate between fragments — lib.rs exchange tests); the response
+        // passes transmit_apdu's existing bounds check untouched.
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        t.push_reply(&[0x60, 0x06, 0x03, 0x01, 0x00, 0x01]); // credit re-grant
+        script_apdu(&mut t, &[0x90, 0x00]);
+
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+
+        let mut rsp = [0u8; 1024];
+        let n = drv
+            .transmit_apdu(&[0xA5u8; 260], &mut rsp)
+            .expect("fragmented apdu");
+        assert_eq!(&rsp[..n], &[0x90, 0x00]);
+
+        let t = drv.transport_mut();
+        // sent = [RF_DISCOVER_SELECT (power_on), DATA fragment 1, DATA
+        // fragment 2].
+        assert_eq!(t.sent.len(), 3);
+        assert_eq!(t.sent[1].len(), 3 + 253);
+        assert_eq!(t.sent[1][0], 0x10, "first fragment PBF set");
+        assert_eq!(t.sent[2].len(), 3 + 7);
+        assert_eq!(t.sent[2][0], 0x00, "last fragment PBF clear");
+    }
+
     // --- Issue #88: TTL presence re-arm (edge-triggered discovery NTFs) ---
 
     fn discover_ntf() -> [u8; 8] {
@@ -589,6 +850,170 @@ mod tests {
         assert!(drv.is_card_present());
     }
 
+    // given a powered-on session (bench 2026-10-11: pcscd's open
+    // sequence always sends IccPowerOff), when power_off runs, then the
+    // reader returns to DISCOVERY (RF_DEACTIVATE type=DISCOVERY, not
+    // IDLE) and the next auto-activation NTF re-establishes presence —
+    // from IDLE no discovery was running and presence read absent
+    // forever ("Card removed" in pcscd while the card sat on the coil).
+    #[test]
+    fn power_off_returns_to_discovery_and_presence_re_latches() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        let mut atr = [0u8; 32];
+        let n = drv.power_on(&mut atr).expect("power_on");
+        assert!(n > 0);
+
+        // Lazy teardown (bench 2026-10-13): pcscd's connect sequence
+        // power-offs immediately before power-on — tearing down the
+        // auto-activated tag destroys the only good activation a
+        // marginal card gives per field cycle. power_off keeps the RF
+        // interface: zero chip writes, session logically off.
+        drv.power_off();
+        assert!(!drv.session_active());
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            0,
+            "lazy teardown writes nothing"
+        );
+        assert!(
+            drv.is_card_present(),
+            "the auto-activated tag stays present across the logical off"
+        );
+
+        // The payoff: pcscd's immediate power_on rebuilds the ATR from
+        // the cached auto-ATS — no select, no re-activation needed.
+        let mut atr2 = [0u8; 32];
+        let n2 = drv.power_on(&mut atr2).expect("power_on after lazy off");
+        assert!(n2 > 0);
+
+        // the field re-polls: the next auto-activation re-latches
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
+        assert!(drv.is_card_present());
+    }
+
+    // The #125 bench repro as a host test: GSS present → host
+    // IccPowerOff (pcscd's open sequence always sends it first) →
+    // presence must recover via the RF_DISCOVER re-issue and power_on
+    // must return a fresh ATR — the chip does NOT restart polling on
+    // its own after a session teardown.
+    #[test]
+    fn poweroff_stuck_chip_recovers_presence_and_atr() {
+        let mut t = MockTransport::new();
+        t.push_notification(&auto_activation_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        let mut atr = [0u8; 32];
+        assert!(drv.power_on(&mut atr).is_ok());
+
+        // power_off: deactivate RSP OK; the chip answers the discover
+        // re-issue OK. The activation NTF is pushed AFTER — the chip
+        // auto-activates ~TOTAL_DURATION after the discover write (and
+        // power_off's deactivate drain would eat a pre-queued NTF).
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        drv.power_off();
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
+
+        // Recovery window: the activation NTF lands within the next
+        // polls (bench: ~TOTAL_DURATION after the discover).
+        let mut present = false;
+        for _ in 0..REARM_NTF_POLLS + 1 {
+            if drv.is_card_present() {
+                present = true;
+                break;
+            }
+        }
+        assert!(present, "presence re-latches after the discover re-issue");
+
+        let mut atr2 = [0u8; 32];
+        let n = drv.power_on(&mut atr2).expect("power_on after power_off");
+        assert!(n > 0);
+        assert!(!drv
+            .into_transport()
+            .sent
+            .iter()
+            .any(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER_SELECT));
+    }
+
+    // given an empty re-arm window with the probe armed (a presence edge
+    // happened), when the window expires, then exactly ONE RF_DISCOVER
+    // probe is written — never per-cycle (chip mute after ~11, bench
+    // 2026-10-10) — and a probe RSP failure is survivable.
+    #[test]
+    fn rearm_expiry_probes_discovery_once_and_survives_rejection() {
+        for probe_rsp_ok in [true, false] {
+            let mut t = MockTransport::new();
+            t.push_notification(&auto_activation_ntf());
+            let mut drv = Pn7160Driver::new(t);
+            assert!(drv.is_card_present(), "latch arms the probe");
+
+            // Absence: the link-loss NTF clears the latch (re-arming).
+            drv.transport_mut().push_notification(&[
+                MT_NTF | GID_RF,
+                OID_RF_DEACTIVATE,
+                0x02,
+                DEACTIVATE_TYPE_IDLE,
+                DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
+            ]);
+            assert!(!drv.is_card_present());
+
+            // Run the deactivate re-arm to its empty NTF window: the
+            // deactivate RSP comes back OK, no tag NTF follows. The
+            // probe RSP is OK or a status rejection, per the loop.
+            let t = drv.transport_mut();
+            t.push_reply(&[MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, STATUS_OK]);
+            t.push_reply(&[
+                MT_RSP | GID_RF,
+                OID_RF_DISCOVER,
+                0x01,
+                if probe_rsp_ok { STATUS_OK } else { 0x05 },
+            ]);
+
+            let probe_writes;
+            for _ in 0..(PRESENCE_REARM_POLLS as usize
+                + REARM_RSP_POLLS as usize
+                + REARM_NTF_POLLS as usize
+                + 4)
+            {
+                drv.is_card_present();
+            }
+            let t = drv.transport_mut();
+            probe_writes = t
+                .sent
+                .iter()
+                .filter(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER)
+                .count();
+            assert_eq!(
+                probe_writes, 1,
+                "exactly one discover probe after the edge (rsp_ok={probe_rsp_ok})"
+            );
+
+            // Rejection path: no phase stuck; the steady cadence may
+            // write its next DEACTIVATE (expected), but never another
+            // DISCOVER probe.
+            for _ in 0..(PRESENCE_REARM_POLLS as usize + 4) {
+                drv.is_card_present();
+            }
+            let discovers_after = drv
+                .transport_mut()
+                .sent
+                .iter()
+                .filter(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER)
+                .count();
+            assert_eq!(
+                discovers_after, probe_writes,
+                "probe not repeated after its window (rsp_ok={probe_rsp_ok})"
+            );
+        }
+    }
+
     // given the tag is ALREADY activated (auto-activation), when the host
     // powers on, then NO RF_DISCOVER_SELECT is sent (it wedges the
     // PN7160 — bench 2026-10-10), the ATR comes from the activation
@@ -615,7 +1040,7 @@ mod tests {
             .expect("power_on via auto-activation");
         assert_eq!(
             &atr[..atr_len],
-            &[0x3B, 0x78, 0x77, 0x91, 0x02, 0x80, 0x73, 0xC8, 0x21],
+            &[0x3B, 0x85, 0x81, 0x31, 0xFE, 0x45, 0x80, 0x73, 0xC8, 0x21, 0x10, 0x84],
             "ATR from the cached activation ATS"
         );
         assert_eq!(
@@ -663,36 +1088,153 @@ mod tests {
     }
 
     // given an auto-activated tag, when the chip reports RF_DEACTIVATE
-    // with reason RF-link-lost (the tag left the field), then presence
-    // clears immediately; a DH-requested deactivation (our own
-    // teardown) must not be mistaken for removal.
+    // with reason RF-link-lost (the tag left the field — NCI §5.2.5.2
+    // Table 81), then presence clears immediately; a DH-requested
+    // deactivation (our own teardown, reason 0x00) must not be mistaken
+    // for removal. Both disputed link-loss candidates are covered (see
+    // the DEACTIVATE_REASON_* block comment in lib.rs).
     #[test]
     fn rf_link_lost_clears_auto_presence() {
+        for reason in [
+            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
+        ] {
+            let mut t = MockTransport::new();
+            t.push_notification(&auto_activation_ntf());
+            let mut drv = Pn7160Driver::new(t);
+            assert!(
+                drv.is_card_present(),
+                "reason {:#x}: latch activation",
+                reason
+            );
+
+            // reason 0x00 = DH request (e.g. a host power_off in
+            // flight) — not a removal; presence unchanged.
+            drv.transport_mut().push_notification(&[
+                MT_NTF | GID_RF,
+                NTF_RF_DEACTIVATE,
+                0x02,
+                DEACTIVATE_TYPE_IDLE,
+                DEACTIVATE_REASON_DH_REQ,
+            ]);
+            assert!(
+                drv.is_card_present(),
+                "reason {:#x}: DH-requested deactivate ≠ removal",
+                reason
+            );
+
+            // link-loss — the tag is gone.
+            drv.transport_mut().push_notification(&[
+                MT_NTF | GID_RF,
+                NTF_RF_DEACTIVATE,
+                0x02,
+                DEACTIVATE_TYPE_IDLE,
+                reason,
+            ]);
+            assert!(
+                !drv.is_card_present(),
+                "reason {:#x}: link loss = immediate absent",
+                reason
+            );
+        }
+    }
+
+    // --- Issue #109 item 2: active-session removal + stale reuse ---
+
+    // given a LIVE session (power_on done, APDUs answered), when the tag
+    // is removed mid-session (link-loss NTF), then the next presence poll
+    // tears the session down — presence false, session_active false,
+    // transmit rejected — and the teardown writes nothing to the wire
+    // (the chip already dropped the RF interface itself).
+    #[test]
+    fn active_session_link_loss_tears_down_session() {
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        script_apdu(&mut t, &[0x90, 0x00]);
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+        let mut rsp = [0u8; 256];
+        drv.transmit_apdu(&[0x00], &mut rsp).expect("apdu");
+
+        drv.transport_mut().push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
+        ]);
+        let sent_before = drv.transport_mut().sent.len();
+        assert!(!drv.is_card_present(), "mid-session removal flips presence");
+        assert!(!drv.session_active(), "session state cleared");
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            sent_before,
+            "teardown must not write — the chip dropped the interface"
+        );
+        assert_eq!(
+            drv.transmit_apdu(&[0x00], &mut rsp),
+            Err(Error::NoCard),
+            "dead session rejects APDUs"
+        );
+    }
+
+    // given a live session, when a DH-requested deactivate NTF arrives
+    // (echo of our own deactivate paths), then the session stays up.
+    #[test]
+    fn dh_request_deactivate_during_session_is_not_removal() {
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+
+        drv.transport_mut().push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            DEACTIVATE_REASON_DH_REQ,
+        ]);
+        assert!(drv.is_card_present());
+        assert!(drv.session_active(), "DH-request ≠ mid-session removal");
+    }
+
+    // given the tag was removed between presence polls (link-loss NTF
+    // queued while the cache still holds the activation), when the host
+    // calls power_on directly, then the drain consumes the link-loss,
+    // discards the stale cache, and answers NoCard — no phantom ATR from
+    // the stale ATS, no select from the stale discovery (issue #109
+    // item 2: "power_on may also reuse a stale activation NTF").
+    #[test]
+    fn power_on_consumes_link_loss_and_rejects_stale_ntf() {
         let mut t = MockTransport::new();
         t.push_notification(&auto_activation_ntf());
         let mut drv = Pn7160Driver::new(t);
-        assert!(drv.is_card_present());
+        assert!(drv.is_card_present(), "latch the auto-activation");
 
-        // reason 0x01 = DH request (e.g. a host power_off in flight) —
-        // not a removal; presence unchanged.
         drv.transport_mut().push_notification(&[
             MT_NTF | GID_RF,
             NTF_RF_DEACTIVATE,
             0x02,
             DEACTIVATE_TYPE_IDLE,
-            0x01,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
         ]);
-        assert!(drv.is_card_present(), "DH-requested deactivate ≠ removal");
-
-        // reason 0x00 = RF link lost — the tag is gone.
-        drv.transport_mut().push_notification(&[
-            MT_NTF | GID_RF,
-            NTF_RF_DEACTIVATE,
-            0x02,
-            DEACTIVATE_TYPE_IDLE,
-            0x00,
-        ]);
-        assert!(!drv.is_card_present(), "link loss = immediate absent");
+        let mut atr = [0u8; 32];
+        assert_eq!(
+            drv.power_on(&mut atr),
+            Err(Error::NoCard),
+            "stale activation must not be resurrected"
+        );
+        assert!(!drv.is_card_present(), "cache cleared, stays absent");
+        let recovered = drv.into_transport();
+        assert!(
+            !recovered
+                .sent
+                .iter()
+                .any(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER_SELECT),
+            "no select may be attempted from a stale cache"
+        );
     }
 
     #[test]
@@ -757,6 +1299,9 @@ mod tests {
     /// Advance polls (bounding each to the non-blocking contract) until
     /// one re-arm cycle completes: the deactivate was written and the
     /// phase machine returned to idle. `rsp` scripts the deactivate RSP.
+    /// A cycle may add the one-shot #125 RF_DISCOVER probe when armed —
+    /// so the cycle budget is the deactivate+probe pair, still one
+    /// write per poll.
     fn run_rearm_cycle(drv: &mut Pn7160Driver<MockTransport>, rsp: &[u8]) {
         drv.transport_mut().push_reply(rsp);
         let writes_before = drv.transport_mut().sent.len();
@@ -768,8 +1313,8 @@ mod tests {
                 return;
             }
             assert!(
-                wrote <= writes_before + 1,
-                "poll {} wrote more than one frame",
+                wrote <= writes_before + 2,
+                "poll {}: cycle wrote more than the deactivate+probe pair",
                 i
             );
         }
@@ -827,7 +1372,11 @@ mod tests {
         let mut drv = Pn7160Driver::new(t);
         assert!(drv.is_card_present());
 
-        for cycle in 0..3 {
+        // Park-in-discovery contract (bench 2026-10-12): re-arm cycles
+        // run only until absence is confirmed — ABSENT_REARMS_TO_CLEAR
+        // empty cycles clear the stale tag and PARK the cadence (the
+        // perpetual cadence semi-muted the PN7160 after ~11 cycles).
+        for cycle in 0..ABSENT_REARMS_TO_CLEAR {
             run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
             assert_eq!(
                 drv.transport_mut().transacts,
@@ -836,6 +1385,26 @@ mod tests {
                 cycle
             );
         }
+        assert!(!drv.is_card_present(), "absence confirmed by now");
+
+        // Parked: polls drain only — zero writes, the strongest form of
+        // the at-most-once invariant.
+        let writes = drv.transport_mut().sent.len();
+        for _ in 0..(PRESENCE_REARM_POLLS as usize * 3) {
+            let _ = drv.is_card_present();
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            writes,
+            "parked driver must not write"
+        );
+
+        // Un-park on arrival: a fresh tag's NTF latches presence through
+        // the plain drain, and the cadence is armed again for the next
+        // removal.
+        drv.transport_mut().push_notification(&discover_ntf());
+        assert!(drv.is_card_present(), "parked driver still sees new tags");
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
     }
 
     // given the NFCC defers the RF_DEACTIVATE_RSP behind its RF activity
@@ -863,10 +1432,20 @@ mod tests {
         assert!(drv.is_card_present());
         assert_eq!(drv.rearm_phase(), Some(RearmPhase::AwaitNtf { polls: 0 }));
 
-        // Window expires without a tag: one empty cycle, presence held.
+        // Window expires without a tag: one empty cycle, presence held —
+        // and the armed #125 probe fires (the boot latch armed it).
+        assert!(drv.is_card_present());
+        assert!(drv.is_card_present());
+        assert_eq!(
+            drv.rearm_phase(),
+            Some(RearmPhase::DiscoverProbeRsp { polls: 0 })
+        );
+        // Probe RSP never arrives either: it gives up at its deadline,
+        // keeping presence.
         assert!(drv.is_card_present());
         assert!(drv.is_card_present());
         assert_eq!(drv.rearm_phase(), None);
+        assert!(drv.is_card_present());
 
         // Now the mute-link direction: RSP never arrives at all. Poll
         // until the cadence writes the next deactivate (the expiry poll
@@ -899,7 +1478,7 @@ mod tests {
     // phase exits) — the re-arm never masks a fresh sighting.
     #[test]
     fn tag_ntf_during_await_rsp_is_absorbed() {
-        let mut t = MockTransport::new();
+        let t = MockTransport::new();
         let mut drv = Pn7160Driver::new(t);
         for _ in 0..PRESENCE_REARM_POLLS - 1 {
             assert!(!drv.is_card_present());
@@ -923,8 +1502,10 @@ mod tests {
         let mut atr = [0u8; 32];
         drv.power_on(&mut atr).expect("power_on");
 
-        // Many polls must not touch the transport (no re-arm during a
-        // session — it would tear the RF interface down).
+        // Many polls must not WRITE the transport (no re-arm during a
+        // session — it would tear the RF interface down). Since issue
+        // #109 they do drain (read-only) to catch mid-session removal,
+        // which never sends a command.
         let sent_before = drv.transport_mut().sent.len();
         for _ in 0..(PRESENCE_REARM_POLLS * 3) {
             assert!(drv.is_card_present());

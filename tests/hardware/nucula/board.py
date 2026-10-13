@@ -25,6 +25,7 @@ RULE: always flash bootloader + partition table + app together.
 RULE: after full_erase, the board needs a USB replug.
 """
 
+import hashlib
 import os
 import re
 import subprocess
@@ -80,6 +81,15 @@ class NuculaBoard:
     esp_idf_sys_out: Path = field(default_factory=lambda: Path(""))
     wallet_fw_dir: Path = Path("/tmp/opencode/nucula-fw/build-551")
 
+    # Unknown-firmware gate (Codex PR-86 P1): how much of the ota_0
+    # slot pretest_check reads to identify the running image, and
+    # where remembered hashes live. The wallet app lands at 0x30000,
+    # so the bytes at 0x40000 are wallet image offset 0x10000.
+    app_peek_size: int = 0x1000
+    wallet_app_base: int = 0x30000
+    known_app_hashes_path: Path = Path("/tmp/opencode/nucula-app-region-hashes.txt")
+    flash_backup_dir: Path = Path("/tmp/opencode")
+
     def __post_init__(self):
         self.firmware_dir = self.workspace_root / "firmware" / "esp32-ccid"
         self._resolve_esp_idf_sys_out()
@@ -95,10 +105,18 @@ class NuculaBoard:
         (feature/config drift); only ones with the partition table count.
         """
         target = Path("/root/.cargo-target/riscv32imc-esp-espidf")
-        candidates = [
-            p for p in target.glob("debug/build/esp-idf-sys/*/out")
-            if (p / "build" / "partition_table" / "partition-table.bin").exists()
-        ]
+        # CI guard: the path doesn't exist on hosted runners — and stat()
+        # on a root-owned parent can EACCES there. Never raise at
+        # collection time; resolution simply skips.
+        try:
+            if not target.exists():
+                return
+            candidates = [
+                p for p in target.glob("debug/build/esp-idf-sys/*/out")
+                if (p / "build" / "partition_table" / "partition-table.bin").exists()
+            ]
+        except OSError:
+            return
         if candidates:
             self.esp_idf_sys_out = max(candidates, key=lambda p: p.stat().st_mtime)
 
@@ -113,6 +131,7 @@ class NuculaBoard:
 
     def _free_port(self):
         """Aggressively free the serial port from any process holding it."""
+        self._suspend_consoles()
         tty = os.path.realpath(self.port_path)
         try:
             subprocess.run(["fuser", "-k", tty], capture_output=True, timeout=5)
@@ -131,6 +150,23 @@ class NuculaBoard:
     def _port_exists(self) -> bool:
         """Check if the USB port exists without opening it."""
         return os.path.exists(self.port_path)
+
+    @staticmethod
+    def _suspend_consoles():
+        """Close live ConsoleCapture fds before `fuser -k` (Codex PR-86 P2).
+
+        The session-scoped console fixture holds the port across tests;
+        when this process is the holder, fuser -k kills pytest itself
+        (bench-verified: SIGKILL, rc 137). Captures reconnect lazily on
+        their next use, so suspending is transparent to tests."""
+        try:
+            from .console import suspend_all_captures
+        except ImportError:
+            try:
+                from console import suspend_all_captures  # type: ignore
+            except ImportError:
+                return
+        suspend_all_captures()
 
     def run_esptool(self, *args: str, timeout: int = 240,
                     retries: int = 3) -> subprocess.CompletedProcess:
@@ -310,9 +346,28 @@ class NuculaBoard:
             if full:
                 bl_dir = self._esp_idf_sys_out() / "build" / "bootloader"
                 bl = next(bl_dir.glob("bootloader.bin"), None)
+                if bl is None:
+                    raise FileNotFoundError(
+                        f"bootloader.bin not found under {bl_dir}"
+                    )
                 self.flash_image({0x0: bl, 0x8000: pt, 0x40000: binary})
             else:
                 self.flash_image({0x8000: pt, 0x40000: binary})
+            # Erase otadata after writing ota_0 (Codex PR-86 P1): the
+            # wallet app is flashed at 0x30000 — right over our otadata
+            # slot — so a wallet→ours switch leaves garbage otadata that
+            # can steer the bootloader at ota_1. Erased otadata falls
+            # back to ota_0 deterministically.
+            r = self.run_esptool(
+                "erase-region",
+                hex(self.flash_offsets["otadata"]), "0x2000",
+            )
+            if r.returncode != 0:
+                raise RuntimeError(
+                    f"otadata erase failed rc={r.returncode} "
+                    f"stderr_tail={(r.stderr or '')[-300:]}"
+                )
+            self._record_app_region_hash(binary)
             if expect is None:
                 expect = ["FWID"]
 
@@ -321,10 +376,8 @@ class NuculaBoard:
         except ImportError:
             from console import ConsoleCapture, BootMarker  # type: ignore
 
-        def _verify(timeout: float) -> tuple[bool, str]:
-            cap = ConsoleCapture(self.port, self.baud_console)
+        def _verify(cap: "ConsoleCapture", timeout: float) -> tuple[bool, str]:
             text = cap.capture_for(timeout, markers=expect)
-            cap.close()
             if all(m in text for m in expect):
                 fw = BootMarker.identify_firmware(text)
                 print(f"[flash_and_boot] booted: {fw}")
@@ -343,13 +396,33 @@ class NuculaBoard:
         # core reset fixes the silently-dropped-reset case (old firmware
         # still running); a flash-id round-trip recovers a chip latched
         # in download mode.
-        ok, last_text = _verify(boot_timeout)
+        #
+        # The capture is OPENED before each reset, not after (Codex
+        # PR-86 P1): boot output in the reset window must not be lost
+        # to capture-open latency. ConsoleCapture deasserts DTR/RTS on
+        # connect, so holding the fd across a reset cannot latch
+        # download mode. It must be CLOSED before any esptool rung —
+        # run_esptool frees the port with fuser, which would kill this
+        # process if it held the fd.
+        cap = ConsoleCapture(self.port, self.baud_console)
+        cap.connect()
+        ok, last_text = _verify(cap, boot_timeout)
+        cap.close()
         if not ok:
+            cap = ConsoleCapture(self.port, self.baud_console)
+            cap.connect()
             self.reset_jtag()
-            ok, last_text = _verify(boot_timeout)
+            ok, last_text = _verify(cap, boot_timeout)
+            cap.close()
         if not ok:
+            # esptool needs exclusive port access; its --after
+            # hard-reset fires at process exit, so the capture reopens
+            # immediately on return, while the chip is still booting.
             self.run_esptool("--after", "hard-reset", "flash-id", timeout=30)
-            ok, last_text = _verify(boot_timeout)
+            cap = ConsoleCapture(self.port, self.baud_console)
+            cap.connect()
+            ok, last_text = _verify(cap, boot_timeout)
+            cap.close()
         if not ok:
             raise RuntimeError(
                 f"board did not boot expected firmware after reset ladder. "
@@ -371,7 +444,93 @@ class NuculaBoard:
             ("no external port holders", self._port_holders() == []),
             ("esptool responsive", self.get_flash_id() is not None),
         ]
+        # Identify (or back up) whatever sits in the ota_0 app slot
+        # BEFORE any HIL flash may overwrite it (Codex PR-86 P1,
+        # m5stick incident: never destroy unidentifiable firmware).
+        label, ok = self.check_app_region_known()
+        results.append((label, ok))
         return results
+
+    def _peek_app_region(self) -> Optional[bytes]:
+        """Read the first 4KB of the ota_0 app slot (None if unreadable)."""
+        raw = self.flash_backup_dir / "nucula-app-peek.bin"
+        r = self.run_esptool(
+            "read-flash",
+            hex(self.flash_offsets["ota_0_app"]),
+            hex(self.app_peek_size), str(raw),
+        )
+        if r.returncode != 0:
+            return None
+        try:
+            return raw.read_bytes()
+        except OSError:
+            return None
+
+    def _known_app_hashes(self) -> set[str]:
+        """Hashes of images we may find at 0x40000 without backing up.
+
+        Sources: the persisted hash log (written after every flash_and_boot
+        of our firmware) and the wallet image (flashed at 0x30000, so the
+        bytes at 0x40000 are its file offset 0x10000).
+        """
+        hashes: set[str] = set()
+        if self.known_app_hashes_path.exists():
+            lines = self.known_app_hashes_path.read_text().splitlines()
+            hashes |= {l.split()[0] for l in lines if l.split()}
+        wallet = self.wallet_fw_dir / "nucula.bin"
+        if wallet.exists():
+            data = wallet.read_bytes()
+            off = self.flash_offsets["ota_0_app"] - self.wallet_app_base
+            chunk = data[off:off + self.app_peek_size]
+            if chunk:
+                hashes.add(hashlib.sha256(chunk).hexdigest())
+        return hashes
+
+    def _record_app_region_hash(self, binary: Path) -> None:
+        """Remember the head of the image we just flashed at ota_0."""
+        try:
+            head = binary.read_bytes()[: self.app_peek_size]
+            self.flash_backup_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.known_app_hashes_path, "a") as f:
+                f.write(f"{hashlib.sha256(head).hexdigest()} ours {binary.name}\n")
+        except OSError:
+            pass
+
+    def check_app_region_known(self) -> tuple[str, bool]:
+        """Identify the app region, backing it up first if unknown.
+
+        Returns (label, ok). ok=False blocks HIL flashes: either the
+        region is unreadable, or it holds unknown firmware AND the full
+        4MB backup failed — destroying it anyway is how shared-bench
+        boards get soft-bricked.
+        """
+        peek = self._peek_app_region()
+        if peek is None:
+            return ("app region readable", False)
+        if all(b == 0xFF for b in peek):
+            return ("app region erased", True)
+        if hashlib.sha256(peek).hexdigest() in self._known_app_hashes():
+            return ("app region identified", True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = self.flash_backup_dir / f"nucula-unknown-fw-{stamp}.bin"
+        r = self.run_esptool(
+            "read-flash", "0x0", "0x400000", str(backup), timeout=600,
+        )
+        if r.returncode != 0:
+            return (
+                f"unknown app region, backup FAILED rc={r.returncode} "
+                f"({(r.stderr or '')[-200:]}). Resolve before flashing",
+                False,
+            )
+        # Record the backed-up hash so a repeated pretest recognizes it.
+        try:
+            self.flash_backup_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.known_app_hashes_path, "a") as f:
+                f.write(f"{hashlib.sha256(peek).hexdigest()} backed-up-{stamp}\n")
+        except OSError:
+            pass
+        print(f"[pretest] unknown firmware backed up: {backup}")
+        return (f"unknown app region backed up: {backup.name}", True)
 
     def _port_holders(self) -> list[str]:
         try:
@@ -440,7 +599,10 @@ class NuculaBoard:
         """Build the firmware and return the path to the app binary."""
         env = os.environ.copy()
         env.update({
-            "RUSTUP_TOOLCHAIN": "nightly",
+            # Pinned esp fork v1.98.1.0 — matches build.sh/CI (one-Rust-
+            # version policy 2026-10-12: both esp32 targets ride the
+            # pinned fork; the fork ships rust-src for build-std).
+            "RUSTUP_TOOLCHAIN": "esp",
             "ESP_IDF_SDKCONFIG_DEFAULTS": f"{self.firmware_dir}/sdkconfig.wallet-test",
             "ESP_IDF_GLOB_PARTCSV_BASE": str(self.firmware_dir),
             "ESP_IDF_GLOB_PARTCSV_1": "/partitions-ota.csv",

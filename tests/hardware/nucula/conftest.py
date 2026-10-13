@@ -21,14 +21,16 @@ FAILS HERE instead of silently testing the wrong binary.
 
 import pytest
 import time
+from pathlib import Path
 
 from .board import BOARD
-from .console import ConsoleCapture, BootMarker
+
+# pyserial is a HARDWARE dep: imported lazily inside the fixtures so the
+# no-hardware CI collection path (python-collect, minimal env) never
+# needs it (AGENTS.md rule — hardware imports stay out of module scope).
 
 
 def pytest_addoption(parser):
-    parser.addoption("--hil", action="store_true", default=False,
-                     help="Run hardware-in-the-loop tests")
     parser.addoption("--test-firmware", action="store_true", default=False,
                      help="Flash and test our Rust bringup firmware")
     parser.addoption("--test-wallet", action="store_true", default=False,
@@ -36,9 +38,6 @@ def pytest_addoption(parser):
     parser.addoption("--flash-binary", type=str, default=None,
                      help="Path to a specific binary to flash and test")
 
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "hil: hardware-in-the-loop test")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -71,6 +70,7 @@ def board():
 
 @pytest.fixture(scope="session")
 def console(board):
+    from .console import ConsoleCapture
     """Console capture with fast USB-CDC reconnection."""
     capture = ConsoleCapture(board.port, board.baud_console)
     yield capture
@@ -89,11 +89,20 @@ def flashed_wallet(board):
 
 
 @pytest.fixture(scope="session")
-def flashed_firmware(board):
+def flashed_firmware(board, request):
     """Flash our Rust bringup firmware and VERIFY via FWID marker."""
-    binary = board.build_firmware()
-    assert binary is not None, "Firmware build failed"
-    text = board.flash_and_boot(binary)
+    from .console import BootMarker
+    # --flash-binary: prebuilt image instead of a rebuild (PR-86 P2).
+    prebuilt = request.config.getoption("--flash-binary")
+    if prebuilt is not None:
+        binary = Path(prebuilt)
+        assert binary.exists(), f"--flash-binary not found: {binary}"
+    else:
+        binary = board.build_firmware()
+        assert binary is not None, "Firmware build failed"
+    # full=True (idempotent): required after wallet firmware — its
+    # bootloader boots factory@0x30000, never our ota_0@0x40000 (PR-86 P1).
+    text = board.flash_and_boot(binary, full=True)
     fwid = BootMarker.parse_fwid(text)
     assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
     print(f"[flashed_firmware] {fwid}")
@@ -105,9 +114,10 @@ def flashed_ccid_firmware(board):
     """Flash the pn7160-ccid reader firmware (USB-CDC CCID serve loop)
     and VERIFY via FWID marker — the binary the dump-and-retrieve
     workflow (Escape 0xD1, AGENTS.md) is exercised against."""
+    from .console import BootMarker
     binary = board.build_firmware(features="pn7160-ccid")
     assert binary is not None, "Firmware build failed"
-    text = board.flash_and_boot(binary)
+    text = board.flash_and_boot(binary, full=True)
     fwid = BootMarker.parse_fwid(text)
     assert fwid is not None, f"No FWID marker in boot console: {text[-300:]}"
     print(f"[flashed_ccid_firmware] {fwid}")
