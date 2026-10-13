@@ -779,6 +779,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn transmit_fragmented_apdu_reassembles_response() {
+        // GP STORE DATA shape through the driver layer: a 260-octet
+        // command fragments 253 + 7 at the NCI layer (PBF chain, credit
+        // gate between fragments — lib.rs exchange tests); the response
+        // passes transmit_apdu's existing bounds check untouched.
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        t.push_reply(&[0x60, 0x06, 0x03, 0x01, 0x00, 0x01]); // credit re-grant
+        script_apdu(&mut t, &[0x90, 0x00]);
+
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+
+        let mut rsp = [0u8; 1024];
+        let n = drv
+            .transmit_apdu(&[0xA5u8; 260], &mut rsp)
+            .expect("fragmented apdu");
+        assert_eq!(&rsp[..n], &[0x90, 0x00]);
+
+        let t = drv.transport_mut();
+        // sent = [RF_DISCOVER_SELECT (power_on), DATA fragment 1, DATA
+        // fragment 2].
+        assert_eq!(t.sent.len(), 3);
+        assert_eq!(t.sent[1].len(), 3 + 253);
+        assert_eq!(t.sent[1][0], 0x10, "first fragment PBF set");
+        assert_eq!(t.sent[2].len(), 3 + 7);
+        assert_eq!(t.sent[2][0], 0x00, "last fragment PBF clear");
+    }
+
     // --- Issue #88: TTL presence re-arm (edge-triggered discovery NTFs) ---
 
     fn discover_ntf() -> [u8; 8] {

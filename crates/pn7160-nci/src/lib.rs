@@ -66,6 +66,14 @@ pub const OID_RF_DEACTIVATE: u8 = 0x06;
 pub const NTF_RF_DISCOVER: u8 = 0x03;
 pub const NTF_RF_INTF_ACTIVATED: u8 = 0x05;
 pub const NTF_RF_DEACTIVATE: u8 = 0x06;
+
+/// CORE_CONN_CREDITS_NTF OID — NCI 1.0 §4.4.4, Table 102: CORE group
+/// (GID 0000b), OID 0110b (0x06). Payload = [Number of Entries (1),
+/// {Conn ID (1), Credits (1)}...]. UM11495 Rev 1.8 §5.3.1 Table 10:
+/// "the number of credits is limited to 1 on each logical connection"
+/// for the PN7160 — every DATA packet sent consumes the only credit, so
+/// fragmented TX gates each next fragment on one of these
+/// ([`reader::exchange`], [`is_conn_credits_ntf`]).
 pub const OID_CORE_CONN_CREDITS: u8 = 0x06;
 
 // --- NXP proprietary group (GID 0xF) — UM11495 Rev 1.8 ----------------------
@@ -103,6 +111,17 @@ pub const NTF_PROP_RF_WTX: u8 = 0x17;
 /// carries no payload (Table 74: 0 parameters).
 pub fn is_wtx_ntf(f: &Frame) -> bool {
     f.mt == MT_NTF && f.gid == GID_PROP && f.oid == NTF_PROP_RF_WTX
+}
+
+/// Is this frame a CORE_CONN_CREDITS_NTF (`60 06 ..`)? NCI 1.0 §4.4.4:
+/// "If the NFCC receives a Data Packet that was subject to credit-based
+/// flow control, it needs to tell the DH when the buffer is again
+/// available for use. It does this by sending CORE_CONN_CREDITS_NTF."
+/// The credit re-grant [`reader::exchange`] waits for between DATA
+/// fragments (PN7160: 1 credit per connection, UM11495 §5.3.1
+/// Table 10).
+pub fn is_conn_credits_ntf(f: &Frame) -> bool {
+    f.mt == MT_NTF && f.gid == GID_CORE && f.oid == OID_CORE_CONN_CREDITS
 }
 
 // --- DATA packet header bits (NCI §5.4.1; NXP nci_defs.h NCI_CID/PBF) ------
@@ -155,14 +174,22 @@ pub struct Frame {
     pub mt: u8,
     pub gid: u8,
     pub oid: u8,
+    /// Packet Boundary Flag (octet 0 bit 4): true = "The Packet contains
+    /// a segment of a Message which is not the last segment" (NCI 1.0
+    /// §3.4.3, Table 3). DATA-chain reassembly happens in
+    /// [`reader::exchange`].
+    pub pbf: bool,
     pub payload: [u8; 255],
     pub len: usize,
 }
 
 impl Frame {
-    /// Decode a full frame from wire bytes. Returns `None` on short buffer,
-    /// or when PBF is set (fragmented packets never occur for <=258B frames
-    /// on this link; NCI §3.3 reassembly is out of scope).
+    /// Decode a full frame from wire bytes. Returns `None` on a short
+    /// buffer or truncated payload. PBF-set (fragmented) packets are
+    /// ACCEPTED and flagged via [`Frame::pbf`] — NCI 1.0 §3.4.3/Table 3
+    /// makes them a legal DATA-packet shape, and the NFCC→DH direction
+    /// MAY use them at any payload length (§3.5). Reassembly of DATA
+    /// chains lives in [`reader::exchange`].
     ///
     /// On the wire, one NCI packet arrives as one I2C read sequence per
     /// UM11495 §4.2 (the C driver's nci_read: 3-byte header transaction,
@@ -171,10 +198,8 @@ impl Frame {
         if buf.len() < HEADER_LEN {
             return None;
         }
-        if (buf[0] & PBF_MASK) != 0 {
-            return None; // PBF set (octet 0 bit 4, NXP nci_defs.h): fragmented
-        }
         let mt = buf[0] & 0xE0;
+        let pbf = (buf[0] & PBF_MASK) != 0;
         let gid = buf[0] & 0x0F;
         let oid = buf[1];
         let plen = buf[2] as usize;
@@ -187,6 +212,7 @@ impl Frame {
             mt,
             gid,
             oid,
+            pbf,
             payload,
             len: plen,
         })
@@ -318,12 +344,38 @@ pub mod transport;
 pub mod data {
     use super::*;
 
+    /// Max payload of one DATA fragment on this link: 253 octets — the
+    /// NXP ISO-DEP alignment clamp (linux_libnfc-nci nci_defs.h
+    /// `NCI_ISO_DEP_MAX_INFO` = 253 = 256 − ISO-DEP prologue 1 − CRC
+    /// epilogue 2), tighter than both the structural NCI limit (LEN is
+    /// one octet, 0–255 — NCI 1.0 §3.4.3) and the PN7160's advertised
+    /// Max Data Packet payload 255 (UM11495 Rev 1.8 §5.3.1 Table 10;
+    /// RF_INTF_ACTIVATED_NTF carries 0xFF). A 253-octet fragment maps
+    /// onto one max-size ISO-DEP I-block (NCI 1.0 §8.3.1, Figure 17).
+    pub const MAX_DATA_FRAGMENT: usize = 253;
+
     pub fn encode(conn_id: u8, payload: &[u8], out: &mut Vec<u8, MAX_FRAME>) -> bool {
+        encode_fragment(conn_id, false, payload, out)
+    }
+
+    /// One DATA packet — NCI 1.0 §3.4.3 "Format of Data Packets": "Each
+    /// Data Packet SHALL have a 3-octet Packet Header" — octet 0 =
+    /// MT(000b) | PBF(bit 4) | Conn ID(bits 3:0), octet 1 = RFU (0),
+    /// octet 2 = Payload Length (0–255). PBF per Table 3: "1b: The
+    /// Packet contains a segment of a Message which is not the last
+    /// segment" — set on every fragment except the last.
+    pub fn encode_fragment(
+        conn_id: u8,
+        pbf: bool,
+        payload: &[u8],
+        out: &mut Vec<u8, MAX_FRAME>,
+    ) -> bool {
         out.clear();
         if payload.len() > 255 {
             return false;
         }
-        out.extend_from_slice(&[conn_id & CID_MASK, 0, payload.len() as u8])
+        let octet0 = (conn_id & CID_MASK) | if pbf { PBF_MASK } else { 0 };
+        out.extend_from_slice(&[octet0, 0, payload.len() as u8])
             .is_ok()
             && out.extend_from_slice(payload).is_ok()
     }
@@ -640,9 +692,32 @@ pub mod reader {
         Some(&activation.payload[6..6 + params_len])
     }
 
-    /// Exchange one APDU over the RF data connection. The reply must be a
-    /// DATA packet on the same connection (Frame::decode surfaces DATA
-    /// packets with mt == MT_DATA and gid == conn_id).
+    /// Exchange one APDU over the RF data connection: TX fragmentation,
+    /// credit gating between fragments, RX reassembly of the reply
+    /// chain. The reply must be DATA packet(s) on the same connection
+    /// (Frame::decode surfaces DATA packets with mt == MT_DATA and
+    /// gid == conn_id).
+    ///
+    /// TX (NCI 1.0 §3.5 "Segmentation and Reassembly"): the APDU is
+    /// chunked at [`data::MAX_DATA_FRAGMENT`] = 253 octets — "For each
+    /// segment of a Data Message, the header of the Data Packet SHALL
+    /// contain the same MT and Conn ID" — with PBF=1 on every fragment
+    /// except the last (Table 3: "1b: The Packet contains a segment of a
+    /// Message which is not the last segment"). Between fragments the
+    /// exchange waits for a CORE_CONN_CREDITS_NTF (§4.4.4: "The DH SHALL
+    /// NOT send any Data Packet on a connection when the corresponding
+    /// NFCC_Credits_Avail is 0"): the PN7160 grants exactly 1 credit per
+    /// logical connection (UM11495 Rev 1.8 §5.3.1 Table 10), so every
+    /// DATA packet consumes the only credit and fragment 2 stalls the
+    /// NFCC until the re-grant arrives.
+    ///
+    /// RX (NCI 1.0 §3.5): "When an NFCC sends a Data Message to the DH,
+    /// regardless of the payload length, it MAY segment the Data Message
+    /// into smaller Data Packets for any internal reason" — DATA packets
+    /// on the connection are concatenated until one arrives with PBF=0
+    /// (§8.3.1.2: the last byte of a non-chaining I-block's payload
+    /// "SHALL be the last octet of the Data Packet with Packet Boundary
+    /// Flag set to 0b").
     ///
     /// Bench 2026-10-13: on marginal coupling the NFCC retries at the RF
     /// layer for SECONDS before the DATA response arrives (a 13 s stall
@@ -652,31 +727,76 @@ pub mod reader {
     /// ≈ 2.4 s, under the serial host's 3 s read timeout
     /// (libccidtwin DEFAULT_COM_READ_TIMEOUT), so the host always gets
     /// our answer — success or a clean failure — before its select()
-    /// expires. Non-matching frames are consumed and ignored, matching the
-    /// driver's neutral handling — in practice the churn is the PN7160's
-    /// WTX advisory `6F 17 00` ([`is_wtx_ntf`]; UM11495 Rev 1.8 §7.3.4
-    /// Table 74 — sent about every `READER_FWITOX_NTF_CFG` period, default
-    /// ≈1.24 s, while the WTX phase continues) plus CORE_CONN_CREDITS.
-    /// NXP's own DH extends its response timer on each WTX NTF; we
-    /// deliberately do NOT — the 2.4 s budget above is the bound (the
-    /// chip offers no retry-bound TLV to tighten, see
-    /// [`NTF_PROP_RF_WTX`]).
-    pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 255>> {
+    /// expires. That budget is shared across the WHOLE exchange
+    /// (fragment credit gates + reply collection). Non-matching frames
+    /// are consumed and ignored, matching the driver's neutral handling
+    /// — in practice the churn is the PN7160's WTX advisory `6F 17 00`
+    /// ([`is_wtx_ntf`]; UM11495 Rev 1.8 §7.3.4 Table 74 — sent about
+    /// every `READER_FWITOX_NTF_CFG` period, default ≈1.24 s, while the
+    /// WTX phase continues) plus CORE_CONN_CREDITS. NXP's own DH extends
+    /// its response timer on each WTX NTF; we deliberately do NOT — the
+    /// 2.4 s budget above is the bound (the chip offers no retry-bound
+    /// TLV to tighten, see [`NTF_PROP_RF_WTX`]).
+    pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 1024>> {
         const DATA_COLLECT_ROUNDS: usize = 12;
         const DATA_COLLECT_WAIT_MS: u64 = 200;
-        let mut frame = Vec::new();
-        if !data::encode(conn_id, apdu, &mut frame) {
-            return None;
+        let mut budget = DATA_COLLECT_ROUNDS;
+
+        // TX: PBF-chained fragments, credit-gated (NCI 1.0 §3.5).
+        if apdu.is_empty() {
+            // "In the case of an 'empty' Data Message, only the Packet
+            // Header is sent" (NCI 1.0 §3.4.3 NOTE) — the historical
+            // single empty DATA packet.
+            let mut frame = Vec::new();
+            if !data::encode_fragment(conn_id, false, &[], &mut frame) || !t.send(&frame) {
+                return None;
+            }
         }
-        if !t.send(&frame) {
-            return None;
+        let mut fragments = apdu.chunks(data::MAX_DATA_FRAGMENT).peekable();
+        while let Some(fragment) = fragments.next() {
+            let last = fragments.peek().is_none();
+            let mut frame = Vec::new();
+            if !data::encode_fragment(conn_id, !last, fragment, &mut frame) || !t.send(&frame) {
+                return None;
+            }
+            if last {
+                break;
+            }
+            // Credit gate: the fragment just sent consumed the PN7160's
+            // single credit (UM11495 §5.3.1 Table 10) — collect frames
+            // until the CORE_CONN_CREDITS_NTF re-grant (NCI 1.0 §4.4.4);
+            // churn (WTX advisories) is consumed while waiting.
+            let mut credited = false;
+            while budget > 0 {
+                if let Some(f) = t.poll_frame() {
+                    if is_conn_credits_ntf(&f) {
+                        credited = true;
+                        break;
+                    }
+                }
+                budget -= 1;
+                t.wait_ms(DATA_COLLECT_WAIT_MS);
+            }
+            if !credited {
+                return None;
+            }
         }
-        for _ in 0..DATA_COLLECT_ROUNDS {
+
+        // RX: collect DATA packets on the connection, reassembling the
+        // PBF chain (NCI 1.0 §3.5; last packet carries PBF=0).
+        let mut response: Vec<u8, 1024> = Vec::new();
+        while budget > 0 {
             if let Some(f) = t.poll_frame() {
                 if f.mt == MT_DATA && f.gid == conn_id && f.len > 0 {
-                    return Vec::from_slice(&f.payload[..f.len]).ok();
+                    if response.extend_from_slice(&f.payload[..f.len]).is_err() {
+                        return None; // reassembly overran the 1024-octet budget
+                    }
+                    if !f.pbf {
+                        return Some(response);
+                    }
                 }
             }
+            budget -= 1;
             t.wait_ms(DATA_COLLECT_WAIT_MS);
         }
         None
@@ -948,10 +1068,24 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_short_and_fragmented() {
+    fn decode_rejects_short_accepts_pbf() {
         assert!(Frame::decode(&[0x40, 0x00]).is_none());
         assert!(Frame::decode(&[0x40, 0x00, 0x02, 0x11]).is_none()); // short payload
-        assert!(Frame::decode(&[0x50, 0x00, 0x00]).is_none()); // PBF set: octet 0 bit 4 (NXP nci_defs.h)
+        // NCI 1.0 §3.4.3/Table 3: PBF set (octet 0 bit 4) = "The Packet
+        // contains a segment of a Message which is not the last segment"
+        // — a legal DATA-packet shape now ACCEPTED (reassembly:
+        // reader::exchange). decode surfaces the flag instead of
+        // rejecting; the flag is what RX chaining keys on.
+        let frag = Frame::decode(&[0x50, 0x00, 0x00]).unwrap();
+        assert!(frag.pbf);
+        let complete = Frame::decode(&[0x40, 0x00, 0x00]).unwrap();
+        assert!(!complete.pbf);
+        // DATA-shaped fragment: octet0 = MT(000b)|PBF|ConnID.
+        let data_frag = Frame::decode(&[0x10, 0x00, 0x02, 0xAA, 0xBB]).unwrap();
+        assert!(data_frag.pbf);
+        assert_eq!(data_frag.mt, MT_DATA);
+        assert_eq!(data_frag.gid, 0);
+        assert_eq!(&data_frag.payload[..2], &[0xAA, 0xBB]);
     }
 
     #[test]
@@ -1137,6 +1271,7 @@ mod tests {
             mt: MT_NTF,
             gid: GID_RF,
             oid,
+            pbf: false,
             payload: p,
             len: payload.len(),
         }
@@ -1319,6 +1454,150 @@ mod tests {
         let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
             .expect("data must arrive after wtx churn");
         assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+    }
+
+    #[test]
+    fn data_fragment_headers_pbf_chain() {
+        // NCI 1.0 §3.4.3 "Format of Data Packets": octet 0 =
+        // MT(000b)|PBF(bit 4)|Conn ID(bits 3:0), octet 1 = RFU (0),
+        // octet 2 = LEN. A 260-octet APDU (GP STORE DATA block) chunks
+        // 253 + 7 at MAX_DATA_FRAGMENT; Table 3: "1b: The Packet
+        // contains a segment of a Message which is not the last
+        // segment" — only the 253-octet first fragment carries PBF.
+        let mut apdu = [0u8; 260];
+        for (i, b) in apdu.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        let (head, tail) = apdu.split_at(data::MAX_DATA_FRAGMENT);
+        assert_eq!((head.len(), tail.len()), (253, 7));
+
+        let mut out = Vec::new();
+        assert!(data::encode_fragment(0, true, head, &mut out));
+        assert_eq!(out.len(), 3 + 253);
+        assert_eq!(&out[..3], &[PBF_MASK, 0x00, 0xFD]);
+        assert_eq!(&out[3..], head);
+
+        assert!(data::encode_fragment(0, false, tail, &mut out));
+        assert_eq!(out.len(), 3 + 7);
+        assert_eq!(&out[..3], &[0x00, 0x00, 0x07]);
+        assert_eq!(&out[3..], tail);
+
+        // The historical single-packet path stays byte-identical to the
+        // C driver (PBF clear) for payloads <= 255.
+        let mut one = Vec::new();
+        assert!(data::encode(0, &[0xAA, 0xBB], &mut one));
+        assert_eq!(one.as_slice(), &[0x00, 0x00, 0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn exchange_fragments_260_byte_apdu_into_pbf_chain() {
+        // GP STORE DATA shape: 260-octet APDU → two DATA packets
+        // (253 + 7), PBF=1 only on the first (NCI 1.0 §3.4.3/Table 3).
+        // The credit re-grant (CORE_CONN_CREDITS_NTF `60 06 ..`,
+        // §4.4.4; payload [num_entries=1, conn 0, +1 credit]) is
+        // scripted to land between the fragments — without consuming it
+        // the second send would overwrite the mock's pending reply and
+        // the DATA response would never surface.
+        let mut apdu = [0u8; 260];
+        for (i, b) in apdu.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7);
+        }
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&[0x60, 0x06, 0x03, 0x01, 0x00, 0x01]); // credits NTF
+        t.push_reply(&[0x00, 0x00, 0x02, 0x90, 0x00]); // DATA response
+        let rsp = reader::exchange(&mut t, 0, &apdu).expect("fragmented exchange");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+        assert_eq!(t.sent.len(), 2, "exactly two DATA packets");
+        let (f1, f2) = (&t.sent[0], &t.sent[1]);
+        assert_eq!(f1.len(), 3 + 253);
+        assert_eq!(&f1[..3], &[0x10, 0x00, 0xFD]); // PBF set, conn 0, LEN 253
+        assert_eq!(&f1[3..], &apdu[..253]);
+        assert_eq!(f2.len(), 3 + 7);
+        assert_eq!(&f2[..3], &[0x00, 0x00, 0x07]); // PBF clear, LEN 7
+        assert_eq!(&f2[3..], &apdu[253..]);
+    }
+
+    #[test]
+    fn exchange_gates_second_fragment_on_credits_ntf() {
+        // Ordering proof for the credit gate: the transport surfaces the
+        // credits NTF only on the FIRST poll and the DATA response only
+        // on the SECOND, recording the send/poll event order. NCI 1.0
+        // §4.4.4: "The DH SHALL NOT send any Data Packet on a
+        // connection when the corresponding NFCC_Credits_Avail is 0" —
+        // on the PN7160 (1 credit/connection, UM11495 §5.3.1 Table 10)
+        // fragment 1 consumes the only credit, so the event log must
+        // read send → credits → send → data; a back-to-back
+        // double-send would read send, send, credits, data.
+        struct GatedTransport {
+            sent: std::vec::Vec<std::vec::Vec<u8>>,
+            events: std::vec::Vec<&'static str>,
+            polls: usize,
+        }
+        impl Transport for GatedTransport {
+            fn send(&mut self, cmd: &[u8]) -> bool {
+                self.sent.push(cmd.to_vec());
+                self.events.push("send");
+                true
+            }
+            fn poll_frame(&mut self) -> Option<Frame> {
+                self.polls += 1;
+                match self.polls {
+                    1 => {
+                        self.events.push("credits");
+                        Frame::decode(&[0x60, 0x06, 0x03, 0x01, 0x00, 0x01])
+                    }
+                    2 => {
+                        self.events.push("data");
+                        Frame::decode(&[0x00, 0x00, 0x02, 0x90, 0x00])
+                    }
+                    _ => None,
+                }
+            }
+            fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
+                None
+            }
+            fn drain(&mut self) -> Option<Frame> {
+                None
+            }
+        }
+        let mut t = GatedTransport {
+            sent: std::vec::Vec::new(),
+            events: std::vec::Vec::new(),
+            polls: 0,
+        };
+        let rsp = reader::exchange(&mut t, 0, &[0u8; 260]).expect("gated exchange");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+        assert_eq!(t.sent.len(), 2);
+        assert_eq!(t.events, vec!["send", "credits", "send", "data"]);
+    }
+
+    #[test]
+    fn exchange_reassembles_pbf_chained_data_response() {
+        // NCI 1.0 §3.5: "When an NFCC sends a Data Message to the DH,
+        // regardless of the payload length, it MAY segment the Data
+        // Message into smaller Data Packets for any internal reason" —
+        // a PBF=1 DATA packet followed by PBF=0 concatenates into one
+        // response (the flag is Frame::pbf from decode).
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[0x10, 0x00, 0x02, 0xAA, 0xBB]); // segment, more follow
+        t.push_notification(&[0x00, 0x00, 0x03, 0xCC, 0xDD, 0xEE]); // last segment
+        let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
+            .expect("reassembled response");
+        assert_eq!(rsp.as_slice(), &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
+    }
+
+    #[test]
+    fn exchange_253_byte_apdu_stays_single_packet() {
+        // MAX_DATA_FRAGMENT boundary: a 253-octet APDU is exactly one
+        // DATA packet with PBF clear and needs no credit wait — payloads
+        // <= 253 keep the pre-fragmentation wire behavior.
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&[0x00, 0x00, 0x02, 0x90, 0x00]);
+        let rsp = reader::exchange(&mut t, 0, &[0xA5u8; 253]).expect("reply");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+        assert_eq!(t.sent.len(), 1);
+        assert_eq!(t.sent[0].len(), 3 + 253);
+        assert_eq!(&t.sent[0][..3], &[0x00, 0x00, 0xFD]);
     }
 
     #[test]
