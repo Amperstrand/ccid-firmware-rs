@@ -1,0 +1,13 @@
+# Nucula CCID (wifi transport) — native IFD driver (#157)
+#
+# Copy to /etc/reader.conf.d/nucula-wifi.conf with the board's real IP,
+# then restart pcscd. Replaces the socat PTY bridge entirely: no socat,
+# no systemd unit, no watchdog (the driver reconnects internally).
+#
+# DEVICENAME is parsed by the driver itself as host[:port] — the first
+# colon belongs to us, not libccidtwin. Optional interim while firmware
+# #125 is open: set NUCULA_POWER_OFF_SHIM=1 in the pcscd service env.
+FRIENDLYNAME "Nucula CCID (wifi)"
+DEVICENAME   192.168.13.42:29443
+LIBPATH      /usr/lib/pcsc/drivers/libifd-nucula.so
+CHANNELID    1
