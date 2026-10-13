@@ -850,16 +850,20 @@ RESPONSECODE IFDHControl(DWORD Lun, DWORD ControlCode, PUCHAR TxBuffer, DWORD Tx
 
     if (ControlCode == CM_IOCTL_GET_FEATURE_REQUEST) {
         /* exactly one feature: CCID escape passthrough (0xD0 counters,
-         * 0xD2/0xD3 bench probes become SCardControl calls). */
+         * 0xD2/0xD3 bench probes become SCardControl calls). TLV value
+         * is BIG-endian — libccid assigns htonl(ioctl) into
+         * PCSC_TLV_STRUCTURE.value (ccid_ifdhandler.c), clients parse
+         * it big-endian; smoke-verified against pcscd 2.0.3 (a
+         * little-endian write reached pcscd as 0x13000042). */
         if (RxLength < 6)
             return IFD_ERROR_INSUFFICIENT_BUFFER;
         uint32_t ioctl = (uint32_t)SCARD_CTL_CODE(FEATURE_CCID_ESC_COMMAND);
         RxBuffer[0] = (unsigned char)FEATURE_CCID_ESC_COMMAND;
         RxBuffer[1] = 4;
-        RxBuffer[2] = (unsigned char)(ioctl & 0xFF);
-        RxBuffer[3] = (unsigned char)((ioctl >> 8) & 0xFF);
-        RxBuffer[4] = (unsigned char)((ioctl >> 16) & 0xFF);
-        RxBuffer[5] = (unsigned char)((ioctl >> 24) & 0xFF);
+        RxBuffer[2] = (unsigned char)((ioctl >> 24) & 0xFF);
+        RxBuffer[3] = (unsigned char)((ioctl >> 16) & 0xFF);
+        RxBuffer[4] = (unsigned char)((ioctl >> 8) & 0xFF);
+        RxBuffer[5] = (unsigned char)(ioctl & 0xFF);
         *pdwBytesReturned = 6;
         return IFD_SUCCESS;
     }

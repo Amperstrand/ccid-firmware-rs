@@ -30,6 +30,13 @@ selftest: $(SELFTEST) mock_board.py
 	./$(SELFTEST) 127.0.0.1 29444; RC=$$?; \
 	kill $$MOCK 2>/dev/null; exit $$RC
 
+# Full pcscd-level smoke: reader enumeration, ATR, transmit, escape
+# passthrough, board-death (reader stays listed, card absent) and
+# recovery. Isolated in a private mount namespace — the system pcscd
+# is never touched. Requires root (unshare -m + tmpfs over /run/pcscd).
+smoke: $(DRIVER) smoke_test.py run-smoke.sh mock_board.py
+	@unshare -m bash ./run-smoke.sh
+
 install: $(DRIVER)
 	install -D -m 0755 $(DRIVER) $(DESTDIR)$(PREFIX)/lib/pcsc/drivers/$(DRIVER)
 	@echo "installed; reader.conf entry (see reader.conf.nucula):"
