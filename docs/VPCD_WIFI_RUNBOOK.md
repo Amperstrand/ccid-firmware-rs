@@ -133,16 +133,15 @@ gp --reader "Nucula VPCD 00 00"        # reader by NAME (indices differ
                                         # from pyscard order under Java
                                         # SmartcardIO)
    --key-enc $NUCULA_GP_KEY_ENC --key-mac $NUCULA_GP_KEY_MAC \
-   --key-dek $NUCULA_GP_KEY_DEK \
-   --bs 200 ...                         # see NCI limitation below
+   --key-dek $NUCULA_GP_KEY_DEK ...
 ```
 
-**`--bs 200` is required today**: NCI DATA packets carry a 1-byte
-length and the crate does not yet fragment (TX) or reassemble (RX)
-PBF-chained messages, so APDUs > ~245 bytes fail as SW `64 00`. A
-260-byte STORE DATA (255 B data + header, +8 B SCP02 MAC) is exactly
-that. 200-byte blocks keep every APDU inside one NCI packet; a 117 KB
-CAP loads in ~4 min. Keys come from env vars — never from the repo.
+Full-size STORE DATA blocks work natively since the NCI DATA
+fragmentation landed (PBF-chained TX, credit-gated between fragments
+on CORE_CONN_CREDITS_NTF, RX reassembly; bench 2026-10-13: 260-byte
+APDU answered by the card, 117 KB CAP installs at default block size
+in ~3.5 min). Before that fix a `--bs 200` workaround kept APDUs
+inside one NCI packet — no longer needed.
 
 ## Operational rules (each one cost an hour)
 
@@ -155,18 +154,39 @@ CAP loads in ~4 min. Keys come from env vars — never from the repo.
    while the live connection serves the other one. Discover the
    working slot by attempting a real connect (ATR or not).
 3. The stock driver exposes **two slots** ("00 00"/"00 01", listeners
-   :35963/:35964). The board connects to :35963 once; which reader
-   name maps to the live connection is decided per pcscd restart.
+   :35963/:35964). Map boards to slots deterministically with
+   `NUCULA_VPCD_PORT` (see "Multi-board benches").
 4. Firmware v3+ treats vpcd read timeouts as **idle, not disconnect** —
-   pcscd goes silent with no clients; a 30 s-timeout disconnect churned
+   pcscd goes silent with no clients; a 30s-timeout disconnect churned
    the TCP link and re-rolled the slot mapping every cycle.
+5. **Restart pcscd after any board reboot/OTA reflash** — the board's
+   lwIP drops TCP without a FIN on hard reset, leaving a half-open
+   ESTAB that wedges the vpcd driver's single-accept; the next
+   `SCardEstablishContext` hangs forever. The runbook restart sequence
+   clears it (bench 2026-10-13: reproduced after every OTA).
+
+## Recovery
+
+- **Wedged card session** (all APDUs → SW 64 00 while ATR still
+  serves): a cached auto-ATS keeps serving presence after the card
+  leaves the field or the RF link degrades; `power_off` is lazy and
+  never clears it. Recover with a same-image OTA reflash.
+- **Board unresponsive** (no ping, no OTA port, silent console, USB
+  still enumerates): full USB reflash — the ROM still answers esptool.
+  ```sh
+  esptool --chip esp32c3 -p /dev/ttyACM0 --baud 460800 erase_flash
+  esptool --chip esp32c3 -p /dev/ttyACM0 --baud 460800 write-flash \
+      0x0 <esp-idf-sys-out>/bootloader/bootloader.bin \
+      0x8000 <esp-idf-sys-out>/partition_table/partition-table.bin \
+      0x40000 ~/.cargo-target/esp32-ccid-wifi-vpcd.bin
+  ```
+  (Bench 2026-10-13: recovered a board that died after two OTA cycles.)
 
 ## Known limitations
 
-- NCI single-packet DATA cap (~245 B APDUs) — PBF-chaining fix planned
 - ~2 s/APDU latency (fire-and-collect budget; early-return pending)
 - Slot lottery on every pcscd restart (two driver slots, one board
-  connection — script the real-connect detection)
+  connection per port — script the real-connect detection)
 
 ## Bench evidence (2026-10-13)
 

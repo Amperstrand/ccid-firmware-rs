@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
+
+`pn7160-nci` now speaks NCI §3.4.3/§3.5 segmentation: TX chunks APDUs
+at 253 octets into PBF-chained DATA packets, gated between fragments
+on `CORE_CONN_CREDITS_NTF` (the PN7160 grants exactly one credit per
+connection), and reassembles PBF-chained replies (responses up to
+1024 octets). Previously payloads >255 were rejected outright — GP
+STORE DATA blocks (260–268 B with SCP02 MAC) failed as SW `64 00` and
+`gp` needed a `--bs 200` workaround. Bench 2026-10-13: 260-byte APDU
+answered by the card (`6F00`), 117 KB SmartPGP CAP installs at default
+block size in 212 s, short-APDU path unchanged (67/67 crate tests).
+
+### Added — hardware test program (pytest, env-gated, no agent needed)
+
+- `tests/hardware/vpcd/` — link health (ping/OTA/netlog/reader/ATR),
+  OTA reflash round-trip, and the full SmartPGP lifecycle
+  (gp delete → verify gone → install → gpg card-status). Bench-green:
+  5/5 link tests.
+- `tests/hardware/perf/` — ACR1252-anchored benchmarks (ATR latency,
+  APDU RTT percentiles, throughput) with a JSONL results ledger and
+  markdown comparison report generator.
+- `tests/hardware/ota/` — rollback negative tests: bad-image taxonomy
+  (truncated, corrupted tail, checksum-invalid) with mandatory
+  good-image restore and documented USB-reflash last resort (13/13
+  image-crafting unit tests).
+- `tools/hil/` — labgrid enrollment: `ccid-nucula` / `ccid-m5stick`
+  places (OTA NetworkService seats), exporter config, place script,
+  and the bench-flock integration notes for the future conftest.
+
 ### Added — wifi-vpcd: pcscd, GPG and GlobalPlatform over WiFi (#154)
 
 - `firmware/esp32-ccid/src/vpcd.rs` — vpcd protocol client in reversed
