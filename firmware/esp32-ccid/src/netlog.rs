@@ -12,6 +12,7 @@ const LOG_PORT: u16 = 4567;
 
 static SOCK: OnceLock<UdpSocket> = OnceLock::new();
 static BOARD_IP: OnceLock<String> = OnceLock::new();
+static BROADCAST_ADDR: OnceLock<String> = OnceLock::new();
 
 struct NetLogger;
 
@@ -34,7 +35,8 @@ impl Log for NetLogger {
         );
         println!("{line}");
         if let Some(sock) = SOCK.get() {
-            let _ = sock.send_to(line.as_bytes(), ("255.255.255.255", LOG_PORT));
+            let dst = BROADCAST_ADDR.get().map(String::as_str).unwrap_or("255.255.255.255");
+            let _ = sock.send_to(line.as_bytes(), (dst, LOG_PORT));
         }
     }
 
@@ -58,6 +60,13 @@ pub fn init() {
 /// 0.0.0.0 bind survives IP changes); newer sockets are dropped.
 pub fn set_ip(ip: &str) {
     let _ = BOARD_IP.set(ip.to_string());
+    // Subnet-directed broadcast, not limited broadcast: the bench AP does
+    // not forward 255.255.255.255 between wireless stations (tcpdump-
+    // verified: datagrams left the board, never arrived at the host).
+    // /24 bench subnet — keep the first three octets, broadcast in the last.
+    if let Some((prefix, _)) = ip.rsplit_once('.') {
+        let _ = BROADCAST_ADDR.set(format!("{prefix}.255"));
+    }
     let sock = UdpSocket::bind("0.0.0.0:0").ok();
     let _ = sock.as_ref().map(|s| s.set_broadcast(true));
     if let Some(s) = sock {
