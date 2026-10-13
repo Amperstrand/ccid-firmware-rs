@@ -16,6 +16,11 @@
 //!   without re-validating against libccidtwin on hardware
 //! - card presence is re-polled at most once per `poll_interval_ticks`,
 //!   gated on GetSlotStatus commands and on read idle
+//! - responses answer-or-silence (#153): a response whose write would
+//!   land after the host's read window closed is DISCARDED, never
+//!   written — libccidtwin's parser has no mid-stream resync, so late
+//!   bytes poison the next pcscd session (`reference/CCID/src/ccid_serial.c`
+//!   `ReadSerial()`: unexpected frame-start byte → `STATUS_COMM_ERROR`)
 
 use crate::ccid_handler::CcidHandler;
 use crate::nfc::NfcDriver;
@@ -32,7 +37,11 @@ const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServeAction {
     /// A complete command was served: write [`Self::echo()`] first, then
-    /// [`Self::notify()`] if present, then [`Self::response()`].
+    /// [`Self::notify()`] if present, then [`Self::response()`]. Write
+    /// sites must first pass the #153 answer-or-silence check — a tick
+    /// captured after the handler ran through
+    /// [`Self::response_expired()`] (drop via
+    /// [`Self::record_late_response()`] when it returns `true`).
     Respond,
     /// A malformed frame arrived and [`ServeConfig::nak_on_error`] is on:
     /// write [`Self::nak_frame()`].
@@ -96,6 +105,8 @@ pub struct CcidSerialServer<D: NfcDriver> {
     resp_len: usize,
     poll_interval_ticks: u32,
     last_poll_tick: u32,
+    frame_done_tick: u32,
+    late_drop_count: u32,
 }
 
 impl<D: NfcDriver> CcidSerialServer<D> {
@@ -140,6 +151,8 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             resp_len: 0,
             poll_interval_ticks: poll_interval_ticks.max(1),
             last_poll_tick: now_ticks,
+            frame_done_tick: now_ticks,
+            late_drop_count: 0,
         }
     }
 
@@ -151,6 +164,13 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// valid frame while the parser waits for bytes that never come
     /// (fuzz-proven, 2026-10-09).
     const INTER_BYTE_STALL_TICKS: u32 = 10;
+
+    /// Host read-window budget for one response (#153). The host's
+    /// `ReadChunk()` select() gives up at `DEFAULT_COM_READ_TIMEOUT =
+    /// 3*1000` ms (`reference/CCID/src/defs.h:76`); 500 ms margin for
+    /// wire + host scheduling leaves 2500. Aligned with #156's 2.4 s
+    /// card-exchange budget so the healthy path never trips it.
+    const RESPONSE_DEADLINE_TICKS: u32 = 2_500;
 
     pub fn feed_byte(&mut self, byte: u8, now_ticks: u32) -> ServeAction {
         let gap = now_ticks.wrapping_sub(self.last_byte_tick);
@@ -172,6 +192,10 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             }
             None => return ServeAction::None,
         };
+
+        // #153: the completing byte's arrival opens the host's 3 s read
+        // window — the deadline anchor for answer-or-silence.
+        self.frame_done_tick = now_ticks;
 
         // Echo the received frame (GemPC Twin protocol). The parser's
         // received-frame snapshot survives its post-event reset.
@@ -272,6 +296,45 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// via `pending_notify`, exactly like the idle path.
     pub fn poll_if_due_after_response(&mut self, now_ticks: u32) -> bool {
         self.poll_and_stash(now_ticks)
+    }
+
+    /// #153 answer-or-silence: has the pending response outlived the
+    /// host's read window? Call with a tick captured AFTER the handler
+    /// ran (the handler is what consumes the window) and BEFORE writing
+    /// echo/notify/response to the wire. The host parser
+    /// (`ReadSerial()`) has no mid-stream resync — an expired response
+    /// must be dropped via [`Self::record_late_response()`], never
+    /// written.
+    pub fn response_expired(&self, now_ticks: u32) -> bool {
+        now_ticks.wrapping_sub(self.frame_done_tick) > Self::RESPONSE_DEADLINE_TICKS
+    }
+
+    /// #156 B hook: refresh the deadline baseline after an interim
+    /// CCID time-extension frame reaches the wire (`bStatus &
+    /// CCID_TIME_EXTENSION` multiplies the host's readTimeout,
+    /// `reference/CCID/src/commands.c:1598`). Until extension frames
+    /// land, the baseline is the frame-completing byte's arrival.
+    pub fn refresh_host_deadline(&mut self, now_ticks: u32) {
+        self.frame_done_tick = now_ticks;
+    }
+
+    /// Drop the pending response as late (#153). Echo, notify and
+    /// response die together — a bare notify after the host gave up is
+    /// the same class of stream poison. Clears the wire buffers so a
+    /// write site that ignores the verdict writes nothing; the pending
+    /// 0xD1 snapshot panic must also be skipped (its ack never went
+    /// out).
+    pub fn record_late_response(&mut self) {
+        self.echo_len = 0;
+        self.notify_len = 0;
+        self.resp_len = 0;
+        self.late_drop_count += 1;
+    }
+
+    /// Responses discarded for exceeding the host read window (#153).
+    /// Surfacing via the Escape 0xD0 diagnostics layout rides #156 A3.
+    pub fn late_drop_count(&self) -> u32 {
+        self.late_drop_count
     }
 
     /// Run a due presence poll and stash any transition for the next
@@ -737,6 +800,86 @@ mod tests {
             feed_frame(&mut server, &frame, POLL_INTERVAL + 20),
             ServeAction::Respond
         );
+    }
+
+    #[test]
+    fn response_deadline_fresh_then_expired() {
+        // #153 answer-or-silence: fresh inside 2500 ms of the completing
+        // byte, expired after — judged with the post-handler tick a
+        // write site would capture.
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let done = 1_000;
+        feed_frame(&mut server, &frame, done - 12);
+
+        assert!(!server.response_expired(done));
+        assert!(!server.response_expired(done + 2_499));
+        assert!(server.response_expired(done + 2_501));
+    }
+
+    #[test]
+    fn response_deadline_anchored_at_completing_byte() {
+        // Slow trickle: bytes arrive over 1000 ticks; the window opens
+        // at the LAST byte, not the first.
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let start = 5_000;
+        let done = start + frame.len() as u32 - 1;
+        feed_frame(&mut server, &frame, start);
+
+        assert!(!server.response_expired(done + 2_000));
+        assert!(server.response_expired(start + 2_600));
+    }
+
+    #[test]
+    fn response_deadline_survives_tick_wraparound() {
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        // Complete the frame just before the u32 tick wrap.
+        let base = u32::MAX - 20;
+        for (i, &b) in frame.iter().enumerate() {
+            server.feed_byte(b, base + i as u32);
+        }
+
+        assert!(!server.response_expired(2_000));
+        assert!(server.response_expired(2_600));
+    }
+
+    #[test]
+    fn record_late_response_drops_wire_buffers_and_counts() {
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &frame, 0), ServeAction::Respond);
+        assert!(!server.echo().is_empty());
+        assert!(!server.response().is_empty());
+
+        server.record_late_response();
+        server.record_late_response();
+
+        assert_eq!(server.late_drop_count(), 2);
+        assert!(server.echo().is_empty(), "echo dropped with the response");
+        assert!(server.notify().is_empty());
+        assert!(server.response().is_empty());
+
+        // The next fresh frame serves normally after a drop.
+        let next = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        assert_eq!(feed_frame(&mut server, &next, 100), ServeAction::Respond);
+        assert!(!server.response().is_empty());
+    }
+
+    #[test]
+    fn refresh_host_deadline_extends_the_window() {
+        // #156 B contract: each interim time-extension frame on the wire
+        // refreshes the baseline, so extension-framed long operations
+        // are never dropped as late.
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        feed_frame(&mut server, &frame, 0);
+
+        assert!(server.response_expired(2_600));
+        server.refresh_host_deadline(2_400);
+        assert!(!server.response_expired(2_600));
+        assert!(server.response_expired(2_400 + 2_501));
     }
 
     #[test]

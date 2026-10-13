@@ -285,6 +285,9 @@ pub fn delivery_plan(link: &SppLink) -> Deliver {
 pub struct PumpOutcome {
     pub responded: u32,
     pub naks: u32,
+    /// Responses dropped for exceeding the host read window (#153) —
+    /// produced no TX bytes.
+    pub late_dropped: u32,
 }
 
 impl PumpOutcome {
@@ -295,6 +298,7 @@ impl PumpOutcome {
     pub fn merge(&mut self, other: PumpOutcome) {
         self.responded += other.responded;
         self.naks += other.naks;
+        self.late_dropped += other.late_dropped;
     }
 }
 
@@ -346,13 +350,20 @@ impl<D: NfcDriver> SppPump<D> {
     /// (echo/notify/response triple, or NAK) to the TX packet. All-or-
     /// nothing per frame: a packet that would not fit whole is dropped
     /// and counted — a truncated frame on the stream is worse than a
-    /// dropped one.
-    pub fn pump_rx(&mut self, entries: &[RxByte]) -> PumpOutcome {
+    /// dropped one. `now_ticks` is the pump-call tick (#153
+    /// answer-or-silence): responses whose frame outlived the host read
+    /// window are dropped, never appended.
+    pub fn pump_rx(&mut self, entries: &[RxByte], now_ticks: u32) -> PumpOutcome {
         use crate::ccid_serial_server::ServeAction;
         let mut outcome = PumpOutcome::default();
         for RxByte { byte, tick } in entries {
             match self.server.feed_byte(*byte, *tick) {
                 ServeAction::Respond => {
+                    if self.server.response_expired(now_ticks) {
+                        self.server.record_late_response();
+                        outcome.late_dropped += 1;
+                        continue;
+                    }
                     let start = self.tx_len;
                     let ok = append_slice(&mut self.tx, &mut self.tx_len, self.server.echo())
                         && append_slice(&mut self.tx, &mut self.tx_len, self.server.notify())
@@ -481,7 +492,11 @@ mod tests {
         ring.push(bytes, tick);
     }
 
-    fn drain_and_pump<D: NfcDriver>(ring: &mut SppRxRing, pump: &mut SppPump<D>) -> PumpOutcome {
+    fn drain_and_pump<D: NfcDriver>(
+        ring: &mut SppRxRing,
+        pump: &mut SppPump<D>,
+        now: u32,
+    ) -> PumpOutcome {
         let mut batch = [RxByte { byte: 0, tick: 0 }; SPP_RX_RING_ENTRIES];
         let mut outcome = PumpOutcome::default();
         let batch = &mut batch[..];
@@ -490,7 +505,7 @@ mod tests {
             if n == 0 {
                 break;
             }
-            outcome.merge(pump.pump_rx(&batch[..n]));
+            outcome.merge(pump.pump_rx(&batch[..n], now));
         }
         outcome
     }
@@ -624,7 +639,7 @@ mod tests {
         push(&mut ring, &frame[..3], 1000);
         push(&mut ring, &frame[3..], 1004);
 
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 1010);
         assert_eq!(outcome.responded, 1);
         assert_eq!(outcome.naks, 0);
 
@@ -650,7 +665,7 @@ mod tests {
         push(&mut ring, &frame[..3], 1000);
         push(&mut ring, &frame[3..], 1100); // 100-tick gap: stall
 
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 1110);
         assert_eq!(outcome.responded, 0);
         assert_eq!(pump.tx().len(), 0);
     }
@@ -663,7 +678,7 @@ mod tests {
         bad[12] ^= 0xFF; // break the LRC
 
         push(&mut ring, &bad, 0);
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 10);
         assert_eq!(outcome.naks, 1);
         assert_eq!(pump.tx(), &[0x03, 0x15, 0x16], "the 3-byte NAK frame");
     }
@@ -680,7 +695,7 @@ mod tests {
 
         push(&mut ring, &f1, 0);
         push(&mut ring, &f2, 1);
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 10);
         assert_eq!(outcome.responded, 2);
 
         let tx = pump.tx();
@@ -706,10 +721,10 @@ mod tests {
             let f = command_frame(PC_TO_RDR_GET_SLOT_STATUS, seq);
             push(&mut ring, &f, seq as u32);
             if seq % 10 == 9 {
-                total.merge(drain_and_pump(&mut ring, &mut pump));
+                total.merge(drain_and_pump(&mut ring, &mut pump, 100));
             }
         }
-        total.merge(drain_and_pump(&mut ring, &mut pump));
+        total.merge(drain_and_pump(&mut ring, &mut pump, 100));
         let dropped = pump.dropped_responses();
         assert!(dropped > 0, "cap must be hit with 80 pipelined frames");
         assert_eq!(
@@ -741,7 +756,7 @@ mod tests {
 
         // Next command: notify rides between echo and response.
         push(&mut ring, &frame, 2 * POLL_INTERVAL + 20);
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 2 * POLL_INTERVAL + 30);
         assert_eq!(outcome.responded, 1);
         let tx = pump.tx();
         assert_eq!(&tx[..13], &frame, "echo first");
@@ -759,7 +774,7 @@ mod tests {
         let polls_before = pump.handler_mut().driver_mut().poll_count();
 
         push(&mut ring, &frame, POLL_INTERVAL * 2 + 1);
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, POLL_INTERVAL * 2 + 10);
         assert_eq!(outcome.responded, 1);
         assert!(
             pump.poll_if_due_after_response(POLL_INTERVAL * 2 + 2),
@@ -782,7 +797,7 @@ mod tests {
 
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 9);
         push(&mut ring, &frame, 5);
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 10);
         assert_eq!(outcome.responded, 1);
         let expected = pump.tx().to_vec();
 
@@ -796,6 +811,30 @@ mod tests {
         // Pending retry: delivered verbatim, before any new traffic.
         assert_eq!(link.pending(), &expected[..]);
         link.clear_pending();
+    }
+
+    #[test]
+    fn pump_drops_response_past_host_deadline() {
+        // #153 answer-or-silence at the SPP write site: the batch is
+        // pumped long after the frame completed (host read window long
+        // closed) — the exchange produces NO TX bytes, and the next
+        // fresh frame serves normally.
+        let mut ring = SppRxRing::new();
+        let mut pump = pump_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 3);
+        push(&mut ring, &frame, 1_000);
+
+        let outcome = drain_and_pump(&mut ring, &mut pump, 1_000 + 2_600);
+        assert_eq!(outcome.responded, 0);
+        assert_eq!(outcome.late_dropped, 1);
+        assert_eq!(pump.tx().len(), 0, "silence — no late bytes on the wire");
+        assert_eq!(pump.server.late_drop_count(), 1);
+
+        let next = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 4);
+        push(&mut ring, &next, 1_000 + 2_700);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 1_000 + 2_710);
+        assert_eq!(outcome.responded, 1);
+        assert_eq!(&pump.tx()[..13], &next, "echo of the fresh frame");
     }
 
     #[test]
@@ -816,7 +855,7 @@ mod tests {
 
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 4);
         push(&mut ring, &frame, 50);
-        let outcome = drain_and_pump(&mut ring, &mut pump);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 60);
         assert_eq!(outcome.responded, 1);
         assert_eq!(&pump.tx()[..13], &frame);
     }
@@ -1106,7 +1145,7 @@ pub mod shell {
                 if n == 0 {
                     break;
                 }
-                outcome.merge(pump.pump_rx(&batch[..n]));
+                outcome.merge(pump.pump_rx(&batch[..n], tick()));
             }
 
             // 2. Deliver what the pump produced (echo → notify → response,

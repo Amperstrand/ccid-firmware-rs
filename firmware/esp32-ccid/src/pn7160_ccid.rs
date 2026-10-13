@@ -176,6 +176,13 @@ pub fn run() -> ! {
                 for &byte in &burst_buf[..n] {
                     let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                     if server.feed_byte(byte, now) == ServeAction::Respond {
+                        // #153: drop responses that outlived the host's
+                        // read window instead of poisoning the stream.
+                        let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                        if server.response_expired(post) {
+                            server.record_late_response();
+                            continue;
+                        }
                         let write_timeout = TickType::new_millis(100).ticks();
                         // GemPC Twin: echo the received frame, then the response
                         let _ = usb.write(server.echo(), write_timeout);
