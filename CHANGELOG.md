@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — DH-side WTX bound + resync teardown, serial time-extension frames (#151/#156)
+
+`pn7160-nci` DATA exchanges now distinguish TIMEOUT from LINK LOSS
+(`ExchangeOutcome`): a timed-out exchange tears the RF interface down
+(`deactivate_to_discovery` → fallback `restart_discovery` → drain →
+clear) so the late DATA response of a WTX-stalled exchange can no
+longer desync the next command; link-loss clears without writes (the
+chip already dropped the interface). WTX advisory counters
+(`6F 17 00`) surface as Escape 0xD4 (8 bytes LE, last/total — the
+28-byte 0xD0 golden layout untouched). The serial CCID server emits
+**CCID time-extension frames** (CCID 1.1 §6.3.4: interim
+RDR_to_PC_SlotStatus, `bStatus 0x80|icc`, `bError = 2` BWT units,
+in-flight bSeq) when an XfrBlock stalls ≥ ~1.5 s — honored verbatim
+by libccidtwin (`commands.c` `readTimeout *= bError`); the stashed
+echo goes out first because ReadSerial consumes one frame as the echo
+(no-stall wire behavior byte-identical). Bench (nucula, FWID-verified):
+extended 0xA0xx CORE_SET_CONFIG TLVs are REFUSED by the chip
+(`[09 01 A0 65]` INVALID_PARAM) — no `SetConfigExt` ladder step wired;
+zero-risk hammer ×100 PASS ×2 (worst 0.502 s, zero desyncs). UM11495
+Rev 1.8 quote-source wiring added (`docs/quote-sources/`, specquotes).
+
 ### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
 
 `pn7160-nci` now speaks NCI §3.4.3/§3.5 segmentation: TX chunks APDUs
