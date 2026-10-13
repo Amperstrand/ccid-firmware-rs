@@ -64,6 +64,13 @@ impl<T: Transport> Pn7160NfcDriver<T> {
     pub fn silent_rearm_streak(&self) -> u8 {
         self.inner.silent_rearm_streak()
     }
+
+    /// Install the exchange stall hook (issue #156 B): the CCID layer's
+    /// time-extension emitter, running deep inside a blocking DATA
+    /// exchange.
+    pub fn set_stall_hook(&mut self, hook: Option<pn7160_nci::reader::StallHook>) {
+        self.inner.set_stall_hook(hook);
+    }
 }
 
 impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
@@ -99,6 +106,10 @@ impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
 
     fn session_active(&self) -> bool {
         self.inner.session_active()
+    }
+
+    fn wtx_counters(&self) -> Option<(u32, u32)> {
+        Some(self.inner.wtx_counters())
     }
 }
 

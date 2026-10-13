@@ -19,7 +19,7 @@
 
 use crate::ccid_handler::CcidHandler;
 use crate::nfc::NfcDriver;
-use ccid_protocol::types::PC_TO_RDR_GET_SLOT_STATUS;
+use ccid_protocol::types::{PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_XFR_BLOCK};
 use ccid_transport_serial::{
     build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent, FrameParser,
 };
@@ -28,6 +28,129 @@ use ccid_transport_serial::{
 pub const MAX_CCID_RESPONSE_SIZE: usize = 271;
 /// SYNC + CTRL + CCID message + LRC.
 const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
+
+/// (issue #156 B) CCID serial time-extension bridge.
+///
+/// The PN7160 stall hook runs deep inside the blocking card exchange
+/// (`reader::exchange_detailed` → `StallHook`), where no references to
+/// the serve loop or its transport exist. The mains register a raw
+/// wire writer here at boot, the server arms the bridge with the
+/// in-flight XfrBlock identity + echo frame at dispatch, and
+/// [`stall_hook`] (installed into the PN7160 driver) writes the interim
+/// [RDR_to_PC_SlotStatus] time-extension frame.
+///
+/// Wire order is load-bearing (libccidtwin `ReadSerial`,
+/// reference/CCID/src/ccid_serial.c): the ECHOED command frame is
+/// consumed and discarded first (`if (echo) { echo = false; goto
+/// start; }`) — interim frames must land AFTER the echo, so the hook
+/// writes the stashed echo before the first extension frame and the
+/// server then suppresses its own echo write. The host honors the
+/// frame verbatim (commands.c `CCID_Receive`: `cmd[STATUS_OFFSET] &
+/// CCID_TIME_EXTENSION` → `readTimeout *= cmd[ERROR_OFFSET]`, re-read).
+///
+/// CCID 1.1 §6.3.4 (time extension): bStatus bit 7 set, bError = the
+/// number of BWT units requested.
+///
+/// Single-tasked by construction (the hook fires on the serve task,
+/// inside `feed_byte`) — the atomics exist for shape simplicity and
+/// deterministic host tests, not cross-task safety.
+pub mod time_extension {
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Mutex;
+
+    use ccid_transport_serial::{calculate_lrc, CTRL_ACK, SYNC};
+
+    use crate::ccid_types::RDR_TO_PC_SLOTSTATUS;
+
+    /// bError multiplier: libccidtwin multiplies its remaining read
+    /// timeout by this value per extension frame (commands.c:1598) —
+    /// 3 s × 2 comfortably covers the 2.4 s exchange budget's tail.
+    const BWT_UNIT_MULTIPLIER: u8 = 2;
+
+    /// Wire size of one framed interim SlotStatus: SYNC + CTRL + the
+    /// 10-byte CCID header (dwLength = 0) + LRC.
+    pub const FRAME_SIZE: usize = 13;
+
+    static ARMED: AtomicBool = AtomicBool::new(false);
+    static SEQ: AtomicU8 = AtomicU8::new(0);
+    static ICC: AtomicU8 = AtomicU8::new(0);
+    static ECHO_FLUSHED: AtomicBool = AtomicBool::new(false);
+    static WRITER: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
+    static ECHO: Mutex<(usize, [u8; 2 + 261 + 3])> = Mutex::new((0, [0; 2 + 261 + 3]));
+
+    /// Mains call this once at boot with their transport's raw write.
+    pub fn register_writer(w: fn(&[u8])) {
+        *WRITER.lock().unwrap() = Some(w);
+    }
+
+    pub fn writer_registered() -> bool {
+        WRITER.lock().unwrap().is_some()
+    }
+
+    /// Server-side: stash the in-flight XfrBlock identity and echo.
+    pub fn arm(seq: u8, icc: u8, echo: &[u8]) {
+        SEQ.store(seq, Ordering::SeqCst);
+        ICC.store(icc, Ordering::SeqCst);
+        ECHO_FLUSHED.store(false, Ordering::SeqCst);
+        let mut slot = ECHO.lock().unwrap();
+        let n = echo.len().min(slot.1.len());
+        slot.1[..n].copy_from_slice(&echo[..n]);
+        slot.0 = n;
+        ARMED.store(true, Ordering::SeqCst);
+    }
+
+    /// Server-side after dispatch: true when the hook already wrote the
+    /// echo (suppress the serve loop's own echo write).
+    pub fn disarm_and_take_flushed() -> bool {
+        ARMED.store(false, Ordering::SeqCst);
+        ECHO_FLUSHED.swap(false, Ordering::SeqCst)
+    }
+
+    /// The [`pn7160_nci::reader::StallHook`] target: emit the interim
+    /// time-extension frame (echo first if not yet on the wire).
+    pub fn stall_hook(_elapsed_ms: u32) {
+        if !ARMED.load(Ordering::SeqCst) {
+            return;
+        }
+        let writer = match *WRITER.lock().unwrap() {
+            Some(w) => w,
+            None => return,
+        };
+        if !ECHO_FLUSHED.swap(true, Ordering::SeqCst) {
+            let slot = ECHO.lock().unwrap();
+            writer(&slot.1[..slot.0]);
+        }
+        let mut frame = [0u8; FRAME_SIZE];
+        let n = build_frame(
+            SEQ.load(Ordering::SeqCst),
+            ICC.load(Ordering::SeqCst),
+            &mut frame,
+        );
+        writer(&frame[..n]);
+    }
+
+    /// Build one framed interim RDR_to_PC_SlotStatus time-extension
+    /// message (CCID 1.1 §6.3.4): type 0x81, dwLength = 0, bSeq of the
+    /// in-flight XfrBlock, bStatus = 0x80 | icc status, bError = BWT
+    /// unit multiplier, GemPC framing + LRC.
+    pub fn build_frame(seq: u8, icc: u8, out: &mut [u8; FRAME_SIZE]) -> usize {
+        out[0] = SYNC;
+        out[1] = CTRL_ACK;
+        out[2] = RDR_TO_PC_SLOTSTATUS;
+        out[3] = 0;
+        out[4] = 0;
+        out[5] = 0;
+        out[6] = 0; // dwLength = 0 (LE)
+        out[7] = 0; // bSlot
+        out[8] = seq; // bSeq — the in-flight XfrBlock's
+        out[9] = 0x80 | (icc & 0x07); // bStatus: time extension | ICC status
+        out[10] = BWT_UNIT_MULTIPLIER; // bError: BWT units requested
+        out[11] = 0;
+        out[12] = 0; // bClockStatus + RFU
+        out[FRAME_SIZE - 1] = calculate_lrc(&out[..FRAME_SIZE - 1]);
+        FRAME_SIZE
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServeAction {
@@ -203,9 +326,28 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         // poll-gated refresh alone goes stale under continuous traffic.
         self.handler.refresh_diagnostics(now_ticks);
 
+        // Time-extension bridge (issue #156 B): XfrBlocks on a stalling
+        // NFC controller (PN7160 WTX churn) emit interim frames from
+        // inside the blocking exchange via the registered stall hook.
+        // The hook writes the echo itself before the first interim
+        // frame (libccidtwin ReadSerial eats one frame as the echo),
+        // so a post-dispatch flush flag suppresses the double write.
+        let time_ext_armed =
+            time_extension::writer_registered() && ccid_bytes.first() == Some(&PC_TO_RDR_XFR_BLOCK);
+        if time_ext_armed {
+            time_extension::arm(
+                ccid_bytes.get(6).copied().unwrap_or(0),
+                self.handler.slot_state().icc_status(),
+                &self.echo_buf[..self.echo_len],
+            );
+        }
+
         let resp_len = self
             .handler
             .process_command(&ccid_bytes, &mut self.ccid_resp_buf);
+        if time_ext_armed && time_extension::disarm_and_take_flushed() {
+            self.echo_len = 0;
+        }
         self.resp_len = build_response_frame(&self.ccid_resp_buf[..resp_len], &mut self.resp_buf);
         ServeAction::Respond
     }
@@ -769,5 +911,142 @@ mod tests {
             (5_005..5_005 + 32).contains(&late),
             "uptime tracks the last dispatched frame ({late})"
         );
+    }
+
+    mod time_extension_tests {
+        use super::*;
+        use crate::ccid_types::SlotState;
+        use ccid_protocol::types::PC_TO_RDR_XFR_BLOCK;
+        use std::sync::Mutex;
+
+        static CAPTURED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+
+        fn capture(bytes: &[u8]) {
+            CAPTURED.lock().unwrap().push(bytes.to_vec());
+        }
+
+        /// Build a host→reader XfrBlock frame carrying one APDU byte.
+        fn xfr_frame(seq: u8, payload: &[u8]) -> Vec<u8> {
+            let mut ccid = vec![PC_TO_RDR_XFR_BLOCK];
+            ccid.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            ccid.push(0);
+            ccid.push(seq);
+            ccid.push(0);
+            ccid.push(0);
+            ccid.push(0);
+            ccid.extend_from_slice(payload);
+            let mut frame = vec![SYNC, ccid_transport_serial::CTRL_ACK];
+            frame.extend_from_slice(&ccid);
+            let lrc = calculate_lrc(&frame);
+            frame.push(lrc);
+            frame
+        }
+
+        #[test]
+        fn interim_frame_bytes_reference_locked() {
+            // GREAT EXPECTATION (reference-locked bytes — do not "fix"
+            // without re-verifying against the cited references):
+            // CCID 1.1 §6.3.4 time extension via RDR_to_PC_SlotStatus —
+            // bStatus bit 7 = time extension requested, bError = BWT
+            // units — as honored verbatim by libccidtwin
+            // (reference/CCID/src/commands.c CCID_Receive:
+            // "Time extension requested" → readTimeout *= bError).
+            let mut out = [0u8; time_extension::FRAME_SIZE];
+            let n = time_extension::build_frame(0x2A, 0x00, &mut out);
+            assert_eq!(n, 13);
+            assert_eq!(
+                &out[..12],
+                &[
+                    0x03, 0x06, // GemPC framing: SYNC + ACK
+                    0x81, // RDR_to_PC_SlotStatus
+                    0x00, 0x00, 0x00, 0x00, // dwLength = 0
+                    0x00, // bSlot
+                    0x2A, // bSeq — the in-flight XfrBlock's
+                    0x80, // bStatus: time extension | ICC present+active
+                    0x02, // bError: 2 BWT units requested
+                    0x00, // bClockStatus
+                ]
+            );
+            assert_eq!(out[12], calculate_lrc(&out[..12]));
+        }
+
+        #[test]
+        fn stalled_xfrblock_puts_echo_then_extension_on_the_wire() {
+            // Issue #156 B: a stalling XfrBlock exchange emits the echo
+            // FIRST (libccidtwin ReadSerial consumes one frame as the
+            // echo — ccid_serial.c `if (echo) { echo = false; ... }`),
+            // then the interim time-extension frame carrying the
+            // XfrBlock's bSeq; the serve loop's own echo write is
+            // suppressed (no double echo) and the real response still
+            // follows.
+            CAPTURED.lock().unwrap().clear();
+            time_extension::register_writer(capture);
+
+            let mut driver = mock_driver(true);
+            driver.init().unwrap();
+            driver.set_stall_probe(Some(time_extension::stall_hook));
+            let mut server = CcidSerialServer::new(CcidHandler::new(driver), POLL_INTERVAL, 0);
+            // Prime presence + power on so the XfrBlock reaches
+            // transmit_apdu (same priming as the power-on test above).
+            feed_frame(
+                &mut server,
+                &command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1),
+                POLL_INTERVAL + 1,
+            );
+            feed_frame(
+                &mut server,
+                &command_frame(PC_TO_RDR_ICC_POWER_ON, 2),
+                POLL_INTERVAL + 20,
+            );
+
+            let frame = xfr_frame(7, &[0x00, 0xA4, 0x04, 0x00]);
+            assert_eq!(feed_frame(&mut server, &frame, 10), ServeAction::Respond);
+
+            let wire = CAPTURED.lock().unwrap();
+            assert_eq!(wire.len(), 2, "echo + one interim frame");
+            assert_eq!(wire[0], frame, "echo first, verbatim");
+            let ext = &wire[1];
+            assert_eq!(ext[2], 0x81, "interim is a SlotStatus");
+            assert_eq!(ext[8], 7, "bSeq of the stalled XfrBlock");
+            assert_eq!(ext[9], 0x80 | SlotState::PresentActive.icc_status());
+            assert_eq!(ext[10], 0x02, "bError multiplier");
+            assert_eq!(
+                ext[13.min(ext.len()) - 1],
+                calculate_lrc(&ext[..ext.len() - 1]),
+                "LRC valid"
+            );
+            drop(wire);
+
+            // The serve loop's echo was suppressed; the response stands.
+            assert_eq!(server.echo().len(), 0, "echo already on the wire");
+            let resp = server.response();
+            assert_eq!(resp[2], 0x80, "RDR_to_PC_DataBlock still served");
+        }
+
+        #[test]
+        fn unstalled_xfrblock_keeps_normal_wire_order() {
+            // No stall probe: no interim frames, echo NOT suppressed —
+            // byte-for-byte the pre-#156-B wire behavior.
+            CAPTURED.lock().unwrap().clear();
+            time_extension::register_writer(capture);
+
+            let mut server = server_with(true);
+            feed_frame(
+                &mut server,
+                &command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1),
+                POLL_INTERVAL + 1,
+            );
+            feed_frame(
+                &mut server,
+                &command_frame(PC_TO_RDR_ICC_POWER_ON, 2),
+                POLL_INTERVAL + 20,
+            );
+
+            let frame = xfr_frame(9, &[0x00, 0xA4, 0x04, 0x00]);
+            assert_eq!(feed_frame(&mut server, &frame, 10), ServeAction::Respond);
+
+            assert!(CAPTURED.lock().unwrap().is_empty(), "nothing emitted");
+            assert_eq!(server.echo(), &frame, "echo served by the loop");
+        }
     }
 }

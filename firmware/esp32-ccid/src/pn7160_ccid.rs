@@ -25,6 +25,21 @@ const INIT_ATTEMPTS: u32 = 5;
 #[link_section = ".rodata"]
 static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
 
+/// Raw CDC writer for the time-extension stall hook (issue #156 B):
+/// the hook runs inside the blocking card exchange where the serve
+/// loop's `usb` driver reference is unreachable — the ESP-IDF C call
+/// writes the same peripheral the UsbSerialDriver serves (the driver
+/// has no Rust-side state for a blocking write).
+fn write_wire_cdc(bytes: &[u8]) {
+    unsafe {
+        esp_idf_sys::usb_serial_jtag_write_bytes(
+            bytes.as_ptr() as *const core::ffi::c_void,
+            bytes.len(),
+            100, // ms ticks (1000 Hz tick rate)
+        );
+    }
+}
+
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
@@ -133,13 +148,17 @@ pub fn run() -> ! {
             }
         }
     }
-    let driver = driver.unwrap_or_else(|| {
+    let mut driver = driver.unwrap_or_else(|| {
         log::warn!(
             "pn7160-ccid: PN7160 unresponsive after {} attempts — card-absent mode",
             INIT_ATTEMPTS
         );
         Pn7160NfcDriver::new(transport.take().expect("transport"))
     });
+    // Issue #156 B: interim CCID time-extension frames during a
+    // stalling (WTX) exchange — hook + raw writer registration.
+    crate::ccid_serial_server::time_extension::register_writer(write_wire_cdc);
+    driver.set_stall_hook(Some(crate::ccid_serial_server::time_extension::stall_hook));
 
     let poll_interval = TickType::new_millis(CARD_POLL_INTERVAL_MS as u64).ticks() as u32;
     let mut server = CcidSerialServer::new(CcidHandler::new(driver), poll_interval, unsafe {

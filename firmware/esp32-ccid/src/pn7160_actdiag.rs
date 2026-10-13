@@ -46,6 +46,50 @@ pub fn run() -> ! {
     let mut transport = EspPn7160Transport::bringup_config_order(bus).expect("transport");
     let mut d = Pn7160NfcDriver::new(transport);
     d.init().expect("ladder");
+
+    // Issue #156 C — extended-TLV capability probe (ONE session):
+    // the bench chip REJECTS standard-form SET_CONFIG TOTAL_DURATION
+    // (actdiag 2026-10-11); can it accept EXTENDED 0xA0xx TLVs at all?
+    // Probe READER_FWITOX_NTF_CFG = 0x0200 (≈154 ms diagnostic NTF
+    // cadence), read CORE_SET_CONFIG_RSP [status, num_applied] via the
+    // status parser (ed0ed5e), then REVERT to the 0x1000 default —
+    // the param is RW in E²PROM (UM11495 Table 99) and must not stay
+    // modified. The A0 44 EMVCo probe is skipped deliberately: one
+    // persistent param touched + reverted is the minimum footprint
+    // that answers the capability question.
+    {
+        use pn7160_nci::tx;
+        let probe = tx::set_config_fwitox([0x02, 0x00]);
+        log::warn!("actdiag: EXT-TLV probe cmd={:02X?}", probe);
+        match d.transport_mut().transact(&probe) {
+            Some(rsp) => {
+                let applied = if rsp.len >= 2 {
+                    rsp.payload[1].to_string()
+                } else {
+                    "n/a (short RSP)".to_string()
+                };
+                log::warn!(
+                    "actdiag: EXT-TLV probe RSP status={:#04x} num_applied={} (raw {:02X?})",
+                    rsp.status().unwrap_or(0xFF),
+                    applied,
+                    &rsp.payload[..rsp.len]
+                );
+            }
+            None => log::error!("actdiag: EXT-TLV probe — no RSP (mute)"),
+        }
+        let revert = tx::set_config_fwitox(tx::FWITOX_DEFAULT);
+        match d.transport_mut().transact(&revert) {
+            Some(rsp) => {
+                log::warn!(
+                    "actdiag: EXT-TLV revert-to-default RSP status={:#04x} (raw {:02X?})",
+                    rsp.status().unwrap_or(0xFF),
+                    &rsp.payload[..rsp.len]
+                );
+            }
+            None => log::error!("actdiag: EXT-TLV revert — no RSP (E² NOT reverted!)"),
+        }
+    }
+
     log::warn!("actdiag: ladder OK — waiting for discovery NTF (watch 30s)");
 
     // raw discovery wait with full logging

@@ -130,6 +130,32 @@ impl<D: NfcDriver> CcidHandler<D> {
                     response,
                 );
             }
+            // Escape 0xD4 (issue #156 A3): PN7160 WTX advisory counters —
+            // 8 bytes LE [last exchange, lifetime total]. The count of
+            // 6F 17 00 RF_WTX notifications consumed during DATA
+            // collection; bench model ≈ stall / 1.24 s (one advisory
+            // per READER_FWITOX_NTF_CFG period, UM11495 Rev 1.8
+            // Table 99 default 0x1000 × 4096/fc). Answered only on
+            // backends that report WTX (PN7160) — elsewhere falls
+            // through to the core's CMD_NOT_SUPPORTED.
+            if header.message_type == PC_TO_RDR_ESCAPE
+                && header.length == 1
+                && ccid_msg.get(CCID_HEADER_SIZE) == Some(&0xD4)
+            {
+                if let Some((last, total)) = self.core.driver().0.wtx_counters() {
+                    let payload = [last.to_le_bytes(), total.to_le_bytes()].concat();
+                    return write_message(
+                        RDR_TO_PC_ESCAPE,
+                        header.slot,
+                        header.seq,
+                        build_bstatus(COMMAND_STATUS_NO_ERROR, self.core.slot_state().icc_status()),
+                        0,
+                        0,
+                        &payload,
+                        response,
+                    );
+                }
+            }
             // Escape 0xD3 (issue #120): I2C poll-cadence probe — times N
             // back-to-back ComIrqReg reads (the exact transaction the
             // MFRC522 transceive poll loop performs) and reports
@@ -615,6 +641,39 @@ mod tests {
             crate::ccid_types::RDR_TO_PC_SLOTSTATUS,
             "multi-byte escape is not the 0xD2 query"
         );
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn escape_0xd4_returns_wtx_counters_le() {
+        // Issue #156 A3: 8 bytes LE [last exchange, lifetime total].
+        let mut handler = new_handler(true);
+        handler.driver_mut().set_wtx_counters(2, 5);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 43, &[0xD4]);
+        let mut response = [0u8; 271];
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(header.specific[0] & 0xC0, 0x00, "command status OK");
+        assert_eq!(payload.len(), 8);
+        assert_eq!(u32::from_le_bytes(payload[0..4].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(payload[4..8].try_into().unwrap()), 5);
+    }
+
+    #[test]
+    fn escape_0xd4_without_wtx_backend_falls_through() {
+        // MFRC522-class backends report no WTX counters — the escape
+        // is not theirs to answer (core's CMD_NOT_SUPPORTED).
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 44, &[0xD4]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, _) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, crate::ccid_types::RDR_TO_PC_SLOTSTATUS);
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
     }
 
