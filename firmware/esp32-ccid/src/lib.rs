@@ -89,7 +89,11 @@ pub mod netlog;
 pub mod ota;
 
 #[cfg(all(
-    any(feature = "pn7160-bringup", feature = "backend-mfrc522", feature = "wifi-ccid"),
+    any(
+        feature = "pn7160-bringup",
+        feature = "backend-mfrc522",
+        feature = "wifi-ccid"
+    ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod wifi;

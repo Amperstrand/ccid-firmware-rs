@@ -68,6 +68,43 @@ pub const NTF_RF_INTF_ACTIVATED: u8 = 0x05;
 pub const NTF_RF_DEACTIVATE: u8 = 0x06;
 pub const OID_CORE_CONN_CREDITS: u8 = 0x06;
 
+// --- NXP proprietary group (GID 0xF) — UM11495 Rev 1.8 ----------------------
+/// GID 0xF — the proprietary group (NCI §3.3 reserves it for vendor use;
+/// the PN7160's GID-0xF commands/notifications are listed in UM11495
+/// Annex B, Table 123).
+pub const GID_PROP: u8 = 0x0F;
+
+/// OID 0x17 in the proprietary group: `PH_NCI_OID_SYSTEM_WTX` (RF_WTX_NTF),
+/// wire header `6F 17 00`.
+///
+/// UM11495 Rev 1.8 §7.3.4, Table 74 (GID 1111b, OID 0x17, 0 parameters):
+/// "Notification indicating that RF communication is in phase of WTX(RTOX)
+/// REQ/RESP exchange for longer period of time." Sent with a period set by
+/// `READER_FWITOX_NTF_CFG` (Table 99, p.102: extended TLV `0xA0 0x65`,
+/// len 2, default 0x1000 × 4096/fc ≈ 302 µs ≈ **1.24 s**) while the remote
+/// endpoint keeps extending the waiting time during a DATA exchange.
+///
+/// Bench 2026-10-13 (issue #151): 12 of these (plen=0) over a 13 s stalled
+/// DATA exchange on marginal coupling — the NFCC honors every WTX request
+/// (ISO 14443-4 caps one WTX at FWT_MAX ≈ 4.95 s but puts NO limit on
+/// consecutive WTX; aborting is PCD/DH policy) and notifies the DH per
+/// period. NXP's own stacks answer by extending the DH-side response
+/// timer (`nfc_ncif_proc_rf_wtx_ntf`, linux_libnfc-nci nci_defs.h
+/// `NCI_MSG_RF_WTX`); this firmware instead consumes and ignores it —
+/// [`reader::exchange`](crate::reader::exchange) bounds the total wait
+/// DH-side. Note: UM11495 Tables 22/99 (all config params) contain NO
+/// chip-side ISO-DEP retry-count or total-WTX-budget TLV — the DH-side
+/// bound is the only deterministic mechanism (the only `NBR_RETRIES`
+/// field anywhere is `TechDet_NBR_RETRIES`, tag-detector/LPCD only).
+pub const NTF_PROP_RF_WTX: u8 = 0x17;
+
+/// Is this frame the PN7160 WTX advisory notification (`6F 17 00`)?
+/// See [`NTF_PROP_RF_WTX`] for the UM11495 Rev 1.8 citation; the frame
+/// carries no payload (Table 74: 0 parameters).
+pub fn is_wtx_ntf(f: &Frame) -> bool {
+    f.mt == MT_NTF && f.gid == GID_PROP && f.oid == NTF_PROP_RF_WTX
+}
+
 // --- DATA packet header bits (NCI §5.4.1; NXP nci_defs.h NCI_CID/PBF) ------
 pub const CID_MASK: u8 = 0x0F;
 pub const PBF_MASK: u8 = 0x10;
@@ -196,6 +233,14 @@ pub mod tx {
     /// rewrote it into a rejected 6-byte TLV with a trailing garbage
     /// octet; with the true status octet parsed (ed0ed5e) the ladder
     /// aborted at SET_CONFIG (actdiag 2026-10-11).
+    ///
+    /// PN7160 proprietary params do NOT use this one-octet-id form:
+    /// they ride the same CORE_SET_CONFIG as EXTENDED TLVs
+    /// `[Tag=0xA0XX, 2 bytes][Len, 1][Val]` (UM11495 Rev 1.8 §7.2,
+    /// Table 22, p.39 — e.g. `READER_FWITOX_NTF_CFG 0xA0 0x65`).
+    /// Full extracted param inventory + the definitive "no ISO-DEP
+    /// retry/WTX-bound TLV exists" negative: issue #151 research
+    /// (UM11495 §13.2 Tables 98–100).
     pub const SET_CONFIG_TOTAL_DURATION: [u8; 8] = [
         MT_CMD,
         OID_CORE_SET_CONFIG,
@@ -598,16 +643,43 @@ pub mod reader {
     /// Exchange one APDU over the RF data connection. The reply must be a
     /// DATA packet on the same connection (Frame::decode surfaces DATA
     /// packets with mt == MT_DATA and gid == conn_id).
+    ///
+    /// Bench 2026-10-13: on marginal coupling the NFCC retries at the RF
+    /// layer for SECONDS before the DATA response arrives (a 13 s stall
+    /// with proprietary retry NTFs was observed mid-GP-auth) — the old
+    /// single 200 ms transact gave up instantly. Fire the request
+    /// (non-blocking send) and collect with a bounded wait: 12 × 200 ms
+    /// ≈ 2.4 s, under the serial host's 3 s read timeout
+    /// (libccidtwin DEFAULT_COM_READ_TIMEOUT), so the host always gets
+    /// our answer — success or a clean failure — before its select()
+    /// expires. Non-matching frames are consumed and ignored, matching the
+    /// driver's neutral handling — in practice the churn is the PN7160's
+    /// WTX advisory `6F 17 00` ([`is_wtx_ntf`]; UM11495 Rev 1.8 §7.3.4
+    /// Table 74 — sent about every `READER_FWITOX_NTF_CFG` period, default
+    /// ≈1.24 s, while the WTX phase continues) plus CORE_CONN_CREDITS.
+    /// NXP's own DH extends its response timer on each WTX NTF; we
+    /// deliberately do NOT — the 2.4 s budget above is the bound (the
+    /// chip offers no retry-bound TLV to tighten, see
+    /// [`NTF_PROP_RF_WTX`]).
     pub fn exchange<T: Transport>(t: &mut T, conn_id: u8, apdu: &[u8]) -> Option<Vec<u8, 255>> {
+        const DATA_COLLECT_ROUNDS: usize = 12;
+        const DATA_COLLECT_WAIT_MS: u64 = 200;
         let mut frame = Vec::new();
         if !data::encode(conn_id, apdu, &mut frame) {
             return None;
         }
-        let rsp = t.transact(&frame)?;
-        if rsp.mt != MT_DATA || rsp.gid != conn_id || rsp.len == 0 {
+        if !t.send(&frame) {
             return None;
         }
-        Vec::from_slice(&rsp.payload[..rsp.len]).ok()
+        for _ in 0..DATA_COLLECT_ROUNDS {
+            if let Some(f) = t.poll_frame() {
+                if f.mt == MT_DATA && f.gid == conn_id && f.len > 0 {
+                    return Vec::from_slice(&f.payload[..f.len]).ok();
+                }
+            }
+            t.wait_ms(DATA_COLLECT_WAIT_MS);
+        }
+        None
     }
 
     /// Deactivate to idle, then consume the DEACTIVATE notification —
@@ -1207,6 +1279,46 @@ mod tests {
         assert!(!reason_is_link_loss(0x03));
         assert!(!reason_is_link_loss(0x04));
         assert_eq!(DEACTIVATE_REASON_DH_REQ, 0x00);
+    }
+
+    #[test]
+    fn wtx_ntf_bytes_match_um11495_table_74() {
+        // GREAT EXPECTATION (reference-locked bytes — do not "fix"
+        // without re-verifying against the cited reference):
+        // bench capture 2026-10-13 (issue #151, 12× during a 13 s
+        // stalled DATA exchange) and UM11495 Rev 1.8 §7.3.4 Table 74 —
+        // PH_NCI_OID_SYSTEM_WTX: GID 1111b (0xF), OID 0x17, zero
+        // parameters → wire header exactly 6F 17 00.
+        let raw = [0x6F, 0x17, 0x00];
+        let f = Frame::decode(&raw).unwrap();
+        assert_eq!(f.mt, MT_NTF);
+        assert_eq!(f.gid, GID_PROP);
+        assert_eq!(f.oid, NTF_PROP_RF_WTX);
+        assert_eq!(f.len, 0);
+        assert!(is_wtx_ntf(&f));
+        // Pure advisory: not a presence signal, not a DATA packet —
+        // reader::event_of ignores it and exchange() consumes it as churn.
+        assert!(reader::event_of(&f).is_none());
+        // Discrimination: RF-group NTFs and GID-0xF *commands* must not
+        // classify as WTX (Table 123 keeps GID-0xF 0x17 out of the
+        // command set — it exists only as this notification).
+        let rf_ntf = ntf_frame(NTF_RF_DEACTIVATE, &[0x00, 0x00]);
+        assert!(!is_wtx_ntf(&rf_ntf));
+        let wrong_mt = Frame::decode(&[0x2F, 0x17, 0x00]).unwrap();
+        assert!(!is_wtx_ntf(&wrong_mt));
+    }
+
+    #[test]
+    fn exchange_consumes_wtx_ntf_churn_before_data() {
+        // Bench shape (issue #151): WTX advisories 6F 17 00 interleave
+        // with the DATA response; exchange must consume them and still
+        // deliver the DATA packet on the same connection.
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[0x6F, 0x17, 0x00]); // WTX churn first
+        t.push_notification(&[0x00, 0x00, 0x02, 0x90, 0x00]); // DATA on conn 0
+        let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
+            .expect("data must arrive after wtx churn");
+        assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
     }
 
     #[test]

@@ -96,9 +96,13 @@ pub fn ven_cycle() {
 /// pcscd then sent NO SetParameters/PPS and failed the connect with
 /// "Card is unresponsive".
 ///
-/// Per PC/SC Part 3 (contactless ATR synthesis, byte-identical to the
-/// MFRC522 backend's bench-proven builder): TS=3B, T0=0x80|n_hist,
-/// TD1=0x80, TD2=0x01 (final protocol T=1), historical bytes, TCK.
+/// G-05 shape (f8a897f, mirroring the m5stick builder's fix): TD1
+/// carries the T=1 nibble — libccid's ATR_GetDefaultProtocol reads the
+/// protocol from TD1, so TD1=0x80 left T=0 as the first offer (the
+/// PROTO_MISMATCH class). TA3=0xFE sets IFSC=254 (the host would chain
+/// every block at 32 otherwise — 8x the round trips) and TB3=0x45 sets
+/// BWI=4/CWI=5: TS=3B, T0=0x80|n_hist, TD1=0x81, TD2=0x31, TA3=0xFE,
+/// TB3=0x45, historical bytes, TCK.
 ///
 /// Input contract: the ATS as carried by the NCI RF_INTF_ACTIVATED
 /// notification — [T0, interface bytes..., historical bytes...] with no
@@ -133,8 +137,12 @@ pub fn ats_to_atr(ats: &[u8]) -> Option<Vec<u8, 32>> {
     let mut atr = Vec::new();
     let _ = atr.push(0x3B);
     let _ = atr.push(0x80 | (hist.len() as u8 & 0x0F));
-    let _ = atr.push(0x80);
-    let _ = atr.push(0x01);
+    let _ = atr.push(0x81);
+    let _ = atr.push(0x31);
+    let _ = atr.push(0xFE);
+    // TB3 inline (BWI=4, CWI=5): the crate stays dependency-free for
+    // the bolty-rs consumer.
+    let _ = atr.push(0x45);
     atr.extend_from_slice(hist).ok()?;
     let mut tck = 0u8;
     for &b in &atr[1..] {
@@ -158,7 +166,7 @@ mod tests {
         let atr = ats_to_atr(&ats).expect("conversion");
         assert_eq!(
             atr.as_slice(),
-            &[0x3B, 0x85, 0x80, 0x01, 0x80, 0x73, 0xC8, 0x21, 0x10, 0x0E]
+            &[0x3B, 0x85, 0x81, 0x31, 0xFE, 0x45, 0x80, 0x73, 0xC8, 0x21, 0x10, 0x84]
         );
     }
 
@@ -168,7 +176,10 @@ mod tests {
         // two historical bytes.
         let ats = [0x75, 0x77, 0x81, 0x82, 0x88, 0x31, 0x32];
         let atr = ats_to_atr(&ats).expect("conversion");
-        assert_eq!(atr.as_slice(), &[0x3B, 0x82, 0x80, 0x01, 0x31, 0x32, 0x00]);
+        assert_eq!(
+            atr.as_slice(),
+            &[0x3B, 0x82, 0x81, 0x31, 0xFE, 0x45, 0x31, 0x32, 0x8A]
+        );
     }
 
     #[test]
@@ -178,7 +189,7 @@ mod tests {
         let atr = ats_to_atr(&ats).expect("conversion");
         assert_eq!(
             atr.as_slice(),
-            &[0x3B, 0x83, 0x80, 0x01, 0x31, 0x32, 0x33, 0x32]
+            &[0x3B, 0x83, 0x81, 0x31, 0xFE, 0x45, 0x31, 0x32, 0x33, 0xB8]
         );
     }
 
@@ -186,14 +197,14 @@ mod tests {
     fn ats_to_atr_empty_history() {
         let ats = [0x78, 0x77, 0x91, 0x02];
         let atr = ats_to_atr(&ats).expect("conversion");
-        assert_eq!(atr.as_slice(), &[0x3B, 0x80, 0x80, 0x01, 0x01]);
+        assert_eq!(atr.as_slice(), &[0x3B, 0x80, 0x81, 0x31, 0xFE, 0x45, 0x8B]);
     }
 
     #[test]
     fn ats_to_atr_minimal() {
         // T0=0x40 (TB1 only), no historical bytes.
         let atr = ats_to_atr(&[0x40, 0x77]).expect("conversion");
-        assert_eq!(atr.as_slice(), &[0x3B, 0x80, 0x80, 0x01, 0x01]);
+        assert_eq!(atr.as_slice(), &[0x3B, 0x80, 0x81, 0x31, 0xFE, 0x45, 0x8B]);
     }
 
     #[test]

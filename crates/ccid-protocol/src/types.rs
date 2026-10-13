@@ -81,6 +81,11 @@ pub const CCID_ERR_CMD_NOT_SUPPORTED: u8 = 0x00;
 pub const CCID_ERR_CMD_SLOT_BUSY: u8 = 0xE0;
 pub const CCID_ERR_PIN_CANCELLED: u8 = 0xEF;
 pub const CCID_ERR_PIN_TIMEOUT: u8 = 0xF0;
+/// CCID 1.1 §6.2.2 time-extension multiplier slot: on a FAILED DataBlock
+/// libccid maps 0xF0 to SW 64 00 (the clean host-visible card-timeout —
+/// commands.c L1605-L1638); do not confuse with PIN_TIMEOUT (same byte,
+/// disjoint command contexts).
+pub const CCID_ERR_CARD_TIMEOUT: u8 = 0xF0;
 pub const CCID_ERR_BUSY_WITH_AUTO_SEQUENCE: u8 = 0xF2;
 pub const CCID_ERR_DEACTIVATED_PROTOCOL: u8 = 0xF3;
 pub const CCID_ERR_PROCEDURE_BYTE_CONFLICT: u8 = 0xF4;

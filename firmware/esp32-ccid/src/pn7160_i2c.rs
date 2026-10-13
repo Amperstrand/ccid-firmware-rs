@@ -42,6 +42,18 @@ pub(crate) static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 =
 pub(crate) static ISR_ADD_RC: core::sync::atomic::AtomicI32 =
     core::sync::atomic::AtomicI32::new(-999);
 
+/// Consecutive failed I2C writes (mute detector, bench 2026-10-12): a
+/// PN7160 that NAKs writes stays wedged until a VEN power cycle — no
+/// runtime recovery existed before this. `send` maintains the streak;
+/// the serve loop samples it and replays the bring-up ladder on
+/// threshold.
+static I2C_SEND_FAILURES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Consecutive-failed-I2C-write streak for the serve loop's mute detector.
+pub fn i2c_send_failure_streak() -> u32 {
+    I2C_SEND_FAILURES.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 unsafe extern "C" fn dummy_irq_isr(_arg: *mut core::ffi::c_void) {
     // nci.c replica: the ISR must quench the level interrupt itself (the
     // PN7160 holds IRQ high until read); a no-op handler = interrupt storm
@@ -326,9 +338,11 @@ impl Transport for EspPn7160Transport {
             esp_idf_sys::i2c_master_transmit(self.dev, cmd.as_ptr(), cmd.len(), SEND_TIMEOUT_MS)
         };
         if rc != 0 {
+            I2C_SEND_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             log::error!("send: i2c write err: {}", rc);
             return false;
         }
+        I2C_SEND_FAILURES.store(0, core::sync::atomic::Ordering::Relaxed);
         true
     }
 
@@ -379,7 +393,11 @@ impl Transport for EspPn7160Transport {
     }
 
     fn wait_ms(&mut self, ms: u64) {
-        esp_idf_hal::delay::Ets::delay_ms(ms as u32);
+        // FreeRtos (not Ets): the ROM busy-wait starves the WiFi and
+        // console tasks for the whole power_on collect window — the
+        // truncated-console-line / TCP-stall hazard the transact
+        // comment documents (same class).
+        FreeRtos::delay_ms(ms as u32);
     }
 
     fn drain(&mut self) -> Option<Frame> {

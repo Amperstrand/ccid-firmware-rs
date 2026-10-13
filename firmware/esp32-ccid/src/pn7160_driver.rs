@@ -58,6 +58,12 @@ impl<T: Transport> Pn7160NfcDriver<T> {
     pub fn into_transport(self) -> T {
         self.inner.into_transport()
     }
+
+    /// Semi-mute streak (ACKed but unanswered re-arm writes) for the
+    /// serve loop's VEN-recovery trigger.
+    pub fn silent_rearm_streak(&self) -> u8 {
+        self.inner.silent_rearm_streak()
+    }
 }
 
 impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {

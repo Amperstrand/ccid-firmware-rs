@@ -35,7 +35,7 @@
 use crate::diagnostics::Diagnostics;
 use crate::params::default_params;
 use crate::pps::is_pps_request;
-use crate::response::{write_message, write_slot_status};
+use crate::response::{write_data_block, write_message, write_slot_status};
 use crate::secure::{PinModifyParams, PinResult, PinVerifyParams, SecureState};
 use card_interface::{PresenceState, SlotDriver};
 use ccid_protocol::atr::{
@@ -43,7 +43,7 @@ use ccid_protocol::atr::{
 };
 use ccid_protocol::status::build_bstatus;
 use ccid_protocol::types::{
-    CcidHeader, SlotState, CCID_ERR_CMD_ABORTED, CCID_ERR_CMD_NOT_SUPPORTED,
+    CcidHeader, SlotState, CCID_ERR_CARD_TIMEOUT, CCID_ERR_CMD_ABORTED, CCID_ERR_CMD_NOT_SUPPORTED,
     CCID_ERR_CMD_SLOT_BUSY, CCID_ERR_HW_ERROR, CCID_ERR_ICC_MUTE, CCID_ERR_PIN_CANCELLED,
     CCID_ERR_PIN_TIMEOUT, CCID_HEADER_SIZE, COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR,
     ICC_STATUS_NO_ICC, ICC_STATUS_PRESENT_ACTIVE, ICC_STATUS_PRESENT_INACTIVE, PC_TO_RDR_ABORT,
@@ -718,16 +718,25 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 )
             }
             Err(_) => {
-                // Card timeout or protocol error — the slot stays
-                // PresentActive (pinned by the firmware suite; the card
-                // may still answer the next exchange).
-                write_slot_status(
+                // Card timeout or protocol error. libccid maps a FAILED
+                // DataBlock by bError (commands.c L1605-L1638): 0xF0 →
+                // synthesizes SW 64 00 (clean card error the whole host
+                // stack — pcscd, pyscard, GlobalPlatformPro — reports
+                // instead of crashing on position(-2) jnasmartcardio
+                // bug, gp issue #307); any other failed code →
+                // IFD_COMMUNICATION_ERROR. A SlotStatus here instead of
+                // a DataBlock is valid CCID but jnasmartcardio's
+                // transmit path 0-byte SW-strip is the documented
+                // crash shape — always answer XfrBlock with a
+                // DataBlock.
+                write_data_block(
                     header.slot,
                     header.seq,
                     ICC_STATUS_PRESENT_ACTIVE,
                     COMMAND_STATUS_FAILED,
-                    CCID_ERR_CMD_ABORTED,
+                    CCID_ERR_CARD_TIMEOUT,
                     0,
+                    &[],
                     response,
                 )
             }
@@ -2331,7 +2340,7 @@ mod contact_profile_tests {
     }
 
     #[test]
-    fn xfr_block_relay_failure_answers_slot_status_0xff_and_stays_active() {
+    fn xfr_block_relay_failure_answers_datablock_timeout_sw_and_stays_active() {
         let mut core = new_core(true, &T0_ATR, false);
         power_on(&mut core, 1);
         core.driver_mut().fail_transmit = true;
@@ -2340,13 +2349,17 @@ mod contact_profile_tests {
             &build(PC_TO_RDR_XFR_BLOCK, 2, [0; 3], &[0x00, 0xA4, 0x04, 0x00]),
             &mut resp,
         );
-        let (mt, _, status, err, _) = parse(&resp[..len]);
-        assert_eq!(mt, RDR_TO_PC_SLOTSTATUS);
+        let (mt, _, status, err, data) = parse(&resp[..len]);
+        // DataBlock (never SlotStatus — the jnasmartcardio 0-byte
+        // SW-strip crash, gp #307), FAILED + 0xF0: libccid synthesizes
+        // SW 64 00 host-side — the clean card-timeout shape.
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
         assert_eq!(
             status,
             COMMAND_STATUS_FAILED << 6 | ICC_STATUS_PRESENT_ACTIVE
         );
-        assert_eq!(err, 0xFF);
+        assert_eq!(err, CCID_ERR_CARD_TIMEOUT);
+        assert!(data.is_empty());
         assert_eq!(core.slot_state(), SlotState::PresentActive);
     }
 
