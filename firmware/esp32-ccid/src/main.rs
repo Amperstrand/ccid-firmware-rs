@@ -382,7 +382,9 @@ fn main() {
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-mfrc522"
+    feature = "backend-mfrc522",
+    not(feature = "wifi-ccid"),
+    not(feature = "wifi-vpcd")
 ))]
 fn main() {
     esp_idf_sys::link_patches();

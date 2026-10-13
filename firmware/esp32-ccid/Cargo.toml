@@ -38,7 +38,12 @@ pn7160-ccid = ["backend-pn7160", "board-nucula"]
 # WiFi TCP transport — the board's application port (#117 workaround by
 # design): GemPC CCID over TCP :29443, host bridges with socat PTY↔TCP.
 wifi-ccid = ["backend-pn7160", "board-nucula"]
-wifi-vpcd = ["backend-pn7160", "board-nucula"]
+# vpcd reversed-connection transport (the primary wifi path) — composes
+# with any backend+board pair; no NFC backend of its own:
+#   nucula:  wifi-vpcd,backend-pn7160,board-nucula   (build.sh wifi-vpcd)
+#   m5atom:  wifi-vpcd,backend-mfrc522,board-m5atom
+#   m5stick: wifi-vpcd,backend-mfrc522,board-m5stick (build.sh m5stick-vpcd)
+wifi-vpcd = []
 # Wire-level instrument + NCI-over-GPIO fallback (issues #63/#80).
 pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 # M1 milestone: minimal bus+probe, nothing else (issues #63/#80).
