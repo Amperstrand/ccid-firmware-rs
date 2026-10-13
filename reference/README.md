@@ -49,11 +49,19 @@ maps in-tree `// MARKER:` comments to verbatim source lines:
 | `PCSC` | `reference/CCID/MacOSX/reader.h` | `PCSC` | drift-check only |
 | `LIBCCID` | `reference/CCID/src/commands.c` | `LIBCCID` | drift-check only |
 | `ISO7816` | `reference/osmo-ccid-firmware/ccid_common/iso7816_3.c` | `ISO7816` | drift-check only |
+| `UM11495` | `docs/quote-sources/um11495-quotes.md` (verbatim transcription) | `UM11495` | drift-check only |
 
 PDF-only authorities with no canonical text source (USB CCID Rev 1.1,
 RM0090) are quoted via the closest tracked text sources above; extracted
 verbatim quotes for them belong under `docs/quote-sources/` with
-section/page cites (issue #140 lane).
+section/page cites (issue #140 lane). First such transcription:
+`docs/quote-sources/um11495-quotes.md` — **UM11495 Rev 1.8 — 2 June
+2025** (NXP PN7160 user manual,
+`nxp.com/docs/en/user-guide/UM11495.pdf`, free, `user-guide` URL
+segment; owner-supplied PDF is the working copy). Sections quoted:
+§7.3.4 Table 74 (PH_NCI_OID_SYSTEM_WTX), §7.2 Table 22 (extended TLV),
+§11.2.1 Table 99 (READER_FWITOX_NTF_CFG). The PDF itself is NOT
+committed.
 
 ## Rules
 
