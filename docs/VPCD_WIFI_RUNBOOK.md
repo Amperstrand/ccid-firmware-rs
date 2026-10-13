@@ -72,10 +72,25 @@ sudo systemctl start pcscd.service
 ```sh
 cd firmware/esp32-ccid
 NUCULA_WIFI_SSID=<ssid> NUCULA_WIFI_PASS=<pass> \
-NUCULA_VPCD_HOST=<host-ip> ./build.sh wifi-vpcd
+NUCULA_VPCD_HOST=<host-ip> ./build.sh wifi-vpcd          # nucula (slot :35963)
+NUCULA_VPCD_PORT=35964 ./build.sh m5stick-vpcd \
+    --flash /dev/ttyUSB0                                  # m5stick (slot :35964)
 python3 host-tools/ota_push.py <board-ip> \
     ~/.cargo-target/esp32-ccid-wifi-vpcd.bin
 ```
+
+**Multi-board benches**: the stock driver exposes one listener per slot
+(:35963 = "Nucula VPCD 00 00", :35964 = "Nucula VPCD 00 01"). Give each
+board its own `NUCULA_VPCD_PORT` and the board↔reader mapping is
+deterministic — no accept race. Both ports need ufw rules. Bench-proven
+with nucula (wall power) + m5stick (computer USB power) side by side.
+
+**Dead/absent reader**: an MFRC522 frontend that never answers degrades
+to `OrNull::Null` — the board still serves its vpcd slot as a
+permanently EMPTY reader, with OTA and netlog alive. "Reader online but
+no card" means the frontend is broken/absent; "no connection at all"
+means the board is gone. A wall-power nucula that loses its reader
+behaves the same via the PN7160 card-absent mode.
 
 Credentials are build-time env vars only — never in the tree. The
 board answers OTA on TCP :3232 (ESP-IDF OTA with rollback hardening:
