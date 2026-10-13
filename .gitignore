@@ -87,6 +87,9 @@ firmware/esp32-ccid/native/
 # HIL run ledger (bench-local state, never committed)
 tests/hardware/labgrid/results/
 
+# Perf-suite results ledger (bench-local state, never committed)
+tests/hardware/perf/results/
+
 # bench build artifacts (host-tools/ifd-nucula)
 host-tools/ifd-nucula/*.so
 host-tools/ifd-nucula/nucula-selftest

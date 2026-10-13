@@ -1,0 +1,34 @@
+## Labgrid environment for the ccid-firmware OTA seats (tools/hil).
+##
+## Usage with the official plugin (intended for the future vpcd e2e
+## conftest — NOT implemented yet, tools/hil/README.md §8):
+##   export LG_COORDINATOR=127.0.0.1:20408
+##   pytest --lg-env tools/hil/labgrid-env.yaml --lg-coordinator 127.0.0.1:20408
+## or plain client (works today):
+##   export LG_ENV=tools/hil/labgrid-env.yaml
+##   labgrid-client -p ccid-nucula acquire   # or ccid-m5stick
+##
+## The places match NetworkService ONLY (OTA :3232). The USBSerialPort
+## console tokens on exporter ai-legion-ccid are deliberately unmatched:
+## acquiring them starts ser2net, opens the port and DTR-resets the
+## board (README §3 "DTR hazard"). Same shape as the repo's
+## tests/hardware/labgrid/environment.yaml (targets + places), scoped to
+## the OTA seats; the serial-DUT places keep living there.
+
+targets:
+  nucula:
+    resources:
+      RemotePlace:
+        name: ccid-nucula
+  m5stick:
+    resources:
+      RemotePlace:
+        name: ccid-m5stick
+
+places:
+  ccid-nucula:
+    matches:
+      - name: 'nucula'
+  ccid-m5stick:
+    matches:
+      - name: 'm5stick'
