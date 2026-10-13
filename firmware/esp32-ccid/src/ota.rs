@@ -92,7 +92,13 @@ fn handle(stream: &mut impl Read) -> Result<(), &'static str> {
 
     let rc = unsafe { esp_ota_end(handle) };
     if rc != 0 {
-        return Err("esp_ota_end failed");
+        return Err("esp_ota_end failed — image rejected (bad checksum or size)");
+    }
+    // Verify the written size matches the announced size before committing
+    // the boot switch (OTA_ROLLBACK hardening: a partial write that passes
+    // esp_ota_end but has wrong length must not brick the board).
+    if remaining != 0 {
+        return Err("short write — bytes lost, refusing to switch boot");
     }
     let rc = unsafe { esp_ota_set_boot_partition(part) };
     if rc != 0 {
