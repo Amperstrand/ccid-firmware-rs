@@ -37,25 +37,29 @@ const VPCD_CTRL_RESET: u8 = 0x02;
 const VPCD_CTRL_ATR: u8 = 0x04;
 
 /// Spawn the vpcd client thread. Takes the NFC driver exclusively.
-pub fn spawn<D: NfcDriver + Send + 'static>(driver: D, host_ip: &str) {
+/// `port` selects the driver slot: the stock libifdvpcd listens on
+/// :35963 (slot 00 00) and :35964 (slot 00 01) — give each board its
+/// own port so a multi-board bench maps boards to readers
+/// deterministically instead of racing one listener.
+pub fn spawn<D: NfcDriver + Send + 'static>(driver: D, host_ip: &str, port: u16) {
     let host = host_ip.to_string();
     let _ = std::thread::Builder::new()
         .stack_size(16 * 1024)
         .name("vpcd".into())
-        .spawn(move || client_loop(driver, &host));
+        .spawn(move || client_loop(driver, &host, port));
 }
 
-fn client_loop<D: NfcDriver + Send + 'static>(driver: D, host: &str) {
+fn client_loop<D: NfcDriver + Send + 'static>(driver: D, host: &str, port: u16) {
     let mut handler = crate::ccid_handler::CcidHandler::new(driver);
     let mut rx_buf = [0u8; 1024];
 
     loop {
-        log::warn!("vpcd: connecting to {}:{}", host, HOST_VPCD_PORT);
+        log::warn!("vpcd: connecting to {}:{}", host, port);
         // connect_timeout, not connect: lwIP's connect() has no built-in
         // timeout — a SYN blackholed by a host firewall (ufw DROP) blocks
         // this thread indefinitely instead of reaching the retry loop.
         // 5s bounds one attempt.
-        let attempt = (host, HOST_VPCD_PORT)
+        let attempt = (host, port)
             .to_socket_addrs()
             .ok()
             .and_then(|mut i| i.next())
