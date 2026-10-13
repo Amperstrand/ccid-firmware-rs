@@ -75,6 +75,20 @@ jobs:
               - 'tests/**'
               - 'host-tools/*.py'
 
+  sdkconfig-clean-wire-gate:
+    # Static clean-wire gate (issue #78 class): every shipped sdkconfig must
+    # declare its console family (UART0-CCID = no console, C3-CDC = USJ,
+    # exempt boards pinned explicitly). Complements the build-coupled
+    # `s_check_sdkconfig` (which validates the GENERATED config) — this one
+    # catches contamination in configs CI never builds.
+    needs: changes
+    if: needs.changes.outputs.esp32 == 'true' || needs.changes.outputs.lint == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check sdkconfig console families
+        run: python3 tools/check_sdkconfigs.py
+
   stm32-build:
     needs: changes
     if: needs.changes.outputs.stm32 == 'true'
