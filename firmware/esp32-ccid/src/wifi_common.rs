@@ -52,7 +52,10 @@ pub fn station_bring_up(
     unsafe {
         let rc = esp_idf_sys::esp_ota_mark_app_valid_cancel_rollback();
         if rc != 0 {
-            log::warn!("ota-rollback: mark_app_valid rc={} (not in pending state — first boot or factory)", rc);
+            log::warn!(
+                "ota-rollback: mark_app_valid rc={} (not in pending state — first boot or factory)",
+                rc
+            );
         }
     }
 
@@ -197,17 +200,18 @@ where
 
     let probe_timeout = esp_idf_hal::delay::TickType::new_millis(100);
     let probe_found = i2c.write(0x28, &[], probe_timeout.into()).is_ok();
-    log::info!("i2c probe @0x28: {}", if probe_found { "ack" } else { "no-ack" });
+    log::info!(
+        "i2c probe @0x28: {}",
+        if probe_found { "ack" } else { "no-ack" }
+    );
 
     // Reader frontend absent or electrically stuck (bench 2026-10-13: SDA
     // held LOW past 32 recovery clocks on BOTH Grove pin maps). Degrade to
     // the null driver instead of halting: the vpcd link comes up as an
     // empty reader and the board stays OTA-flasheable + netlog-visible,
     // so the bench distinguishes "reader broken" from "board gone".
-    let hw = match mfrc522::Mfrc522::new(
-        mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28),
-    )
-    .init()
+    let hw = match mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28))
+        .init()
     {
         Ok(hw) => hw,
         Err(e) => {
@@ -229,7 +233,11 @@ where
     });
     log::warn!(
         "bring-up: MFRC522 {}",
-        if init_ok { "initialized" } else { "init retries exhausted — card-absent mode" }
+        if init_ok {
+            "initialized"
+        } else {
+            "init retries exhausted — card-absent mode"
+        }
     );
 
     OrNull::Live(driver)

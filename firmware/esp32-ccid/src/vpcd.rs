@@ -70,13 +70,23 @@ fn client_loop<D: NfcDriver + Send + 'static>(driver: D, host: &str, port: u16) 
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
                 log::warn!("vpcd: connected to host {}", host);
                 serve_connection(&mut stream, &mut handler, &mut rx_buf);
-                log::warn!("vpcd: disconnected — reconnecting in {}ms", RECONNECT_DELAY_MS);
+                log::warn!(
+                    "vpcd: disconnected — reconnecting in {}ms",
+                    RECONNECT_DELAY_MS
+                );
             }
             Some(Err(e)) => {
-                log::warn!("vpcd: connect failed ({}) — retrying in {}ms", e, RECONNECT_DELAY_MS);
+                log::warn!(
+                    "vpcd: connect failed ({}) — retrying in {}ms",
+                    e,
+                    RECONNECT_DELAY_MS
+                );
             }
             None => {
-                log::warn!("vpcd: host resolve failed — retrying in {}ms", RECONNECT_DELAY_MS);
+                log::warn!(
+                    "vpcd: host resolve failed — retrying in {}ms",
+                    RECONNECT_DELAY_MS
+                );
             }
         }
         std::thread::sleep(Duration::from_millis(RECONNECT_DELAY_MS));
@@ -98,7 +108,16 @@ fn serve_connection<D: NfcDriver>(
             // 30s, re-rolling which driver slot wins accept() (two
             // listeners, :35963/:35964) and wedging CLOSE-WAIT sockets
             // on the host. Field-observed as the slot-flapping cause.
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue
+            }
             Err(_) => return, // hard I/O error — reconnect
         };
         let response = handle_message(handler, &payload, rx_buf);

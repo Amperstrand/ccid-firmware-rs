@@ -35,7 +35,10 @@ impl Log for NetLogger {
         );
         println!("{line}");
         if let Some(sock) = SOCK.get() {
-            let dst = BROADCAST_ADDR.get().map(String::as_str).unwrap_or("255.255.255.255");
+            let dst = BROADCAST_ADDR
+                .get()
+                .map(String::as_str)
+                .unwrap_or("255.255.255.255");
             let _ = sock.send_to(line.as_bytes(), (dst, LOG_PORT));
         }
     }

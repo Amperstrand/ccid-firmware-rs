@@ -1071,11 +1071,11 @@ mod tests {
     fn decode_rejects_short_accepts_pbf() {
         assert!(Frame::decode(&[0x40, 0x00]).is_none());
         assert!(Frame::decode(&[0x40, 0x00, 0x02, 0x11]).is_none()); // short payload
-        // NCI 1.0 §3.4.3/Table 3: PBF set (octet 0 bit 4) = "The Packet
-        // contains a segment of a Message which is not the last segment"
-        // — a legal DATA-packet shape now ACCEPTED (reassembly:
-        // reader::exchange). decode surfaces the flag instead of
-        // rejecting; the flag is what RX chaining keys on.
+                                                                     // NCI 1.0 §3.4.3/Table 3: PBF set (octet 0 bit 4) = "The Packet
+                                                                     // contains a segment of a Message which is not the last segment"
+                                                                     // — a legal DATA-packet shape now ACCEPTED (reassembly:
+                                                                     // reader::exchange). decode surfaces the flag instead of
+                                                                     // rejecting; the flag is what RX chaining keys on.
         let frag = Frame::decode(&[0x50, 0x00, 0x00]).unwrap();
         assert!(frag.pbf);
         let complete = Frame::decode(&[0x40, 0x00, 0x00]).unwrap();
@@ -1581,8 +1581,8 @@ mod tests {
         let mut t = mock::MockTransport::new();
         t.push_notification(&[0x10, 0x00, 0x02, 0xAA, 0xBB]); // segment, more follow
         t.push_notification(&[0x00, 0x00, 0x03, 0xCC, 0xDD, 0xEE]); // last segment
-        let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
-            .expect("reassembled response");
+        let rsp =
+            reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00]).expect("reassembled response");
         assert_eq!(rsp.as_slice(), &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE]);
     }
 
