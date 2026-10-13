@@ -70,6 +70,12 @@ pub struct EspPn7160Transport {
     ntf_count: usize,
 }
 
+// SAFETY: the raw I2C handles are only accessed from the single thread
+// that owns this transport (the vpcd or CCID serve thread). The ESP32-C3
+// I2C driver is not internally thread-safe, but our architecture guarantees
+// exclusive access by construction (one driver, one thread).
+unsafe impl Send for EspPn7160Transport {}
+
 /// Decomposed board pins for the NFC block: the bring-up main splits
 /// `Peripherals` once (modem + nvs to WiFi, the rest here) because
 /// `Peripherals::take` is single-shot.

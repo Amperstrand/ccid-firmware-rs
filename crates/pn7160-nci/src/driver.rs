@@ -446,6 +446,56 @@ impl<T: Transport> Pn7160Driver<T> {
             self.clear_tag();
             return Err(Error::NoCard);
         }
+        // Wall-power re-activation (bench 2026-10-13): the card coupled
+        // during boot, the activation NTF was consumed by the first
+        // presence poll, and a later exchange failure cleared the cache.
+        // The NFCC still holds the RF interface open (auto-activated)
+        // but won't re-fire the NTF. Force a fresh activation cycle:
+        // deactivate to discovery, then collect again — the present
+        // tag re-activates within ~0.5 s.
+        if fresh_ntf.is_none() && self.last_ntf.is_none() {
+            let _ = reader::deactivate_to_discovery(&mut self.transport);
+            self.collect_rounds = 0;
+            let (ntf2, ats2) = loop {
+                match reader::wait_for_event(&mut self.transport) {
+                    Some(reader::TagEvent::Tag(n, ats)) => {
+                        self.last_ntf = Some(n);
+                        self.last_auto_ats = ats.clone();
+                        break (Some(n), ats);
+                    }
+                    Some(reader::TagEvent::LinkLost) => {
+                        self.clear_tag();
+                        return Err(Error::NoCard);
+                    }
+                    None => {}
+                }
+                if self.collect_rounds >= 8 {
+                    break (None, None);
+                }
+                self.collect_rounds += 1;
+                self.transport.wait_ms(150);
+            };
+            if ntf2.is_none() {
+                return Err(Error::NoCard);
+            }
+            let ntf = ntf2.unwrap();
+            let ats: heapless::Vec<u8, 32> = match ats2 {
+                Some(a) => a,
+                None => return Err(Error::Select("re-activation carried no ATS")),
+            };
+            if let Some(uid) = reader::nfca_uid(&ntf) {
+                self.uid_len = uid.len().min(10);
+                self.uid[..self.uid_len].copy_from_slice(&uid[..self.uid_len]);
+            }
+            let atr_bytes = crate::transport::ats_to_atr(&ats)
+                .ok_or(Error::Select("ATS too short for ATR construction"))?;
+            if atr.len() < atr_bytes.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            atr[..atr_bytes.len()].copy_from_slice(&atr_bytes);
+            self.active = true;
+            return Ok(atr_bytes.len());
+        }
         let ntf = fresh_ntf.or(self.last_ntf).ok_or(Error::NoCard)?;
         let auto_ats = fresh_ats.or_else(|| self.last_auto_ats.clone());
         if let Some(uid) = reader::nfca_uid(&ntf) {
