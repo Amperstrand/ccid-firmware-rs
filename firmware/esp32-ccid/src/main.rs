@@ -743,6 +743,7 @@ mod pad_diag {
     not(feature = "pn7160-bringup"),
     not(feature = "pn7160-ccid"),
     not(feature = "wifi-ccid"),
+    not(feature = "wifi-vpcd"),
     not(feature = "pn7160-bitbang"),
     not(feature = "pn7160-m1"),
     not(feature = "pn7160-v10raw"),
@@ -774,6 +775,14 @@ fn main() {
 ))]
 fn main() {
     esp32_ccid::pn7160_actdiag::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "wifi-vpcd"
+))]
+fn main() {
+    esp32_ccid::wifi_vpcd::run()
 }
 
 #[cfg(all(

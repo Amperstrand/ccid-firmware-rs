@@ -134,13 +134,13 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
         ;;
-    wifi-ccid)
+    wifi-ccid|wifi-vpcd)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
         RELEASE_ARGS=()
-        FEATURE_ARGS=(--no-default-features --features wifi-ccid)
+        FEATURE_ARGS=(--no-default-features --features "${BOARD}")
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
