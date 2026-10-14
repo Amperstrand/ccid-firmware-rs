@@ -65,6 +65,7 @@ pub mod time_extension {
 
     use ccid_transport_serial::{calculate_lrc, CTRL_ACK, SYNC};
 
+    use super::MAX_FRAME_SIZE;
     use crate::ccid_types::RDR_TO_PC_DATABLOCK;
 
     /// bError multiplier: libccidtwin multiplies its remaining read
@@ -81,7 +82,13 @@ pub mod time_extension {
     static ICC: AtomicU8 = AtomicU8::new(0);
     static ECHO_FLUSHED: AtomicBool = AtomicBool::new(false);
     static WRITER: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
-    static ECHO: Mutex<(usize, [u8; 2 + 261 + 3])> = Mutex::new((0, [0; 2 + 261 + 3]));
+    // Codex PR159 P1 (echo stash capacity): a maximum XfrBlock wire
+    // frame is MAX_FRAME_SIZE (274 = 2 + 10 + 261 + 1) — the previous
+    // [u8; 2 + 261 + 3] (266) stash let arm() silently truncate a
+    // 254-261-byte command, so the hook emitted an echo whose header
+    // still advertised the original length with the tail missing (host
+    // framing loss). Single source of truth, no duplicated capacity.
+    static ECHO: Mutex<(usize, [u8; MAX_FRAME_SIZE])> = Mutex::new((0, [0; MAX_FRAME_SIZE]));
 
     /// Mains call this once at boot with their transport's raw write.
     pub fn register_writer(w: fn(&[u8])) {
@@ -1061,6 +1068,33 @@ mod tests {
 
             assert!(CAPTURED.lock().unwrap().is_empty(), "nothing emitted");
             assert_eq!(server.echo(), &frame, "echo served by the loop");
+        }
+
+        #[test]
+        fn full_size_xfrblock_echo_survives_the_stash_verbatim() {
+            // given a MAXIMUM XfrBlock wire frame (274 = 2 + 10 + 261 +
+            // 1 bytes) stalls, when the hook flushes the stashed echo,
+            // then it is written VERBATIM — the stash used to hold only
+            // 266 bytes and arm() silently truncated, emitting an echo
+            // whose CCID header advertised the original length with
+            // the tail missing (Codex PR159 P1, host framing loss).
+            CAPTURED.lock().unwrap().clear();
+            time_extension::register_writer(capture);
+
+            let payload = [0xA5u8; 261];
+            let frame = xfr_frame(0x33, &payload);
+            assert_eq!(frame.len(), 274, "max TPDU-exchange XfrBlock wire frame");
+
+            time_extension::arm(0x33, 0x00, &frame);
+            time_extension::stall_hook(0);
+            let _ = time_extension::disarm_and_take_flushed();
+
+            let wire = CAPTURED.lock().unwrap();
+            assert_eq!(wire.len(), 2, "echo + one interim frame");
+            assert_eq!(wire[0], frame, "echo verbatim — no truncation");
+            assert_eq!(wire[1].len(), time_extension::FRAME_SIZE);
+            assert_eq!(wire[1][2], 0x80, "interim DataBlock follows");
+            assert_eq!(wire[1][8], 0x33, "bSeq of the stalled XfrBlock");
         }
     }
 }
