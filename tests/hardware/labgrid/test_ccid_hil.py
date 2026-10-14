@@ -58,6 +58,11 @@ def test_apdu_get_challenge_returns_class_not_supported(pcsc_reader_name, cherry
 def test_reader_advertises_pinpad(helpers, pcscd_running):
     """DUT advertises PIN support via the CCID feature list (the host-visible
     consequence of bPINSupport != 0; lsusb -v needs root, features don't)."""
+    import bench as benchmod
+
+    absent = benchmod.dut_absent_reason("stm32-ccid")
+    if absent:
+        pytest.skip(f"stm32-ccid: {absent}")
     result = helpers.run(
         "python3 - <<'PYEOF'\n"
         "from smartcard.pcsc.PCSCPart10 import getFeatureRequest\n"

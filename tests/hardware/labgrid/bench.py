@@ -140,10 +140,22 @@ def dut_absent_reason(place: str) -> str | None:
                     f"{F469_STLINK_SERIAL[:8]}…) is not on USB and no "
                     "Cherry DUT enumerates; nothing to test")
     elif place == "m5stick":
-        # The GemPC wire is SILENT by clean-wire doctrine; the wifi-vpcd
-        # build uses UART0 as a streaming console. A short open that
-        # receives printable noise therefore means: board alive, wrong
-        # firmware variant — GemPC legs are meaningless against it.
+        # Primary signal: the m5stick's vpcd reader live in pcscd (slot
+        # "00 01" is its listener, tools/hil §6) — robust even when the
+        # vpcd firmware is quiet (connected == silent). Fallback: the
+        # GemPC wire is SILENT by clean-wire doctrine while the wifi-vpcd
+        # build streams a console on UART0, so printable noise from a
+        # short open also means wrong variant.
+        try:
+            from smartcard.System import readers  # noqa: PLC0415
+
+            if any("Nucula VPCD 00 01" in str(r) for r in readers()):
+                return ("m5stick is serving pcscd through its live vpcd "
+                        "reader (Nucula VPCD 00 01) — the wifi-vpcd "
+                        "firmware variant; GemPC legs skip until the "
+                        "standard image returns")
+        except Exception:
+            pass
         try:
             import serial as pyserial  # noqa: PLC0415
         except ImportError:
