@@ -57,19 +57,25 @@ jobs:
     name: HIL suites (on-device)
     needs: bench-health
     if: always() && needs.bench-health.result != 'cancelled'
-    # Bench validation 2026-10-14: the FULL suite wedged >15 min in a
-    # blocked leg (known bench-limited paths, e.g. the nucula backup-first
-    # guard). Hard job timeout until the legs get per-test timeouts /
-    # curation (#184 follow-up): a hung leg must cost the nightly one
-    # red run, not the runner indefinitely.
+    # Hard job timeout on top of per-test timeouts: even a
+    # timeout-surviving wedge (thread-method can't kill C extensions)
+    # costs one red nightly, never the runner indefinitely.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with: { submodules: 'false' }
-      - name: run labgrid HIL suites (identity legs)
+      - name: run labgrid HIL suites
+        # Per-test timeout (pytest-timeout, bench-verified installed):
+        # a wedged leg (blocked serial reads, the nucula backup-guard
+        # class) costs one red test, never the runner. GP lifecycle is
+        # EXCLUDED unattended — GP attempts are card-budget-bearing
+        # (AGENTS.md Card-Handling Doctrine); automating it needs
+        # explicit owner sign-off (#183).
         run: >
-          python3 -m pytest tests/hardware/labgrid/test_bench_state.py
-          -v --hil --junitxml=hil-junit.xml
+          python3 -m pytest tests/hardware/labgrid/ -v --hil
+          --ignore=tests/hardware/labgrid/test_gp_lifecycle_hil.py
+          --timeout=240 --timeout-method=thread
+          --junitxml=hil-junit.xml
       - name: junit artifact
         if: always()
         uses: actions/upload-artifact@v4
