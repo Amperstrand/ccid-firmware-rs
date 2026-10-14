@@ -71,6 +71,13 @@ format = "markdown"
 file = "reference/osmo-ccid-firmware/ccid_common/iso7816_3.c"
 comment_marker = "ISO7816"
 
+# PDF-only authority (UM11495 Rev 1.8): quotes are transcribed verbatim
+# into the tracked markdown below (docs/quote-sources/ policy, #140/#156).
+[sources.UM11495]
+format = "markdown"
+file = "docs/quote-sources/um11495-quotes.md"
+comment_marker = "UM11495"
+
 [sources.CCID_DEFS]
 format = "markdown"
 file = "reference/CCID/src/ccid.h"

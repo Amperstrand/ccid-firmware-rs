@@ -105,6 +105,23 @@ _None — all 53 rows verified against the tree and closed with commit-hash evid
 
 ---
 
+## Refresh 2026-10-14 — open-PR sweep, PRs #158–#161 dumps
+
+New sweep wave: `/tmp/opencode/pr-sweep/{158,159,160,161}.txt` against the open
+PR heads. PR #159 (all 4 findings on `sisyphus/156-wtx-bound-timeext`, PR head
+852bbd1) is fully dispositioned below; the shared-base-file findings split
+assigned to PR #158's lane are tracked there (note: the `fix/pr158-codex`
+commit c0e53b9 message lists "echo stash capacity" but its diff does NOT
+contain that fix — it is dispositioned here, in the 159 lane).
+
+| PR | Sev | Finding | Verdict | Evidence |
+|---|---|---|---|---|
+| 159 | P1 | Teardown `drain()` reads ONE frame; resync can queue several (late DATA, deactivate RSP+NTF, discover RSP) | **ADDRESSED** | `a29e695` — `reader::drain_link()` drains to empty, bounded ×`DRAIN_LINK_CAP`=16; used in the resync arm, `power_off` eager fallback, and end of `deactivate_to_discovery`; multi-frame mock tests added |
+| 159 | P1 | Blocking teardown transaction accepts the FIRST non-NTF frame — a late DATA packet masquerades as the RSP | **ADDRESSED** | `a29e695` — `reader::transact_strict()` (send + poll until the frame answering THIS command, churn consumed) behind `deactivate_to_discovery` + `restart_discovery`; masquerade + bounded-timeout tests |
+| 159 | P1 | Echo stash `[u8; 2+261+3]`=266 < 274 max wire frame — `arm()` silently truncates max XfrBlock echoes | **ADDRESSED** | `30b40f7` — stash is `[u8; MAX_FRAME_SIZE]`; `full_size_xfrblock_echo_survives_the_stash_verbatim` locks a 274-byte echo round-trip |
+| 159 | P2 | XfrBlock time extension emitted as SlotStatus (0x81) instead of the in-flight command's response type | **ADDRESSED** | `a29e695` — interim is `RDR_to_PC_DataBlock` (0x80), CCID Rev 1.1 §6.1.4; byte-lock test updated; host tolerance verified in `reference/CCID/src` (ReadSerial type-agnostic, commands.c:1598 keys on bStatus) |
+| 159 | P2 | `wtx_hammer.py` exits on ANY second frame — interim treated as final, real response discarded by next `reset_input_buffer()` | **ADDRESSED** | `a29e695` — `final_index()`: terminate only on a non-time-extension reader frame with the expected bSeq; echo-only timeout counts as no-response; interim check accepts 0x80+0x81 |
+
 # Codex Review Sweep — 2026-10-14 round (PR 158 + follow-ups)
 
 Scope: `/tmp/opencode/pr-sweep/158.txt` (PR #158, merged d4666e2) plus the bot's

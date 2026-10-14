@@ -24,6 +24,8 @@ use crate::wifi::WifiManager;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpListener};
+use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 const CARD_POLL_INTERVAL_MS: u32 = 500;
@@ -37,6 +39,24 @@ const IDLE_CLOSE_TICKS: u32 = 2400;
 
 #[link_section = ".rodata"]
 static _BUILD_TAG: &[u8] = b"wifi-ccid-v1";
+
+/// Connected session's TCP fd (-1 = no session) — the stall-hook
+/// writer's only reach into the accept loop's stack-local stream.
+static SESSION_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Raw TCP writer for the time-extension stall hook (issue #156 B):
+/// runs inside the blocking card exchange, where the serve loop's
+/// `stream` reference is unreachable. Borrows the live fd without
+/// consuming it (`forget` keeps the owning stream valid).
+fn write_wire_tcp(bytes: &[u8]) {
+    let fd = SESSION_FD.load(Ordering::SeqCst);
+    if fd < 0 {
+        return;
+    }
+    let borrowed = std::net::TcpStream::from_raw_fd(fd);
+    let _ = borrowed.write_all(bytes);
+    std::mem::forget(borrowed);
+}
 
 pub fn run() -> ! {
     link_patches();
@@ -123,13 +143,17 @@ pub fn run() -> ! {
             }
         }
     }
-    let driver = driver.unwrap_or_else(|| {
+    let mut driver = driver.unwrap_or_else(|| {
         log::warn!(
             "wifi-ccid: PN7160 unresponsive after {} attempts — card-absent mode",
             INIT_ATTEMPTS
         );
         Pn7160NfcDriver::new(transport.take().expect("transport"))
     });
+    // Issue #156 B: interim CCID time-extension frames during a
+    // stalling (WTX) exchange — hook + raw writer registration.
+    crate::ccid_serial_server::time_extension::register_writer(write_wire_tcp);
+    driver.set_stall_hook(Some(crate::ccid_serial_server::time_extension::stall_hook));
 
     let poll_interval = TickType::new_millis(CARD_POLL_INTERVAL_MS as u64).ticks() as u32;
     let response_deadline_ticks = response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
@@ -167,6 +191,7 @@ pub fn run() -> ! {
         };
         let _ = stream.set_nodelay(true);
         let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+        SESSION_FD.store(stream.as_raw_fd(), Ordering::SeqCst);
         log::warn!("wifi-ccid: client {} connected", peer);
         let mut burst_buf = [0u8; 64];
         let mut idle_ticks: u32 = 0;
@@ -268,5 +293,8 @@ pub fn run() -> ! {
             let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
             server.poll_if_due(now);
         }
+        // Session over (closed/idle/error): retire the stall-hook fd
+        // before the stream drops and the fd could be reused.
+        SESSION_FD.store(-1, Ordering::SeqCst);
     }
 }

@@ -100,6 +100,14 @@ pub trait NfcDriver {
     fn reinit_count(&self) -> u32 {
         0
     }
+
+    /// WTX advisory counters (issue #156 A3, Escape 0xD4):
+    /// `(last exchange, lifetime total)` PN7160 RF_WTX notifications
+    /// (`6F 17 00`) consumed during DATA collection. `None` on
+    /// backends without a WTX-reporting NFC controller (MFRC522/PN532).
+    fn wtx_counters(&self) -> Option<(u32, u32)> {
+        None
+    }
 }
 
 /// Bridges firmware-local [`NfcDriver`] implementations to the shared
@@ -192,6 +200,13 @@ pub struct MockNfcDriver {
     poll_count: u32,
     /// Test instrumentation: last APDU handed to transmit_apdu.
     last_apdu: Vec<u8>,
+    /// Test instrumentation: WTX counters surfaced by wtx_counters()
+    /// (issue #156 A3 / Escape 0xD4).
+    wtx: Option<(u32, u32)>,
+    /// Test instrumentation: invoked at the START of transmit_apdu with
+    /// a nominal stall elapsed (issue #156 B) — models the PN7160
+    /// driver's stall hook firing from inside a blocking exchange.
+    stall_probe: Option<fn(u32)>,
 }
 
 impl MockNfcDriver {
@@ -211,6 +226,8 @@ impl MockNfcDriver {
             uid: Vec::new(),
             poll_count: 0,
             last_apdu: Vec::new(),
+            wtx: None,
+            stall_probe: None,
         }
     }
 
@@ -226,6 +243,16 @@ impl MockNfcDriver {
 
     pub fn set_uid(&mut self, uid: &[u8]) {
         self.uid = uid.to_vec();
+    }
+
+    /// Test instrumentation: values returned by `wtx_counters()`.
+    pub fn set_wtx_counters(&mut self, last: u32, total: u32) {
+        self.wtx = Some((last, total));
+    }
+
+    /// Test instrumentation: stall probe invoked inside transmit_apdu.
+    pub fn set_stall_probe(&mut self, probe: Option<fn(u32)>) {
+        self.stall_probe = probe;
     }
 
     #[cfg(test)]
@@ -286,6 +313,9 @@ impl NfcDriver for MockNfcDriver {
     }
 
     fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Self::Error> {
+        if let Some(probe) = self.stall_probe {
+            probe(1600);
+        }
         if !self.card_present {
             self.session_active = false;
             return Err(NfcError::NoCard);
@@ -303,6 +333,10 @@ impl NfcDriver for MockNfcDriver {
 
         response[..self.apdu_response.len()].copy_from_slice(&self.apdu_response);
         Ok(self.apdu_response.len())
+    }
+
+    fn wtx_counters(&self) -> Option<(u32, u32)> {
+        self.wtx
     }
 }
 

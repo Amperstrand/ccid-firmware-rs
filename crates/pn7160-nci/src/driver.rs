@@ -4,7 +4,7 @@
 //! via the mock Transport; the firmware crate wraps it in a thin
 //! `NfcDriver` delegation.
 
-use super::{reader, Transport, STATUS_OK};
+use super::{reader, reader::ExchangeOutcome, Transport, STATUS_OK};
 use reader::DiscoverNtf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +81,19 @@ pub struct Pn7160Driver<T: Transport> {
     /// silent re-arms mean the chip wedged — only a VEN power cycle
     /// recovers it.
     silent_rearms: u8,
+    /// Stall hook invoked from inside a running DATA exchange (issue
+    /// #156 B): receives the nominal elapsed collection wait in ms so
+    /// the CCID layer can emit interim time-extension frames. `None`
+    /// on host tests and any caller without a wire to notify.
+    stall_hook: Option<reader::StallHook>,
+    /// WTX advisories (`6F 17 00`) consumed during the LAST exchange
+    /// (issue #156 A3) and the lifetime total — surfaced through
+    /// Escape 0xD4. Bench model: one advisory per
+    /// READER_FWITOX_NTF_CFG period (default 0x1000 × 4096/fc ≈ 1.24 s,
+    /// UM11495 Rev 1.8 Table 99), so a stalled exchange's count is
+    /// ≈ stall / 1.24 s.
+    wtx_last: u32,
+    wtx_total: u32,
 }
 
 /// Presence re-arm cadence in polls (issue #88): at the firmware's 500 ms
@@ -122,6 +135,9 @@ impl<T: Transport> Pn7160Driver<T> {
             probe_armed: false,
             discovery_parked: false,
             silent_rearms: 0,
+            stall_hook: None,
+            wtx_last: 0,
+            wtx_total: 0,
         }
     }
 
@@ -142,6 +158,19 @@ impl<T: Transport> Pn7160Driver<T> {
     /// detector): the serve loop VEN-cycles the PN7160 on threshold.
     pub fn silent_rearm_streak(&self) -> u8 {
         self.silent_rearms
+    }
+
+    /// Install the exchange stall hook (issue #156 B). The hook runs
+    /// deep inside a blocking DATA exchange — the only channel from
+    /// there to the CCID wire — so it must be a plain function pointer
+    /// reading whatever context it needs from statics.
+    pub fn set_stall_hook(&mut self, hook: Option<reader::StallHook>) {
+        self.stall_hook = hook;
+    }
+
+    /// WTX advisory counters (issue #156 A3): `(last exchange, total)`.
+    pub fn wtx_counters(&self) -> (u32, u32) {
+        (self.wtx_last, self.wtx_total)
     }
 }
 
@@ -554,13 +583,14 @@ impl<T: Transport> Pn7160Driver<T> {
         }
         // Eager path: only a SELECTED session holds an RF interface
         // without a cached auto-ATS — tear that one down (single
-        // transact; the re-issue is refused 0xA0 when discovery is
+        // deactivate; the re-issue is refused 0xA0 when discovery is
         // already running). A plain discovery-NTF latch has no
         // interface: no chip writes at all.
-        if self.active {
-            if reader::deactivate_to_discovery(&mut self.transport).is_err() {
-                let _ = reader::restart_discovery(&mut self.transport);
-            }
+        if self.active && reader::deactivate_to_discovery(&mut self.transport).is_err() {
+            let _ = reader::restart_discovery(&mut self.transport);
+            // Same multi-frame residue risk as the resync path (Codex
+            // PR159 P1): empty the link after the fallback chain.
+            reader::drain_link(&mut self.transport);
         }
         self.active = false;
         self.uid_len = 0;
@@ -573,25 +603,63 @@ impl<T: Transport> Pn7160Driver<T> {
     }
 
     /// Exchange one APDU with the activated tag (connection 0).
+    ///
+    /// Issue #156 A (the #151 desync hole): on a collection TIMEOUT the
+    /// RF interface is still live and the chip keeps honoring WTX — the
+    /// late DATA response lands in the NEXT command's poll window
+    /// (#101-class desync). Timeout therefore tears down and resyncs:
+    /// deactivate-to-discovery (fallback: restart discovery), drain the
+    /// link, clear the tag latch, close the session — the mirror of
+    /// `power_off`'s eager teardown. LINK LOSS needs none of that: the
+    /// chip already dropped the interface itself.
     pub fn transmit_apdu(&mut self, command: &[u8], response: &mut [u8]) -> Result<usize, Error> {
         if !self.active {
             return Err(Error::NoCard);
         }
-        let rsp = reader::exchange(&mut self.transport, 0, command).ok_or(Error::ExchangeFailed)?;
-        // Stale-ACTIVE guard (bench 2026-10-13): every real APDU response
-        // carries SW (>= 2 bytes) — an EMPTY exchange means the tag faded
-        // without a link-lost NTF and the lazy-teardown cache is holding a
-        // phantom session. Clear the latch so presence reads absent and
-        // discovery re-arms for the next real coupling.
-        if rsp.is_empty() {
-            self.clear_tag();
-            return Err(Error::ExchangeFailed);
+        let (outcome, wtx) =
+            reader::exchange_detailed(&mut self.transport, 0, command, self.stall_hook);
+        self.wtx_last = wtx;
+        self.wtx_total = self.wtx_total.saturating_add(wtx);
+        match outcome {
+            ExchangeOutcome::Data(rsp) => {
+                // Stale-ACTIVE guard (bench 2026-10-13): every real APDU response
+                // carries SW (>= 2 bytes) — an EMPTY exchange means the tag faded
+                // without a link-lost NTF and the lazy-teardown cache is holding a
+                // phantom session. Clear the latch so presence reads absent and
+                // discovery re-arms for the next real coupling.
+                if rsp.is_empty() {
+                    self.clear_tag();
+                    self.active = false;
+                    self.uid_len = 0;
+                    return Err(Error::ExchangeFailed);
+                }
+                if response.len() < rsp.len() {
+                    return Err(Error::BufferTooSmall);
+                }
+                response[..rsp.len()].copy_from_slice(&rsp);
+                Ok(rsp.len())
+            }
+            ExchangeOutcome::Timeout => {
+                // Resync teardown (issue #156 A): the chip may still be
+                // mid-WTX on a live interface — tear it down and empty
+                // the link so no late DATA response pollutes the next
+                // command window. drain-until-EMPTY, bounded (Codex
+                // PR159 P1): a single drain read one frame while the
+                // teardown leaves several pending.
+                if reader::deactivate_to_discovery(&mut self.transport).is_err() {
+                    let _ = reader::restart_discovery(&mut self.transport);
+                }
+                reader::drain_link(&mut self.transport);
+                self.clear_tag();
+                self.active = false;
+                self.uid_len = 0;
+                Err(Error::ExchangeFailed)
+            }
+            ExchangeOutcome::LinkLost => {
+                self.teardown_on_link_loss();
+                Err(Error::ExchangeFailed)
+            }
         }
-        if response.len() < rsp.len() {
-            return Err(Error::BufferTooSmall);
-        }
-        response[..rsp.len()].copy_from_slice(&rsp);
-        Ok(rsp.len())
     }
 
     pub fn session_active(&self) -> bool {
@@ -608,6 +676,7 @@ impl<T: Transport> Pn7160Driver<T> {
 mod tests {
     use super::*;
     use crate::mock::MockTransport;
+    use crate::Frame;
     use crate::{
         DEACTIVATE_REASON_DH_REQ, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
         DEACTIVATE_REASON_RF_LINK_LOSS_NXP, DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF,
@@ -776,6 +845,213 @@ mod tests {
         assert_eq!(
             drv.transmit_apdu(&[0x00], &mut rsp),
             Err(Error::ExchangeFailed)
+        );
+    }
+
+    #[test]
+    fn timeout_resync_tears_down_interface_drains_and_clears() {
+        // Issue #156 A: on a collection timeout the RF interface may
+        // still be live (chip honoring WTX) — the driver must tear it
+        // down, drain the link, clear the latch and close the session
+        // so the late DATA response cannot land in the next command's
+        // poll window (#101-class desync).
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        // no DATA reply, no deactivate RSPs scripted: the teardown hits
+        // its fallback chain (deactivate fails → restart_discovery).
+
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+        assert!(drv.session_active());
+
+        let mut rsp = [0u8; 256];
+        assert_eq!(
+            drv.transmit_apdu(&[0x00], &mut rsp),
+            Err(Error::ExchangeFailed)
+        );
+        assert!(!drv.session_active(), "timeout closes the session");
+        let sent = &drv.transport_mut().sent;
+        let teardown_written = sent
+            .iter()
+            .any(|c| c.as_slice() == reader::RF_DEACTIVATE_DISCOVERY);
+        assert!(
+            teardown_written,
+            "resync must attempt deactivate-to-discovery: {:?}",
+            sent
+        );
+        // The next command cannot ride the dead session.
+        assert_eq!(drv.transmit_apdu(&[0x00], &mut rsp), Err(Error::NoCard));
+    }
+
+    // given a timeout exchange on a link carrying MULTI-frame pending
+    // traffic (Codex PR159 P1): a late DATA packet + WTX advisory
+    // ahead of the teardown RSP (the masquerade), the deactivate NTF,
+    // then MORE late residue after a quiet beat — when transmit_apdu
+    // resyncs, then the teardown consumes the churn via strict RSP
+    // matching, drains until the link is ACTUALLY empty (a survivor
+    // would land in the next command's poll window), and closes the
+    // session.
+    struct ResyncTransport {
+        sent: std::vec::Vec<std::vec::Vec<u8>>,
+        polls: usize,
+        poll_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>>,
+        drain_pos: usize,
+        drain_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>>,
+    }
+    impl Transport for ResyncTransport {
+        fn send(&mut self, cmd: &[u8]) -> bool {
+            self.sent.push(cmd.to_vec());
+            true
+        }
+        fn poll_frame(&mut self) -> Option<Frame> {
+            let raw = self.poll_schedule.get(self.polls)?.clone();
+            self.polls += 1;
+            raw.and_then(|r| Frame::decode(&r))
+        }
+        fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
+            None
+        }
+        fn drain(&mut self) -> Option<Frame> {
+            let raw = self.drain_schedule.get(self.drain_pos)?.clone();
+            self.drain_pos += 1;
+            raw.and_then(|r| Frame::decode(&r))
+        }
+    }
+
+    #[test]
+    fn timeout_resync_drains_multi_frame_late_traffic_to_empty() {
+        let raw = |b: &[u8]| Some(b.to_vec());
+        let mut poll_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>> =
+            (0..12).map(|_| None).collect(); // exchange RX: 12 silent rounds → Timeout
+        poll_schedule.push(raw(&[0x00, 0x00, 0x02, 0x90, 0x00])); // late DATA packet (masquerade bait)
+        poll_schedule.push(raw(&[0x6F, 0x17, 0x00])); // WTX advisory
+        poll_schedule.push(raw(&[0x41, 0x06, 0x01, 0x00])); // RF_DEACTIVATE_RSP OK
+        let mut drain_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>> = std::vec::Vec::new();
+        drain_schedule.extend([raw(&auto_activation_ntf())]); // presence latch
+        drain_schedule.extend((0..9).map(|_| None)); // power_on collect rounds
+        drain_schedule.push(raw(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            DEACTIVATE_REASON_DH_REQ,
+        ])); // the teardown's own NTF (eaten by deactivate's drain)
+        drain_schedule.push(None); // link quiet — first drain_link stops here
+        drain_schedule.push(raw(&[0x10, 0x00, 0x01, 0xAA])); // late DATA segment arrives
+        drain_schedule.push(raw(&[0x41, 0x03, 0x01, 0x00])); // stale RF_DISCOVER_RSP
+        drain_schedule.push(raw(&[0x6F, 0x17, 0x00])); // WTX advisory
+        drain_schedule.push(None); // actually empty now
+
+        let mut drv = Pn7160Driver::new(ResyncTransport {
+            sent: std::vec::Vec::new(),
+            polls: 0,
+            poll_schedule,
+            drain_pos: 0,
+            drain_schedule,
+        });
+        assert!(drv.is_card_present(), "presence latches the activation NTF");
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr)
+            .expect("power_on via cached auto-ATS");
+        assert!(drv.session_active());
+
+        let mut rsp = [0u8; 256];
+        assert_eq!(
+            drv.transmit_apdu(&[0x00, 0xA4, 0x04, 0x00], &mut rsp),
+            Err(Error::ExchangeFailed),
+            "the silent 2.4 s collect window times out"
+        );
+        assert!(!drv.session_active(), "resync closes the session");
+
+        let t = drv.transport_mut();
+        assert_eq!(
+            t.polls,
+            t.poll_schedule.len(),
+            "every scripted frame consumed — nothing rides the poll window"
+        );
+        assert!(
+            t.sent
+                .iter()
+                .any(|c| c.as_slice() == reader::RF_DEACTIVATE_DISCOVERY),
+            "strict teardown wrote the deactivate"
+        );
+        assert!(
+            !t.sent
+                .iter()
+                .any(|c| c.len() >= 2 && c[0] == MT_CMD | GID_RF && c[1] == OID_RF_DISCOVER),
+            "matching RSP arrived — no fallback discover needed"
+        );
+        // Multi-frame residue drained to EMPTY: both queues exhausted.
+        assert!(t.poll_frame().is_none());
+        assert!(t.drain().is_none());
+        // And the dead session rejects the next command.
+        assert_eq!(drv.transmit_apdu(&[0x00], &mut rsp), Err(Error::NoCard));
+    }
+
+    #[test]
+    fn link_lost_mid_exchange_clears_session_without_teardown_writes() {
+        // Issue #156 A2: a link-lost NTF mid-exchange means the chip
+        // already tore the RF interface down — no deactivate/restart
+        // writes, just the session clear.
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        t.push_notification(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            0x00,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+        ]);
+
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+
+        let mut rsp = [0u8; 256];
+        assert_eq!(
+            drv.transmit_apdu(&[0x00], &mut rsp),
+            Err(Error::ExchangeFailed)
+        );
+        assert!(!drv.session_active());
+        let sent = &drv.transport_mut().sent;
+        assert!(
+            !sent
+                .iter()
+                .any(|c| c.as_slice() == reader::RF_DEACTIVATE_DISCOVERY),
+            "link-loss teardown writes nothing: {:?}",
+            sent
+        );
+    }
+
+    #[test]
+    fn wtx_counters_track_advisories_per_exchange() {
+        // Issue #156 A3: last-exchange and lifetime WTX advisory counts
+        // (Escape 0xD4 surface) across two exchanges in one session.
+        let mut t = MockTransport::new();
+        script_discover_select_activate(&mut t);
+        t.push_notification(&[0x6F, 0x17, 0x00]);
+        t.push_notification(&[0x6F, 0x17, 0x00]);
+        t.push_notification(&[0x00, 0x00, 0x02, 0x90, 0x00]);
+        t.push_notification(&[0x6F, 0x17, 0x00]);
+        t.push_notification(&[0x00, 0x00, 0x02, 0x61, 0x02]);
+
+        let mut drv = Pn7160Driver::new(t);
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr).expect("power_on");
+        assert_eq!(drv.wtx_counters(), (0, 0), "counters start zeroed");
+
+        let mut rsp = [0u8; 256];
+        drv.transmit_apdu(&[0x00, 0xA4, 0x04, 0x00], &mut rsp)
+            .expect("apdu");
+        assert_eq!(drv.wtx_counters(), (2, 2), "last + total after exchange 1");
+
+        drv.transmit_apdu(&[0x00, 0xA4, 0x04, 0x00], &mut rsp)
+            .expect("apdu 2");
+        assert_eq!(
+            drv.wtx_counters(),
+            (1, 3),
+            "last resets per exchange, total accumulates"
         );
     }
 

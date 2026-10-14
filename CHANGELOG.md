@@ -47,6 +47,45 @@ the C3 LE Set Advertising Parameters → Command Disallowed (0x0c) rejection
 reproduces with a verified BT-enabled config — config/cache hypotheses
 eliminated; ranked follow-ups in `docs/BLE_ROADMAP.md`.
 
+### Fixed — DH-side WTX bound + resync teardown, serial time-extension frames (#151/#156)
+
+`pn7160-nci` DATA exchanges now distinguish TIMEOUT from LINK LOSS
+(`ExchangeOutcome`): a timed-out exchange tears the RF interface down
+(`deactivate_to_discovery` → fallback `restart_discovery` → drain →
+clear) so the late DATA response of a WTX-stalled exchange can no
+longer desync the next command; link-loss clears without writes (the
+chip already dropped the interface). WTX advisory counters
+(`6F 17 00`) surface as Escape 0xD4 (8 bytes LE, last/total — the
+28-byte 0xD0 golden layout untouched). The serial CCID server emits
+**CCID time-extension frames** (CCID Rev 1.1 §6.1.4: interim
+RDR_to_PC_DataBlock — the in-flight XfrBlock's response type —
+`bStatus 0x80|icc`, `bError = 2` BWT units, in-flight bSeq) when an
+XfrBlock stalls ≥ ~1.5 s — honored verbatim by libccidtwin
+(`commands.c` `readTimeout *= bError`; the serial reader keys on the
+bStatus bit, not the message type); the stashed echo goes out first
+because ReadSerial consumes one frame as the echo (no-stall wire
+behavior byte-identical). Bench (nucula, FWID-verified):
+extended 0xA0xx CORE_SET_CONFIG TLVs are REFUSED by the chip
+(`[09 01 A0 65]` INVALID_PARAM) — no `SetConfigExt` ladder step wired;
+zero-risk hammer ×100 PASS ×2 (worst 0.502 s, zero desyncs). UM11495
+Rev 1.8 quote-source wiring added (`docs/quote-sources/`, specquotes).
+
+Codex review follow-ups on the above (PR #159, host-test-verified —
+bench rerun tracked): the resync teardown now drains to EMPTY
+(`drain_link`, bounded ×16 — a single `drain()` read one frame while
+the teardown can leave several pending) and matches teardown RSPs
+STRICTLY (`transact_strict`: send + poll until the frame answering
+the command arrives — `transact`'s "first non-NTF frame" rule let a
+late DATA packet masquerade as the RF_DEACTIVATE_RSP); the interim
+time-extension frame is a DataBlock (0x80), not a SlotStatus (0x81 —
+the pre-fix shape kept the wrong response type for an in-flight
+XfrBlock); the time-extension echo stash holds the full 274-byte
+MAX_FRAME_SIZE (was 266 — `arm()` silently truncated max-size XfrBlock
+echoes into header/tail mismatch); `wtx_hammer.py` waits for the TRUE
+final response (non-time-extension reader frame with the expected
+bSeq — an echo + interim pair no longer terminates the wait, and an
+echo-only timeout counts as no-response).
+
 ### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
 
 `pn7160-nci` now speaks NCI §3.4.3/§3.5 segmentation: TX chunks APDUs

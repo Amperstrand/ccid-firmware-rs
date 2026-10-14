@@ -81,10 +81,12 @@ pub fn ven_cycle() {
 ///   marker 0x3B (direct convention)
 /// - CRC_A — the ISO 14443-3 transport checksum never appears in the
 ///   contact-side ATR
+///
 /// The resulting ATR carries the ATS interface bytes verbatim: T0
 /// becomes the ATR's T0 (Y1 mask + historical count), TA1/TB1/TC1
 /// become the ATR's interface group, and the historical bytes pass
 /// through. pcscd parses these to derive Fi/Di and protocol selection.
+///
 /// Build a PC/SC-compatible ATR from an ISO 14443-4 ATS.
 ///
 /// The ATS interface bytes (TA1/TB1/TC1: D/F coding, SFGT, IFSC) are NOT
