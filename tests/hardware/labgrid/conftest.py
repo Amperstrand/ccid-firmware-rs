@@ -361,6 +361,11 @@ def flashed_firmware(request, helpers):
     if bin_path is None:
         yield None
         return
+    import bench as benchmod
+
+    absent = benchmod.dut_absent_reason("stm32-ccid")
+    if absent:
+        pytest.skip(f"stm32-ccid: flash skipped — {absent}")
     bin_path = Path(bin_path).resolve()
     if not bin_path.exists():
         pytest.fail(f"Firmware binary not found: {bin_path}")
@@ -391,6 +396,11 @@ def flashed_firmware(request, helpers):
 
 @pytest.fixture(scope="session")
 def cherry_reader(helpers, flashed_firmware):
+    import bench as benchmod
+
+    absent = benchmod.dut_absent_reason("stm32-ccid")
+    if absent:
+        pytest.skip(f"stm32-ccid: {absent}")
     result = helpers.run("lsusb")
     assert CHERRY_VID_PID in result.stdout, (
         f"DUT ({CHERRY_VID_PID}) not found:\n{result.stdout}"

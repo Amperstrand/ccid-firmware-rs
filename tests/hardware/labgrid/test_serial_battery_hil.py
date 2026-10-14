@@ -146,8 +146,16 @@ def _run_soak(reader) -> tuple[int, int]:
 
 @pytest.mark.parametrize("place_name", ["m5stick", "nucula-c3"], indirect=True)
 def test_serial_dut_battery(place_name, bench_lock):
-    """The battery's core, one DUT at a time, place held."""
+    """The battery's core, one DUT at a time, place held. Absent
+    hardware / swapped firmware variants SKIP with detection reason
+    (SKIP≠FAIL, #183)."""
     from conformance_battery import Reader
+
+    import bench as benchmod
+
+    absent = benchmod.dut_absent_reason(place_name)
+    if absent:
+        pytest.skip(f"{place_name}: {absent}")
 
     port_name = PLACE_TO_PORT[place_name]
     from serial_ports import resolve
