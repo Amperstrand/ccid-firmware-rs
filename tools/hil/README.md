@@ -17,7 +17,7 @@ closed the whole time).
 | Piece | Where | Notes |
 |---|---|---|
 | labgrid coordinator | `ai-legion`, system unit `labgrid-coordinator.service`, `0.0.0.0:20408` | pre-existing, bench-wide; persists places via `StateDirectory=labgrid` (`/var/lib/labgrid/places.yaml`) — coordinator restarts do NOT wipe places here |
-| exporter `ai-legion-ccid` | `ai-legion`, systemd **--user** unit `labgrid-exporter-ccid.service` (root), config `tools/hil/labgrid-exporter.yaml` | this repo's enrollment: OTA NetworkServices + console USBSerialPort tokens |
+| exporter `ai-legion-ccid` | `ai-legion`, SYSTEM unit `labgrid-exporter-ccid.service` (converted 2026-10-14 from a root --user unit), config `tools/hil/labgrid-exporter.yaml` deployed to `/etc/labgrid/exporter-ccid.yaml` | this repo's enrollment: OTA NetworkServices + console USBSerialPort tokens |
 | exporter `ai-legion-nfc` | `ai-legion`, system unit, config `tests/hardware/labgrid/exporter-ai-legion-nfc.yaml` → `/etc/labgrid/exporter-nfc.yaml` | pre-existing: serial tokens (`nucula-c3`, `m5stick-usb` — plain `SerialPort` class), STM32 DUTs, reference-reader USB identities. Not touched here |
 | places `ccid-nucula`, `ccid-m5stick` | coordinator | network-only matches, labels `board=` / `transport=network` |
 
@@ -33,13 +33,16 @@ Resources exported by `ai-legion-ccid` (as seen by `labgrid-client resources`):
 ## 2. Start / stop / re-create
 
 ```bash
-systemctl --user status labgrid-exporter-ccid        # exporter health
-journalctl --user-unit labgrid-exporter-ccid -f      # its log
-systemctl --user restart labgrid-exporter-ccid       # after editing the yaml
+systemctl status labgrid-exporter-ccid               # exporter health
+journalctl -u labgrid-exporter-ccid -f               # its log
+systemctl restart labgrid-exporter-ccid              # after editing the yaml
 tools/hil/labgrid-place.sh                           # idempotent place (re)creation
 ```
 
-The unit lives at `~/.config/systemd/user/labgrid-exporter-ccid.service`
+The unit lives at `/etc/systemd/system/labgrid-exporter-ccid.service`
+with the config at `/etc/labgrid/exporter-ccid.yaml` (source of truth:
+`tools/hil/labgrid-exporter.yaml` — copy + restart after edits, per the
+conwrt-bench config-sync rule)
 (install instructions in `tools/hil/labgrid-exporter.service`). It points
 at this worktree's yaml — when the checkout moves to a stable path, update
 the `ExecStart` line and re-`daemon-reload`. User units start with root's
@@ -184,9 +187,9 @@ watch the run.
 
 | File | Role |
 |---|---|
-| `labgrid-exporter.yaml` | exporter config (deployed by the --user unit) |
+| `labgrid-exporter.yaml` | exporter config (deployed to `/etc/labgrid/exporter-ccid.yaml` by the system unit) |
 | `labgrid-place.sh` | idempotent place creation + labels |
 | `labgrid-env.yaml` | client env (targets/places; `-c` or `--lg-env`) |
-| `labgrid-exporter.service` | systemd --user unit template (installed copy points here) |
+| `labgrid-exporter.service` | historical --user unit template (superseded by the system unit; kept for the conversion record) |
 | `gh-runner-bench.service` | Actions bench-runner unit (system unit on .208; runbook §9) |
 | `results/` | verification transcripts (gitignored) |
