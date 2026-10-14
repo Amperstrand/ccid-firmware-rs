@@ -668,7 +668,11 @@ mod tests {
     #[test]
     fn escape_0xd4_without_wtx_backend_falls_through() {
         // MFRC522-class backends report no WTX counters — the escape
-        // is not theirs to answer (core's CMD_NOT_SUPPORTED).
+        // is not theirs to answer, so the core dispatch rejects it as
+        // an Escape-typed CMD_NOT_SUPPORTED failure (#141 host
+        // contract: unsupported escape payloads answer
+        // RDR_to_PC_Escape, matching osmo + the STM32 sibling), not a
+        // SlotStatus frame.
         let mut handler = new_handler(false);
         let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 44, &[0xD4]);
         let mut response = [0u8; 271];
@@ -676,7 +680,11 @@ mod tests {
         let len = handler.process_command(&cmd, &mut response);
         let (header, _) = parse_response(&response[..len]);
 
-        assert_eq!(header.message_type, crate::ccid_types::RDR_TO_PC_SLOTSTATUS);
+        assert_eq!(
+            header.message_type,
+            crate::ccid_types::RDR_TO_PC_ESCAPE,
+            "no WTX backend: core's Escape-typed rejection"
+        );
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
     }
 

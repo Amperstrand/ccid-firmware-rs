@@ -86,7 +86,9 @@ pub mod time_extension {
     static SEQ: AtomicU8 = AtomicU8::new(0);
     static ICC: AtomicU8 = AtomicU8::new(0);
     static ECHO_FLUSHED: AtomicBool = AtomicBool::new(false);
-    static WRITER: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
+    /// Raw wire-write function the mains register (CDC/TCP/SPP write).
+    type WireWriter = fn(&[u8]);
+    static WRITER: Mutex<Option<WireWriter>> = Mutex::new(None);
     // Codex PR159 P1 (echo stash capacity): a maximum XfrBlock wire
     // frame is MAX_FRAME_SIZE (274 = 2 + 10 + 261 + 1) — the previous
     // [u8; 2 + 261 + 3] (266) stash let arm() silently truncate a
