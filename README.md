@@ -120,7 +120,7 @@ this; GP keys and the per-card retry ledger live on #127.
 
 Rust firmware for STM32-based USB CCID readers.
 
-- USB identity: IDBridge CT30-compatible (`VID:PID 08E6:3437`)
+- USB identity: Cherry SmartTerminal ST-2xxx emulation (`VID:PID 046a:003e`, default profile)
 - Smartcard protocols: T=0 and T=1
 - Transport: ISO 7816-3 over USART2 smartcard mode
 - Host compatibility: pcscd/libccid and standard CCID stacks
@@ -229,8 +229,9 @@ Detailed build instructions, profile selection, and flashing are documented in [
 
 ## Linux note (plug and play)
 
-With the default `08E6:3437` identity, Linux `pcscd/libccid` works out of the box on standard
-installations that already include the upstream reader list.
+With the default Cherry SmartTerminal ST-2xxx identity (`046a:003e`), Linux
+`pcscd/libccid` works out of the box on standard installations that already
+include the upstream reader list.
 
 ## Flash
 

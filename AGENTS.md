@@ -734,6 +734,32 @@ direct-serial gaps encoded as the exact-set xfail `NUCULA_KNOWN_GAPS`
 (#128). `nucula-broker` reader.conf left ENABLED (serving state) —
 disable when idle per the nucula row above.
 
+### Bench state delta (2026-10-14 session — read before any STM32 HIL run)
+
+- **The F469's ST-LINK (066FFF515786534867184152) is DETACHED from the
+  bench host (.208)**; its USB CCID (046a) is absent. The `stm32-ccid`
+  place still exports resources but is a phantom — the classic
+  `test_ccid_hil.py` suite cannot run until the board is re-attached.
+- **The F746 is wired (ST-LINK 066EFF3837334D4E43123327, place
+  `stm32-f746`)** — ST-LINK only; its user USB remains unplugged (no
+  046a enumeration possible yet). Its flash was restored to the
+  current-main image 2026-10-14 (written+verified) after an incident
+  where a bare local `st-flash` wrote an F469 image onto it (the
+  conftest now pins the adapter serial — see the flashed_firmware
+  fixture). ST-LINK SWD latch recovery on .208: USBDEVFS_RESET
+  (ioctl 0x5514) on the ST-LINK device node.
+- **CardMan 3121 is on the bus as `076b:3021`** (OmniKey VID — grep
+  for 0b97 finds nothing; bench_inventory's USB-presence check keys on
+  the right IDs only on the bench host).
+- New places: `ccid-nucula` / `ccid-m5stick` (OTA seats, boards at
+  192.168.13.230/.234:3232, flash via `tests/hardware/vpcd/ota_push.py`),
+  and the wifi-vpcd path serves pcscd from the bench nucula. The
+  sibling root session on .208 actively holds `nucula-c3` + `m5stick`
+  — coordinate, don't steal.
+- Coordinator: `LG_COORDINATOR=192.168.13.208:20408` (the .221 host is
+  NOT the bench host; USB readers and the classic HIL suites live on
+  .208 — run them there).
+
 ### Recovery events (2026-10-09, all resolved)
 
 - **m5stick re-flashed by micronuts** (display showed their app,
@@ -2294,3 +2320,31 @@ FreedomTechFeed) keep the existing owner-gate flow. Read the target
 repo CONTRIBUTING/AI policy before drafting anything upstream.
 Canonical text: lightning-playground AGENTS.md (standing rule UPDATE
 2026-09-06).
+
+## Lab hardware: one single source of truth (2026-09-28)
+
+All lab hardware — routers, ESP32/STM32 fixtures, switches, power, serial —
+is declared in the **private repo `Amperstrand/conwrt-lab`** (`lab.yaml`:
+devices, MACs, IPs, topology, VLANs, labgrid places). This project does NOT
+own hardware state.
+
+Rules for code and agents in this repo:
+
+1. **Never hardcode device IPs, MACs, or serial-port paths.** Resolve from the
+   registry: `CONWRT_LAB=<conwrt-lab checkout>` +
+   `python3 $CONWRT_BENCH/scripts/lab_registry.py …`, or from a labgrid place.
+2. **Access hardware through labgrid places** (coordinator `ai-legion:20408`):
+   `labgrid-client -p <place> ssh|console|power`. Acquire/release for
+   exclusivity during tests.
+3. **Flashing/adoption goes through conwrt tooling** (`Amperstrand/conwrt-bench`):
+   `scripts/dut_recover.py --from-lab <device-id>` for recovery flashes,
+   `scripts/bench_net.py` for bay/VLAN changes. These update the registry.
+4. **State changes end with a registry commit** in conwrt-lab — if you changed
+   a device (flashed, moved, adopted), lab.yaml must reflect it before you
+   walk away.
+5. **When surprised, reconcile first**:
+   `python3 $CONWRT_BENCH/scripts/lab_registry.py reconcile` detects dead
+   devices, switch reboots, and place drift in one command.
+
+Env: `CONWRT_LAB` (this registry checkout) and `CONWRT_BENCH` (conwrt-bench
+checkout) are the two paths every hardware-touching tool understands.
