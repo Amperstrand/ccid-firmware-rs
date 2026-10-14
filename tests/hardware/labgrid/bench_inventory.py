@@ -6,26 +6,46 @@ does pcscd see every reader, and is the DUT/reference identity split clean?
 
     python3 tests/hardware/labgrid/bench_inventory.py
 
-Exit code 0 = bench fully healthy; 1 = at least one check failed.
+Expected exports are PARSED from the in-repo exporter configs
+(tests/hardware/labgrid/exporter-ai-legion-nfc.yaml +
+tools/hil/labgrid-exporter.yaml) — the configs are the single source of
+truth, so this check cannot drift from the wiring it validates (the
+2026-10-14 audit found a hardcoded list two bench rewirings stale).
+
+The pcscd/USB/identity sections are BENCH-HOST checks: they probe
+locally-attached hardware. Run them on the bench host (.208); anywhere
+else the script detects the absence of ALL bench USB ids and skips those
+sections with a banner instead of printing a wall of misleading FAILs.
+
+Exit code 0 = bench healthy (or healthy-where-applicable); 1 = failure.
 """
 
+import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 DUT_SERIAL = "ST2XXX-001"  # F469 Cherry-emulation iSerial
-EXPECTED_EXPORTS = {
-    "ai-legion-nfc/nucula-c3/SerialPort",
-    "ai-legion-nfc/m5stick-ftdi/SerialPort",
-    "ai-legion-nfc/m5stick-usb/SerialPort",
-    "ai-legion-nfc/stm32f469-stlink/SerialPort",
-    "ai-legion-nfc/stm32f469-ccid/USBDevice",
-    "ai-legion-nfc/ref-acr1252/USBDevice",
-    "ai-legion-nfc/ref-cardman/USBDevice",
+HERE = Path(__file__).resolve().parent
+EXPORTER_CONFIGS = {
+    "ai-legion-nfc": HERE / "exporter-ai-legion-nfc.yaml",
+    "ai-legion-ccid": HERE.parent.parent.parent / "tools" / "hil" / "labgrid-exporter.yaml",
 }
-EXPECTED_PLACES = ["stm32-ccid", "nucula-c3", "m5stick", "ref-acr1252", "ref-cardman"]
+EXPECTED_PLACES = [
+    "stm32-ccid", "nucula-c3", "m5stick", "ref-acr1252", "ref-cardman",
+    "stm32-f746", "ccid-nucula", "ccid-m5stick",
+]
 # readers pcscd must list, keyed by stable identity fragment
 EXPECTED_PCSCD = ["ST2XXX-001", "ACR1252", "CardMan"]
+# (vid:pid, label) pairs that identify the bench host's USB tree; if NONE
+# are present, the pcscd/USB sections are skipped as not-on-bench-host.
+BENCH_USB_IDS = [
+    ("046a:003e", "F469/F746 DUT (Cherry emul)"),
+    ("0483:374b", "ST-LINK V2.1"),
+    ("072f:223b", "ACR1252 reference"),
+    ("076b:3021", "CardMan reference"),
+]
 
 failures = []
 
@@ -55,12 +75,38 @@ def check(name: str, ok: bool, detail: str = ""):
         failures.append(name)
 
 
+def expected_groups() -> set:
+    """Parse (exporter, group) pairs from the in-repo configs.
+
+    Group-level on purpose: the coordinator may serve a declared class
+    under a proxied name (the OTA seats declare USBSerialPort, the
+    coordinator lists NetworkSerialPort for the same group), so exact
+    class-name prediction is fragile — group presence is the invariant
+    that matters ("is the wiring exported?").
+    """
+    expected = set()
+    for exporter, path in EXPORTER_CONFIGS.items():
+        if not path.is_file():
+            check(f"exporter config {path.name} present", False, "file missing")
+            continue
+        for line in path.read_text().splitlines():
+            m = re.match(r"^([A-Za-z0-9_-]+):\s*$", line)
+            if m:
+                expected.add((exporter, m.group(1)))
+    return expected
+
+
 print("== labgrid coordinator ==")
 resources = [l.strip() for l in sh("labgrid-client resources").splitlines() if l.strip()]
 check(f"coordinator reachable ({len(resources)} resources total)", bool(resources))
-exported = {r for r in resources if r.startswith("ai-legion-nfc/")}
-missing = EXPECTED_EXPORTS - exported
-check(f"all 7 bench resources exported", not missing, f"missing: {sorted(missing)}")
+exported_groups = {
+    tuple(r.split("/")[:2]) for r in resources
+    if r.startswith(("ai-legion-nfc/", "ai-legion-ccid/"))
+}
+want = expected_groups()
+missing = want - exported_groups
+check(f"all {len(want)} configured resource groups exported", not missing,
+      f"missing: {sorted('/'.join(g) for g in missing)}")
 
 print("== labgrid places ==")
 held = held_places()
@@ -78,23 +124,34 @@ for place in EXPECTED_PLACES:
     else:
         check(f"place {place}: acquire/release", False, r.stderr.strip()[:100])
 
-print("== pcscd readers ==")
-readers_out = sh(
-    "python3 -c 'from smartcard.System import readers; "
-    "[print(str(r)) for r in readers()]'"
-)
-readers = [l for l in readers_out.splitlines() if l.strip()]
-check(f"pcscd lists readers ({len(readers)})", bool(readers), readers_out[:120])
-for frag in EXPECTED_PCSCD:
-    check(f"reader identity '{frag}' present",
-          any(frag in r for r in readers),
-          "; ".join(readers))
+lsusb = sh("lsusb")
+on_bench_host = any(vidpid in lsusb for vidpid, _ in BENCH_USB_IDS)
+if not on_bench_host:
+    print("== pcscd / USB: SKIPPED — not the bench host ==")
+    print("  (none of the bench USB ids are locally attached; these sections")
+    print("   check locally-plugged readers and belong on the bench host, .208)")
+else:
+    print("== pcscd readers ==")
+    readers_out = sh(
+        "python3 -c 'from smartcard.System import readers; "
+        "[print(str(r)) for r in readers()]'"
+    )
+    readers = [l for l in readers_out.splitlines() if l.strip()]
+    check(f"pcscd lists readers ({len(readers)})", bool(readers), readers_out[:120])
+    for frag in EXPECTED_PCSCD:
+        check(f"reader identity '{frag}' present",
+              any(frag in r for r in readers),
+              "; ".join(readers))
 
-print("== DUT/reference identity split ==")
-dut = [r for r in readers if DUT_SERIAL in r]
-check(f"exactly one DUT reader (serial {DUT_SERIAL})", len(dut) == 1, "; ".join(dut))
-refs = [r for r in readers if DUT_SERIAL not in r and ("ACR1252" in r or "CardMan" in r)]
-check(f"reference readers carry no DUT serial ({len(refs)} found)", len(refs) >= 2, "; ".join(refs))
+    print("== DUT/reference identity split ==")
+    dut = [r for r in readers if DUT_SERIAL in r]
+    check(f"exactly one DUT reader (serial {DUT_SERIAL})", len(dut) == 1, "; ".join(dut))
+    refs = [r for r in readers if DUT_SERIAL not in r and ("ACR1252" in r or "CardMan" in r)]
+    check(f"reference readers carry no DUT serial ({len(refs)} found)", len(refs) >= 2, "; ".join(refs))
+
+    print("== USB device presence ==")
+    for vidpid, label in BENCH_USB_IDS:
+        check(f"{label} on USB", vidpid in lsusb)
 
 print("== disk pressure (issue #108) ==")
 # The 2026-10-10 incident: /root/.cargo-target grew until the disk filled
@@ -116,16 +173,9 @@ for p in ("/root/.cargo-target", "/tmp/opencode"):
     else:
         check(f"disk under {p} below 85%", True, detail)
 
-print("== USB device presence ==")
-lsusb = sh("lsusb")
-for vidpid, label in [("046a:003e", "F469 DUT (Cherry emul)"),
-                      ("0483:374b", "ST-LINK V2.1"),
-                      ("072f:223b", "ACR1252 reference"),
-                      ("076b:3021", "CardMan reference")]:
-    check(f"{label} on USB", vidpid in lsusb)
-
 print()
 if failures:
     print(f"INVENTORY: {len(failures)} FAILED — {', '.join(failures)}")
     sys.exit(1)
-print("INVENTORY: all checks passed — bench fully healthy")
+print("INVENTORY: all checks passed — bench fully healthy"
+      + ("" if on_bench_host else " (bench-host sections skipped on this host)"))

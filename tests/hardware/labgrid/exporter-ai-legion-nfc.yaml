@@ -18,11 +18,6 @@ nucula-c3:
     port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
     speed: 115200
 
-m5stick-ftdi:
-  SerialPort:
-    port: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_A50285BI-if00-port0
-    speed: 115200
-
 m5stick-usb:
   SerialPort:
     port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0
@@ -30,6 +25,9 @@ m5stick-usb:
 
 ### F469-DISCO SWD flash + console (ST-LINK V2.1 CDC; serial is IN the
 ## by-id path — stable without a udev match)
+## ⚠️ 2026-10-14: the F469's ST-LINK is PHYSICALLY DETACHED from the bench
+## host — this resource (and the stm32-ccid place) is a phantom until the
+## board is re-attached. Kept in the config so the wiring is not lost.
 stm32f469-stlink:
   SerialPort:
     port: /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066FFF515786534867184152-if02
@@ -40,6 +38,18 @@ stm32f469-stlink:
 stm32f469-ccid:
   USBDevice:
     match: 'ID_VENDOR_ID=046a ID_MODEL_ID=003e ID_SERIAL_SHORT=ST2XXX-001'
+
+### F746-DISCO (GPIO bitbang smartcard path) — second STM32 DUT, wired
+## 2026-10-12. Bench-distinct iSerial ST2XXX-F746 (commit 0af0fb0).
+## ST-LINK only — the user USB (046a enumeration) still needs the plug.
+stm32f746-stlink:
+  SerialPort:
+    port: /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF3837334D4E43123327-if02
+    speed: 115200
+
+stm32f746-ccid:
+  USBDevice:
+    match: 'ID_VENDOR_ID=046a ID_MODEL_ID=003e ID_SERIAL_SHORT=ST2XXX-F746'
 
 ## --- reference readers (comparison oracles; never DUTs) -------------------
 

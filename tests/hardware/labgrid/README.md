@@ -41,31 +41,60 @@ pytest tests/hardware/labgrid/ -v
 
 ## Test topology per place
 
-| Place | Identity probe | Suite |
-|---|---|---|
-| `stm32-ccid` | pcscd `ST2XXX-001` (Cherry emul) | `test_ccid_hil.py` (USB enum, ATR, APDU, pinpad, escape) |
-| `nucula-c3` | GemPC Escape 0x02 over USB-CDC | `test_serial_battery_hil.py` |
-| `m5stick` | GemPC Escape 0x02 over UART0 | `test_serial_battery_hil.py` |
-| `ref-acr1252` | pcscd `ACR1252` | identity only (reference oracle) |
-| `ref-cardman` | pcscd `CardMan` | identity only (contact reference) |
+Eight places (2026-10-14): the five original bench seats plus the F746
+DUT and the two ESP32 OTA seats served by the second exporter.
+
+| Place | Exporter | Identity probe | Suite |
+|---|---|---|---|
+| `stm32-ccid` | ai-legion-nfc | pcscd `ST2XXX-001` (Cherry emul) | `test_ccid_hil.py` (USB enum, ATR, APDU, pinpad, escape) |
+| `stm32-f746` | ai-legion-nfc | ST-LINK serial `066EFF…2327` (USB id pending plug) | flash/restore via st-flash (see conftest serial pin) |
+| `nucula-c3` | ai-legion-nfc | GemPC Escape 0x02 over USB-CDC | `test_serial_battery_hil.py` |
+| `m5stick` | ai-legion-nfc | GemPC Escape 0x02 over UART0 | `test_serial_battery_hil.py` |
+| `ref-acr1252` | ai-legion-nfc | pcscd `ACR1252` | identity only (reference oracle) |
+| `ref-cardman` | ai-legion-nfc | pcscd `CardMan` | identity only (contact reference) |
+| `ccid-nucula` | ai-legion-ccid | OTA TCP `192.168.13.230:3232` | `tests/hardware/vpcd/` + `host-tools/ota_push.py` |
+| `ccid-m5stick` | ai-legion-ccid | OTA TCP `192.168.13.234:3232` | OTA reflash (vpcd slot :35964) |
 
 ## Testbed topology
 
-Single bench host (ai-legion, .208) — tests run ON it as local
-subprocesses (labgrid doctrine rule 3). There is no SSH anywhere in the
-harness (the pre-labgrid SSH style was removed in the 2026-10-09
-migration); labgrid coordinates the places, and the exporter runs on the
-bench host from the in-repo config (`exporter-ai-legion-nfc.yaml`,
-deployed to `/etc/labgrid/exporter-nfc.yaml`).
+Two bench hosts in practice:
+
+- **.208 (ai-legion)** — the USB bench: readers, ST-LINKs, pcscd, both
+  labgrid exporters, the coordinator. The classic HIL suites run ON it.
+- **.221 (compute)** — no bench USB; sessions here use labgrid for
+  place coordination and the network paths (OTA seats, vpcd, netlog).
 
 ```
-bench host (ai-legion .208)
-├── labgrid-exporter ── 5 places (see table above)
-├── ST-LINK/V2.1 ──▶ STM32F469  (USB CCID, Cherry ST-2xxx emul)
-├── FTDI         ──▶ M5Stick    (UART0 GemPC Twin serial)
-├── USB-JTAG     ──▶ nucula     (USB-CDC GemPC Twin serial)
-└── ACR1252 · CardMan  (reference readers, never DUTs)
+coordinator 192.168.13.208:20408  (LG_COORDINATOR — see below)
+├── exporter ai-legion-nfc  (config: tests/hardware/labgrid/exporter-ai-legion-nfc.yaml,
+│    deployed to /etc/labgrid/exporter-nfc.yaml on .208)
+│    ├── ST-LINK 066FFF…4152 ──▶ STM32F469  (⚠️ detached 2026-10-14 — phantom until replugged)
+│    ├── ST-LINK 066EFF…2327 ──▶ STM32F746  (user USB still unplugged)
+│    ├── Hades2001 FTDI     ──▶ M5Stick    (UART0 GemPC Twin serial)
+│    ├── Espressif USB-JTAG ──▶ nucula     (USB-CDC GemPC Twin serial)
+│    └── ACR1252 · CardMan  (reference readers, never DUTs)
+└── exporter ai-legion-ccid  (config: tools/hil/labgrid-exporter.yaml;
+     the RUNNING instance still starts from /tmp/opencode/ccid-idf555 —
+     content in sync 2026-10-14, but re-point it to the deployed config
+     before that worktree is removed, or the OTA seats vanish — #166)
+     └── ccid-nucula / ccid-m5stick OTA seats (NetworkService :3232 — no
+         USBSerialPort matches by default: opening the CDC chip-resets
+         the nucula; see the config header)
 ```
+
+**Coordinator discovery (the #164 failure class):** labgrid 26.0 has NO
+client config file — `labgrid-client` uses `LG_COORDINATOR` or falls
+back to `127.0.0.1:20408`. On any host that is not .208 the fallback
+fails with "Could not connect to coordinator". Fix (deployed on .221
+2026-10-14): `/etc/profile.d/labgrid-coordinator.sh` exporting
+`LG_COORDINATOR=192.168.13.208:20408` — replicate on new hosts.
+
+**Exporter-config sync rule:** a bench rewiring that edits the DEPLOYED
+`/etc/labgrid/exporter-nfc.yaml` MUST land the same edit in
+`tests/hardware/labgrid/exporter-ai-legion-nfc.yaml` in the same
+session — `bench_inventory.py` parses the in-repo configs as the source
+of truth, and the 2026-10-14 audit found the repo copy two rewirings
+stale (F746 missing, dead m5stick-ftdi still present).
 
 ## Prerequisites (bench host)
 
@@ -84,7 +113,7 @@ rustup target add thumbv7em-none-eabihf   # for STM32 firmware builds
 | `place_name` | function | Parametrized place acquire/release; busy → skip with holder |
 | `labgrid_place` | session | Session hold of `stm32-ccid` (classic STM32 suite) |
 | `bench` | session | Local host command runner (no SSH) |
-| `flashed_firmware` | session | Flashes `.bin` via `st-flash --reset write` (local) |
+| `flashed_firmware` | session | Flashes `.bin` via `st-flash --serial <F469 ST-LINK> --reset write` — adapter pinned from the exporter config (board-crossing guard, 2026-10-14) |
 | `cherry_reader` | session | Verifies Cherry ST-2xxx (046A:003E) in `lsusb` |
 | `pcscd_running` | session | Ensures `pcscd.socket` + `pcscd.service` active |
 | `pcsc_reader_name` | session | The DUT reader by USB serial (never enumeration order) |
