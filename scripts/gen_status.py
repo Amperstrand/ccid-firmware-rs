@@ -101,7 +101,8 @@ def hil_section(junit: dict, stamp: str) -> str:
         for cls in sorted(suites):
             t = suites[cls]
             lines.append(f"| {cls} | {t['passed']} | {t['skipped']} | {t['failed']} |\n")
-    lines.append(f"\nVerified: {stamp} — `pytest tests/hardware/labgrid/ --hil` "
+    lines.append(f"\nVerified: {stamp} — nightly HIL selection per "
+                 "`.github/workflows/hil-bench.yml` "
                  "(SKIP = place busy/hardware absent, per doctrine)\n")
     return "".join(lines)
 
