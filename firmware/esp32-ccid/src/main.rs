@@ -904,3 +904,6 @@ fn main() {
 fn main() {
     esp32_ccid::pn7160_m1::run()
 }
+
+// CI tier verification (2026-10-14): a firmware/ touch must run the
+// PRIMARY esp32 legs on PRs; secondary legs stay on main/nightly/label.
