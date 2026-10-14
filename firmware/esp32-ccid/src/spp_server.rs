@@ -148,6 +148,12 @@ impl SppRxRing {
     }
 }
 
+impl Default for SppRxRing {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Connection state shared between the SPP callback and the serve loop.
 /// All transitions are cheap (no I/O) so the callback never blocks the
 /// Bluedroid task on card business.
@@ -1400,8 +1406,21 @@ pub mod shell {
                     g.link.clear_pending();
                     g.link.note_dropped_tx(len);
                     log::debug!("spp: dropped {len} parked bytes past the host read window");
+                    // Codex round 2 on #158: the expired packet may have
+                    // been a 0xD1 ack — its panic contract is void (the
+                    // ack never reached the wire). Cancel the armed
+                    // snapshot or the NEXT delivered response inherits
+                    // a wrong-command reboot.
+                    let _ = pump.take_snapshot_request();
                 } else if spp.write(handle, &mut retry_buf[..len]).is_ok() {
                     shared.lock().unwrap().link.clear_pending();
+                    // The parked packet may have been a 0xD1 ack — it is
+                    // on the wire NOW, so complete the ack-before-panic
+                    // contract exactly like the fresh-delivery path.
+                    if pump.take_snapshot_request() {
+                        FreeRtos::delay_ms(SPP_SNAPSHOT_SETTLE_MS);
+                        panic!("escape 0xD1: diagnostic snapshot requested");
+                    }
                 }
             }
 

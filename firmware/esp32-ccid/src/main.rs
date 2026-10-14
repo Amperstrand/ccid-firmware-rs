@@ -186,6 +186,11 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
 /// Feed one host byte through the server and, when the byte completes
 /// a frame, write echo (+notify) + response and flush. Extracted so the
 /// #101 drain loop can feed queued bytes through the identical path.
+/// `arrival_floor` is a conservative LOWER BOUND on the byte's arrival
+/// (the tick captured when the transport last knew its queue empty, or
+/// before the blocking section that queued it): feed-time stamps
+/// overstate arrivals queued behind a handler, which would resurrect
+/// the #153 late-answer bug (Codex round 2 on #158).
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
@@ -195,6 +200,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     uart: &UartDriver,
     server: &mut esp32_ccid::ccid_serial_server::CcidSerialServer<D>,
     byte: u8,
+    arrival_floor: u32,
 ) {
     use esp32_ccid::ccid_serial_server::ServeAction;
 
@@ -204,6 +210,10 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     let byte_us = esp32_ccid::t1::now_us();
     match server.feed_byte(byte, now) {
         ServeAction::Respond => {
+            // #153 arrival-anchor correction: the frame may have queued
+            // behind the PREVIOUS handler — judge it against the floor,
+            // not the drain-time feed stamp.
+            server.refresh_host_deadline(arrival_floor);
             // #153 answer-or-silence: the handler ran inside feed_byte;
             // if it outlived the host's read window, late bytes must
             // not reach the wire (libccidtwin has no mid-stream
@@ -310,21 +320,40 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
     // survived the block. The blocking read stays 1-byte: UART reads
     // wait for the FULL requested length, so a larger buffer would
     // add latency, not throughput.
+    //
+    // #153 arrival floors (Codex round 2 on #158): a byte fed from the
+    // drain loop queued behind a handler — its true arrival is only
+    // bounded below by the tick captured before that handler's
+    // dispatch. Drained bytes are anchored there, so drain-time feed
+    // stamps cannot extend the host read window. A read that returns
+    // empty proves the ring idle and raises the floor.
     let mut byte_buf = [0u8; 1];
     let mut drain_buf = [0u8; 256];
     let timeout_ticks = esp_idf_hal::delay::TickType::new_millis(UART_RX_TIMEOUT_MS).ticks();
     let drain_ticks = esp_idf_hal::delay::TickType::new_millis(0).ticks();
     loop {
+        let read_start = unsafe { esp_idf_sys::xTaskGetTickCount() };
         match uart.read(&mut byte_buf, timeout_ticks) {
             Ok(1) => {
-                serve_byte(uart, &mut server, byte_buf[0]);
+                // Bytes queued behind this byte's handler arrived at or
+                // after its dispatch tick.
+                let pre_dispatch = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                serve_byte(uart, &mut server, byte_buf[0], read_start);
+                let mut floor = pre_dispatch;
                 loop {
                     match uart.read(&mut drain_buf, drain_ticks) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
+                            // One read = one burst: every byte in it
+                            // shares the floor captured before it.
+                            let burst_floor = floor;
+                            let mut last_dispatch = burst_floor;
                             for &b in &drain_buf[..n] {
-                                serve_byte(uart, &mut server, b);
+                                let pre = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                                serve_byte(uart, &mut server, b, burst_floor);
+                                last_dispatch = pre;
                             }
+                            floor = last_dispatch;
                         }
                     }
                 }
