@@ -30,10 +30,9 @@
 ## 2026-10-14 the cross-place exclusion is COORDINATOR-ENFORCED by
 ## matching each NetworkService below into its USB sibling place:
 ##   m5stick    matches ai-legion-ccid/m5stick/NetworkService   (live, verified)
-##   nucula-c3  matches ai-legion-ccid/nucula/NetworkService    (pending: the
-##     place was held when the match was attempted — run
-##     `labgrid-client -p nucula-c3 add-match ai-legion-ccid/nucula/NetworkService`
-##     once idle; labgrid refuses match changes on acquired places)
+##   nucula-c3  matches ai-legion-ccid/nucula/NetworkService   (live, verified
+##     2026-10-14 — after release -k of a 1h13m leaked hold: no port holders,
+##     no nucula processes, sibling session active on other lanes)
 ## Acquiring either place of a pair now acquires the shared resource and
 ## the coordinator refuses the sibling ("Matching resource ... already
 ## acquired"). The bench flock (/tmp/amperstrand-bench.lock,
