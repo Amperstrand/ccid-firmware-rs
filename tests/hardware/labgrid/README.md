@@ -45,6 +45,11 @@ pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil \
 
 # CI / no hardware: everything skips without --hil.
 pytest tests/hardware/labgrid/ -v
+
+# Queue politely for a busy bench (reservation, not poll-acquire):
+# blocks until the coordinator allocates the place to you, then the
+# suite runs; CI lanes add --reserve-priority -10 to yield.
+pytest tests/hardware/labgrid/ -v --hil --places m5stick --reserve
 ```
 
 ## Test topology per place
@@ -118,8 +123,8 @@ rustup target add thumbv7em-none-eabihf   # for STM32 firmware builds
 | Fixture | Scope | Description |
 |---------|-------|-------------|
 | `bench_lock` | session | Cross-project flock on `/tmp/amperstrand-bench.lock` |
-| `place_name` | function | Parametrized place acquire/release; busy → skip with holder |
-| `labgrid_place` | session | Session hold of `stm32-ccid` (classic STM32 suite) |
+| `place_name` | function | Parametrized place acquire/release; busy → skip with holder, or queue with `--reserve` |
+| `labgrid_place` | session | Session hold of `stm32-ccid`; `--reserve` queues via coordinator reservation |
 | `bench` | session | Local host command runner (no SSH) |
 | `flashed_firmware` | session | Flashes `.bin` via `st-flash --serial <F469 ST-LINK> --reset write` — adapter pinned from the exporter config (board-crossing guard, 2026-10-14) |
 | `cherry_reader` | session | Verifies Cherry ST-2xxx (046A:003E) in `lsusb` |
@@ -160,7 +165,7 @@ st-flash --reset write /path/to/gm65-firmware.bin 0x08000000
 | Cherry reader not in `lsusb` after flash | Wait 3s for USB re-enum, or reset USB PHY (issue #22) |
 | `pcsc_scan` shows no readers | `systemctl start pcscd.socket pcscd.service` |
 | pyscard `Unsupported card` from opensc | Use pyscard directly (bypasses opensc driver matching) |
-| Place skip: "held by ..." | Another session owns the board — coordinate, don't force |
+| Place skip: "held by ..." | Another session owns the board — coordinate, don't force — or re-run with `--reserve` to queue (`--reserve-timeout-min` caps the wait) |
 | Bench skip: "bench flock held" | A cross-project session (bolty/micronuts) is on the bench |
 
 ## Bench cards & GlobalPlatform (issue #127)

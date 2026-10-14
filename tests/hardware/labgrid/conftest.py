@@ -134,6 +134,35 @@ def _lg(*args: str, check: bool = True):
     )
 
 
+def _reserve_wait(place: str, prio: int, timeout_s: int):
+    """Queue for a place via a coordinator reservation (the polite
+    cross-project pattern — conwrt-bench docs/labgrid-coordination.md).
+    Blocks until allocated; returns the reservation token.
+
+    Reservation, not poll-acquire: once the coordinator allocates, only
+    this reservation's owner can lock the place — the current holder's
+    release hands it over instead of a race.
+    """
+    r = subprocess.run(
+        ["labgrid-client", "reserve", "--wait", "--prio", str(prio), f"name={place}"],
+        capture_output=True, text=True, timeout=timeout_s, check=False,
+    )
+    if r.returncode != 0:
+        pytest.fail(f"reservation for '{place}' failed: {(r.stderr or r.stdout).strip()[:200]}")
+    m = re.search(r"^\s*token:\s*(\S+)", r.stdout, re.M)
+    if not m:
+        pytest.fail(f"could not parse reservation token from: {r.stdout!r}")
+    return m.group(1)
+
+
+def _lg_token(token: str, *args: str):
+    """Run labgrid-client against the place allocated to a reservation."""
+    return subprocess.run(
+        ["labgrid-client", "-p", f"+{token}", *args],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+
+
 # ---------------------------------------------------------------- options
 
 def pytest_addoption(parser):
@@ -147,6 +176,17 @@ def pytest_addoption(parser):
     parser.addoption("--places", action="store", default=",".join(PLACES),
                      help="Comma-separated subset of bench places to cover "
                           "(stm32-ccid,nucula-c3,m5stick,ref-acr1252,ref-cardman).")
+    parser.addoption("--reserve", action="store_true", default=False,
+                     help="Queue for busy places via coordinator reservations "
+                          "(reserve --wait) instead of failing/skipping — the "
+                          "polite cross-project pattern (conwrt-bench "
+                          "docs/labgrid-coordination.md).")
+    parser.addoption("--reserve-priority", action="store", type=int, default=0,
+                     help="Reservation priority (default 0; CI lanes use "
+                          "negative to yield to interactive sessions).")
+    parser.addoption("--reserve-timeout-min", action="store", type=int, default=120,
+                     help="How long --reserve may block waiting for a place "
+                          "(minutes, default 120).")
 
 
 def pytest_collection_modifyitems(config, items):
@@ -178,7 +218,9 @@ def bench_lock(request):
 def place_name(request):
     """Parametrized over the bench places selected via --places. Busy
     places SKIP (with the holder named) instead of failing a run — a
-    shared bench yields partial coverage, visibly."""
+    shared bench yields partial coverage, visibly. With --reserve they
+    QUEUE instead (owner-locked allocation once granted).
+    """
     wanted = request.config.getoption("--places").split(",")
     if request.param not in wanted:
         pytest.skip(f"place not selected: {request.param}")
@@ -188,6 +230,25 @@ def place_name(request):
     holder = _place_holder(request.param)
     if holder is None:
         pytest.fail(f"coordinator unreachable for place {request.param}")
+    if holder and request.config.getoption("--reserve"):
+        prio = request.config.getoption("--reserve-priority")
+        timeout_s = request.config.getoption("--reserve-timeout-min") * 60
+        token = _reserve_wait(request.param, prio, timeout_s)
+        print(f"[labgrid] reservation allocated for {request.param} "
+              f"(was held by {holder}; token {token})")
+        r = _lg_token(token, "acquire")
+        if r.returncode != 0:
+            subprocess.run(["labgrid-client", "cancel-reservation", token],
+                           capture_output=True, timeout=30)
+            pytest.fail(f"could not acquire allocated place '{request.param}': "
+                        f"{r.stderr.strip()[:200]}")
+        _ledger("place_acquired", place=request.param, reserved=True)
+        yield request.param
+        _lg_token(token, "release")
+        subprocess.run(["labgrid-client", "cancel-reservation", token],
+                       capture_output=True, timeout=30)
+        _ledger("place_released", place=request.param, reserved=True)
+        return
     if holder:
         pytest.skip(f"place held by {holder}: {request.param}")
     with acquired_place(request.param) as p:
@@ -200,9 +261,31 @@ def place_name(request):
 def labgrid_place(request):
     """Acquire the DUT's labgrid place for the whole session — the single
     coordination point for bench access (released on teardown).
+
+    With --reserve: queue via a coordinator reservation instead of
+    failing when the place is busy (anti-bounce — the allocation is
+    owner-locked once granted).
     """
     if request.config.getoption("--skip-labgrid"):
         yield None
+        return
+    token = None
+    if request.config.getoption("--reserve"):
+        prio = request.config.getoption("--reserve-priority")
+        timeout_s = request.config.getoption("--reserve-timeout-min") * 60
+        token = _reserve_wait(PLACE, prio, timeout_s)
+        print(f"[labgrid] reservation allocated for {PLACE} (token {token})")
+        r = _lg_token(token, "acquire")
+        if r.returncode != 0:
+            subprocess.run(["labgrid-client", "cancel-reservation", token],
+                           capture_output=True, timeout=30)
+            pytest.fail(f"could not acquire allocated place '{PLACE}': {r.stderr.strip()[:200]}")
+        print(f"[labgrid] acquired {PLACE} via reservation")
+        yield PLACE
+        _lg_token(token, "release")
+        subprocess.run(["labgrid-client", "cancel-reservation", token],
+                       capture_output=True, timeout=30)
+        print(f"[labgrid] released {PLACE}, reservation cancelled")
         return
     r = _lg("acquire", check=False)
     inherited = "You have already acquired" in (r.stderr or "")
