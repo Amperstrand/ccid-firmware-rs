@@ -44,8 +44,16 @@ const CARD_ABSENT_THRESHOLD: u8 = 3;
 
 /// Field-off dwell for the antenna cycle in `reset_activation_frontend`
 /// (see there for the wedged-PICC rationale).
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 const FIELD_OFF_DWELL_MS: u32 = 50;
 /// Field-on settle before the first REQA/WUPA after the cycle.
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 const FIELD_ON_SETTLE_MS: u32 = 5;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -109,6 +117,10 @@ use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
     feature = "backend-mfrc522"
 ))]
 use iso14443::type_a::vec::FrameVec;
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use iso14443::type_a::{Frame, PcdTransceiver};
 
 #[cfg(all(
