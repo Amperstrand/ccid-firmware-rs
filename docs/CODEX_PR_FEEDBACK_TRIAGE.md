@@ -145,3 +145,17 @@ misattributed from PR 159's sweep (`159.txt`). PR 159's own brief tracks it.
 
 Open follow-ups: #172 (bench hardware verification of #153 + floors),
 #173 (esp32-build matrix lacks m5stick-spp/wifi-ccid; no esp32 clippy CI gate).
+
+*2026-10-14 second refresh (post-merge rounds for PRs 159–162)*: PR #159's
+four in-merge fixes were dispositioned above (a29e695/30b40f7); the
+remaining three closed as: deadline-growth + bridge-test serialization →
+PR #179 e3bab63; FWITOX restore → issue #180 (Reference-First: the
+extended-tag CORE_GET_CONFIG shape is unverified). PR #160: five findings
+superseded by the #158/#168/#174 main fixes (the branch predated them);
+F-1/F-2/F-3 verified genuinely fixed in the merged tree (handler + tests
+present); auto-power-off timing corrected in #179 dc8f796 (verified
+against upstream pin 6cadd81); per-command window → issue #181.
+PR #161: all three findings superseded by c0e53b9-era main fixes.
+PR #162: README stale claim fixed in #179 2305e50. Every finding across
+158–168–174–179 now carries a reply on its PR with a commit hash or an
+issue number.
