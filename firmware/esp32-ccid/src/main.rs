@@ -617,6 +617,37 @@ fn main() {
         mfrc522_result.as_ref().err().map(|e| format!("{e:?}"))
     );
 
+    // M5StickC LCD status screen (bolty-rs display.rs port): claims I2C1
+    // (AXP192), SPI2 + the LCD pins. GPIO27 is the StickC backlight —
+    // LedStatus (Atom LED matrix on GPIO27) must stay OFF on lcd builds
+    // or its RMT pulses fight the backlight. The display takes over the
+    // status-signalling role; CCID serving never depends on it.
+    #[cfg(all(feature = "board-m5stick", feature = "lcd", target_arch = "xtensa"))]
+    {
+        let result = unsafe {
+            esp32_ccid::m5stick_lcd::init(
+                peripherals.i2c1,
+                peripherals.spi2,
+                peripherals.pins.gpio21,
+                peripherals.pins.gpio22,
+                peripherals.pins.gpio13,
+                peripherals.pins.gpio15,
+                peripherals.pins.gpio5,
+                peripherals.pins.gpio23,
+                peripherals.pins.gpio18,
+                peripherals.pins.gpio27,
+                env!("FW_GIT_REV"),
+                "GemPC serial",
+            )
+        };
+        if let Err(e) = result {
+            log::error!("Display init failed: {e} — continuing headless");
+        } else {
+            esp32_ccid::m5stick_lcd::spawn_ticker();
+        }
+    }
+
+    #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
     let mut led = esp32_ccid::led::LedStatus::new();
 
     let mfrc522_hw = match mfrc522_result {
@@ -629,6 +660,7 @@ fn main() {
             log::error!("MFRC522 init failed ({e:?}) — CCID offline, LED=Error, halting card loop");
             let mut tick: u32 = 0;
             loop {
+                #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
                 led.set_state(esp32_ccid::led::LedState::Error);
                 if tick % 30 == 0 {
                     log::warn!("reader absent ({}x5s) — CCID still offline", tick);
@@ -655,8 +687,10 @@ fn main() {
     });
 
     if init_ok {
+        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
         led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
     } else {
+        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
         led.set_state(esp32_ccid::led::LedState::Error);
     }
 
