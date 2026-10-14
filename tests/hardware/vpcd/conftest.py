@@ -19,8 +19,11 @@ import subprocess
 import time
 
 import pytest
-from smartcard.Exceptions import CardConnectionException, NoCardException
-from smartcard.System import readers
+
+# pyscard is imported lazily inside the discovery helpers (the
+# python-collect gate runs with pytest + stdlib ONLY — a module-level
+# hardware import breaks collection of the whole tests/hardware tree;
+# same rule as tests/hardware/test_ccid_apdu.py).
 
 #: vpcd reader names exposed by the stock libifdvpcd reader.conf (runbook
 #: "Multi-board benches"): :35963 = "Nucula VPCD 00 00", :35964 = "Nucula VPCD 00 01".
@@ -69,6 +72,9 @@ def real_connect(name, tries=3):
     restarts.
     """
     last = None
+    from smartcard.Exceptions import CardConnectionException, NoCardException
+    from smartcard.System import readers
+
     for _ in range(tries):
         rs = [r for r in readers() if str(r) == name]
         if not rs:
@@ -99,6 +105,9 @@ def slot_map():
     """
     deadline = time.time() + 90
     last_err = None
+    from smartcard.Exceptions import CardConnectionException, NoCardException
+    from smartcard.System import readers
+
     while time.time() < deadline:
         try:
             names = [str(r) for r in readers() if str(r).startswith(NUCULA_PREFIX)]
@@ -128,6 +137,8 @@ def card_slot(slot_map):
     """
     for name, atr in slot_map.items():
         if atr:
+            from smartcard.System import readers
+
             idx = [str(r) for r in readers()].index(name)
             return name, idx, atr
     pytest.fail(f"no Nucula slot holds a card (slot_map={slot_map}); "
