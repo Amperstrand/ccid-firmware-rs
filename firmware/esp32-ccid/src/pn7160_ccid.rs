@@ -178,9 +178,9 @@ pub fn run() -> ! {
         match usb.read(&mut burst_buf, timeout_ticks) {
             Ok(n) if n > 0 => {
                 // One read = one burst: every byte in it shares the
-                // floor captured before it began.
+                // floor captured before it.
+                let read_end = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 let floor = arrival_floor;
-                let mut last_dispatch = floor;
                 for &byte in &burst_buf[..n] {
                     let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                     if server.feed_byte(byte, now) == ServeAction::Respond {
@@ -209,9 +209,17 @@ pub fn run() -> ! {
                             panic!("escape 0xD1: diagnostic snapshot requested");
                         }
                     }
-                    last_dispatch = now;
                 }
-                arrival_floor = last_dispatch;
+                // Codex round 3 on #168: the floor may only advance on
+                // evidence the queue drained. A SHORT read could not
+                // fill the buffer — plausibly drained at read return, so
+                // later bytes are fresh. A FULL read may leave older
+                // queued bytes behind (retries piling during a handler
+                // past one burst): the floor must stay put or their
+                // arrivals would be overstated.
+                if n < burst_buf.len() {
+                    arrival_floor = read_end;
+                }
             }
             _ => {
                 // Read idle — background card poll; the empty read also

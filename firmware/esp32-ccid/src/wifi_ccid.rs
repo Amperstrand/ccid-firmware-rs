@@ -185,9 +185,9 @@ pub fn run() -> ! {
                 Ok(n) => {
                     idle_ticks = 0;
                     // One read = one burst: every byte in it shares the
-                    // floor captured before it began.
+                    // floor captured before it.
+                    let read_end = unsafe { esp_idf_sys::xTaskGetTickCount() };
                     let floor = arrival_floor;
-                    let mut last_dispatch = floor;
                     for &byte in &burst_buf[..n] {
                         let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                         if server.feed_byte(byte, now) == ServeAction::Respond {
@@ -213,9 +213,13 @@ pub fn run() -> ! {
                                 panic!("escape 0xD1: diagnostic snapshot requested");
                             }
                         }
-                        last_dispatch = now;
                     }
-                    arrival_floor = last_dispatch;
+                    // Codex round 3 on #168: advance the floor only on a
+                    // SHORT read (queue plausibly drained at read
+                    // return) — a full read may leave older queued bytes.
+                    if n < burst_buf.len() {
+                        arrival_floor = read_end;
+                    }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                     idle_ticks += 1;
