@@ -602,7 +602,10 @@ mod tests {
     #[test]
     fn escape_0xd2_only_matches_single_byte_payload() {
         // A longer escape carrying 0xD2 first must NOT hit the counters —
-        // it falls through to the core dispatch (CMD_NOT_SUPPORTED).
+        // it falls through to the core dispatch, which rejects it as an
+        // Escape-typed CMD_NOT_SUPPORTED failure (#141: unsupported escape
+        // payloads answer RDR_to_PC_Escape, matching osmo + the STM32
+        // sibling), not a SlotStatus frame.
         let mut handler = new_handler(false);
         let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 42, &[0xD2, 0x00]);
         let mut response = [0u8; 271];
@@ -612,7 +615,7 @@ mod tests {
 
         assert_eq!(
             header.message_type,
-            crate::ccid_types::RDR_TO_PC_SLOTSTATUS,
+            crate::ccid_types::RDR_TO_PC_ESCAPE,
             "multi-byte escape is not the 0xD2 query"
         );
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);

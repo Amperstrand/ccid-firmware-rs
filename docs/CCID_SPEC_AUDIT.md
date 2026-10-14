@@ -728,7 +728,7 @@ REQUEST_GET_DATA_RATES => {
 | Secure (PIN) | §6.1.11/12 | ✅ | **EXCEEDS osmo** |
 | SetDataRate | §6.1.14 | ✅ | None |
 | Abort | §6.1.13 | ⚠️ | Stub (acceptable) |
-| Escape | §6.1.8 | ✅ Partial | 0xD0 → 28-byte LE diagnostics; 0x6A → firmware-features (Gemalto convention); others CMD_NOT_SUPPORTED |
+| Escape | §6.1.8 | ✅ Partial | 0xD0 → 28-byte LE diagnostics; 0x6A → firmware-features (Gemalto convention, 21-byte `GEMALTO_FIRMWARE_FEATURES` layout per `reference/CCID/src/ccid.h` — libccid accepts only the exact struct size, #141); others CMD_NOT_SUPPORTED |
 | T0APDU | §6.1.10 | ⚠️ | Returns CMD_NOT_SUPPORTED (intentional) |
 | Mechanical | §6.1.12 | ⚠️ | Returns CMD_NOT_SUPPORTED (intentional) |
 
