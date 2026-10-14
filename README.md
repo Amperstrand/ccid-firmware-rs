@@ -5,89 +5,36 @@ This repository now carries two firmware products on the same `main` branch:
 - `./firmware/ccid-firmware/` — STM32 USB CCID firmware for contact smart cards
 - `./firmware/esp32-ccid/` — ESP32 serial CCID firmware for NFC cards
 
-Current supported hardware combinations:
+Current hardware combinations:
 
-| MCU | Card frontend | pcscd | Status | Notes |
-|-----|---------------|-------|--------|-------|
-| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | ✓ USB CCID | Primary | Wired CCID over USB, T=0/T=1 + PIN, ~43 ms/APDU, labgrid HIL 7/7 |
+| MCU | Card frontend | pcscd | Focus | Notes |
+|-----|---------------|-------|-------|-------|
+| STM32F469-DISCO | Specter DIY Shield Lite / ISO 7816 contact slot | ✓ USB CCID | Primary | Wired CCID over USB, T=0/T=1 + PIN |
 | STM32F746-DISCO | GPIO bit-bang (ISO 7816-3 in software) | ✓ USB CCID | Supported | Same CCID core, software physical layer |
-| ESP32 classic (M5Stick/M5Atom) | MFRC522 over I2C | ✓ serial (libccidtwin) | Primary (NFC) | GemPC Twin serial framing, T=1 endpoint, pcscd + APDU relay verified; CAP-scale transfers limited by per-block MFRC522 latency |
+| ESP32 classic (M5Stick/M5Atom) | MFRC522 over I2C | ✓ serial (libccidtwin) | Primary (NFC) | GemPC Twin serial framing, T=1 endpoint |
 | ESP32 dev boards | PN532 over SPI | ✓ serial | Secondary | Kept supported, current focus is MFRC522 |
-| ESP32-C3 (nucula board) | PN7160 over I2C | **✗ hardware wall** | Card-level verified (direct-serial only) | ATR + APDU relay PASS over the CDC with the safe opener. pcscd/libccidtwin enumeration is impossible on C3 silicon (chip-resets on every port-open, no disable bit — issue #117); ~300 ms/command CDC latency floor (#119) |
+| ESP32-C3 (nucula board) | PN7160 over I2C | ✓ via PTY broker | Card-level verified | Direct pcscd/libccidtwin enumeration impossible on C3 silicon (chip-resets on port-open, no disable bit — #117) |
 
-## Status (2026-10-12): what works, what doesn't, what's tested
+## Status: generated, never hand-written
 
-**Works, hardware-tested (bench evidence 2026-10-11/12):**
+**What works and what doesn't is NOT maintained in this README.** It is
+generated from evidence by the nightly device-CI run (issue #183):
 
-- All six pcscd readers card-level verified in one session: Cherry
-  (STM32, ours), GemPCTwin serial (m5stick, ours), Nucula via the PTY
-  broker (ours), CardMan/ACR1252/NR7101 (references). ATR + APDU relay
-  on every one; sustained soak 30/30 rounds, 0 errors.
-- **pcscd over Bluetooth** (new): `m5stick-spp` — RFCOMM/SPP transport
-  for the same GemPC server; card ATR + APDUs over the air, p50 48ms.
-- Differential suite 16/16 (ATR + AID + read-only APDU agreement).
-- Full `gpg --card-status` on the ACR1252 SmartPGP card (keys,
-  fingerprints, counters).
-- Cherry latency 42.75ms p50 (n=60) post-DRY-handler-port —
-  non-regression proven on hardware. Nucula card path 16ms/command.
-- PIN verify/modify parse fixed to the pcscd wire shape (reference-
-  locked tests; HIL round-trip is the recommended follow-up).
-
-**Doesn't work / gated (tracked):**
-
-- GPG applet install *through our own readers*: CAP-scale uploads need
-  the m5stick perf pass (#120); the nucula GP-install flow is untested
-  pending the #125 tail.
-- Satochip/SeedKeeper lanes: no card on the bench + the `pysatochip`
-  sdist is currently broken on this host (#126).
-- Nucula BLE (C3 is BLE-only): needs the GATT↔PTY bridge (#118);
-  pcscd-over-BT is m5stick-only for now.
-- PSO signature format quirk on the SmartPGP card (#123, card-side).
-- STM32F746 USB bring-up still needs the physical plug (bench table).
-
-**Blockers are logistics, not protocol**: cards (Satochip, identical
-differential card), silicon (C3 pcscd wall → broker path shipped), and
-two perf/finish lanes (#120, #122).
-
-## Roadmap
-
-1. **#120** m5stick perf → SmartPGP install through our reader → GPG
-   on all three of our readers (matrix complete).
-2. **#125 tail** nucula GP-install + gpg through the broker.
-3. **#122** STM32 latency round 3 (42.8 → ~11ms target).
-4. **#118** nucula BLE GATT bridge (pcscd-over-BT for C3).
-5. **#123** PSO signature quirk; Satochip once a card lands.
-6. Soak + release-cadence: tag per hardware-verified bench state.
+- **[docs/STATUS.md on the `bench/status` branch](../blob/bench/status/docs/STATUS.md)** —
+  the live bench wiring matrix + on-device HIL results, every claim
+  stamped with commit + date + the test that verified it. Regenerated
+  nightly; hand edits are never made.
+- **The issue tracker is the roadmap** — priorities, known gaps, and
+  per-board deep state (BLE #66, GP cards #127, device CI #183) live in
+  issues with checklists, not in prose here.
+- Card & GP safety doctrine: AGENTS.md "Card-Handling Doctrine" (#144
+  records the card lost learning it; the retry ledger is #127).
 
 The practical architecture is a shared CCID core with interchangeable axes:
 
 - MCU target: STM32 or ESP32
 - card frontend: wired contact or NFC
 - transport: USB CCID or serial CCID
-
-## Current state & roadmap (2026-10-12)
-
-**Known-good states** (regression-locked by `pytest tests/hardware/labgrid/ -v --hil` — currently 15 passed + 1 xfailed):
-
-| Hardware | State |
-|---|---|
-| **STM32F469-DISCO** (Cherry profile, contact) | **Fully known-good**: pcscd + ATR/APDU relay, reflash cycle, hardened TPDU-level T=1 pipe (0 corruption in 400-exchange fidelity), and the **full GlobalPlatform CAP lifecycle through our own reader** — SCP02 auth, install → use (byte-exact) → uninstall → card power-cycle reset (`test_gp_lifecycle_hil.py`, factory card CPLC 50796920, #132 closed) |
-| Bench (labgrid, 5 places) | All-green; all five readers serve pcscd simultaneously |
-| m5stick (ESP32 + MFRC522, serial CCID) | Serving pcscd (GemPCTwin) + full conformance battery green; #101 serve-loop hardening MERGED to main 2026-10-14 (on-hardware probe pending) — CAP installs now gated on perf (#59) |
-| nucula (ESP32-C3 + PN7160) | Serving pcscd via the PTY broker; known gaps: #125 (re-arm after power-off), #128 (direct-serial serve) |
-| STM32F746 | Bring-up pending — bench-distinct iSerial landed; labgrid place `stm32-f746` wired 2026-10-12 (flash restored to current main 2026-10-14); only the physical user-USB plug remains |
-
-**Roadmap** (priority order — the issue tracker is the source of truth):
-
-1. **m5stick CAP-install unlock** — #142 G-04/G-05 (WTX + relay), #59 (MFRC522 per-block perf); #101 serve-loop hardening is merged (hardware probe outstanding)
-2. **nucula known-good** — #125 (IccPowerOff re-arm), #128 (direct-serial serve gaps)
-3. **STM32 polish** — #135 (smartcard framing: STOP/GT/PE-ORE→0xFD), #136 (libccid conformance residuals), #141 (PC/SC contract audit)
-4. **Infrastructure** — #133 (observability; after the `sisyphus/idf-555-unify` merge), #143 (capture corpus + byte-diff), #139 (GP lane)
-5. **F746 bring-up** — distinct iSerial ready, place exists; needs the USB plug + T=1 card check
-
-Card & GP doctrine: see AGENTS.md "Card-Handling Doctrine" — never hammer
-secure-channel-class commands; #144 records the one card lost learning
-this; GP keys and the per-card retry ledger live on #127.
 
 ## Repository layout
 
