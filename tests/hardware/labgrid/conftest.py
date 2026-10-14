@@ -304,10 +304,14 @@ def labgrid_place(request):
     r = _lg("acquire", check=False)
     inherited = "You have already acquired" in (r.stderr or "")
     if r.returncode != 0 and not inherited:
-        pytest.fail(
-            f"could not acquire labgrid place '{PLACE}' "
-            f"(already held? `labgrid-client -p {PLACE} who`): {r.stderr.strip()}"
-        )
+        # A held or unreachable place is a SKIP, never a FAIL (#183
+        # SKIP≠FAIL): one busy place must cost its own legs, not seven
+        # setup errors — and a bench-infra outage is amber, not red.
+        holder = _place_holder(PLACE)
+        if holder:
+            pytest.skip(f"{PLACE} held by {holder} — its legs are theirs")
+        pytest.skip(f"{PLACE} not acquirable (bench/coordinator issue): "
+                    f"{(r.stderr or '').strip()[:160]}")
     if inherited:
         # Shared-identity bench: the hold may be a sibling session's — the
         # coordination goal is met, and teardown must not release it.
