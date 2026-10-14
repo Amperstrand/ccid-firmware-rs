@@ -15,6 +15,12 @@ Vendoring policy (what may live where) is defined in `AGENTS.md` →
 | `reference/CCID/` | [salsa.debian.org/rousseau/CCID](https://salsa.debian.org/rousseau/CCID.git) — the pcscd CCID driver (libccid) | `1a0f75d` (1.7.1-8) | LGPL-2.1-or-later (GPL-2.0 dual) | Host-side contract: `readers/*.txt` (authoritative device identities — Cherry/CT30/K30), `src/commands.c` (bError handling; specquotes `LIBCCID`), `src/ccid_serial.c` (GemPC serial framing; specquotes `CCID_SERIAL`), `src/openct/proto-t1.c` (host T=1 engine), `src/ifdhandler.c` + `src/parse.c` (PC/SC↔CCID translation, descriptor parser), `MacOSX/reader.h` (PIN structures; specquotes `PCSC`) |
 | `reference/osmo-ccid-firmware/` | [gitea.osmocom.org sim-card/osmo-ccid-firmware](https://gitea.osmocom.org/sim-card/osmo-ccid-firmware) | `639db14` (0.3-44) | GPL-2.0-or-later | Open-source CCID device reference: `ccid_common/ccid_proto.h` (CCID constants; specquotes `CCID_SPEC`), `ccid_common/iso7816_3.{c,h}` (`@implements ISO 7816-3:2006` Fi/Di/WT tables; specquotes `ISO7816`), `sysmoOCTSIM/config/hpl_sercom_config.h` (SAMD51 ISO 7816 USART config incl. NACK policy), `ccid_common/ccid_slot_fsm.c` (ICC_MUTE timeout shapes) |
 
+## Quote-only copies (trimmed subsets, never compiled)
+
+| Path | Upstream | Pin | Upstream license | What we quote/use |
+|---|---|---|---|---|
+| `reference/pcsc-lite/` | [github.com/LudovicRousseau/PCSC](https://github.com/LudovicRousseau/PCSC) — pcscd + SCard service layer | `6cadd81` (2.5.2) | BSD-3-Clause | PC/SC host-contract audit (#141): `src/winscard.c` (GetAttrib refusal + no-transmit-timeout), `src/winscard_svc.c` (daemon RPC dispatch), `src/readerfactory.c` (init capability queries), `src/eventhandler.c` (poll cadence + power-off grace), `src/prothandler.c` (PPS policy), `src/ifdwrapper.c` (IFDH call sites), `src/pcscd.h.in` (poll/grace constants), `src/PCSC/reader.h` (v2 part 10 FEATURE_* table), `src/PCSC/ifdhandler.h` (TAG_*/IFD_* codes), `src/PCSC/pcsclite.h.in` (SCARD_ATTR_* table), `doc/reader.conf.5.in`. Details: `reference/pcsc-lite/PROVENANCE.md` |
+
 ## Build-path vendored code (compiled — only when patched)
 
 | Path | Upstream | Pin | License | Why vendored |
