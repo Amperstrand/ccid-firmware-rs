@@ -49,6 +49,7 @@ static SESSION_FD: AtomicI32 = AtomicI32::new(-1);
 /// `stream` reference is unreachable. Borrows the live fd without
 /// consuming it (`forget` keeps the owning stream valid).
 fn write_wire_tcp(bytes: &[u8]) {
+    use std::os::fd::FromRawFd;
     let fd = SESSION_FD.load(Ordering::SeqCst);
     if fd < 0 {
         return;
