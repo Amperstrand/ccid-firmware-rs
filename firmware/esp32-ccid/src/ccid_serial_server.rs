@@ -86,6 +86,12 @@ pub mod time_extension {
     static SEQ: AtomicU8 = AtomicU8::new(0);
     static ICC: AtomicU8 = AtomicU8::new(0);
     static ECHO_FLUSHED: AtomicBool = AtomicBool::new(false);
+    /// Interim frames the hook has written since `arm()` — read (and
+    /// reset) by the server at dispatch-return to extend its own
+    /// response deadline (Codex PR159 P1: each frame multiplied the
+    /// HOST's read window; ours must follow or the final response is
+    /// self-dropped while the host still waits).
+    static EXTENSIONS_WRITTEN: AtomicU8 = AtomicU8::new(0);
     /// Raw wire-write function the mains register (CDC/TCP/SPP write).
     type WireWriter = fn(&[u8]);
     static WRITER: Mutex<Option<WireWriter>> = Mutex::new(None);
@@ -111,6 +117,7 @@ pub mod time_extension {
         SEQ.store(seq, Ordering::SeqCst);
         ICC.store(icc, Ordering::SeqCst);
         ECHO_FLUSHED.store(false, Ordering::SeqCst);
+        EXTENSIONS_WRITTEN.store(0, Ordering::SeqCst);
         let mut slot = ECHO.lock().unwrap();
         let n = echo.len().min(slot.1.len());
         slot.1[..n].copy_from_slice(&echo[..n]);
@@ -118,11 +125,14 @@ pub mod time_extension {
         ARMED.store(true, Ordering::SeqCst);
     }
 
-    /// Server-side after dispatch: true when the hook already wrote the
-    /// echo (suppress the serve loop's own echo write).
-    pub fn disarm_and_take_flushed() -> bool {
+    /// Server-side after dispatch: the number of interim frames the
+    /// hook wrote during the exchange (0 = no stall — serve the echo
+    /// normally). Any nonzero count also means the echo is already on
+    /// the wire (the hook writes it before the first extension frame).
+    pub fn disarm_and_take_emitted() -> u8 {
         ARMED.store(false, Ordering::SeqCst);
-        ECHO_FLUSHED.swap(false, Ordering::SeqCst)
+        ECHO_FLUSHED.store(false, Ordering::SeqCst);
+        EXTENSIONS_WRITTEN.swap(0, Ordering::SeqCst)
     }
 
     /// The [`pn7160_nci::reader::StallHook`] target: emit the interim
@@ -146,6 +156,7 @@ pub mod time_extension {
             &mut frame,
         );
         writer(&frame[..n]);
+        EXTENSIONS_WRITTEN.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Build one framed interim time-extension message (CCID Rev 1.1
@@ -413,8 +424,21 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         let resp_len = self
             .handler
             .process_command(&ccid_bytes, &mut self.ccid_resp_buf);
-        if time_ext_armed && time_extension::disarm_and_take_flushed() {
-            self.echo_len = 0;
+        if time_ext_armed {
+            let emitted = time_extension::disarm_and_take_emitted();
+            if emitted > 0 {
+                // The hook already wrote the echo; suppress ours.
+                self.echo_len = 0;
+                // Codex PR159 P1: every interim frame multiplied the
+                // host's read window (commands.c CCID_TIME_EXTENSION →
+                // readTimeout ×= bError) — extend OUR deadline to match,
+                // or a ~2.4 s stall + teardown cleanup self-drops the
+                // final response at the original 2.5 s window while the
+                // host is still waiting on the extended one. One window
+                // per frame: a conservative under-estimate of the
+                // host's multiplicative growth (3 s × 2 per frame).
+                self.extend_response_deadline(self.response_deadline_ticks * u32::from(emitted));
+            }
         }
         self.resp_len = build_response_frame(&self.ccid_resp_buf[..resp_len], &mut self.resp_buf);
         ServeAction::Respond
@@ -525,6 +549,16 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// `Respond`.
     pub fn refresh_host_deadline(&mut self, now_ticks: u32) {
         self.frame_done_tick = now_ticks;
+    }
+
+    /// #156 B deadline growth (Codex PR159 P1): each interim
+    /// time-extension frame on the wire multiplied the host's read
+    /// window (`commands.c` `CCID_TIME_EXTENSION` → `readTimeout *=
+    /// bError`) — extend ours by `extra_ticks` to match, or the final
+    /// response is self-dropped at the original window while the host
+    /// still waits on the extended one.
+    pub fn extend_response_deadline(&mut self, extra_ticks: u32) {
+        self.frame_done_tick = self.frame_done_tick.wrapping_add(extra_ticks);
     }
 
     /// Drop the pending response as late (#153). Echo, notify and
@@ -1301,6 +1335,12 @@ mod tests {
 
         static CAPTURED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
+        /// Codex PR159 P2: the extension bridge (WRITER/ARMED/ECHO
+        /// statics) is production-global — tests that clear CAPTURED,
+        /// arm, fire the hook, and assert on shared state must not
+        /// interleave under Cargo's parallel test threads.
+        static TEST_LOCK: Mutex<()> = Mutex::new(());
+
         fn capture(bytes: &[u8]) {
             CAPTURED.lock().unwrap().push(bytes.to_vec());
         }
@@ -1324,6 +1364,7 @@ mod tests {
 
         #[test]
         fn interim_frame_bytes_reference_locked() {
+            let _bridge = TEST_LOCK.lock().unwrap();
             // GREAT EXPECTATION (reference-locked bytes — do not "fix"
             // without re-verifying against the cited references):
             // CCID Rev 1.1 §6.1.4 time extension on an in-flight
@@ -1358,6 +1399,7 @@ mod tests {
 
         #[test]
         fn stalled_xfrblock_puts_echo_then_extension_on_the_wire() {
+            let _bridge = TEST_LOCK.lock().unwrap();
             // Issue #156 B: a stalling XfrBlock exchange emits the echo
             // FIRST (libccidtwin ReadSerial consumes one frame as the
             // echo — ccid_serial.c `if (echo) { echo = false; ... }`),
@@ -1416,6 +1458,7 @@ mod tests {
 
         #[test]
         fn unstalled_xfrblock_keeps_normal_wire_order() {
+            let _bridge = TEST_LOCK.lock().unwrap();
             // No stall probe: no interim frames, echo NOT suppressed —
             // byte-for-byte the pre-#156-B wire behavior.
             CAPTURED.lock().unwrap().clear();
@@ -1441,7 +1484,64 @@ mod tests {
         }
 
         #[test]
+        fn emission_count_matches_the_frames_the_hook_wrote() {
+            let _bridge = TEST_LOCK.lock().unwrap();
+            CAPTURED.lock().unwrap().clear();
+            time_extension::register_writer(capture);
+
+            assert_eq!(
+                time_extension::disarm_and_take_emitted(),
+                0,
+                "no arm, no emission"
+            );
+
+            time_extension::arm(7, 0x00, &[0x03, 0x00, 0x15, 0x16]);
+            assert_eq!(
+                time_extension::disarm_and_take_emitted(),
+                0,
+                "armed but not stalled"
+            );
+
+            time_extension::arm(7, 0x00, &[0x03, 0x00, 0x15, 0x16]);
+            time_extension::stall_hook(0);
+            time_extension::stall_hook(0);
+            assert_eq!(
+                time_extension::disarm_and_take_emitted(),
+                2,
+                "two interim frames counted, once"
+            );
+            assert_eq!(
+                time_extension::disarm_and_take_emitted(),
+                0,
+                "count resets on take"
+            );
+        }
+
+        #[test]
+        fn extend_response_deadline_follows_the_host_window_growth() {
+            // Codex PR159 P1: a ~2.4 s stall + teardown cleanup pushes
+            // the final response past the original window — but the
+            // interim frame told the host to keep waiting, so the server
+            // must extend its own deadline instead of self-dropping.
+            let mut server = server_with(false);
+            let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+            feed_frame(&mut server, &frame, 0);
+
+            assert!(server.response_expired(2_600));
+            // One interim frame ⇒ one response-window of extra budget
+            // (conservative vs the host's 3 s × 2 multiplicative growth).
+            // The frame completed at tick 12, so the extended deadline
+            // is 12 + 2_500 + 2_500 = 5_012.
+            server.extend_response_deadline(2_500);
+            assert!(!server.response_expired(2_600));
+            assert!(!server.response_expired(5_012));
+            assert!(server.response_expired(5_013));
+            assert_eq!(server.response_deadline_tick(), 5_012);
+        }
+
+        #[test]
         fn full_size_xfrblock_echo_survives_the_stash_verbatim() {
+            let _bridge = TEST_LOCK.lock().unwrap();
             // given a MAXIMUM XfrBlock wire frame (274 = 2 + 10 + 261 +
             // 1 bytes) stalls, when the hook flushes the stashed echo,
             // then it is written VERBATIM — the stash used to hold only
@@ -1457,7 +1557,7 @@ mod tests {
 
             time_extension::arm(0x33, 0x00, &frame);
             time_extension::stall_hook(0);
-            let _ = time_extension::disarm_and_take_flushed();
+            let _ = time_extension::disarm_and_take_emitted();
 
             let wire = CAPTURED.lock().unwrap();
             assert_eq!(wire.len(), 2, "echo + one interim frame");
