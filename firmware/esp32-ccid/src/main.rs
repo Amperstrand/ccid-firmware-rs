@@ -204,6 +204,16 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     let byte_us = esp32_ccid::t1::now_us();
     match server.feed_byte(byte, now) {
         ServeAction::Respond => {
+            // #153 answer-or-silence: the handler ran inside feed_byte;
+            // if it outlived the host's read window, late bytes must
+            // not reach the wire (libccidtwin has no mid-stream
+            // resync). Drop echo+notify+response as a unit.
+            let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
+            if server.response_expired(post) {
+                server.record_late_response();
+                server.poll_if_due_after_response(unsafe { esp_idf_sys::xTaskGetTickCount() });
+                return;
+            }
             write_all_logged(uart, server.echo());
             let notify = server.notify();
             if !notify.is_empty() {
@@ -257,9 +267,15 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
 
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
+    // #153 window in TICKS — the tick rate is 100 Hz in production, so
+    // 2500 ms must be converted (Codex #158 P1), never written as raw
+    // ticks.
+    let response_deadline_ticks =
+        esp32_ccid::ccid_serial_server::response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
     let mut server = CcidSerialServer::with_config(
         handler,
         poll_interval_ticks,
+        response_deadline_ticks,
         unsafe { esp_idf_sys::xTaskGetTickCount() },
         esp32_ccid::ccid_serial_server::ServeConfig {
             nak_on_error: true,
