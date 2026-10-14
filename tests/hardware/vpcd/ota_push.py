@@ -6,8 +6,12 @@ the post-flash liveness check looks for the vpcd listener session instead
 of the retired :29443 CCID port — wifi-vpcd boards connect OUT to the
 host's libifdvpcd listener (docs/VPCD_WIFI_RUNBOOK.md "Architecture").
 
-Wire protocol (firmware/esp32-ccid/src/ota.rs):
+Wire protocol (firmware/esp32-ccid/src/ota.rs + ota_header.rs):
   connect -> "OTA1" + u32-LE image size -> raw image bytes
+  (armed builds) connect -> "OTA2" + size + 32-byte token -> image —
+  used automatically when the OTA_TOKEN env is set (exactly 32 chars,
+  matching the firmware build; mismatched magic/token is refused loud
+  BEFORE any image byte is accepted).
   board writes the inactive OTA slot, switches boot partition, reboots.
   On error the board answers 'E' before closing.
 
@@ -18,6 +22,7 @@ Exit codes: 0 = image accepted by the board, 1 = rejected/socket error,
 Usage: python3 ota_push.py <board-ip> <image.bin> [--vpcd-host-port 35963]
 """
 
+import os
 import socket
 import struct
 import sys
@@ -45,7 +50,13 @@ def push(ip, path, vpcd_host_port=35963, port=3232):
     print(f"image: {path} ({len(image)} bytes)")
     print(f"connecting to {ip}:{port} ...")
     s = socket.create_connection((ip, port), timeout=10)
-    s.sendall(b"OTA1" + struct.pack("<I", len(image)))
+    token = os.environ.get("OTA_TOKEN", "")
+    if token:
+        if len(token) != 32:
+            raise SystemExit("OTA_TOKEN must be exactly 32 chars (matches the firmware build)")
+        s.sendall(b"OTA2" + struct.pack("<I", len(image)) + token.encode())
+    else:
+        s.sendall(b"OTA1" + struct.pack("<I", len(image)))
     print("header sent, streaming image ...")
     sent = 0
     t0 = time.time()

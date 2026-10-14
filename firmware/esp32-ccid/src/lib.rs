@@ -16,6 +16,7 @@ pub mod ccid_handler;
 pub mod ccid_serial_server;
 pub mod ccid_types;
 pub mod nfc;
+pub mod ota_header;
 pub mod pn532_driver;
 pub mod serial_framing;
 pub mod t1;
