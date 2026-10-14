@@ -168,6 +168,13 @@ pub struct SppLink {
     /// = undated (NAK-only packets — not governed by the host read
     /// window).
     pending_deadline: Option<u32>,
+    /// Dump-and-retrieve intent riding WITH the parked bytes: true when
+    /// this packet is a 0xD1 ack. Consumed by the retry path only after
+    /// the packet is actually written; dies with the bytes on expiry,
+    /// clear, or replacement (Codex round 3 on #168 — a flag left in
+    /// the handler outlived its ack and rebooted on an unrelated
+    /// command).
+    pending_snapshot: bool,
     dropped_tx: u32,
 }
 
@@ -180,6 +187,7 @@ impl SppLink {
             pending: [0; SPP_TX_BUF_SIZE],
             pending_len: 0,
             pending_deadline: None,
+            pending_snapshot: false,
             dropped_tx: 0,
         }
     }
@@ -194,6 +202,7 @@ impl SppLink {
         }
         self.pending_len = 0;
         self.pending_deadline = None;
+        self.pending_snapshot = false;
         self.last_rx_tick = now_ticks;
     }
 
@@ -207,6 +216,7 @@ impl SppLink {
         self.congested = false;
         self.pending_len = 0;
         self.pending_deadline = None;
+        self.pending_snapshot = false;
         self.last_rx_tick = now_ticks;
     }
 
@@ -240,11 +250,14 @@ impl SppLink {
     /// Park a packet that could not be written (congestion or a failed
     /// `esp_spp_write`). Strictly single-slot: the protocol is
     /// request/response, so a second park means the host desynced — the
-    /// older bytes are dropped and counted, order among DELIVERED bytes
-    /// is never reordered. `deadline_tick` is the packet's #153 expiry
-    /// ([`SppPump::tx_deadline`]); the retry path drops expired bytes
-    /// instead of writing them.
-    pub fn park(&mut self, bytes: &[u8], deadline_tick: Option<u32>) {
+    /// older bytes are dropped and counted (their snapshot intent dies
+    /// with them), order among DELIVERED bytes is never reordered.
+    /// `deadline_tick` is the packet's #153 expiry
+    /// ([`SppPump::tx_deadline`]); `snapshot` is its dump-and-retrieve
+    /// intent — the caller CONSUMES the server's 0xD1 flag when handing
+    /// it over, so the intent can never outlive these bytes (Codex
+    /// round 3 on #168).
+    pub fn park(&mut self, bytes: &[u8], deadline_tick: Option<u32>, snapshot: bool) {
         let n = bytes.len().min(SPP_TX_BUF_SIZE);
         if self.pending_len > 0 {
             self.dropped_tx = self.dropped_tx.saturating_add(self.pending_len as u32);
@@ -252,6 +265,7 @@ impl SppLink {
         self.pending[..n].copy_from_slice(&bytes[..n]);
         self.pending_len = n;
         self.pending_deadline = deadline_tick;
+        self.pending_snapshot = snapshot;
         if bytes.len() > SPP_TX_BUF_SIZE {
             self.dropped_tx = self.dropped_tx.saturating_add((bytes.len() - n) as u32);
         }
@@ -264,6 +278,14 @@ impl SppLink {
     pub fn clear_pending(&mut self) {
         self.pending_len = 0;
         self.pending_deadline = None;
+        self.pending_snapshot = false;
+    }
+
+    /// Extract the parked packet's dump-and-retrieve intent — true at
+    /// most once per parked 0xD1 ack, and only for the caller that
+    /// actually wrote the bytes.
+    pub fn take_pending_snapshot(&mut self) -> bool {
+        core::mem::replace(&mut self.pending_snapshot, false)
     }
 
     /// #153 for parked bytes: has the host read window that was open
@@ -668,7 +690,7 @@ mod tests {
         link.on_cong(true);
         assert_eq!(delivery_plan(&link), Deliver::Park, "congested: park");
 
-        link.park(&[1, 2, 3], None);
+        link.park(&[1, 2, 3], None, false);
         assert_eq!(link.pending(), &[1, 2, 3]);
         link.on_cong(false);
         assert_eq!(
@@ -679,7 +701,7 @@ mod tests {
         link.clear_pending();
         assert_eq!(delivery_plan(&link), Deliver::Write);
 
-        link.park(&[4, 5], None);
+        link.park(&[4, 5], None, false);
         link.on_close(300);
         assert_eq!(link.handle(), None);
         assert_eq!(link.pending().len(), 0, "close discards undelivered bytes");
@@ -690,8 +712,8 @@ mod tests {
     fn link_park_is_single_slot_and_counts_drops() {
         let mut link = SppLink::new(0);
         link.on_open(1, 0);
-        link.park(&[1, 2, 3, 4], Some(100));
-        link.park(&[5, 6], None);
+        link.park(&[1, 2, 3, 4], Some(100), false);
+        link.park(&[5, 6], None, false);
         assert_eq!(link.pending(), &[5, 6], "newest parked bytes win");
         assert_eq!(link.dropped_tx(), 4, "the overwritten slot is counted");
     }
@@ -875,7 +897,7 @@ mod tests {
         link.on_cong(true);
         assert_eq!(delivery_plan(&link), Deliver::Park);
         let parked_deadline = pump.tx_deadline();
-        link.park(pump.tx(), parked_deadline);
+        link.park(pump.tx(), parked_deadline, false);
         pump.tx_clear();
         assert_eq!(link.pending(), &expected[..]);
 
@@ -959,14 +981,14 @@ mod tests {
         let mut link = SppLink::new(0);
         link.on_open(1, 0);
         // Undated park (NAK-only packet): retry behavior unchanged.
-        link.park(&[0x03, 0x15, 0x16], None);
+        link.park(&[0x03, 0x15, 0x16], None, false);
         assert!(
             !link.pending_expired(u32::MAX - 1),
             "undated bytes never expire by #153"
         );
         link.clear_pending();
 
-        link.park(&[1, 2, 3], Some(3_500));
+        link.park(&[1, 2, 3], Some(3_500), false);
         assert!(!link.pending_expired(3_499));
         assert!(!link.pending_expired(3_500), "at the deadline: in window");
         assert!(link.pending_expired(3_501), "past it: silence, never write");
@@ -979,7 +1001,7 @@ mod tests {
         let mut link = SppLink::new(0);
         link.on_open(1, 0);
         let deadline = u32::MAX - 100;
-        link.park(&[9, 9], Some(deadline));
+        link.park(&[9, 9], Some(deadline), false);
         assert!(
             !link.pending_expired(deadline - 1),
             "before it, below the wrap"
@@ -989,6 +1011,36 @@ mod tests {
             link.pending_expired(deadline + 1),
             "just past, above the wrap"
         );
+    }
+
+    #[test]
+    fn parked_snapshot_intent_rides_with_the_bytes() {
+        // Codex round 3 on #168: the 0xD1 intent belongs to the parked
+        // PACKET, not the handler — extracted exactly once by whoever
+        // writes those bytes, and it dies with them on expiry, clear,
+        // or replacement (a replacement packet must not inherit the
+        // older 0xD1's reboot).
+        let mut link = SppLink::new(0);
+        link.on_open(1, 0);
+
+        link.park(&[1], Some(100), true);
+        assert!(link.take_pending_snapshot(), "extracted once");
+        assert!(!link.take_pending_snapshot(), "never twice");
+
+        // Replacement: the older 0xD1 intent dies with its bytes.
+        link.park(&[1], Some(100), true);
+        link.park(&[2], Some(200), false);
+        assert!(!link.take_pending_snapshot());
+
+        // Undelivered intent dies at clear_pending (expiry/close path).
+        link.park(&[3], Some(300), true);
+        link.clear_pending();
+        assert!(!link.take_pending_snapshot());
+
+        // Connection lifecycle resets it too.
+        link.park(&[4], Some(400), true);
+        link.on_close(0);
+        assert!(!link.take_pending_snapshot());
     }
 
     #[test]
@@ -1344,6 +1396,7 @@ pub mod shell {
                     (delivery_plan(&g.link), g.link.handle())
                 };
                 let mut delivered = false;
+                let mut parked = false;
                 match plan {
                     Deliver::Write => {
                         let handle = handle.expect("delivery_plan checked for a handle");
@@ -1351,23 +1404,45 @@ pub mod shell {
                             Ok(()) => delivered = true,
                             Err(e) => {
                                 // Busy/full: park and retry — the host is
-                                // waiting for exactly these bytes (until
-                                // their #153 deadline passes).
+                                // waiting for exactly these bytes. The 0xD1
+                                // intent moves INTO the packet: it can no
+                                // longer outlive these bytes (Codex round
+                                // 3 on #168).
                                 log::debug!("spp: write busy ({e}) — parking");
                                 let deadline = pump.tx_deadline();
-                                shared.lock().unwrap().link.park(pump.tx(), deadline);
+                                let snapshot = pump.take_snapshot_request();
+                                shared
+                                    .lock()
+                                    .unwrap()
+                                    .link
+                                    .park(pump.tx(), deadline, snapshot);
+                                parked = true;
                             }
                         }
                     }
                     Deliver::Park => {
                         let deadline = pump.tx_deadline();
-                        shared.lock().unwrap().link.park(pump.tx(), deadline);
+                        let snapshot = pump.take_snapshot_request();
+                        shared
+                            .lock()
+                            .unwrap()
+                            .link
+                            .park(pump.tx(), deadline, snapshot);
+                        parked = true;
                     }
                     Deliver::Drop => {
                         shared.lock().unwrap().link.note_dropped_tx(pump.tx().len());
                     }
                 }
                 pump.tx_clear();
+
+                // The 0xD1 flag must never outlive its ack: delivered →
+                // consumed below; parked → rides with the bytes; neither
+                // (dropped outright, e.g. no connection or TX-cap
+                // rollback) → the ack is dead, cancel now.
+                if !delivered && !parked {
+                    let _ = pump.take_snapshot_request();
+                }
 
                 // 3. Post-response cadence ONLY after delivery (#89: no
                 //    physical poll may delay pending/parked bytes).
@@ -1406,18 +1481,19 @@ pub mod shell {
                     g.link.clear_pending();
                     g.link.note_dropped_tx(len);
                     log::debug!("spp: dropped {len} parked bytes past the host read window");
-                    // Codex round 2 on #158: the expired packet may have
-                    // been a 0xD1 ack — its panic contract is void (the
-                    // ack never reached the wire). Cancel the armed
-                    // snapshot or the NEXT delivered response inherits
-                    // a wrong-command reboot.
-                    let _ = pump.take_snapshot_request();
+                    // The 0xD1 intent (if any) died with the bytes — it
+                    // rides in the link, not the handler flag.
                 } else if spp.write(handle, &mut retry_buf[..len]).is_ok() {
-                    shared.lock().unwrap().link.clear_pending();
-                    // The parked packet may have been a 0xD1 ack — it is
-                    // on the wire NOW, so complete the ack-before-panic
-                    // contract exactly like the fresh-delivery path.
-                    if pump.take_snapshot_request() {
+                    // The parked packet reached the wire: complete its
+                    // dump-and-retrieve contract (if it carried a 0xD1
+                    // ack) exactly like the fresh-delivery path.
+                    let snapshot = {
+                        let mut g = shared.lock().unwrap();
+                        let s = g.link.take_pending_snapshot();
+                        g.link.clear_pending();
+                        s
+                    };
+                    if snapshot {
                         FreeRtos::delay_ms(SPP_SNAPSHOT_SETTLE_MS);
                         panic!("escape 0xD1: diagnostic snapshot requested");
                     }
