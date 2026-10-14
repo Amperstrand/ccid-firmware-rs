@@ -148,11 +148,18 @@ frames).
   every **400 ms** (`PCSCLITE_STATUS_POLL_RATE`, pcscd.h.in:53;
   eventhandler.c:465-481) — each poll is a serial GetSlotStatus with the
   3 s window. The firmware must tolerate this cadence indefinitely.
-- **Auto power-off**: a card left powered but unused is powered down
-  after the **5 s grace period**
-  (`PCSCLITE_POWER_OFF_GRACE_PERIOD`, pcscd.h.in:70; eventhandler.c:476,
-  490-506) — unsolicited-from-firmware's-view `PC_to_RDR_IccPowerOff`
-  MUST be served promptly and correctly.
+- **Auto power-off** (CORRECTED 2026-10-14, Codex on #160): the 5 s
+  `PCSCLITE_POWER_OFF_GRACE_PERIOD` (pcscd.h.in:70) reaches the driver
+  only as the `pthCardEvent` TIMEOUT (eventhandler.c:466-472) — readers
+  WITH a card-event thread. `libccidtwin` serial readers have NO
+  `pthCardEvent`: the poll loop sleeps `PCSCLITE_STATUS_POLL_RATE` =
+  400 000 µs = 400 ms per iteration (pcscd.h.in:53), and the
+  power-state block (eventhandler.c:488-507) powers a
+  POWERED-but-never-used card down on the NEXT iteration (~≤400 ms),
+  with one extra GRACE_PERIOD iteration after the last disconnect
+  (~≤800 ms total). Upstream pin `6cadd81` (Release 2.5.2).
+  Unsolicited-from-firmware's-view `PC_to_RDR_IccPowerOff` MUST be
+  served promptly and correctly either way.
 - **Reader-open probe**: `CreateChannelByNameOrChannel` issues up to
   **two** GetSlotStatus reads at channel open (ifdhandler.c:166-183) —
   the handshake our boot banner must not collide with (clean-wire

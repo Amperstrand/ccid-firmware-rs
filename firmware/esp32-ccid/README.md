@@ -231,9 +231,9 @@ for limits and the complementary channels (Escape 0xD0 counters,
 UART Service lookalike) so the UART0 wire carries CCID frames only.
 Parked as experimental: bench-central connects are flaky (host-side
 BlueZ quirk), and the ESP32-C3 path is blocked by a controller quirk
-(no `c3-ccid-ble` board — see AGENTS.md "BLE Debug Console" > C3
-traps). The code is feature-gated and costs nothing in standard
-builds.
+(the `c3-ccid-ble` board builds, but advertising is rejected — see
+AGENTS.md "BLE Debug Console" > C3 traps and issue #66). The code is
+feature-gated and costs nothing in standard builds.
 
 ```bash
 ./build.sh m5stick-ble  --flash /dev/serial/by-id/<m5stick-port>
