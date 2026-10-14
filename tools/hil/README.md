@@ -140,7 +140,47 @@ points, deliberately left as documentation only:
   address (§5) — never the serial ports, unless the flock is held and a
   recovery flash is intended (§3).
 
-## 9. Files
+## 9. GitHub Actions bench runner (`ai-legion-bench`, label `bench`)
+
+Self-hosted runner executing the `hil-bench` nightly (`.github/workflows/
+hil-bench.yml`, issue #183). Unit template: `gh-runner-bench.service`
+(deployed to `/etc/systemd/system/` on .208; runner tree at
+`/opt/actions-runner` — persistent disk, never /tmp).
+
+**Security invariant:** the repo is PUBLIC and the runner executes as
+root — the `hil-bench` workflow must NEVER gain `pull_request` /
+`pull_request_target` triggers (fork code = RCE on the bench host).
+schedule + workflow_dispatch only, by design.
+
+Registration / re-registration (token expires ~1 h; needed after runner
+updates or deregistration):
+
+```bash
+# 1. Mint a registration token (POST — plain GET 404s intermittently):
+gh api /repos/Amperstrand/ccid-firmware-rs/actions/runners/registration-token \
+   --method POST --jq .token > /tmp/runner-tok.txt
+# 2. Transfer as a FILE (scp) — never pipe through `> file 2>&1` and
+#    never read via ssh stdin: a stderr line in the file = 401 mysteries.
+scp /tmp/runner-tok.txt root@192.168.13.208:/tmp/runner-tok.txt
+# 3. On the bench: config.sh REFUSES root — configure as a mortal user,
+#    then hand the tree back to root (the SERVICE runs as root):
+ssh root@192.168.13.208 'cd /opt/actions-runner && chown -R ubuntu:ubuntu . && \
+  TOK=$(cat /tmp/runner-tok.txt) && rm -f /tmp/runner-tok.txt && \
+  sudo -u ubuntu ./config.sh --url https://github.com/Amperstrand/ccid-firmware-rs \
+    --token "$TOK" --labels bench --name ai-legion-bench --unattended && \
+  chown -R root:root .'
+# 4. The unit ExecStarts bin/Runner.Listener DIRECTLY (run.sh and
+#    config.sh both refuse root); restart:
+ssh root@192.168.13.208 'systemctl restart gh-runner-bench'
+```
+
+Update procedure: `systemctl stop gh-runner-bench`, swap the
+`/opt/actions-runner` tree (tarball), re-register (credentials die with
+the old tree), start. Verify: `gh api repos/.../actions/runners` shows
+`ai-legion-bench` online; `gh workflow run hil-bench --ref main` then
+watch the run.
+
+## 10. Files
 
 | File | Role |
 |---|---|
@@ -148,4 +188,5 @@ points, deliberately left as documentation only:
 | `labgrid-place.sh` | idempotent place creation + labels |
 | `labgrid-env.yaml` | client env (targets/places; `-c` or `--lg-env`) |
 | `labgrid-exporter.service` | systemd --user unit template (installed copy points here) |
+| `gh-runner-bench.service` | Actions bench-runner unit (system unit on .208; runbook §9) |
 | `results/` | verification transcripts (gitignored) |

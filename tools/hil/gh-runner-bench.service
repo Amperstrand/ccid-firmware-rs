@@ -1,0 +1,22 @@
+[Unit]
+Description=GitHub Actions self-hosted runner — ai-legion bench (label: bench)
+Documentation=https://github.com/Amperstrand/ccid-firmware-rs/issues/183
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# v1 documented tradeoff (issue #183): runs as root because the HIL suites
+# need pcscd control, st-flash, USBDEVFS_RESET, and the labgrid flock. The
+# repo is PUBLIC — this runner must NEVER execute pull_request workflows
+# (fork code = RCE on the bench host); the hil-bench workflow is
+# schedule/workflow_dispatch-only by design. Hardening tracked in #183.
+User=root
+WorkingDirectory=/opt/actions-runner
+ExecStart=/opt/actions-runner/bin/Runner.Listener run --startuptype service
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

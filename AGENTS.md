@@ -1347,6 +1347,41 @@ ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
 | nucula standard | USB-CDC | clean-wire (#131): boot banner only, then framed CCID only — diagnostics via Escape 0xD0/0xD1, coredumps, or actdiag/ble/netlog builds |
 | nucula (`ble` build) | USB-CDC | `c3-ccid-ble` board exists (`sisyphus/c3-ble-board`); advertising still blocked on the C3 0x0c controller rejection (see issue #66) |
 
+## Device CI: the hil-bench nightly + generated STATUS.md (2026-10-14, #183)
+
+**Hardware status is GENERATED, never hand-written.** The `hil-bench`
+workflow (`.github/workflows/hil-bench.yml`) runs nightly 03:17 UTC on
+the self-hosted runner `ai-legion-bench` (systemd `gh-runner-bench`
+on .208, label `bench`): bench inventory (`bench_inventory.py --json`)
+→ labgrid HIL suites (per-test 240 s timeouts, GP lifecycle excluded
+unattended — card-budget doctrine) → `scripts/gen_status.py` publishes
+`docs/STATUS.md` to the **`bench/status` branch**. README links there;
+no hand-maintained works/doesn't-work prose anywhere.
+
+Rules and lessons (all paid for 2026-10-14):
+
+1. **The runner executes as root on a PUBLIC repo** — `hil-bench` must
+   never gain pull_request/pull_request_target triggers (fork code =
+   RCE on the bench). schedule + dispatch only. Runbook + unit template:
+   `tools/hil/README.md` §9.
+2. **SKIP ≠ FAIL**: card moved / board detached / place busy = amber
+   skip with reason; only code-caused failures are red. The current
+   reds are REAL state (F469 detached; m5stick runs the wifi-vpcd
+   variant — identity FAIL is variant drift, don't reflash).
+3. **Killed pytest leaves labgrid places acquired** — kill pytest
+   gracefully or release the places after (`labgrid-client who` shows
+   them); a stale hold masks hardware absence (stm32-ccid "skipped"
+   for hours because a killed run still held it).
+4. **pytest-timeout method=signal, not thread** — a C-level `select()`
+   wedge (pyserial) survives the thread method's dump and the process
+   exits, losing junit; SIGALRM interrupts it and the run continues.
+5. **earlyoom poisons `pgrep -f` guards** — its `--prefer` list
+   literally contains "cargo|rustc"; use `pgrep -x` for build-liveness
+   checks before target-dir surgery.
+6. Registration-token transfer as a FILE (scp) — `> file 2>&1`
+   redirects and ssh-stdin reads corrupt tokens into 401 mysteries
+   (runbook §9).
+
 ## Labgrid Bench Doctrine (ai-legion NFC/CCID testbed, 2026-10-09)
 
 The bench (ai-legion, multi-homed as 192.168.13.208) carries five labgrid
