@@ -22,6 +22,7 @@ import fcntl
 import json
 import os
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -110,6 +111,70 @@ class PlaceBusy(Exception):
             f"labgrid place '{place}' held by "
             f"{holder or 'unknown session'} {detail}".strip()
         )
+
+
+# F469 ST-LINK serial, pinned by the exporter config (flashed_firmware
+# resolves it from there too — one place to be right).
+F469_STLINK_SERIAL = "066FFF515786534867184152"
+
+
+def dut_absent_reason(place: str) -> str | None:
+    """Why this place's DUT is detectably not testable (None = testable).
+
+    SKIP≠FAIL doctrine (#183): hardware that is physically absent, or
+    deliberately serving a different firmware variant, says nothing
+    about the code under test — those legs SKIP with this reason. Only
+    present-and-expected hardware may FAIL.
+    """
+    try:
+        by_id = sorted(os.listdir("/dev/serial/by-id"))
+    except OSError:
+        by_id = []
+    lsusb = subprocess.run(["lsusb"], capture_output=True, text=True).stdout
+
+    if place == "stm32-ccid":
+        stlink = any(F469_STLINK_SERIAL in p for p in by_id)
+        cherry = "046a:003e" in lsusb
+        if not stlink and not cherry:
+            return ("F469 physically detached — its ST-LINK ("
+                    f"{F469_STLINK_SERIAL[:8]}…) is not on USB and no "
+                    "Cherry DUT enumerates; nothing to test")
+    elif place == "m5stick":
+        # The GemPC wire is SILENT by clean-wire doctrine; the wifi-vpcd
+        # build uses UART0 as a streaming console. A short open that
+        # receives printable noise therefore means: board alive, wrong
+        # firmware variant — GemPC legs are meaningless against it.
+        try:
+            import serial as pyserial  # noqa: PLC0415
+        except ImportError:
+            return None
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from serial_ports import resolve  # noqa: PLC0415
+
+        try:
+            port = resolve("m5stick")
+        except Exception:
+            return None
+        try:
+            with pyserial.Serial(port, 115200, timeout=0.2) as s:
+                s.setDTR(False)
+                s.setRTS(False)
+                buf = b""
+                deadline = time.time() + 1.5
+                while time.time() < deadline:
+                    n = s.in_waiting
+                    if n:
+                        buf += s.read(n)
+                    else:
+                        time.sleep(0.1)
+        except OSError:
+            return None
+        printable = sum(1 for b in buf if 32 <= b < 127 or b in (9, 10, 13))
+        if len(buf) > 20 and printable >= len(buf) * 0.8:
+            return ("m5stick is streaming on UART0 — the wifi-vpcd console "
+                    "variant is flashed (another lane's active firmware); "
+                    "GemPC legs skip until the standard image returns")
+    return None
 
 
 def ledger(event: str, **fields) -> None:

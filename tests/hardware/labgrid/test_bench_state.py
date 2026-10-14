@@ -57,7 +57,13 @@ def pcscd_paused():
 
 def test_place_identity(place_name, bench_lock):
     """Every selected place answers its identity probe — the definition
-    of a bench we still own."""
+    of a bench we still own. Absent hardware / swapped firmware variants
+    SKIP with the detection reason (SKIP≠FAIL, #183)."""
+    import bench as benchmod
+
+    absent = benchmod.dut_absent_reason(place_name)
+    if absent:
+        pytest.skip(f"{place_name}: {absent}")
     probe = IDENTITY_PROBES[place_name]
     if place_name in SERIAL_PROBES:
         with pcscd_paused():
@@ -71,14 +77,24 @@ def test_place_identity(place_name, bench_lock):
 def test_dut_identities_unique_in_pcscd(bench_lock):
     """Doctrine rule 3: each DUT identity matches EXACTLY ONE pcscd
     reader — the bench's reference devices (ACR1252, CardMan, NR7101)
-    can never collide with our emulated identities."""
+    can never collide with our emulated identities. Absent hardware
+    contributes no assertion (#183 SKIP≠FAIL)."""
     import bench as benchmod
 
     _pcscd(stop=False)
+    absent = []
     for place, identity in DUT_IDENTITIES.items():
         holder = benchmod.place_holder(place)
         if holder:
             pytest.skip(f"{place} held by {holder} — its pcscd state is theirs")
+        reason = benchmod.dut_absent_reason(place)
+        if reason:
+            absent.append(f"{place}: {reason}")
+    checkable = [(p, i) for p, i in DUT_IDENTITIES.items()
+                 if not any(p in a for a in absent)]
+    if not checkable:
+        pytest.skip("no DUT hardware testable — " + "; ".join(absent))
+    for place, identity in checkable:
         matches = pcsc_reader_matches(identity)
         assert matches, f"DUT identity missing from pcscd: {identity}"
         assert len(matches) == 1, (
