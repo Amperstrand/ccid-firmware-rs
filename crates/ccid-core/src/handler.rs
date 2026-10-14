@@ -1056,14 +1056,22 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
+        // libccid's ccid_open_hack_post() sends Escape{0x1F, 0x02} to
+        // GEMPCKEY/GEMPCTWIN readers under DRIVER_OPTION_GEMPC_TWIN_KEY_APDU
+        // (reference/CCID/src/ccid.c:299-313) and flips dwFeatures to
+        // CCID_CLASS_SHORT_APDU when it succeeds. Rejecting on purpose: this
+        // firmware does NOT implement APDU exchange level (T=1 stays
+        // firmware-terminated), so a success ack would silently change the
+        // host's framing expectations. A failed escape leaves the driver at
+        // TPDU level, which is the level we actually speak.
         if payload == [0x1F, 0x02] {
             return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,
                 header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
                 0,
-                0,
+                CCID_ERR_CMD_NOT_SUPPORTED,
                 &[],
                 response,
             );
@@ -1087,13 +1095,23 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
-        write_slot_status(
+        // Unsupported escape payloads answer in the Escape response type, not
+        // SlotStatus: this is what osmo-ccid-firmware does
+        // (ccid_device.c: resp = ccid_gen_escape(cs, seq,
+        // CCID_CMD_STATUS_FAILED, CCID_ERR_CMD_NOT_SUPPORTED, NULL, 0);)
+        // and what our own STM32 sibling (send_err_resp, ccid_core.rs) does.
+        // libccid's CmdEscapeCheck tolerates either shape, but CCID Rev 1.1
+        // §6.1.8 maps PC_to_RDR_Escape to RDR_to_PC_Escape and the sibling
+        // divergence is exactly the mock/hardware-divergence bug class the
+        // fix-all-siblings protocol exists for (#141 audit, F-1).
+        write_message(
+            RDR_TO_PC_ESCAPE,
             header.slot,
             header.seq,
-            self.current_icc_status(),
-            COMMAND_STATUS_FAILED,
-            CCID_ERR_CMD_NOT_SUPPORTED,
+            build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
             0,
+            CCID_ERR_CMD_NOT_SUPPORTED,
+            &[],
             response,
         )
     }
@@ -1654,6 +1672,49 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
         assert_eq!(payload, [0x01, 0x01, 0x01]);
         assert!(handler.sync_notifications());
+    }
+
+    #[test]
+    fn test_escape_unknown_payload_answers_escape_type() {
+        // osmo-ccid-firmware answers failed escapes with an Escape frame
+        // (ccid_device.c: ccid_gen_escape(..., CCID_CMD_STATUS_FAILED,
+        // CCID_ERR_CMD_NOT_SUPPORTED, NULL, 0)) — not SlotStatus (#141 F-1)
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 10, &[0xFF]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert!(payload.is_empty());
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
+        );
+        assert_eq!(header.specific[1], CCID_ERR_CMD_NOT_SUPPORTED);
+    }
+
+    #[test]
+    fn test_escape_apdu_level_switch_rejected() {
+        // libccid's ccid_open_hack_post() flips dwFeatures to SHORT_APDU
+        // when Escape{0x1F,0x02} succeeds (reference/CCID/src/ccid.c,
+        // GEMPCKEY/GEMPCTWIN under DRIVER_OPTION_GEMPC_TWIN_KEY_APDU);
+        // this firmware speaks TPDU level only, so the switch must fail
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 11, &[0x1F, 0x02]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert!(payload.is_empty());
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(COMMAND_STATUS_FAILED, ICC_STATUS_NO_ICC)
+        );
+        assert_eq!(header.specific[1], CCID_ERR_CMD_NOT_SUPPORTED);
     }
 
     #[test]

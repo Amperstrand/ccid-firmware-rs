@@ -332,8 +332,12 @@ fn test_escape_gemalto_firmware_features() {
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
     assert!(r.is_success());
-    assert_eq!(r.data_len, 15);
-    assert_eq!(r.data[0], 1); // bNumberMessageFix = 1
+    // sizeof(struct GEMALTO_FIRMWARE_FEATURES) == 21 — libccid accepts the
+    // answer only at this exact size (reference/CCID/src/ccid.c
+    // set_gemalto_firmware_features: "len_features == sizeof *gf_features")
+    assert_eq!(r.data_len, 21);
+    assert_eq!(r.data[12], 1); // VersionNumber
+    assert_eq!(r.data[0], 0); // bLogicalLCDLineNumber: no LCD
 }
 
 #[test]
@@ -581,7 +585,8 @@ fn test_full_gemalto_session_with_escape() {
     let resp = h.send(PC_TO_RDR_ESCAPE, &[0x6A], 0x02);
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
-    assert_eq!(r.data[0], 1); // bNumberMessageFix
+    assert_eq!(r.data_len, 21); // sizeof(struct GEMALTO_FIRMWARE_FEATURES)
+    assert_eq!(r.data[12], 1); // VersionNumber
 
     // XfrBlock
     let apdu = [0x00, 0xA4, 0x04, 0x00, 0x00];
