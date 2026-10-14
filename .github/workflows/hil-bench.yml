@@ -65,16 +65,18 @@ jobs:
       - uses: actions/checkout@v4
         with: { submodules: 'false' }
       - name: run labgrid HIL suites
-        # Per-test timeout (pytest-timeout, bench-verified installed):
-        # a wedged leg (blocked serial reads, the nucula backup-guard
-        # class) costs one red test, never the runner. GP lifecycle is
+        # Per-test timeout (pytest-timeout, bench-verified installed), signal
+        # method: bench-proven necessary — the thread method cannot kill a
+        # C-level select() (first widened nightly 2026-10-14 lost the whole
+        # run + junit to exactly that) while SIGALRM interrupts it (EINTR)
+        # and the run continues. GP lifecycle is
         # EXCLUDED unattended — GP attempts are card-budget-bearing
         # (AGENTS.md Card-Handling Doctrine); automating it needs
         # explicit owner sign-off (#183).
         run: >
           python3 -m pytest tests/hardware/labgrid/ -v --hil
           --ignore=tests/hardware/labgrid/test_gp_lifecycle_hil.py
-          --timeout=240 --timeout-method=thread
+          --timeout=240 --timeout-method=signal
           --junitxml=hil-junit.xml
       - name: junit artifact
         if: always()
