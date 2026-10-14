@@ -79,6 +79,13 @@ python3 host-tools/ota_push.py <board-ip> \
     ~/.cargo-target/esp32-ccid-wifi-vpcd.bin
 ```
 
+**Optional OTA auth (2026-10-14):** add `OTA_TOKEN=<exactly 32 chars>`
+to the build env to arm the board's OTA server — armed builds accept
+only the `OTA2` + token header form and refuse tokenless `OTA1` loud.
+The push client picks the form automatically from the same `OTA_TOKEN`
+env var; a token/tokenless mismatch fails at the magic stage before any
+image byte moves (no corruption window).
+
 **Multi-board benches**: the stock driver exposes one listener per slot
 (:35963 = "Nucula VPCD 00 00", :35964 = "Nucula VPCD 00 01"). Give each
 board its own `NUCULA_VPCD_PORT` and the board↔reader mapping is

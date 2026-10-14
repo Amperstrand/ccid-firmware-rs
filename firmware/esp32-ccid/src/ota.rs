@@ -2,6 +2,11 @@
 //! a u32-LE image size, then the raw app image bytes; writes them to
 //! the inactive OTA partition via the esp-idf app_update API, switches
 //! the boot partition, and reboots. Host client: ota_push.py.
+//!
+//! Authenticated form (build armed with `OTA_TOKEN=<32 chars>`): the
+//! client sends "OTA2" + size + the 32-byte token instead — see
+//! `ota_header` (pure logic + tests there). Unarmed builds keep the
+//! original OTA1 behavior bit-for-bit.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -11,9 +16,10 @@ use esp_idf_sys::{
     esp_ota_write, esp_restart,
 };
 
+use crate::ota_header::{self, MAGIC_V2, TOKEN_LEN};
+
 const PORT: u16 = 3232;
 const OTA_SIZE_UNKNOWN: usize = 0xFFFF_FFFF;
-const MAGIC: [u8; 4] = *b"OTA1";
 const CHUNK: usize = 1024;
 
 pub fn spawn() {
@@ -50,12 +56,21 @@ fn handle(stream: &mut impl Read) -> Result<(), &'static str> {
     stream
         .read_exact(&mut hdr)
         .map_err(|_| "header read failed")?;
-    if hdr[..4] != MAGIC {
-        return Err("bad magic");
-    }
+    let magic: [u8; 4] = hdr[..4].try_into().expect("fixed slice");
     let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
     if size == 0 || size > 4 * 1024 * 1024 {
         return Err("bad size");
+    }
+
+    let expected = ota_header::compiled_token();
+    if magic == MAGIC_V2 {
+        let mut token = [0u8; TOKEN_LEN];
+        stream
+            .read_exact(&mut token)
+            .map_err(|_| "token read failed")?;
+        ota_header::authorize(&magic, Some(&token), expected.as_ref())?;
+    } else {
+        ota_header::authorize(&magic, None, expected.as_ref())?;
     }
 
     // Safety: single-threaded use of the app_update API on a partition

@@ -92,7 +92,10 @@ coordinator 192.168.13.208:20408  (LG_COORDINATOR — see below)
      ephemeral-worktree path, resources + place acquire re-verified)
      └── ccid-nucula / ccid-m5stick OTA seats (NetworkService :3232 — no
          USBSerialPort matches by default: opening the CDC chip-resets
-         the nucula; see the config header)
+         the nucula; see the config header). Cross-place exclusion with
+         the USB places is coordinator-enforced via the shared
+         NetworkService match (m5stick pair verified 2026-10-14;
+         nucula pair pending an idle place — see the config header)
 ```
 
 **Coordinator discovery (the #164 failure class):** labgrid 26.0 has NO
