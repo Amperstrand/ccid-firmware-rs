@@ -156,6 +156,12 @@ pub fn run() -> ! {
     // buffer length), so a whole frame lands in one call.
     let mut burst_buf = [0u8; 64];
     let timeout_ticks = TickType::new_millis(UART_RX_TIMEOUT_MS as u64).ticks();
+    // #153 arrival floor (Codex round 2 on #158): bytes queued in the
+    // CDC ring during a blocking handler are returned by the NEXT read
+    // — anchor them at the tick of the last dispatch, never at the
+    // drain-time read. An empty read proves the ring idle and raises
+    // the floor.
+    let mut arrival_floor = unsafe { esp_idf_sys::xTaskGetTickCount() };
 
     // Purge boot-log bytes so CCID starts clean
     esp_idf_hal::delay::FreeRtos::delay_ms(500);
@@ -171,17 +177,19 @@ pub fn run() -> ! {
     loop {
         match usb.read(&mut burst_buf, timeout_ticks) {
             Ok(n) if n > 0 => {
-                // Feed every byte through the same per-byte path. A
-                // Respond fires only on the LAST byte of a frame (the
-                // parser completes on LRC and the echo holds the whole
-                // received frame), so any bytes after it in this burst
-                // are the START of the next host frame — flush the
-                // response first, then keep feeding.
+                // One read = one burst: every byte in it shares the
+                // floor captured before it began.
+                let floor = arrival_floor;
+                let mut last_dispatch = floor;
                 for &byte in &burst_buf[..n] {
                     let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                     if server.feed_byte(byte, now) == ServeAction::Respond {
-                        // #153: drop responses that outlived the host's
-                        // read window instead of poisoning the stream.
+                        // #153: the frame may have queued behind the
+                        // previous handler — anchor it at the burst's
+                        // arrival floor before judging expiry, then drop
+                        // responses that outlived the host's read window
+                        // instead of poisoning the stream.
+                        server.refresh_host_deadline(floor);
                         let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
                         if server.response_expired(post) {
                             server.record_late_response();
@@ -201,11 +209,15 @@ pub fn run() -> ! {
                             panic!("escape 0xD1: diagnostic snapshot requested");
                         }
                     }
+                    last_dispatch = now;
                 }
+                arrival_floor = last_dispatch;
             }
             _ => {
-                // Read idle — background card poll
+                // Read idle — background card poll; the empty read also
+                // proves the ring drained: later bytes are fresh.
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                arrival_floor = now;
                 server.poll_if_due(now);
                 #[cfg(feature = "ble")]
                 if let Some(ble) = ble_console.as_ref() {

@@ -353,6 +353,17 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// CCID_TIME_EXTENSION` multiplies the host's readTimeout,
     /// `reference/CCID/src/commands.c:1598`). Until extension frames
     /// land, the baseline is the frame-completing byte's arrival.
+    ///
+    /// Also the #153 arrival-anchor correction for queued bytes (Codex
+    /// review round 2 on #158): transports that read bursts AFTER a
+    /// blocking handler cannot know per-byte arrival times (only the
+    /// SPP ring stamps true arrivals in its callback) — the completing
+    /// byte's feed-time stamp then overstates the host's read window by
+    /// the handler duration, and a host retry queued behind an
+    /// over-window handler looks fresh. Serve sites pass the tick
+    /// captured BEFORE the blocking section began (a conservative
+    /// arrival lower bound) here, right after `feed_byte` returned
+    /// `Respond`.
     pub fn refresh_host_deadline(&mut self, now_ticks: u32) {
         self.frame_done_tick = now_ticks;
     }
@@ -1041,6 +1052,54 @@ mod tests {
         server.refresh_host_deadline(2_400);
         assert!(!server.response_expired(2_600));
         assert!(server.response_expired(2_400 + 2_501));
+    }
+
+    #[test]
+    fn queued_frame_reanchored_at_pre_handler_floor_is_late() {
+        // Codex #158 round 2 (P1): a host retry that QUEUED behind an
+        // over-window handler is fed at drain time — its feed-time
+        // stamps make it look fresh, and the late response would poison
+        // the next session. The serve site re-anchors the completed
+        // frame at the pre-handler tick (conservative arrival floor);
+        // judged against THAT, the exchange is late.
+        let mut server = server_with(false);
+
+        // Frame A completes live at ~1_000; its handler blocks for 12 s
+        // (host read window closes ~4_000, host retries at ~4_100).
+        feed_frame(
+            &mut server,
+            &command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1),
+            988,
+        );
+
+        // The queued retry is fed at drain time 13_000 — without the
+        // correction its response looks fresh (the bug):
+        feed_frame(
+            &mut server,
+            &command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2),
+            13_000,
+        );
+        assert!(
+            !server.response_expired(13_013),
+            "uncorrected: drain-time stamp hides the true arrival (the bug)"
+        );
+
+        // Serve-site correction: anchor at the tick captured before the
+        // blocking handler began.
+        server.refresh_host_deadline(1_000);
+        assert_eq!(server.response_deadline_tick(), 1_000 + 2_500);
+        assert!(
+            server.response_expired(13_013),
+            "re-anchored: the retry's window closed long ago — silence"
+        );
+
+        // A genuinely fresh frame afterwards serves normally.
+        feed_frame(
+            &mut server,
+            &command_frame(PC_TO_RDR_GET_SLOT_STATUS, 3),
+            20_000,
+        );
+        assert!(!server.response_expired(20_020));
     }
 
     #[test]
