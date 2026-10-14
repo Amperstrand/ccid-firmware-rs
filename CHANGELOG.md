@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Housekeeping — 2026-10-14 unattended session
+
+- `cargo fmt` restored over the NCI-fragmentation + wifi-vpcd lanes
+  (they had landed unformatted; `stm32-lint` fmt gate was red on main).
+- Merged the four stale unmerged branches after re-verification against
+  current main: `dry-phase2` (DRY phase-2 bench closure docs — HIL 7/7,
+  42.89 ms n=300 non-regression), `sisyphus/release-profile-hotfix`
+  (release matrix feature-legs incl. the F746 variant, tag-checkout fix,
+  `scripts/check_release_config.sh` smoke guard; Dockerfile base aligned
+  with the 1.99.0 pin and `verify-reproducibility.sh` default fixed away
+  from the never-existing `profile-cherry-st2100`), and
+  `fix/101-serve-loop-rx-hardening` (UART ring 548→4096 + post-flush
+  drain + retry-idempotent T=1 endpoint; host tests green, m5stick bin
+  build green). `sisyphus/audit-wave4` was NOT merged — superseded;
+  its one live artifact (`tools/check_sdkconfigs.py`) was salvaged,
+  updated to the current config families (spp/vpcd/ble/wallet-test
+  exempt classification, explicit console pins, legacy kconfig aliases
+  ignored) and wired into CI as `sdkconfig-clean-wire-gate`.
+- HIL conftest: `flashed_firmware` pins `st-flash --serial` to the
+  F469 ST-LINK resolved from the in-repo exporter config — bare local
+  st-flash flashed whatever adapter was attached and put an F469 image
+  onto the F746 board (2026-10-14 incident; F746 restored to the
+  current-main image, flash write verified).
+- Docs: AGENTS.md bench-state delta (F469 ST-LINK detached, F746 wired
+  ST-LINK-only + restored, CardMan=076b:3021, OTA seats, coordinator
+  env, nucula HIL pretest blocked by its backup-first guard — board
+  alive at flash-id level), conwrt-lab single-source-of-truth section
+  recovered from a lost stash, rust-toolchain.toml comment re-aligned
+  with the one-Rust-version policy, README USB-identity lines corrected
+  to the Cherry default.
+
 ### Fixed — DH-side WTX bound + resync teardown, serial time-extension frames (#151/#156)
 
 `pn7160-nci` DATA exchanges now distinguish TIMEOUT from LINK LOSS

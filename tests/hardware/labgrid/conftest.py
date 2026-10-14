@@ -29,6 +29,7 @@ Usage:
 """
 
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -252,7 +253,13 @@ def helpers(bench):
 
 @pytest.fixture(scope="session")
 def flashed_firmware(request, helpers):
-    """Flash firmware .bin to the F469 via st-flash (SWD)."""
+    """Flash firmware .bin to the F469 via st-flash (SWD).
+
+    The ST-LINK adapter is pinned by serial, resolved from the in-repo
+    exporter config — bare local st-flash targets whatever ST-LINK is
+    attached, which crossed boards on the shared bench (2026-10-14: the
+    F469's ST-LINK was detached, the F746's was attached, and an F469
+    image landed on the F746)."""
     bin_path = request.config.getoption("--firmware-bin")
     if bin_path is None:
         yield None
@@ -260,7 +267,25 @@ def flashed_firmware(request, helpers):
     bin_path = Path(bin_path).resolve()
     if not bin_path.exists():
         pytest.fail(f"Firmware binary not found: {bin_path}")
-    result = helpers.run(f"st-flash --reset write {shlex.quote(str(bin_path))} {DEFAULT_FLASH_BASE}", timeout=60)
+
+    exporter_cfg = Path(__file__).parent / "exporter-ai-legion-nfc.yaml"
+    match = re.search(
+        r"stm32f469-stlink:.*?usb-STMicroelectronics_STM32_STLink_([0-9A-Fa-f]+)-if02",
+        exporter_cfg.read_text(),
+        re.S,
+    )
+    if not match:
+        pytest.fail(
+            f"cannot resolve the F469 ST-LINK serial from {exporter_cfg} — "
+            "refusing to flash an unpinned adapter (board-crossing hazard)"
+        )
+    stlink_serial = match.group(1)
+
+    result = helpers.run(
+        f"st-flash --serial {stlink_serial} --reset write "
+        f"{shlex.quote(str(bin_path))} {DEFAULT_FLASH_BASE}",
+        timeout=60,
+    )
     if result.returncode != 0:
         pytest.fail(f"st-flash failed:\nstdout: {result.stdout}\nstderr: {result.stderr}")
     time.sleep(USB_RESCAN_DELAY_S)
