@@ -762,7 +762,9 @@ pub mod reader {
 
     /// Stall callback for [`exchange_detailed`] (issue #156 B): receives
     /// the NOMINAL elapsed collection wait in ms. The CCID layer uses it
-    /// to emit interim RDR_to_PC_SlotStatus time-extension frames.
+    /// to emit interim RDR_to_PC_DataBlock time-extension frames (CCID
+    /// Rev 1.1 §6.1.4 — the interim keeps the in-flight XfrBlock's
+    /// response type).
     pub type StallHook = fn(elapsed_ms: u32);
 
     /// Collect rounds per exchange: 12 × 200 ms ≈ 2.4 s, under the
@@ -780,6 +782,24 @@ pub mod reader {
     /// so an interim CCID time-extension frame always reaches the host
     /// before its select() expires.
     const STALL_REPORT_MS: u32 = 1500;
+
+    /// Strict-RSP collect budget for [`transact_strict`]: 20 polls ×
+    /// 10 ms = 200 ms — parity with the firmware I2C transport's
+    /// blocking transact IRQ budget (`IRQ_WAIT_BUDGET_US`,
+    /// pn7160_i2c.rs; a FreeRtos 1 ms request rounds up to a 10 ms
+    /// tick, so the ESP32 wall budget matches). Host mocks no-op
+    /// `wait_ms` and just spend the polls.
+    pub const STRICT_RSP_POLLS: usize = 20;
+    const STRICT_RSP_WAIT_MS: u64 = 10;
+
+    /// Cap for [`drain_link`] (Codex PR159 P1): the teardown/resync
+    /// path can queue several frames — a late APDU DATA response
+    /// (possibly a PBF chain of ~5 packets on a 1 KiB exchange), the
+    /// RF_DEACTIVATE_NTF, a fallback RF_DISCOVER_RSP, WTX advisories —
+    /// and the cap bounds a chatty or wedged chip that streams frames
+    /// faster than the loop reads (the semi-muted PN7160 keeps I2C
+    /// ACKing — bench 2026-10-12).
+    pub const DRAIN_LINK_CAP: usize = 16;
 
     /// Exchange one APDU over the RF data connection: TX fragmentation,
     /// credit gating between fragments, RX reassembly of the reply
@@ -957,6 +977,49 @@ pub mod reader {
         (ExchangeOutcome::Timeout, wtx)
     }
 
+    /// Send `cmd` and collect its RSP with STRICT matching (Codex
+    /// PR159 P1): non-matching frames on the link — a late APDU DATA
+    /// packet, WTX advisories, notifications — are consumed as churn,
+    /// and only the frame that answers THIS command
+    /// ([`Frame::is_rsp_to`]) terminates the wait.
+    ///
+    /// [`Transport::transact`] cannot offer this contract: its
+    /// "first non-NTF frame" rule (the firmware I2C transport,
+    /// pn7160_i2c.rs) is exactly what lets a late DATA packet
+    /// masquerade as the RF_DEACTIVATE_RSP — the real RSP then stays
+    /// pending and cascades mismatches through the teardown fallback
+    /// chain. Budget: [`STRICT_RSP_POLLS`] × 10 ms (see the const).
+    pub fn transact_strict<T: Transport>(t: &mut T, cmd: &[u8]) -> Result<Frame, &'static str> {
+        if !t.send(cmd) {
+            return Err("write failed");
+        }
+        for round in 0..STRICT_RSP_POLLS {
+            if round > 0 {
+                t.wait_ms(STRICT_RSP_WAIT_MS);
+            }
+            if let Some(f) = t.poll_frame() {
+                if f.is_rsp_to(cmd) {
+                    return Ok(f);
+                }
+            }
+        }
+        Err("no matching response")
+    }
+
+    /// Drain the transport until it is actually EMPTY, bounded by
+    /// [`DRAIN_LINK_CAP`] (Codex PR159 P1): one `drain()` reads
+    /// exactly ONE pending frame, but the teardown/resync path can
+    /// queue several — any survivor lands in the next command's poll
+    /// window (#101-class desync). The cap returns control on a chatty
+    /// or wedged chip instead of looping forever.
+    pub fn drain_link<T: Transport>(t: &mut T) {
+        for _ in 0..DRAIN_LINK_CAP {
+            if t.drain().is_none() {
+                return;
+            }
+        }
+    }
+
     /// Deactivate to idle, then consume the DEACTIVATE notification —
     /// byte-exact semantics of nci.c `nci_restart_discovery`.
     pub fn deactivate_idle<T: Transport>(t: &mut T) -> Result<(), &'static str> {
@@ -975,20 +1038,22 @@ pub mod reader {
     /// discovery resumes natively, so a tag still in the field is
     /// re-found (auto-activated ISO-DEP tags re-emit INTF_ACTIVATED
     /// within ~TOTAL_DURATION) without stacking RF_DISCOVER re-issues.
-    /// BLOCKING (waits for the RSP); the presence path uses the split
-    /// [`Transport::send`] + [`Transport::poll_frame`] form instead.
+    /// BLOCKING (bounded wait for the RSP); the presence path uses the
+    /// split [`Transport::send`] + [`Transport::poll_frame`] form
+    /// instead. RSP matching is STRICT ([`transact_strict`], Codex
+    /// PR159 P1): a late DATA packet pending on the link is consumed
+    /// as churn, never mistaken for the deactivate RSP.
     pub fn deactivate_to_discovery<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         let cmd = RF_DEACTIVATE_DISCOVERY;
-        let rsp = t.transact(&cmd).ok_or("no deactivate response")?;
-        if !rsp.is_rsp_to(&cmd) {
-            return Err("deactivate response mismatch");
-        }
+        let rsp = transact_strict(t, &cmd).map_err(|_| "no deactivate response")?;
         if rsp.status() != Some(STATUS_OK) {
             return Err("deactivate status != OK");
         }
         // The DEACTIVATE_NTF is optional timing-wise; a missing one is
-        // not fatal — discovery restart is what matters.
-        let _ = t.drain();
+        // not fatal — discovery restart is what matters. Drain to
+        // EMPTY, not one frame: the teardown can leave several pending
+        // (Codex PR159 P1).
+        drain_link(t);
         Ok(())
     }
 
@@ -1002,13 +1067,12 @@ pub mod reader {
     /// auto-activates and re-emits RF_INTF_ACTIVATED, re-latching
     /// presence. ONE-SHOT per teardown: a per-cycle re-issue mutes the
     /// chip after ~11 cycles (bench 2026-10-10, see
-    /// [`DEACTIVATE_TYPE_DISCOVERY`]).
+    /// [`DEACTIVATE_TYPE_DISCOVERY`]). RSP matching is STRICT
+    /// ([`transact_strict`], Codex PR159 P1) — same masquerade hazard
+    /// as the deactivate it falls back from.
     pub fn restart_discovery<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         let cmd = RF_DISCOVER_PASSIVE_A;
-        let rsp = t.transact(&cmd).ok_or("no discover response")?;
-        if !rsp.is_rsp_to(&cmd) {
-            return Err("discover response mismatch");
-        }
+        let rsp = transact_strict(t, &cmd).map_err(|_| "no discover response")?;
         if rsp.status() != Some(STATUS_OK) {
             return Err("discover status != OK");
         }
@@ -1680,6 +1744,112 @@ mod tests {
         assert_eq!(outcome, reader::ExchangeOutcome::Timeout);
         assert_eq!(CALLS.load(Ordering::SeqCst), 1, "single emission in 2.4 s");
         assert_eq!(LAST.load(Ordering::SeqCst), 1600, "round 8 × 200 ms");
+    }
+
+    // given a late APDU DATA packet and advisories are pending ahead of
+    // the teardown RSP (the Codex PR159 P1 masquerade), when
+    // transact_strict collects the response, then the churn is
+    // consumed and ONLY the frame answering the command is returned —
+    // `transact`'s "first non-NTF frame" rule would have handed back
+    // the DATA packet. The transport scripts the exact hardware frame
+    // order (the #1 mock/hardware divergence lesson: model the
+    // transport's filtering semantics, not just the happy queue).
+    #[test]
+    fn transact_strict_skips_late_data_and_wtx_to_the_matching_rsp() {
+        struct ChattyTransport {
+            polls: usize,
+        }
+        impl Transport for ChattyTransport {
+            fn send(&mut self, _cmd: &[u8]) -> bool {
+                true
+            }
+            fn poll_frame(&mut self) -> Option<Frame> {
+                let schedule: [&[u8]; 3] = [
+                    &[0x00, 0x00, 0x02, 0x90, 0x00], // late APDU DATA packet
+                    &[0x6F, 0x17, 0x00],             // WTX advisory
+                    &[0x41, 0x06, 0x01, 0x00],       // RF_DEACTIVATE_RSP OK
+                ];
+                let raw = *schedule.get(self.polls)?;
+                self.polls += 1;
+                Frame::decode(raw)
+            }
+            fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
+                None
+            }
+            fn drain(&mut self) -> Option<Frame> {
+                None
+            }
+        }
+        let mut t = ChattyTransport { polls: 0 };
+        let rsp = reader::transact_strict(&mut t, &reader::RF_DEACTIVATE_DISCOVERY)
+            .expect("RSP must surface after the churn");
+        assert_eq!(rsp.mt, MT_RSP);
+        assert_eq!(rsp.oid, OID_RF_DEACTIVATE);
+        assert_eq!(rsp.status(), Some(STATUS_OK));
+        assert_eq!(t.polls, 3, "churn frames consumed, RSP matched");
+    }
+
+    // given the ONLY frame the link ever produces is a DATA packet,
+    // when transact_strict collects, then it never accepts it as the
+    // RSP and gives up at the bounded budget.
+    #[test]
+    fn transact_strict_times_out_without_ever_accepting_a_data_packet() {
+        struct DataOnlyTransport {
+            polls: usize,
+        }
+        impl Transport for DataOnlyTransport {
+            fn send(&mut self, _cmd: &[u8]) -> bool {
+                true
+            }
+            fn poll_frame(&mut self) -> Option<Frame> {
+                self.polls += 1;
+                Frame::decode(&[0x00, 0x00, 0x02, 0x90, 0x00])
+            }
+            fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
+                None
+            }
+            fn drain(&mut self) -> Option<Frame> {
+                None
+            }
+        }
+        let mut t = DataOnlyTransport { polls: 0 };
+        assert_eq!(
+            reader::transact_strict(&mut t, &reader::RF_DEACTIVATE_DISCOVERY),
+            Err("no matching response")
+        );
+        assert_eq!(
+            t.polls,
+            reader::STRICT_RSP_POLLS,
+            "bounded — no infinite churn loop"
+        );
+    }
+
+    // given the teardown/resync leaves SEVERAL frames pending (late
+    // DATA packet, WTX advisory, deactivate NTF, stale RSP — the Codex
+    // PR159 P1 multi-frame residue), when drain_link runs, then every
+    // frame is consumed until the link is actually empty — and a chatty
+    // chip is capped at DRAIN_LINK_CAP.
+    #[test]
+    fn drain_link_empties_multi_frame_residue_bounded() {
+        let mut t = mock::MockTransport::new();
+        t.push_notification(&[0x00, 0x00, 0x02, 0x90, 0x00]); // late DATA packet
+        t.push_notification(&[0x6F, 0x17, 0x00]); // WTX advisory
+        t.push_notification(&[MT_NTF | GID_RF, NTF_RF_DEACTIVATE, 0x02, 0x00, 0x00]);
+        t.push_notification(&[0x41, 0x03, 0x01, 0x00]); // stale RF_DISCOVER_RSP
+        reader::drain_link(&mut t);
+        assert_eq!(t.drained, 4, "every pending frame consumed");
+        assert!(t.drain().is_none(), "link actually empty");
+
+        let mut chatty = mock::MockTransport::new();
+        for _ in 0..(reader::DRAIN_LINK_CAP + 4) {
+            chatty.push_notification(&[0x6F, 0x17, 0x00]);
+        }
+        reader::drain_link(&mut chatty);
+        assert_eq!(
+            chatty.drained,
+            reader::DRAIN_LINK_CAP,
+            "cap bounds a chatty chip"
+        );
     }
 
     #[test]

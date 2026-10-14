@@ -583,11 +583,14 @@ impl<T: Transport> Pn7160Driver<T> {
         }
         // Eager path: only a SELECTED session holds an RF interface
         // without a cached auto-ATS — tear that one down (single
-        // transact; the re-issue is refused 0xA0 when discovery is
+        // deactivate; the re-issue is refused 0xA0 when discovery is
         // already running). A plain discovery-NTF latch has no
         // interface: no chip writes at all.
         if self.active && reader::deactivate_to_discovery(&mut self.transport).is_err() {
             let _ = reader::restart_discovery(&mut self.transport);
+            // Same multi-frame residue risk as the resync path (Codex
+            // PR159 P1): empty the link after the fallback chain.
+            reader::drain_link(&mut self.transport);
         }
         self.active = false;
         self.uid_len = 0;
@@ -640,11 +643,13 @@ impl<T: Transport> Pn7160Driver<T> {
                 // Resync teardown (issue #156 A): the chip may still be
                 // mid-WTX on a live interface — tear it down and empty
                 // the link so no late DATA response pollutes the next
-                // command window.
+                // command window. drain-until-EMPTY, bounded (Codex
+                // PR159 P1): a single drain read one frame while the
+                // teardown leaves several pending.
                 if reader::deactivate_to_discovery(&mut self.transport).is_err() {
                     let _ = reader::restart_discovery(&mut self.transport);
                 }
-                let _ = self.transport.drain();
+                reader::drain_link(&mut self.transport);
                 self.clear_tag();
                 self.active = false;
                 self.uid_len = 0;
@@ -671,6 +676,7 @@ impl<T: Transport> Pn7160Driver<T> {
 mod tests {
     use super::*;
     use crate::mock::MockTransport;
+    use crate::Frame;
     use crate::{
         DEACTIVATE_REASON_DH_REQ, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
         DEACTIVATE_REASON_RF_LINK_LOSS_NXP, DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF,
@@ -875,6 +881,111 @@ mod tests {
             sent
         );
         // The next command cannot ride the dead session.
+        assert_eq!(drv.transmit_apdu(&[0x00], &mut rsp), Err(Error::NoCard));
+    }
+
+    // given a timeout exchange on a link carrying MULTI-frame pending
+    // traffic (Codex PR159 P1): a late DATA packet + WTX advisory
+    // ahead of the teardown RSP (the masquerade), the deactivate NTF,
+    // then MORE late residue after a quiet beat — when transmit_apdu
+    // resyncs, then the teardown consumes the churn via strict RSP
+    // matching, drains until the link is ACTUALLY empty (a survivor
+    // would land in the next command's poll window), and closes the
+    // session.
+    struct ResyncTransport {
+        sent: std::vec::Vec<std::vec::Vec<u8>>,
+        polls: usize,
+        poll_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>>,
+        drain_pos: usize,
+        drain_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>>,
+    }
+    impl Transport for ResyncTransport {
+        fn send(&mut self, cmd: &[u8]) -> bool {
+            self.sent.push(cmd.to_vec());
+            true
+        }
+        fn poll_frame(&mut self) -> Option<Frame> {
+            let raw = self.poll_schedule.get(self.polls)?.clone();
+            self.polls += 1;
+            raw.and_then(|r| Frame::decode(&r))
+        }
+        fn transact(&mut self, _cmd: &[u8]) -> Option<Frame> {
+            None
+        }
+        fn drain(&mut self) -> Option<Frame> {
+            let raw = self.drain_schedule.get(self.drain_pos)?.clone();
+            self.drain_pos += 1;
+            raw.and_then(|r| Frame::decode(&r))
+        }
+    }
+
+    #[test]
+    fn timeout_resync_drains_multi_frame_late_traffic_to_empty() {
+        let raw = |b: &[u8]| Some(b.to_vec());
+        let mut poll_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>> =
+            (0..12).map(|_| None).collect(); // exchange RX: 12 silent rounds → Timeout
+        poll_schedule.push(raw(&[0x00, 0x00, 0x02, 0x90, 0x00])); // late DATA packet (masquerade bait)
+        poll_schedule.push(raw(&[0x6F, 0x17, 0x00])); // WTX advisory
+        poll_schedule.push(raw(&[0x41, 0x06, 0x01, 0x00])); // RF_DEACTIVATE_RSP OK
+        let mut drain_schedule: std::vec::Vec<Option<std::vec::Vec<u8>>> = std::vec::Vec::new();
+        drain_schedule.extend([raw(&auto_activation_ntf())]); // presence latch
+        drain_schedule.extend((0..9).map(|_| None)); // power_on collect rounds
+        drain_schedule.push(raw(&[
+            MT_NTF | GID_RF,
+            NTF_RF_DEACTIVATE,
+            0x02,
+            DEACTIVATE_TYPE_IDLE,
+            DEACTIVATE_REASON_DH_REQ,
+        ])); // the teardown's own NTF (eaten by deactivate's drain)
+        drain_schedule.push(None); // link quiet — first drain_link stops here
+        drain_schedule.push(raw(&[0x10, 0x00, 0x01, 0xAA])); // late DATA segment arrives
+        drain_schedule.push(raw(&[0x41, 0x03, 0x01, 0x00])); // stale RF_DISCOVER_RSP
+        drain_schedule.push(raw(&[0x6F, 0x17, 0x00])); // WTX advisory
+        drain_schedule.push(None); // actually empty now
+
+        let mut drv = Pn7160Driver::new(ResyncTransport {
+            sent: std::vec::Vec::new(),
+            polls: 0,
+            poll_schedule,
+            drain_pos: 0,
+            drain_schedule,
+        });
+        assert!(drv.is_card_present(), "presence latches the activation NTF");
+        let mut atr = [0u8; 32];
+        drv.power_on(&mut atr)
+            .expect("power_on via cached auto-ATS");
+        assert!(drv.session_active());
+
+        let mut rsp = [0u8; 256];
+        assert_eq!(
+            drv.transmit_apdu(&[0x00, 0xA4, 0x04, 0x00], &mut rsp),
+            Err(Error::ExchangeFailed),
+            "the silent 2.4 s collect window times out"
+        );
+        assert!(!drv.session_active(), "resync closes the session");
+
+        let t = drv.transport_mut();
+        assert_eq!(
+            t.polls,
+            t.poll_schedule.len(),
+            "every scripted frame consumed — nothing rides the poll window"
+        );
+        assert!(
+            t.sent
+                .iter()
+                .any(|c| c.as_slice() == reader::RF_DEACTIVATE_DISCOVERY),
+            "strict teardown wrote the deactivate"
+        );
+        assert!(
+            !t.sent
+                .iter()
+                .any(|c| c.len() >= 2 && c[0] == MT_CMD | GID_RF && c[1] == OID_RF_DISCOVER),
+            "matching RSP arrived — no fallback discover needed"
+        );
+        // Multi-frame residue drained to EMPTY: both queues exhausted.
+        assert!(t.poll_frame().is_none());
+        assert!(t.drain().is_none());
+        // And the dead session rejects the next command.
         assert_eq!(drv.transmit_apdu(&[0x00], &mut rsp), Err(Error::NoCard));
     }
 

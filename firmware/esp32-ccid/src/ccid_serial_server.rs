@@ -37,7 +37,7 @@ const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 /// wire writer here at boot, the server arms the bridge with the
 /// in-flight XfrBlock identity + echo frame at dispatch, and
 /// [`stall_hook`] (installed into the PN7160 driver) writes the interim
-/// [RDR_to_PC_SlotStatus] time-extension frame.
+/// [RDR_to_PC_DataBlock] time-extension frame.
 ///
 /// Wire order is load-bearing (libccidtwin `ReadSerial`,
 /// reference/CCID/src/ccid_serial.c): the ECHOED command frame is
@@ -46,10 +46,15 @@ const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 /// writes the stashed echo before the first extension frame and the
 /// server then suppresses its own echo write. The host honors the
 /// frame verbatim (commands.c `CCID_Receive`: `cmd[STATUS_OFFSET] &
-/// CCID_TIME_EXTENSION` → `readTimeout *= cmd[ERROR_OFFSET]`, re-read).
+/// CCID_TIME_EXTENSION` → `readTimeout *= cmd[ERROR_OFFSET]`, re-read
+/// — the serial reader hands it ANY framed RDR message, the bStatus
+/// bit, not the message type, keys the extension).
 ///
-/// CCID 1.1 §6.3.4 (time extension): bStatus bit 7 set, bError = the
-/// number of BWT units requested.
+/// CCID Rev 1.1 §6.1.4 (time extension on PC_to_RDR_XfrBlock): the
+/// interim frame KEEPS THE IN-FLIGHT COMMAND'S RESPONSE TYPE — an
+/// empty RDR_to_PC_DataBlock (dwLength = 0) carrying the bSeq and
+/// clock-status bytes; bStatus bit 7 set, bError = the number of BWT
+/// units requested.
 ///
 /// Single-tasked by construction (the hook fires on the serve task,
 /// inside `feed_byte`) — the atomics exist for shape simplicity and
@@ -60,14 +65,14 @@ pub mod time_extension {
 
     use ccid_transport_serial::{calculate_lrc, CTRL_ACK, SYNC};
 
-    use crate::ccid_types::RDR_TO_PC_SLOTSTATUS;
+    use crate::ccid_types::RDR_TO_PC_DATABLOCK;
 
     /// bError multiplier: libccidtwin multiplies its remaining read
     /// timeout by this value per extension frame (commands.c:1598) —
     /// 3 s × 2 comfortably covers the 2.4 s exchange budget's tail.
     const BWT_UNIT_MULTIPLIER: u8 = 2;
 
-    /// Wire size of one framed interim SlotStatus: SYNC + CTRL + the
+    /// Wire size of one framed interim DataBlock: SYNC + CTRL + the
     /// 10-byte CCID header (dwLength = 0) + LRC.
     pub const FRAME_SIZE: usize = 13;
 
@@ -129,14 +134,17 @@ pub mod time_extension {
         writer(&frame[..n]);
     }
 
-    /// Build one framed interim RDR_to_PC_SlotStatus time-extension
-    /// message (CCID 1.1 §6.3.4): type 0x81, dwLength = 0, bSeq of the
-    /// in-flight XfrBlock, bStatus = 0x80 | icc status, bError = BWT
-    /// unit multiplier, GemPC framing + LRC.
+    /// Build one framed interim time-extension message (CCID Rev 1.1
+    /// §6.1.4): an XfrBlock time extension KEEPS THE IN-FLIGHT
+    /// COMMAND'S RESPONSE TYPE — RDR_to_PC_DataBlock (0x80), not
+    /// SlotStatus. Empty DataBlock: dwLength = 0, bSeq of the
+    /// in-flight XfrBlock, bStatus = 0x80 | icc status (time extension
+    /// requested), bError = BWT unit multiplier, bClockStatus = 0,
+    /// GemPC framing + LRC.
     pub fn build_frame(seq: u8, icc: u8, out: &mut [u8; FRAME_SIZE]) -> usize {
         out[0] = SYNC;
         out[1] = CTRL_ACK;
-        out[2] = RDR_TO_PC_SLOTSTATUS;
+        out[2] = RDR_TO_PC_DATABLOCK;
         out[3] = 0;
         out[4] = 0;
         out[5] = 0;
@@ -946,11 +954,17 @@ mod tests {
         fn interim_frame_bytes_reference_locked() {
             // GREAT EXPECTATION (reference-locked bytes — do not "fix"
             // without re-verifying against the cited references):
-            // CCID 1.1 §6.3.4 time extension via RDR_to_PC_SlotStatus —
+            // CCID Rev 1.1 §6.1.4 time extension on an in-flight
+            // PC_to_RDR_XfrBlock — the interim frame KEEPS THE IN-FLIGHT
+            // COMMAND'S RESPONSE TYPE (RDR_to_PC_DataBlock, 0x80, with
+            // dwLength = 0 carrying the bSeq + clock-status bytes);
             // bStatus bit 7 = time extension requested, bError = BWT
-            // units — as honored verbatim by libccidtwin
+            // units. Honored verbatim by libccidtwin
             // (reference/CCID/src/commands.c CCID_Receive:
-            // "Time extension requested" → readTimeout *= bError).
+            // "Time extension requested" → readTimeout *= bError; the
+            // serial reader hands over ANY framed RDR message — the
+            // bStatus bit, not the message type, keys the extension,
+            // verified in ccid_serial.c ReadSerial).
             let mut out = [0u8; time_extension::FRAME_SIZE];
             let n = time_extension::build_frame(0x2A, 0x00, &mut out);
             assert_eq!(n, 13);
@@ -958,8 +972,8 @@ mod tests {
                 &out[..12],
                 &[
                     0x03, 0x06, // GemPC framing: SYNC + ACK
-                    0x81, // RDR_to_PC_SlotStatus
-                    0x00, 0x00, 0x00, 0x00, // dwLength = 0
+                    0x80, // RDR_to_PC_DataBlock — the XfrBlock's response type
+                    0x00, 0x00, 0x00, 0x00, // dwLength = 0 (empty DataBlock)
                     0x00, // bSlot
                     0x2A, // bSeq — the in-flight XfrBlock's
                     0x80, // bStatus: time extension | ICC present+active
@@ -1006,7 +1020,7 @@ mod tests {
             assert_eq!(wire.len(), 2, "echo + one interim frame");
             assert_eq!(wire[0], frame, "echo first, verbatim");
             let ext = &wire[1];
-            assert_eq!(ext[2], 0x81, "interim is a SlotStatus");
+            assert_eq!(ext[2], 0x80, "interim mirrors the XfrBlock's response type");
             assert_eq!(ext[8], 7, "bSeq of the stalled XfrBlock");
             assert_eq!(ext[9], 0x80 | SlotState::PresentActive.icc_status());
             assert_eq!(ext[10], 0x02, "bError multiplier");

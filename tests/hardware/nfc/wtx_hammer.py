@@ -9,7 +9,9 @@ SC-class command is ever sent):
   - every response parses with the right bSeq (no post-exchange
     desync — the #101/#151 failure class),
   - interim CCID time-extension frames (issue #156 B) are counted and
-    shape-checked (type 0x81, bStatus 0x80|icc, bError > 0),
+    shape-checked (type 0x80 DataBlock mirroring the in-flight
+    XfrBlock's response type per CCID 1.1 §6.1.4 — pre-fix 0x81
+    SlotStatus interims also tolerated; bStatus 0x80|icc, bError > 0),
   - Escape 0xD4 (issue #156 A3) WTX counters read before/after.
 
 Direct-serial GemPC framing over the USB-CDC with the safe opener
@@ -42,8 +44,14 @@ PC_TO_RDR_ICC_POWER_ON = 0x62
 PC_TO_RDR_XFR_BLOCK = 0x6F
 PC_TO_RDR_SET_PARAMETERS = 0x61
 PC_TO_RDR_ESCAPE = 0x6B
+RDR_TO_PC_DATABLOCK = 0x80
 RDR_TO_PC_SLOTSTATUS = 0x81
+RDR_TO_PC_NOTIFY_SLOT_CHANGE = 0x50
 TIME_EXTENSION_BIT = 0x80
+# Interim time-extension carriers (Codex PR159 P2 + fix 2): current
+# firmware emits 0x80 (the in-flight XfrBlock's response type, CCID
+# 1.1 §6.1.4); 0x81 interims from pre-fix firmware are tolerated.
+INTERIM_TYPES = (RDR_TO_PC_DATABLOCK, RDR_TO_PC_SLOTSTATUS)
 
 
 def open_port(port: str) -> serial.Serial:
@@ -82,6 +90,31 @@ def i_block(ns: int, inf: bytes) -> bytes:
     return b + bytes([lrc(b)])
 
 
+def is_final_response(fr) -> bool:
+    """A final reader response: an RDR-to-PC message type (>= 0x80,
+    not the 0x50 slot-change notify) whose bStatus carries NO
+    time-extension bit. Interim time-extension frames (issue #156 B)
+    carry the SAME bSeq as the in-flight command — the extension bit,
+    not the sequence, is what distinguishes them."""
+    mt, _seq, bstatus, _berror, _pl = fr
+    return (
+        mt >= 0x80
+        and mt != RDR_TO_PC_NOTIFY_SLOT_CHANGE
+        and not (bstatus & TIME_EXTENSION_BIT)
+    )
+
+
+def final_index(frames, seq):
+    """Index of the final response FOR `seq`, or None. A qualifying
+    frame with a foreign bSeq (stale residue) does not terminate the
+    wait (Codex PR159 P2): the response for THIS command may still be
+    in flight."""
+    for idx in range(len(frames) - 1, -1, -1):
+        if is_final_response(frames[idx]) and frames[idx][1] == seq:
+            return idx
+    return None
+
+
 class Gate:
     def __init__(self, port: str):
         self.port = port
@@ -96,8 +129,8 @@ class Gate:
     def exchange(self, msg_type: int, payload: bytes, label: str,
                  proto: int = 0, budget: float = 6.0):
         """Send one framed CCID command; return the parsed frames
-        (echo first, response last, interims between). Gate-failing
-        conditions are counted, never fatal mid-run."""
+        (echo first, interims between, final response LAST). Gate-
+        failing conditions are counted, never fatal mid-run."""
         self.seq = (self.seq + 1) & 0xFF
         seq = self.seq
         self.s.reset_input_buffer()
@@ -107,26 +140,35 @@ class Gate:
         deadline = time.monotonic() + budget
         while time.monotonic() < deadline:
             frames += parse_frames(self.s.read(4096))
-            if len(frames) >= 2:
-                break  # echo + final response
+            # Codex PR159 P2: terminate ONLY on a non-time-extension
+            # reader response for THIS sequence — during a stall the
+            # first two frames are echo + interim time-extension, and
+            # treating the interim as final discarded the real response
+            # via the next command's reset_input_buffer().
+            if final_index(frames, seq) is not None:
+                break
         took = time.monotonic() - t0
         self.times.append((label, seq, took))
-        if not frames:
-            print(f"  [{label}] seq={seq}: NO FRAMES")
+        end = final_index(frames, seq)
+        if end is None:
+            # An echo-only (or interim-only) timeout is NOT a response
+            # (Codex PR159 P2) — never treat the echo or an interim
+            # extension as the final answer.
+            detail = f"{len(frames)} frame(s) before timeout"
+            print(f"  [{label}] seq={seq}: NO FINAL RESPONSE ({detail})")
             self.no_response += 1
+            if any(is_final_response(f) for f in frames):
+                self.desyncs += 1
+                print(f"  [{label}] DESYNC: only foreign-bSeq finals seen")
             return []
-        # frames[0] is the echo (same type as the command); frames[-1]
-        # is the response; anything between must be a well-formed
-        # interim time-extension SlotStatus (issue #156 B).
-        for mt, _fseq, bstatus, berror, _pl in frames[1:-1]:
+        # frames[0] is the echo (same type as the command); anything
+        # between echo and final must be a well-formed interim
+        # time-extension frame (issue #156 B).
+        for mt, _fseq, bstatus, berror, _pl in frames[1:end]:
             self.interim_frames += 1
-            if mt != RDR_TO_PC_SLOTSTATUS or not (bstatus & TIME_EXTENSION_BIT) or berror == 0:
+            if mt not in INTERIM_TYPES or not (bstatus & TIME_EXTENSION_BIT) or berror == 0:
                 self.bad_interims += 1
                 print(f"  [{label}] BAD INTERIM: mt={mt:#x} bstatus={bstatus:#x} berror={berror:#x}")
-        resp_mt, resp_seq, _bs, _be, resp_payload = frames[-1]
-        if resp_seq != seq:
-            print(f"  [{label}] DESYNC: response bSeq {resp_seq} != {seq}")
-            self.desyncs += 1
         return frames
 
 
