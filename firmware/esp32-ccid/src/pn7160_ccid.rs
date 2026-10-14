@@ -13,7 +13,7 @@ use esp_idf_hal::usb_serial::{config::Config as UsbConfig, UsbSerialDriver};
 use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
-use crate::ccid_serial_server::{CcidSerialServer, ServeAction};
+use crate::ccid_serial_server::{response_window_ticks, CcidSerialServer, ServeAction};
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
 use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
@@ -142,9 +142,13 @@ pub fn run() -> ! {
     });
 
     let poll_interval = TickType::new_millis(CARD_POLL_INTERVAL_MS as u64).ticks() as u32;
-    let mut server = CcidSerialServer::new(CcidHandler::new(driver), poll_interval, unsafe {
-        esp_idf_sys::xTaskGetTickCount()
-    });
+    let response_deadline_ticks = response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
+    let mut server = CcidSerialServer::new(
+        CcidHandler::new(driver),
+        poll_interval,
+        response_deadline_ticks,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+    );
     // Issue #119: burst reads. The old 1-byte buffer cost one usb.read
     // call PER BYTE (13 calls for a 13-byte GetSlotStatus frame, ~23 ms
     // each → flat ~300 ms/command). 64 bytes = one full-speed CDC bulk
@@ -176,6 +180,13 @@ pub fn run() -> ! {
                 for &byte in &burst_buf[..n] {
                     let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                     if server.feed_byte(byte, now) == ServeAction::Respond {
+                        // #153: drop responses that outlived the host's
+                        // read window instead of poisoning the stream.
+                        let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
+                        if server.response_expired(post) {
+                            server.record_late_response();
+                            continue;
+                        }
                         let write_timeout = TickType::new_millis(100).ticks();
                         // GemPC Twin: echo the received frame, then the response
                         let _ = usb.write(server.echo(), write_timeout);
