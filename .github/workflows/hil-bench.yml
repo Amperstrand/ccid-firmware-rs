@@ -1,0 +1,107 @@
+# HIL bench nightly (issue #183): device-in-the-loop testing on the
+# ai-legion bench via the self-hosted `bench` runner, plus generated
+# STATUS.md on the bench/status branch.
+#
+# SECURITY (public repo + root runner — read before editing triggers):
+#   This workflow MUST NOT run pull_request/pull_request_target events.
+#   Fork PR code would execute on the bench host as root. schedule and
+#   workflow_dispatch only (dispatch requires repo write access).
+#   The runner tradeoffs are documented on issue #183.
+
+name: hil-bench
+
+on:
+  schedule:
+    - cron: '17 3 * * *'  # nightly, off-peak minutes
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  # F469 ST-LINK is physically detached (2026-10-14): its place fails
+  # acquire → the suite skips it loudly. Revisit when re-attached.
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  bench-health:
+    runs-on: [self-hosted, bench]
+    name: bench inventory
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: 'false' }
+      - name: bench_inventory.py --json
+        id: inv
+        run: |
+          set +e
+          python3 tests/hardware/labgrid/bench_inventory.py --json > inventory.json
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0   # inventory failure must not cancel the HIL attempt — the
+                   # suites skip what they cannot reach and record the rest
+      - name: inventory summary
+        if: always()
+        run: |
+          {
+            echo '## Bench inventory'
+            echo '```json'
+            cat inventory.json 2>/dev/null || echo '{"error": "inventory run produced no output"}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: bench-inventory, path: inventory.json }
+
+  hil:
+    runs-on: [self-hosted, bench]
+    name: HIL suites (on-device)
+    needs: bench-health
+    if: always() && needs.bench-health.result != 'cancelled'
+    # Bench validation 2026-10-14: the FULL suite wedged >15 min in a
+    # blocked leg (known bench-limited paths, e.g. the nucula backup-first
+    # guard). Hard job timeout until the legs get per-test timeouts /
+    # curation (#184 follow-up): a hung leg must cost the nightly one
+    # red run, not the runner indefinitely.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: { submodules: 'false' }
+      - name: run labgrid HIL suites (identity legs)
+        run: >
+          python3 -m pytest tests/hardware/labgrid/test_bench_state.py
+          -v --hil --junitxml=hil-junit.xml
+      - name: junit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: hil-junit, path: hil-junit.xml }
+
+  status:
+    runs-on: ubuntu-latest
+    name: publish STATUS.md
+    needs: [bench-health, hil]
+    if: always() && needs.bench-health.result != 'skipped'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: generate STATUS.md
+        run: |
+          mkdir -p docs
+          inv=$(ls artifacts/bench-inventory/inventory.json 2>/dev/null || true)
+          junit=$(ls artifacts/hil-junit/hil-junit.xml 2>/dev/null || true)
+          python3 scripts/gen_status.py \
+            --inventory "${inv:-/dev/null}" \
+            --junit "${junit:-/dev/null}" \
+            --commit "$GITHUB_SHA" --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat docs/STATUS.md >> "$GITHUB_STEP_SUMMARY"
+      - name: publish to bench/status branch
+        run: |
+          git config user.name 'bench-status-bot'
+          git config user.email 'noreply@amperstrand.no'
+          git checkout --orphan bench-status
+          git rm -rq --cached . 2>/dev/null || true
+          git add docs/STATUS.md
+          git commit -qm "bench status @ ${GITHUB_SHA:0:12} [skip ci]"
+          git push -q --force origin HEAD:refs/heads/bench/status
