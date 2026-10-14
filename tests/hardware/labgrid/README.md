@@ -4,6 +4,14 @@ Hardware-in-the-loop tests for the CCID reader firmware: the STM32F469
 DUT, the two ESP32 serial DUTs (nucula, m5stick), and the reference
 readers — coordinated through labgrid places.
 
+> **Org-wide canon (2026-10-14):** cross-project labgrid practices —
+> coordinator topology and exporter fleet, reservation queueing
+> (`labgrid-client reserve --wait`, priorities, owner-ETA convention),
+> one-device-one-exclusion-domain, and the trusted-network security
+> model — live in **conwrt-bench `docs/labgrid-coordination.md`**
+> (private, single source of truth). This README covers the
+> ccid-specific layer on top of that canon.
+
 ## Bench coordination (#65)
 
 Three exclusivity layers, taken in this order (same protocol as bolty-rs,
