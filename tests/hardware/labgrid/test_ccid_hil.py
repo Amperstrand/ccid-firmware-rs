@@ -27,6 +27,11 @@ def test_usb_enumeration_cherry(cherry_reader):
 def test_pcscd_detects_reader(helpers, pcscd_running):
     """pcscd lists the DUT reader with the card present. The serial-selected
     fixture proves enumeration; this asserts the card is IN the slot."""
+    import bench as benchmod
+
+    absent = benchmod.dut_absent_reason("stm32-ccid")
+    if absent:
+        pytest.skip(f"stm32-ccid: {absent}")
     result = helpers.run("python3 /tmp/hil-ccid-bench/hil_atr.py")
     out = result.stdout.strip()
     assert not out.startswith("ERROR:NOREADER"), f"DUT reader missing: {out}"
