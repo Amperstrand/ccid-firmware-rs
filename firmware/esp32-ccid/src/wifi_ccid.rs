@@ -16,7 +16,7 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
-use crate::ccid_serial_server::{CcidSerialServer, ServeAction};
+use crate::ccid_serial_server::{response_window_ticks, CcidSerialServer, ServeAction};
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
 use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
@@ -132,9 +132,13 @@ pub fn run() -> ! {
     });
 
     let poll_interval = TickType::new_millis(CARD_POLL_INTERVAL_MS as u64).ticks() as u32;
-    let mut server = CcidSerialServer::new(CcidHandler::new(driver), poll_interval, unsafe {
-        esp_idf_sys::xTaskGetTickCount()
-    });
+    let response_deadline_ticks = response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
+    let mut server = CcidSerialServer::new(
+        CcidHandler::new(driver),
+        poll_interval,
+        response_deadline_ticks,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+    );
 
     // Single-session serve loop, tick architecture (bench hardening
     // 2026-10-12): a 250 ms read timeout makes every iteration a tick,

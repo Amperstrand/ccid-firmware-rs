@@ -34,6 +34,26 @@ pub const MAX_CCID_RESPONSE_SIZE: usize = 271;
 /// SYNC + CTRL + CCID message + LRC.
 const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 
+/// Host read-window budget for one response (#153), in MILLISECONDS.
+/// The host's `ReadChunk()` select() gives up at
+/// `DEFAULT_COM_READ_TIMEOUT = 3*1000` ms (`reference/CCID/src/defs.h:76`);
+/// 500 ms margin for wire + host scheduling leaves 2500. Aligned with
+/// #156's 2.4 s card-exchange budget so the healthy path never trips it.
+pub const RESPONSE_WINDOW_MS: u32 = 2_500;
+
+/// [`RESPONSE_WINDOW_MS`] expressed in FreeRTOS ticks — the
+/// `pdMS_TO_TICKS(ms) = ms * configTICK_RATE_HZ / 1000` expansion
+/// (FreeRTOS task.h; bindgen does not export the macro — same situation
+/// as `pn7160_v10raw::delay_ticks`), truncating integer math like the
+/// kernel macro. Every production sdkconfig runs `CONFIG_FREERTOS_HZ=100`
+/// (10 ms/tick), where the window is **250 ticks**: a raw `2_500` tick
+/// constant read as 25 s there — a 10× over-window that let the 13 s
+/// card-death path through (Codex review on #158, P1). Callers pass
+/// `esp_idf_sys::configTICK_RATE_HZ` on target.
+pub const fn response_window_ticks(tick_hz: u32) -> u32 {
+    RESPONSE_WINDOW_MS * tick_hz / 1000
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServeAction {
     /// A complete command was served: write [`Self::echo()`] first, then
@@ -104,6 +124,10 @@ pub struct CcidSerialServer<D: NfcDriver> {
     resp_buf: [u8; MAX_FRAME_SIZE],
     resp_len: usize,
     poll_interval_ticks: u32,
+    /// #153 window in TICKS (see [`response_window_ticks`]) — supplied by
+    /// the caller because the tick rate is a device property
+    /// (`configTICK_RATE_HZ`), not a property of this device-agnostic core.
+    response_deadline_ticks: u32,
     last_poll_tick: u32,
     frame_done_tick: u32,
     late_drop_count: u32,
@@ -119,11 +143,19 @@ impl<D: NfcDriver> CcidSerialServer<D> {
 
     /// `now_ticks` seeds the poll gate the same way the on-device loop
     /// captures the boot tick, so the first poll fires only after one full
-    /// interval.
-    pub fn new(handler: CcidHandler<D>, poll_interval_ticks: u32, now_ticks: u32) -> Self {
+    /// interval. `response_deadline_ticks` is the #153 window in ticks —
+    /// derive it with [`response_window_ticks`] so the tick rate is
+    /// honored (`CONFIG_FREERTOS_HZ=100` in production: 250, not 2500).
+    pub fn new(
+        handler: CcidHandler<D>,
+        poll_interval_ticks: u32,
+        response_deadline_ticks: u32,
+        now_ticks: u32,
+    ) -> Self {
         Self::with_config(
             handler,
             poll_interval_ticks,
+            response_deadline_ticks,
             now_ticks,
             ServeConfig::default(),
         )
@@ -132,6 +164,7 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     pub fn with_config(
         handler: CcidHandler<D>,
         poll_interval_ticks: u32,
+        response_deadline_ticks: u32,
         now_ticks: u32,
         config: ServeConfig,
     ) -> Self {
@@ -150,6 +183,7 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             resp_buf: [0; MAX_FRAME_SIZE],
             resp_len: 0,
             poll_interval_ticks: poll_interval_ticks.max(1),
+            response_deadline_ticks: response_deadline_ticks.max(1),
             last_poll_tick: now_ticks,
             frame_done_tick: now_ticks,
             late_drop_count: 0,
@@ -164,13 +198,6 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// valid frame while the parser waits for bytes that never come
     /// (fuzz-proven, 2026-10-09).
     const INTER_BYTE_STALL_TICKS: u32 = 10;
-
-    /// Host read-window budget for one response (#153). The host's
-    /// `ReadChunk()` select() gives up at `DEFAULT_COM_READ_TIMEOUT =
-    /// 3*1000` ms (`reference/CCID/src/defs.h:76`); 500 ms margin for
-    /// wire + host scheduling leaves 2500. Aligned with #156's 2.4 s
-    /// card-exchange budget so the healthy path never trips it.
-    const RESPONSE_DEADLINE_TICKS: u32 = 2_500;
 
     pub fn feed_byte(&mut self, byte: u8, now_ticks: u32) -> ServeAction {
         let gap = now_ticks.wrapping_sub(self.last_byte_tick);
@@ -304,9 +331,21 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// echo/notify/response to the wire. The host parser
     /// (`ReadSerial()`) has no mid-stream resync — an expired response
     /// must be dropped via [`Self::record_late_response()`], never
-    /// written.
+    /// written. The window is the constructor-supplied
+    /// `response_deadline_ticks` (tick-rate-derived, see
+    /// [`response_window_ticks`]).
     pub fn response_expired(&self, now_ticks: u32) -> bool {
-        now_ticks.wrapping_sub(self.frame_done_tick) > Self::RESPONSE_DEADLINE_TICKS
+        now_ticks.wrapping_sub(self.frame_done_tick) > self.response_deadline_ticks
+    }
+
+    /// Absolute tick at which the pending response's host read window
+    /// closes: `frame_done_tick + response_deadline_ticks` (#153). Write
+    /// sites that park bytes for a later retry (the SPP path) re-check
+    /// parked data against THIS — a window restarted at park time would
+    /// grant the response a second lifetime.
+    pub fn response_deadline_tick(&self) -> u32 {
+        self.frame_done_tick
+            .wrapping_add(self.response_deadline_ticks)
     }
 
     /// #156 B hook: refresh the deadline baseline after an interim
@@ -321,14 +360,17 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     /// Drop the pending response as late (#153). Echo, notify and
     /// response die together — a bare notify after the host gave up is
     /// the same class of stream poison. Clears the wire buffers so a
-    /// write site that ignores the verdict writes nothing; the pending
-    /// 0xD1 snapshot panic must also be skipped (its ack never went
-    /// out).
+    /// write site that ignores the verdict writes nothing, and cancels
+    /// the pending 0xD1 snapshot request: its ack never went out, so
+    /// leaving the flag armed would make the NEXT unrelated delivered
+    /// response trigger the panic — a wrong-command reboot (Codex
+    /// review on #158, P2).
     pub fn record_late_response(&mut self) {
         self.echo_len = 0;
         self.notify_len = 0;
         self.resp_len = 0;
         self.late_drop_count += 1;
+        let _ = self.handler.take_snapshot_request();
     }
 
     /// Responses discarded for exceeding the host read window (#153).
@@ -370,6 +412,12 @@ mod tests {
     use ccid_transport_serial::{calculate_lrc, SYNC};
 
     const POLL_INTERVAL: u32 = 500;
+    /// Tests model a 1 kHz tick rate (ticks == ms — like the
+    /// `sdkconfig.wallet-test` fragment), keeping the numeric
+    /// expectations tick-shaped. Production runs 100 Hz where the #153
+    /// window is 250 ticks — locked separately below.
+    const TEST_TICK_HZ: u32 = 1_000;
+    const TEST_DEADLINE_TICKS: u32 = 2_500;
 
     fn mock_driver(card_present: bool) -> MockNfcDriver {
         let atr = [0x3B, 0x80, 0x01, 0x01];
@@ -380,7 +428,12 @@ mod tests {
     fn server_with(card_present: bool) -> CcidSerialServer<MockNfcDriver> {
         let mut driver = mock_driver(card_present);
         driver.init().unwrap();
-        CcidSerialServer::new(CcidHandler::new(driver), POLL_INTERVAL, 0)
+        CcidSerialServer::new(
+            CcidHandler::new(driver),
+            POLL_INTERVAL,
+            TEST_DEADLINE_TICKS,
+            0,
+        )
     }
 
     /// Build a host→reader command frame: SYNC + ACK + 10-byte CCID header
@@ -403,6 +456,23 @@ mod tests {
         frame[1] = ccid_transport_serial::CTRL_ACK;
         frame[2..12].copy_from_slice(&ccid);
         frame[12] = calculate_lrc(&frame[..12]);
+        frame
+    }
+
+    /// Command frame carrying a CCID payload (e.g. Escape 0xD1):
+    /// SYNC + ACK + 10-byte CCID header (dwLength = payload.len()) +
+    /// payload + LRC.
+    fn command_frame_with_payload(message_type: u8, seq: u8, payload: &[u8]) -> Vec<u8> {
+        let mut ccid = [0u8; 10];
+        ccid[0] = message_type;
+        ccid[1..5].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        ccid[6] = seq;
+        let mut frame = Vec::with_capacity(2 + 10 + payload.len() + 1);
+        frame.push(SYNC);
+        frame.push(ccid_transport_serial::CTRL_ACK);
+        frame.extend_from_slice(&ccid);
+        frame.extend_from_slice(payload);
+        frame.push(calculate_lrc(&frame));
         frame
     }
 
@@ -544,6 +614,7 @@ mod tests {
         let mut server = CcidSerialServer::new(
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
+            TEST_DEADLINE_TICKS,
             1_000, // constructed "late" in uptime
         );
 
@@ -565,6 +636,7 @@ mod tests {
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(driver),
             POLL_INTERVAL,
+            TEST_DEADLINE_TICKS,
             0,
             ServeConfig {
                 nak_on_error: true,
@@ -609,6 +681,7 @@ mod tests {
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
+            TEST_DEADLINE_TICKS,
             0,
             ServeConfig {
                 nak_on_error: false,
@@ -647,6 +720,7 @@ mod tests {
         CcidSerialServer::with_config(
             CcidHandler::new(driver),
             POLL_INTERVAL,
+            TEST_DEADLINE_TICKS,
             0,
             ServeConfig {
                 nak_on_error: true,
@@ -785,6 +859,7 @@ mod tests {
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
+            TEST_DEADLINE_TICKS,
             0,
             ServeConfig::default(),
         );
@@ -804,9 +879,10 @@ mod tests {
 
     #[test]
     fn response_deadline_fresh_then_expired() {
-        // #153 answer-or-silence: fresh inside 2500 ms of the completing
-        // byte, expired after — judged with the post-handler tick a
-        // write site would capture.
+        // #153 answer-or-silence: fresh inside 2500 ticks of the
+        // completing byte (the 1 kHz test model: 2500 ms), expired
+        // after — judged with the post-handler tick a write site would
+        // capture.
         let mut server = server_with(false);
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
         let done = 1_000;
@@ -843,6 +919,91 @@ mod tests {
 
         assert!(!server.response_expired(2_000));
         assert!(server.response_expired(2_600));
+    }
+
+    #[test]
+    fn response_window_ticks_matches_pd_ms_to_ticks() {
+        // Codex #158 P1 lock: the #153 window must be DERIVED from the
+        // tick rate (FreeRTOS task.h pdMS_TO_TICKS), never a raw tick
+        // constant. Production sdkconfigs run CONFIG_FREERTOS_HZ=100 —
+        // 2500 ms is 250 ticks there; the retired raw 2_500 tick
+        // constant was a 10× over-window (25 s).
+        assert_eq!(response_window_ticks(100), 250, "production: 100 Hz");
+        assert_eq!(
+            response_window_ticks(1_000),
+            2_500,
+            "wallet-test fragment: 1 kHz"
+        );
+        assert_eq!(
+            response_window_ticks(500),
+            1_250,
+            "truncating math, like the macro"
+        );
+    }
+
+    #[test]
+    fn response_deadline_honors_the_configured_tick_window() {
+        // The expiry verdict must come from the constructor-supplied
+        // tick window, not any ms assumption: at the production 100 Hz
+        // rate a response 2.5 s after the completing byte is LATE, where
+        // the old ms-shaped constant kept it "fresh" for 25 s.
+        let mut server = CcidSerialServer::new(
+            CcidHandler::new(mock_driver(false)),
+            POLL_INTERVAL,
+            response_window_ticks(100),
+            0,
+        );
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let done = 1_000;
+        feed_frame(&mut server, &frame, done - 12);
+
+        assert_eq!(server.response_deadline_tick(), done + 250);
+        assert!(!server.response_expired(done + 249));
+        assert!(
+            !server.response_expired(done + 250),
+            "at-window: still fresh"
+        );
+        assert!(
+            server.response_expired(done + 251),
+            "past the window: silence"
+        );
+    }
+
+    #[test]
+    fn late_dropped_escape_snapshot_is_cancelled_not_inherited() {
+        // Codex #158 P2: the 0xD1 ack arms the snapshot flag; if THAT
+        // response is late-dropped the flag must be consumed by the
+        // drop — otherwise the NEXT delivered (unrelated) response
+        // triggers the panic: a wrong-command reboot.
+        let mut server = server_with(false);
+
+        // Control: a DELIVERED 0xD1 still fires exactly once.
+        let escape = command_frame_with_payload(PC_TO_RDR_ESCAPE, 1, &[0xD1]);
+        feed_frame(&mut server, &escape, 100);
+        assert!(server.take_snapshot_request());
+        assert!(!server.take_snapshot_request());
+
+        // The bug shape: 0xD1 arrives, its ack is late-dropped.
+        let escape2 = command_frame_with_payload(PC_TO_RDR_ESCAPE, 2, &[0xD1]);
+        feed_frame(&mut server, &escape2, 200);
+        server.record_late_response();
+
+        // The drop consumed the pending snapshot…
+        assert!(
+            !server.take_snapshot_request(),
+            "late drop cancelled the 0xD1 snapshot"
+        );
+
+        // …so the next delivered response inherits no panic.
+        feed_frame(
+            &mut server,
+            &command_frame(PC_TO_RDR_GET_SLOT_STATUS, 3),
+            300,
+        );
+        assert!(
+            !server.take_snapshot_request(),
+            "unrelated response must not trigger the snapshot panic"
+        );
     }
 
     #[test]

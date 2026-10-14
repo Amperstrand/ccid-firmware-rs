@@ -157,6 +157,11 @@ pub struct SppLink {
     last_rx_tick: u32,
     pending: [u8; SPP_TX_BUF_SIZE],
     pending_len: usize,
+    /// #153: absolute tick by which the parked bytes must reach the wire
+    /// (the producing response's `frame_done + response window`). `None`
+    /// = undated (NAK-only packets — not governed by the host read
+    /// window).
+    pending_deadline: Option<u32>,
     dropped_tx: u32,
 }
 
@@ -168,6 +173,7 @@ impl SppLink {
             last_rx_tick: now_ticks,
             pending: [0; SPP_TX_BUF_SIZE],
             pending_len: 0,
+            pending_deadline: None,
             dropped_tx: 0,
         }
     }
@@ -181,6 +187,7 @@ impl SppLink {
             self.dropped_tx = self.dropped_tx.saturating_add(self.pending_len as u32);
         }
         self.pending_len = 0;
+        self.pending_deadline = None;
         self.last_rx_tick = now_ticks;
     }
 
@@ -193,6 +200,7 @@ impl SppLink {
         self.handle = None;
         self.congested = false;
         self.pending_len = 0;
+        self.pending_deadline = None;
         self.last_rx_tick = now_ticks;
     }
 
@@ -227,14 +235,17 @@ impl SppLink {
     /// `esp_spp_write`). Strictly single-slot: the protocol is
     /// request/response, so a second park means the host desynced — the
     /// older bytes are dropped and counted, order among DELIVERED bytes
-    /// is never reordered.
-    pub fn park(&mut self, bytes: &[u8]) {
+    /// is never reordered. `deadline_tick` is the packet's #153 expiry
+    /// ([`SppPump::tx_deadline`]); the retry path drops expired bytes
+    /// instead of writing them.
+    pub fn park(&mut self, bytes: &[u8], deadline_tick: Option<u32>) {
         let n = bytes.len().min(SPP_TX_BUF_SIZE);
         if self.pending_len > 0 {
             self.dropped_tx = self.dropped_tx.saturating_add(self.pending_len as u32);
         }
         self.pending[..n].copy_from_slice(&bytes[..n]);
         self.pending_len = n;
+        self.pending_deadline = deadline_tick;
         if bytes.len() > SPP_TX_BUF_SIZE {
             self.dropped_tx = self.dropped_tx.saturating_add((bytes.len() - n) as u32);
         }
@@ -246,6 +257,24 @@ impl SppLink {
 
     pub fn clear_pending(&mut self) {
         self.pending_len = 0;
+        self.pending_deadline = None;
+    }
+
+    /// #153 for parked bytes: has the host read window that was open
+    /// when these bytes were produced closed while they sat parked? A
+    /// late write is the same stream poison as a late response — the
+    /// retry must drop them (Codex review on #158, P2). Wraparound-safe
+    /// absolute-deadline form of the serve core's
+    /// `now - frame_done > window`: elapsed-since-deadline is small once
+    /// strictly past it, huge (2^32 − δ) before it.
+    pub fn pending_expired(&self, now_ticks: u32) -> bool {
+        match (self.pending_deadline, self.pending_len > 0) {
+            (Some(deadline), true) => {
+                let since = now_ticks.wrapping_sub(deadline);
+                since != 0 && since < 0x8000_0000
+            }
+            _ => false,
+        }
     }
 
     /// Count TX bytes dropped because no connection exists to carry them.
@@ -318,6 +347,10 @@ pub struct SppPump<D: NfcDriver> {
     server: CcidSerialServer<D>,
     tx: [u8; SPP_TX_BUF_SIZE],
     tx_len: usize,
+    /// #153 deadline of the OLDEST bytes in `tx` (first response
+    /// appended since the last [`Self::tx_clear`]) — `None` while the
+    /// packet holds no dated response (empty, or NAK-only).
+    tx_deadline: Option<u32>,
     respond_stamp_us: Option<i64>,
     dropped_responses: u32,
 }
@@ -327,11 +360,17 @@ impl<D: NfcDriver> SppPump<D> {
     /// NAK on malformed frames, NotifySlotChange on transitions, no
     /// inline polls (#89 — a physical poll must never delay a pending
     /// response; with SPP "pending" includes parked-but-undelivered).
-    pub fn new(handler: CcidHandler<D>, poll_interval_ticks: u32, now_ticks: u32) -> Self {
+    pub fn new(
+        handler: CcidHandler<D>,
+        poll_interval_ticks: u32,
+        response_deadline_ticks: u32,
+        now_ticks: u32,
+    ) -> Self {
         Self {
             server: CcidSerialServer::with_config(
                 handler,
                 poll_interval_ticks,
+                response_deadline_ticks,
                 now_ticks,
                 ServeConfig {
                     nak_on_error: true,
@@ -341,6 +380,7 @@ impl<D: NfcDriver> SppPump<D> {
             ),
             tx: [0; SPP_TX_BUF_SIZE],
             tx_len: 0,
+            tx_deadline: None,
             respond_stamp_us: None,
             dropped_responses: 0,
         }
@@ -350,16 +390,18 @@ impl<D: NfcDriver> SppPump<D> {
     /// (echo/notify/response triple, or NAK) to the TX packet. All-or-
     /// nothing per frame: a packet that would not fit whole is dropped
     /// and counted — a truncated frame on the stream is worse than a
-    /// dropped one. `now_ticks` is the pump-call tick (#153
-    /// answer-or-silence): responses whose frame outlived the host read
-    /// window are dropped, never appended.
-    pub fn pump_rx(&mut self, entries: &[RxByte], now_ticks: u32) -> PumpOutcome {
+    /// dropped one. `now` is the live tick source (#153
+    /// answer-or-silence): it is consulted AFTER each `feed_byte` — the
+    /// card handler runs synchronously inside it, and its elapsed time
+    /// must count against the host read window (Codex review on #158,
+    /// P1). Expired responses are dropped, never appended.
+    pub fn pump_rx<F: Fn() -> u32>(&mut self, entries: &[RxByte], now: F) -> PumpOutcome {
         use crate::ccid_serial_server::ServeAction;
         let mut outcome = PumpOutcome::default();
         for RxByte { byte, tick } in entries {
             match self.server.feed_byte(*byte, *tick) {
                 ServeAction::Respond => {
-                    if self.server.response_expired(now_ticks) {
+                    if self.server.response_expired(now()) {
                         self.server.record_late_response();
                         outcome.late_dropped += 1;
                         continue;
@@ -369,11 +411,17 @@ impl<D: NfcDriver> SppPump<D> {
                         && append_slice(&mut self.tx, &mut self.tx_len, self.server.notify())
                         && append_slice(&mut self.tx, &mut self.tx_len, self.server.response());
                     if ok {
+                        // Oldest bytes govern the parked-retry deadline.
+                        self.tx_deadline
+                            .get_or_insert(self.server.response_deadline_tick());
                         self.respond_stamp_us = Some(crate::t1::now_us());
                         outcome.responded += 1;
                     } else {
                         // Roll back — never emit a partial frame.
                         self.tx_len = start;
+                        if self.tx_len == 0 {
+                            self.tx_deadline = None;
+                        }
                         self.dropped_responses += 1;
                     }
                 }
@@ -406,6 +454,16 @@ impl<D: NfcDriver> SppPump<D> {
     /// Drop the delivered packet (after a successful write or a park).
     pub fn tx_clear(&mut self) {
         self.tx_len = 0;
+        self.tx_deadline = None;
+    }
+
+    /// #153 deadline carried by the TX packet — the absolute tick by
+    /// which the OLDEST bytes in it must reach the wire. Parking call
+    /// sites hand this to [`SppLink::park`] so the retry path can drop
+    /// expired bytes instead of writing them late. `None` for NAK-only
+    /// packets (the read window guards responses).
+    pub fn tx_deadline(&self) -> Option<u32> {
+        self.tx_deadline
     }
 
     /// Issue #120 turnaround stamp, measured from the completing byte to
@@ -464,6 +522,7 @@ fn append_slice(buf: &mut [u8], len: &mut usize, bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ccid_serial_server::response_window_ticks;
     use crate::nfc::MockNfcDriver;
     use ccid_protocol::types::PC_TO_RDR_GET_SLOT_STATUS;
     use ccid_transport_serial::{calculate_lrc, CTRL_ACK, SYNC};
@@ -485,7 +544,13 @@ mod tests {
     fn pump_with(card_present: bool) -> SppPump<MockNfcDriver> {
         let mut driver = MockNfcDriver::new(card_present, &[0x3B, 0x80, 0x01, 0x01], &[0x90, 0x00]);
         driver.init().unwrap();
-        SppPump::new(CcidHandler::new(driver), POLL_INTERVAL, 0)
+        // 1 kHz tick model (ticks == ms), like ccid_serial_server tests.
+        SppPump::new(
+            CcidHandler::new(driver),
+            POLL_INTERVAL,
+            response_window_ticks(1_000),
+            0,
+        )
     }
 
     fn push(ring: &mut SppRxRing, bytes: &[u8], tick: u32) {
@@ -505,7 +570,7 @@ mod tests {
             if n == 0 {
                 break;
             }
-            outcome.merge(pump.pump_rx(&batch[..n], now));
+            outcome.merge(pump.pump_rx(&batch[..n], || now));
         }
         outcome
     }
@@ -597,7 +662,7 @@ mod tests {
         link.on_cong(true);
         assert_eq!(delivery_plan(&link), Deliver::Park, "congested: park");
 
-        link.park(&[1, 2, 3]);
+        link.park(&[1, 2, 3], None);
         assert_eq!(link.pending(), &[1, 2, 3]);
         link.on_cong(false);
         assert_eq!(
@@ -608,7 +673,7 @@ mod tests {
         link.clear_pending();
         assert_eq!(delivery_plan(&link), Deliver::Write);
 
-        link.park(&[4, 5]);
+        link.park(&[4, 5], None);
         link.on_close(300);
         assert_eq!(link.handle(), None);
         assert_eq!(link.pending().len(), 0, "close discards undelivered bytes");
@@ -619,8 +684,8 @@ mod tests {
     fn link_park_is_single_slot_and_counts_drops() {
         let mut link = SppLink::new(0);
         link.on_open(1, 0);
-        link.park(&[1, 2, 3, 4]);
-        link.park(&[5, 6]);
+        link.park(&[1, 2, 3, 4], Some(100));
+        link.park(&[5, 6], None);
         assert_eq!(link.pending(), &[5, 6], "newest parked bytes win");
         assert_eq!(link.dropped_tx(), 4, "the overwritten slot is counted");
     }
@@ -803,13 +868,21 @@ mod tests {
 
         link.on_cong(true);
         assert_eq!(delivery_plan(&link), Deliver::Park);
-        link.park(pump.tx());
+        let parked_deadline = pump.tx_deadline();
+        link.park(pump.tx(), parked_deadline);
         pump.tx_clear();
         assert_eq!(link.pending(), &expected[..]);
 
         link.on_cong(false);
         // Pending retry: delivered verbatim, before any new traffic.
         assert_eq!(link.pending(), &expected[..]);
+        // The parked deadline is the response's own (frame done at tick
+        // 5 + 2500-tick window): still inside it at 2504/2505, past it
+        // at 2506 — a retry then must drop, not write.
+        assert_eq!(parked_deadline, Some(2_505));
+        assert!(!link.pending_expired(2_504));
+        assert!(!link.pending_expired(2_505));
+        assert!(link.pending_expired(2_506));
         link.clear_pending();
     }
 
@@ -835,6 +908,104 @@ mod tests {
         let outcome = drain_and_pump(&mut ring, &mut pump, 1_000 + 2_710);
         assert_eq!(outcome.responded, 1);
         assert_eq!(&pump.tx()[..13], &next, "echo of the fresh frame");
+    }
+
+    #[test]
+    fn pump_expiry_samples_the_clock_per_response() {
+        // Codex #158 P1: the #153 tick must be consulted AFTER feed_byte
+        // ran the card handler, PER Respond. Two frames in one batch, and
+        // a clock that advances one full window per consultation: the
+        // first response is judged fresh, the second (whose check sees
+        // the advanced clock) is late — a single frozen pre-handler
+        // sample would return the same verdict for both.
+        let mut ring = SppRxRing::new();
+        let mut pump = pump_with(false);
+        let f1 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let f2 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        push(&mut ring, &f1, 1_000);
+        // 5-tick gap: inside the inter-byte stall guard, so f2 parses as
+        // a real second frame (13 ticks would trip the guard).
+        push(&mut ring, &f2, 1_005);
+
+        let clock = std::cell::Cell::new(1_020u32);
+        let mut batch = [RxByte { byte: 0, tick: 0 }; SPP_RX_RING_ENTRIES];
+        let n = ring.pop_batch(&mut batch);
+        let outcome = pump.pump_rx(&batch[..n], || {
+            let t = clock.get();
+            clock.set(t + 2_600);
+            t
+        });
+
+        assert_eq!(
+            outcome.responded, 1,
+            "first check: 20 ticks elapsed — fresh"
+        );
+        assert_eq!(
+            outcome.late_dropped, 1,
+            "second check: 3620 — past the window"
+        );
+        // First exchange's 26 bytes went out; the late one is silence.
+        assert_eq!(pump.tx().len(), 26);
+    }
+
+    #[test]
+    fn parked_bytes_expire_at_their_response_deadline() {
+        let mut link = SppLink::new(0);
+        link.on_open(1, 0);
+        // Undated park (NAK-only packet): retry behavior unchanged.
+        link.park(&[0x03, 0x15, 0x16], None);
+        assert!(
+            !link.pending_expired(u32::MAX - 1),
+            "undated bytes never expire by #153"
+        );
+        link.clear_pending();
+
+        link.park(&[1, 2, 3], Some(3_500));
+        assert!(!link.pending_expired(3_499));
+        assert!(!link.pending_expired(3_500), "at the deadline: in window");
+        assert!(link.pending_expired(3_501), "past it: silence, never write");
+        // Long-before reads as a huge wrapping delta, not as expired.
+        assert!(!link.pending_expired(1_000));
+    }
+
+    #[test]
+    fn parked_deadline_survives_tick_wraparound() {
+        let mut link = SppLink::new(0);
+        link.on_open(1, 0);
+        let deadline = u32::MAX - 100;
+        link.park(&[9, 9], Some(deadline));
+        assert!(
+            !link.pending_expired(deadline - 1),
+            "before it, below the wrap"
+        );
+        assert!(!link.pending_expired(deadline), "at it");
+        assert!(
+            link.pending_expired(deadline + 1),
+            "just past, above the wrap"
+        );
+    }
+
+    #[test]
+    fn pump_carries_the_oldest_response_deadline() {
+        // Two exchanges appended to one packet: the parked deadline is
+        // the FIRST exchange's (its bytes are the oldest — they expire
+        // first), and tx_clear resets it.
+        let mut ring = SppRxRing::new();
+        let mut pump = pump_with(false);
+        let f1 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        let f2 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        push(&mut ring, &f1, 1_000);
+        push(&mut ring, &f2, 1_005);
+
+        let outcome = drain_and_pump(&mut ring, &mut pump, 1_020);
+        assert_eq!(outcome.responded, 2);
+        assert_eq!(
+            pump.tx_deadline(),
+            Some(1_000 + 2_500),
+            "first frame_done + window, not the second's"
+        );
+        pump.tx_clear();
+        assert_eq!(pump.tx_deadline(), None);
     }
 
     #[test]
@@ -890,6 +1061,7 @@ pub mod shell {
 
     use super::{delivery_plan, Deliver, PumpOutcome, RxByte, SppLink, SppPump, SppRxRing};
     use crate::ccid_handler::CcidHandler;
+    use crate::ccid_serial_server::response_window_ticks;
     use crate::nfc::NfcDriver;
 
     /// Read-idle timeout — mirrors `UART_RX_TIMEOUT_MS` in the UART mains:
@@ -1127,7 +1299,15 @@ pub mod shell {
         // --- Serve loop: serve_uart's cadence over the SPP byte pipe ---
         let poll_interval_ticks =
             esp_idf_hal::delay::TickType::new_millis(SPP_POLL_INTERVAL_MS as u64).ticks() as u32;
-        let mut pump = SppPump::new(handler, poll_interval_ticks, tick());
+        // #153 window in TICKS — tick-rate-derived (Codex #158 P1);
+        // CONFIG_FREERTOS_HZ=100 here, so 2500 ms is 250 ticks.
+        let response_deadline_ticks = response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
+        let mut pump = SppPump::new(
+            handler,
+            poll_interval_ticks,
+            response_deadline_ticks,
+            tick(),
+        );
         let mut batch = [RxByte { byte: 0, tick: 0 }; SPP_POP_BATCH];
         let mut retry_buf = [0u8; super::SPP_TX_BUF_SIZE];
 
@@ -1135,7 +1315,9 @@ pub mod shell {
             let now = tick();
 
             // 1. RX: copy out under the lock, serve outside it (card I/O
-            //    must never stall the Bluedroid callback).
+            //    must never stall the Bluedroid callback). `tick` is
+            //    passed as the live clock: pump_rx samples it AFTER the
+            //    handler ran (#153 — handler time counts, Codex #158 P1).
             let mut outcome = PumpOutcome::default();
             loop {
                 let n = {
@@ -1145,7 +1327,7 @@ pub mod shell {
                 if n == 0 {
                     break;
                 }
-                outcome.merge(pump.pump_rx(&batch[..n], tick()));
+                outcome.merge(pump.pump_rx(&batch[..n], tick));
             }
 
             // 2. Deliver what the pump produced (echo → notify → response,
@@ -1163,14 +1345,17 @@ pub mod shell {
                             Ok(()) => delivered = true,
                             Err(e) => {
                                 // Busy/full: park and retry — the host is
-                                // waiting for exactly these bytes.
+                                // waiting for exactly these bytes (until
+                                // their #153 deadline passes).
                                 log::debug!("spp: write busy ({e}) — parking");
-                                shared.lock().unwrap().link.park(pump.tx());
+                                let deadline = pump.tx_deadline();
+                                shared.lock().unwrap().link.park(pump.tx(), deadline);
                             }
                         }
                     }
                     Deliver::Park => {
-                        shared.lock().unwrap().link.park(pump.tx());
+                        let deadline = pump.tx_deadline();
+                        shared.lock().unwrap().link.park(pump.tx(), deadline);
                     }
                     Deliver::Drop => {
                         shared.lock().unwrap().link.note_dropped_tx(pump.tx().len());
@@ -1193,20 +1378,29 @@ pub mod shell {
                 }
             }
 
-            // 4. Pending retry: congestion cleared / stack drained.
-            let retry: Option<(u32, usize)> = {
+            // 4. Pending retry: congestion cleared / stack drained — but
+            //    #153 still applies: bytes whose host read window closed
+            //    while they sat parked are dropped and counted, never
+            //    written late (Codex review on #158, P2).
+            let retry: Option<(u32, usize, bool)> = {
                 let g = shared.lock().unwrap();
                 match g.link.handle() {
                     Some(h) if !g.link.congested() && !g.link.pending().is_empty() => {
+                        let expired = g.link.pending_expired(tick());
                         let pending = g.link.pending();
                         retry_buf[..pending.len()].copy_from_slice(pending);
-                        Some((h, pending.len()))
+                        Some((h, pending.len(), expired))
                     }
                     _ => None,
                 }
             };
-            if let Some((handle, len)) = retry {
-                if spp.write(handle, &mut retry_buf[..len]).is_ok() {
+            if let Some((handle, len, expired)) = retry {
+                if expired {
+                    let mut g = shared.lock().unwrap();
+                    g.link.clear_pending();
+                    g.link.note_dropped_tx(len);
+                    log::debug!("spp: dropped {len} parked bytes past the host read window");
+                } else if spp.write(handle, &mut retry_buf[..len]).is_ok() {
                     shared.lock().unwrap().link.clear_pending();
                 }
             }
