@@ -81,10 +81,10 @@ coordinator 192.168.13.208:20408  (LG_COORDINATOR — see below)
 │    ├── Hades2001 FTDI     ──▶ M5Stick    (UART0 GemPC Twin serial)
 │    ├── Espressif USB-JTAG ──▶ nucula     (USB-CDC GemPC Twin serial)
 │    └── ACR1252 · CardMan  (reference readers, never DUTs)
-└── exporter ai-legion-ccid  (config: tools/hil/labgrid-exporter.yaml;
-     the RUNNING instance still starts from /tmp/opencode/ccid-idf555 —
-     content in sync 2026-10-14, but re-point it to the deployed config
-     before that worktree is removed, or the OTA seats vanish — #166)
+└── exporter ai-legion-ccid  (system unit labgrid-exporter-ccid.service,
+     config deployed to /etc/labgrid/exporter-ccid.yaml; source of truth:
+     tools/hil/labgrid-exporter.yaml — converted 2026-10-14 off the
+     ephemeral-worktree path, resources + place acquire re-verified)
      └── ccid-nucula / ccid-m5stick OTA seats (NetworkService :3232 — no
          USBSerialPort matches by default: opening the CDC chip-resets
          the nucula; see the config header)

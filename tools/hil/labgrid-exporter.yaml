@@ -1,7 +1,13 @@
 ## ccid-firmware bench exporter: the two ESP32 OTA seats.
 ##
-## Run by systemd --user unit labgrid-exporter-ccid.service (see
-## tools/hil/README.md) against the ai-legion coordinator 127.0.0.1:20408.
+## Run by the SYSTEM unit labgrid-exporter-ccid.service on the bench host
+## (.208) against the ai-legion coordinator 127.0.0.1:20408 — config
+## deployed to /etc/labgrid/exporter-ccid.yaml (converted 2026-10-14 from
+## a --user unit whose config lived in an ephemeral worktree; resources +
+## place acquire re-verified after the swap). Deploying an edit: copy this
+## file to /etc/labgrid/exporter-ccid.yaml on .208 and
+## `systemctl restart labgrid-exporter-ccid` — same session, per the
+## conwrt-bench config-sync rule.
 ## Exporter name: ai-legion-ccid (bolty-rs tools/hil lineage; the bench's
 ## serial/USB-identity exporter ai-legion-nfc stays untouched).
 ##
