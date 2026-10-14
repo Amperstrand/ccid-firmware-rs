@@ -486,6 +486,31 @@ jobs:
             target: xtensa-esp32-espidf
             sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
             sdkconfig_full: false
+          # pcscd-over-Bluetooth-SPP (issue #173): the SPP shell
+          # (spp_server.rs `mod shell`) is compiled by NO other matrix
+          # entry — target coverage so its serve-loop surgery surfaces
+          # in CI, not on the bench. Mirrors build.sh m5stick-spp.
+          - name: m5stick-spp
+            features: "backend-mfrc522,board-m5stick,spp"
+            no-default-features: true
+            gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig-xtensa-spp.full"
+            sdkconfig_full: true
+          # wifi TCP CCID main (issue #173): wifi_ccid.rs is compiled by
+          # no other entry. C3 + PN7160 + sdkconfig.full, mirrors
+          # build.sh wifi-ccid (debug profile, bench parity).
+          - name: wifi-ccid
+            features: "wifi-ccid,backend-pn7160,board-nucula"
+            no-default-features: true
+            gate: false
+            toolchain: esp
+            profile: ""
+            target: riscv32imc-esp-espidf
+            sdkconfig: "sdkconfig.full"
+            sdkconfig_full: true
     steps:
       - uses: actions/checkout@v5
         with:
@@ -740,6 +765,7 @@ jobs:
         with:
           toolchain: "1.99.0"
           targets: x86_64-unknown-linux-gnu
+          components: clippy
 
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -749,6 +775,12 @@ jobs:
 
       - name: Run ESP32 host-side tests
         run: cargo test --target x86_64-unknown-linux-gnu
+
+      # Host-clippy zero-warning gate (issue #173): the 5 warnings fixed
+      # in PR #168 accumulated silently for weeks because no CI job ran
+      # clippy on this crate. Keep it at zero.
+      - name: Clippy (host target, zero warnings)
+        run: cargo clippy --target x86_64-unknown-linux-gnu -- -D warnings
 
       # The pn7160 backend (bring-up driver + NCI adapter, incl. the health
       # -check accessors) compiles only under its feature — without this
