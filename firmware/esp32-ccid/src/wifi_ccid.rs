@@ -195,6 +195,12 @@ pub fn run() -> ! {
         log::warn!("wifi-ccid: client {} connected", peer);
         let mut burst_buf = [0u8; 64];
         let mut idle_ticks: u32 = 0;
+        // #153 arrival floor (Codex round 2 on #158): bytes queued in
+        // the TCP stack during a blocking handler are returned by the
+        // NEXT read — anchor them at the tick of the last dispatch,
+        // never at the drain-time read. A timed-out read proves the
+        // stream idle and raises the floor.
+        let mut arrival_floor = unsafe { esp_idf_sys::xTaskGetTickCount() };
         loop {
             match stream.read(&mut burst_buf) {
                 Ok(0) => {
@@ -203,12 +209,19 @@ pub fn run() -> ! {
                 }
                 Ok(n) => {
                     idle_ticks = 0;
+                    // One read = one burst: every byte in it shares the
+                    // floor captured before it began.
+                    let floor = arrival_floor;
+                    let mut last_dispatch = floor;
                     for &byte in &burst_buf[..n] {
                         let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                         if server.feed_byte(byte, now) == ServeAction::Respond {
-                            // #153: drop responses that outlived the
-                            // host's read window instead of poisoning
-                            // the stream.
+                            // #153: the frame may have queued behind the
+                            // previous handler — anchor it at the burst's
+                            // arrival floor before judging expiry, then drop
+                            // responses that outlived the host's read window
+                            // instead of poisoning the stream.
+                            server.refresh_host_deadline(floor);
                             let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
                             if server.response_expired(post) {
                                 server.record_late_response();
@@ -225,7 +238,9 @@ pub fn run() -> ! {
                                 panic!("escape 0xD1: diagnostic snapshot requested");
                             }
                         }
+                        last_dispatch = now;
                     }
+                    arrival_floor = last_dispatch;
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
                     idle_ticks += 1;
@@ -233,6 +248,9 @@ pub fn run() -> ! {
                         log::warn!("wifi-ccid: client {} idle timeout — closing", peer);
                         break;
                     }
+                    // The timed-out read proves nothing queued: later
+                    // bytes are fresh arrivals.
+                    arrival_floor = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 }
                 Err(e) => {
                     log::warn!("wifi-ccid: read error ({:?}) — dropping client", e);

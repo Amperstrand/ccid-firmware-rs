@@ -73,17 +73,17 @@ The practical architecture is a shared CCID core with interchangeable axes:
 |---|---|
 | **STM32F469-DISCO** (Cherry profile, contact) | **Fully known-good**: pcscd + ATR/APDU relay, reflash cycle, hardened TPDU-level T=1 pipe (0 corruption in 400-exchange fidelity), and the **full GlobalPlatform CAP lifecycle through our own reader** — SCP02 auth, install → use (byte-exact) → uninstall → card power-cycle reset (`test_gp_lifecycle_hil.py`, factory card CPLC 50796920, #132 closed) |
 | Bench (labgrid, 5 places) | All-green; all five readers serve pcscd simultaneously |
-| m5stick (ESP32 + MFRC522, serial CCID) | Serving pcscd (GemPCTwin) + full conformance battery green; CAP installs pending serve-loop hardening (#101) + perf (#59) |
+| m5stick (ESP32 + MFRC522, serial CCID) | Serving pcscd (GemPCTwin) + full conformance battery green; #101 serve-loop hardening MERGED to main 2026-10-14 (on-hardware probe pending) — CAP installs now gated on perf (#59) |
 | nucula (ESP32-C3 + PN7160) | Serving pcscd via the PTY broker; known gaps: #125 (re-arm after power-off), #128 (direct-serial serve) |
-| STM32F746 | Bring-up pending — bench-distinct iSerial landed, needs the physical USB plug + labgrid place |
+| STM32F746 | Bring-up pending — bench-distinct iSerial landed; labgrid place `stm32-f746` wired 2026-10-12 (flash restored to current main 2026-10-14); only the physical user-USB plug remains |
 
 **Roadmap** (priority order — the issue tracker is the source of truth):
 
-1. **m5stick CAP-install unlock** — #142 G-04/G-05 (WTX + relay), #59 (MFRC522 per-block perf), #101 (serve-loop RX hardening)
+1. **m5stick CAP-install unlock** — #142 G-04/G-05 (WTX + relay), #59 (MFRC522 per-block perf); #101 serve-loop hardening is merged (hardware probe outstanding)
 2. **nucula known-good** — #125 (IccPowerOff re-arm), #128 (direct-serial serve gaps)
 3. **STM32 polish** — #135 (smartcard framing: STOP/GT/PE-ORE→0xFD), #136 (libccid conformance residuals), #141 (PC/SC contract audit)
 4. **Infrastructure** — #133 (observability; after the `sisyphus/idf-555-unify` merge), #143 (capture corpus + byte-diff), #139 (GP lane)
-5. **F746 bring-up** — distinct iSerial ready; needs USB + place + T=1 card check
+5. **F746 bring-up** — distinct iSerial ready, place exists; needs the USB plug + T=1 card check
 
 Card & GP doctrine: see AGENTS.md "Card-Handling Doctrine" — never hammer
 secure-channel-class commands; #144 records the one card lost learning

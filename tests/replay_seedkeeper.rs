@@ -261,8 +261,10 @@ fn replay_escape_get_firmware_features() {
     let r = parse_ccid_response(&resp);
     assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
     assert!(r.is_success());
-    assert_eq!(r.data_len, 15);
-    assert_eq!(r.data[0], 0x01);
+    // 21 = sizeof(struct GEMALTO_FIRMWARE_FEATURES), the only size libccid
+    // accepts (reference/CCID/src/ccid.c; #141 audit F-3)
+    assert_eq!(r.data_len, 21);
+    assert_eq!(r.data[12], 0x01); // VersionNumber
 }
 
 #[test]
@@ -296,9 +298,12 @@ fn replay_firmware_init_sequence() {
     assert_eq!(r.msg_type, RDR_TO_PC_ESCAPE);
     assert!(r.is_success());
     assert_eq!(r.b_error, 0x00);
-    assert_eq!(r.data_len, 15);
-    // firmware_features = 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-    let expected_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    // 21-byte GEMALTO_FIRMWARE_FEATURES layout (reference/CCID/src/ccid.h,
+    // #141 audit F-3): no LCD, no PIN features, VersionNumber=1 at [12]
+    assert_eq!(r.data_len, 21);
+    let expected_features: [u8; 21] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
     assert_eq!(r.data.as_slice(), &expected_features);
 
     // 4. ICC_POWER_ON -> ATR

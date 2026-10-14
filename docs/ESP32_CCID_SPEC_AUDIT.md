@@ -137,12 +137,12 @@ Max payload 261 bytes enforced at the framing layer (`Overflow`); `bBWI` and
 
 | Escape payload | Response payload | Purpose |
 |---|---|---|
-| `0x02` | `"GemPC Twin ESP32 1.0\0"` | firmware version — libccidtwin identification handshake; bench identity probe for the m5stick |
+| `0x02` | `"GemPC Twin ESP32 1.0\0"` | firmware version — libccidtwin identification handshake; bench identity probe for the m5stick; also answers libccid's `sFirmwareID` probe for Gemalto-vendor serial readers (pcscd `GET_TLV_PROPERTIES`, #141) |
 | `0x01 0x01 0x01` | echo `01 01 01` | enable synchronous card-movement notifications (libccidtwin handshake) |
-| `0x1F 0x02` | empty | GemPC Twin host-handshake sequence, acknowledged |
+| `0x1F 0x02` | Escape failed + `CMD_NOT_SUPPORTED` | TPDU→APDU exchange-level switch — **rejected by design**: libccid's `ccid_open_hack_post()` flips `dwFeatures` to SHORT_APDU when this escape succeeds (`reference/CCID/src/ccid.c`, GEMPCTWIN under `DRIVER_OPTION_GEMPC_TWIN_KEY_APDU`); the firmware speaks TPDU level only, so an ack would silently change the host's framing expectations (#141) |
 | `0xD0` | 28-byte LE `Diagnostics` | vendor-neutral diagnostic counters (apdu tx/rx, NAK, errors, reinits, presence, uptime) — same wire format as the STM32 firmware |
 | `0xD1` | echo `D1`, then panic | dump-and-retrieve: serve loop panics AFTER the ack is on the wire → flash coredump (AGENTS.md "Crash Dumps & Snapshot Debugging") |
-| anything else | SlotStatus failed + `CMD_NOT_SUPPORTED` | |
+| anything else | Escape failed + `CMD_NOT_SUPPORTED` | osmo-ccid-firmware shape (`ccid_gen_escape(...CCID_CMD_STATUS_FAILED, CCID_ERR_CMD_NOT_SUPPORTED...)`, ccid_device.c:585) — matches the STM32 sibling `send_err_resp`; previously SlotStatus-shaped (#141 F-1) |
 
 Note: the **`0x6A` firmware-features escape (Gemalto IDBridge convention)
 exists only on the STM32 firmware** (see `docs/CCID_SPEC_AUDIT.md` §6.1.8) —

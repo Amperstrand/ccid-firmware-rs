@@ -1228,18 +1228,27 @@ BLE queue stayed empty forever while logs kept hitting the console.
   Advertising Parameters with Command Disallowed (0x0c) and the device
   never advertises (`bta_dm_ble_set_adv_params_all` / `hci write adv
   params error 0xc` in the console with C logs unsilenced).
-- **OPEN: even with 42-on/50-off, a correct adv/scan-rsp split, and the
-  canonical IDF event chaining (adv-data complete → scan-rsp write →
-  scan-rsp complete → start_advertising), the C3 still answers the adv
-  params write with 0x0c** (bench 2026-10-09, firmware prints `ble:
-  event-chain error: ESP_FAIL` from the AdvertisingStarted event). The
-  GATT chain itself completes — only advertising is blocked. There is
-  **no `c3-ccid-ble` build.sh board** until this is root-caused;
-  `sdkconfig-c3-ble.full` is kept with a header warning for the next
-  attempt. The nucula debug story stays: standard build (console shares
-  CDC; the GemPC parser tolerates log noise), coredumps for crashes
-  (issue #64), `pn7160-actdiag` for card-path dives, GDB-over-JTAG for
-  live state.
+- **OPEN (updated 2026-10-14): the 0x0c rejection is REAL controller
+  behavior — config/cache hypotheses eliminated.** Even with 42-on/50-off,
+  a correct adv/scan-rsp split, the canonical IDF event chaining
+  (adv-data complete → scan-rsp write → scan-rsp complete →
+  start_advertising), AND a `c3-ccid-ble` build.sh board that forces the
+  sdkconfig through the cache-stamped flow (branch `sisyphus/c3-ble-board`),
+  the C3 still rejects the adv params write with 0x0c — bench-reproduced
+  2026-10-14 with a hash-verified flash: boot log prints `ble: adv + scan
+  rsp configured — starting advertising` then `ble: event-chain error:
+  ESP_FAIL` from the AdvertisingStarted event. The GATT chain completes —
+  only advertising is blocked. Stale-sdkconfig as an explanation is dead
+  (the `ble` feature is deliberately loud against BT-off configs and the
+  build compiled+ran with BT enabled). Ranked next steps on issue #66:
+  (1) surface the REAL BtaStatus instead of collapsing to ESP_FAIL +
+  unsilence BT_BTM logs in a diagnostic build; (2) diff against the
+  working xtensa path (identical Rust chain advertises fine on m5stick);
+  (3) if Bluedroid-on-C3 stays opaque, evaluate the NimBLE host for the
+  C3 console. `sdkconfig-c3-ble.full` stays 42-on/50-off. The nucula
+  debug story stays: standard build (console shares CDC; the GemPC parser
+  tolerates log noise), coredumps for crashes (issue #64),
+  `pn7160-actdiag` for card-path dives, GDB-over-JTAG for live state.
 
 ### Bench central (BlueZ) gotchas
 
@@ -1336,7 +1345,7 @@ ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
 | M5Stick/M5Atom (standard) | UART0 | console NONE by default; netlog (UDP :4567) with WiFi creds |
 | M5Stick/M5Atom (`ble` build, experimental) | UART0 | BLE NUS notifications (`m5stick-ble`) |
 | nucula standard | USB-CDC | clean-wire (#131): boot banner only, then framed CCID only — diagnostics via Escape 0xD0/0xD1, coredumps, or actdiag/ble/netlog builds |
-| nucula (`ble` build) | USB-CDC | blocked — no `c3-ccid-ble` board until the C3 adv quirk is root-caused |
+| nucula (`ble` build) | USB-CDC | `c3-ccid-ble` board exists (`sisyphus/c3-ble-board`); advertising still blocked on the C3 0x0c controller rejection (see issue #66) |
 
 ## Labgrid Bench Doctrine (ai-legion NFC/CCID testbed, 2026-10-09)
 

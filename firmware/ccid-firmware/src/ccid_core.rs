@@ -440,10 +440,42 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
-            // Gemalto IDBridge firmware-features convention (b0 = 'vendor
-            // feature support'; readers/Gemalto_IDBridge_CT30.txt family):
-            // a 15-byte TLV-style capability bitmap, all other bits clear.
-            let firmware_features: [u8; 15] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            // libccid accepts the firmware-features answer ONLY when its
+            // length is exactly sizeof(struct GEMALTO_FIRMWARE_FEATURES)
+            // (reference/CCID/src/ccid.c set_gemalto_firmware_features:
+            // "len_features == sizeof *gf_features"); any other length is
+            // silently discarded. 21 bytes: no LCD, no PIN features, no
+            // firewall — consistent with bPINSupport=0x00 / wLcdLayout
+            // =0x0000 in the CT30/K30 profiles. Field map below follows
+            // the struct declaration:
+            // CCID_DEFS: gemalto_firmware_features; ... struct GEMALTO_FIRMWARE_FEATURES
+            // CCID_DEFS: ...{
+            // CCID_DEFS: ...unsigned char bLogicalLCDLineNumber; /* Logical number of LCD lines */
+            // CCID_DEFS: ...unsigned char bLogicalLCDRowNumber; /* Logical number of characters per LCD line */
+            // CCID_DEFS: ...unsigned char bLcdInfo; /* b0 indicates if scrolling is available */
+            // CCID_DEFS: ...unsigned char bEntryValidationCondition; /* See PIN_PROPERTIES */
+            let firmware_features: [u8; 21] = [
+                0, // bLogicalLCDLineNumber
+                0, // bLogicalLCDRowNumber
+                0, // bLcdInfo
+                0, // bEntryValidationCondition
+                0, // VerifyPinStart..Abort bitfield byte
+                0, // GetKey/WriteDisplay/SetSpeMessage/RFU bitfield byte
+                0, 0, // RFUb2
+                0, // bTimeOut2..RFUb3 bitfield byte
+                0, 0, 0, // RFUb4
+                1, // VersionNumber
+                0, // MinimumPINSize
+                0, // MaximumPINSize
+                0, // Firewall/RFUb5 bitfield byte
+                0, 0, // FirewalledCommand_SW1/SW2
+                0, 0, 0, // RFUb6
+            ];
+            // struct tail at offset 12 (after the Part-10 feature bitfield
+            // bytes, RFUb2[2], the bTimeOut2 byte and RFUb4[3]):
+            // CCID_DEFS: unsigned char VersionNumber; /* ?? */
+            // CCID_DEFS: ...unsigned char MinimumPINSize; /* for Verify and Modify */
+            // CCID_DEFS: ...unsigned char MaximumPINSize;
             self.tx_len = write_message(
                 RDR_TO_PC_ESCAPE,
                 0,

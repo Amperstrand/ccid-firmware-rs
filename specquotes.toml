@@ -16,6 +16,10 @@
 #                 on-wire field order/omission rules)
 #   ISO7816     — osmo's ISO 7816-3 tables (@implements annotations),
 #                 the Fi/Di/fmax authority for ATR parsing
+#   CCID_DEFS   — libccid's driver structures/constants (ccid.h): the
+#                 GEMALTO_FIRMWARE_FEATURES layout the 0x6A escape answers
+#   PCSCD       — pcscd's daemon constants (pcscd.h.in): poll cadence,
+#                 power-off grace, event timeouts (#141 host contract)
 #
 # All live in git submodules under reference/ (CI checks out with
 # submodules: true; locally run `git submodule update --init` first).
@@ -73,3 +77,13 @@ comment_marker = "ISO7816"
 format = "markdown"
 file = "docs/quote-sources/um11495-quotes.md"
 comment_marker = "UM11495"
+
+[sources.CCID_DEFS]
+format = "markdown"
+file = "reference/CCID/src/ccid.h"
+comment_marker = "CCID_DEFS"
+
+[sources.PCSCD]
+format = "markdown"
+file = "reference/pcsc-lite/src/pcscd.h.in"
+comment_marker = "PCSCD"
