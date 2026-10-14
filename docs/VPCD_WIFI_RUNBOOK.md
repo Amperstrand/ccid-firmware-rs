@@ -187,6 +187,13 @@ inside one NCI packet — no longer needed.
 - ~2 s/APDU latency (fire-and-collect budget; early-return pending)
 - Slot lottery on every pcscd restart (two driver slots, one board
   connection per port — script the real-connect detection)
+- **Zero-data APDUs must be 5-byte case-2 (header + Le), never the
+  6-byte form with a bare `Lc=0` before Le** (bench 2026-10-14): the
+  6-byte form answers `6700` AND wedges the board card-session —
+  every later exchange returns the cached ATR as payload with garbage
+  SW (`10 84` observed), card unreachable, recovery = same-image OTA
+  reflash + pcscd restart. Canonical builders: `crates/ccid-pcsc-host`
+  (Rust, hosts) — never hand-roll APDU framing for this chain.
 
 ## Bench evidence (2026-10-13)
 

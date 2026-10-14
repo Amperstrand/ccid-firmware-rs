@@ -96,6 +96,14 @@ made concrete — all recovered without serial access except the last:
   unreachable). A pcscd restart does NOT fix it — the wedge is
   board-side (the driver keeps its session across vpcd reconnects).
   Recovery: same-image OTA reflash (board reboot) or USB-serial reset.
+- **6-byte zero-data APDU (bare `Lc=0` before Le) wedges the board
+  session** (2026-10-14, SatoCash SELECT/GET_STATUS ladder): card
+  answers `6700` for the 6-byte form; every subsequent exchange then
+  returns the cached ATR bytes as payload with SW `10 84` through BOTH
+  driver slots — a pcscd restart alone does NOT heal it; recovery is
+  the OTA-reboot + runbook pcscd restart pair. The 5-byte case-2 form
+  (header + Le) is stable (9000, thousands of exchanges across
+  sessions). Fix lives in `crates/ccid-pcsc-host::apdu` — use it.
 - **Stale half-open vpcd ESTAB after an OTA reboot**: pcscd's
   single-accept driver still holds the pre-reboot socket; the board's
   new outbound connection is never served. Recovery: runbook pcscd
