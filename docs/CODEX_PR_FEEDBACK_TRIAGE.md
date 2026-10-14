@@ -102,3 +102,29 @@ _None — all 53 rows verified against the tree and closed with commit-hash evid
 - **PR 107 items map to `conformance_battery.py`** (not `perf_ab.py`): the review names `power_on_expect`/`xfr_expect`/`reopen()`, all of which live there. All four P1s from the merged #107 head (`f035d9c`) are now closed: ICC-status decode + DTR-latch in `ed0ed5e`, late-response accumulation + labgrid acquisition in `510b797` (third refresh verified each site in the tree).
 - **Skepticism cross-check vs `.omo/pr-triage.md`**: that prior triage marks PR 85 items 4/11/13/15, the PR 86 lump, and PR 98 as resolved; direct reads of `build.sh`, `crates/pn7160-nci/src/lib.rs`, `pn7160_i2c.rs`, `pn7160_v10raw.rs`, `board.py`, and `main.rs` contradict it. This table's UNADDRESSED verdicts for those items are backed by the quoted code sites above.
 - **Spec check for PR 85 #11**: NCI CORE_SET_CONFIG_RSP = `[status, num_params, param_ids…]`; the crate's own `Frame::status()` doc (`lib.rs:138`) says SET_CONFIG_RSP leads with status — the `payload[1]` special case contradicts the file's own documentation.
+
+---
+
+# Codex Review Sweep — 2026-10-14 round (PR 158 + follow-ups)
+
+Scope: `/tmp/opencode/pr-sweep/158.txt` (PR #158, merged d4666e2) plus the bot's
+round-2/round-3 findings on the fix PRs themselves. All items verified against
+the tree by reading the flagged code; each row cites its landing commit.
+
+| PR | Finding | Verdict | Evidence |
+|---|---|---|---|
+| 158 | P1 tick-vs-ms deadline (`ccid_serial_server.rs:173`) | ADDRESSED | c0e53b9 — `response_window_ticks(configTICK_RATE_HZ)` (pdMS_TO_TICKS expansion); host tests lock 100 Hz → 250 |
+| 158 | P1 SPP deadline sampled pre-handler (`spp_server.rs:1148`) | ADDRESSED | c0e53b9 — `pump_rx<F: Fn() -> u32>` sampled per Respond after `feed_byte` |
+| 158 | P2 parked retry bypasses expiry (`spp_server.rs:365`) | ADDRESSED | c0e53b9 — `SppLink::park(…, Option<deadline>)` + `pending_expired` wraparound-safe retry drop |
+| 158 | P2 stale 0xD1 flag on late-drop (`ccid_serial_server.rs:372`) | ADDRESSED | c0e53b9 — `record_late_response()` consumes the flag |
+| 158 | P1 drain-time stamping of queued frames (`main.rs:212`, round 2) | ADDRESSED | #168 ab30919 → refined #174 eb70765 — arrival floors advance only on drain evidence (short/empty read); UART drain = single pre-dispatch floor |
+| 158 | P2 parked-0xD1 flag outlives its packet (`spp_server.rs:1400`, round 2) | ADDRESSED | #168 9d164b4 → reworked #174 24f5e97 — intent rides in `SppLink.pending_snapshot`, consumed only by the retry that writes the bytes |
+| 168 | P1 floor advances to last_dispatch (round 3) | ADDRESSED | #174 eb70765 |
+| 168 | P2 replacement park inherits 0xD1 reboot (round 3) | ADDRESSED | #174 24f5e97 |
+
+Note: the 2026-10-14 brief for PR 158 listed a fifth finding (266-byte echo
+stash / `arm()` truncation) that does NOT exist in the PR-158 review — it was
+misattributed from PR 159's sweep (`159.txt`). PR 159's own brief tracks it.
+
+Open follow-ups: #172 (bench hardware verification of #153 + floors),
+#173 (esp32-build matrix lacks m5stick-spp/wifi-ccid; no esp32 clippy CI gate).
