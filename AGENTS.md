@@ -756,6 +756,14 @@ disable when idle per the nucula row above.
   and the wifi-vpcd path serves pcscd from the bench nucula. The
   sibling root session on .208 actively holds `nucula-c3` + `m5stick`
   — coordinate, don't steal.
+- **Nucula HIL pretest is blocked by its own backup-first guard**
+  (probed 2026-10-14 with the place free): the board is ALIVE —
+  esptool flash-id answers (MAC 90:da:72:9a:50:18, 4 MB) and the
+  partition table reads — but `pretest_check`'s unknown-app-region
+  backup dies with `Packet content transfer stopped` (the documented
+  C3 CDC bulk-read stall), so the suite refuses to run until a
+  backup succeeds. That is the guard working as designed; treat the
+  app-region read as the bench-limited step, not the board.
 - Coordinator: `LG_COORDINATOR=192.168.13.208:20408` (the .221 host is
   NOT the bench host; USB readers and the classic HIL suites live on
   .208 — run them there).

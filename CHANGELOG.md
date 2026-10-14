@@ -32,10 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   current-main image, flash write verified).
 - Docs: AGENTS.md bench-state delta (F469 ST-LINK detached, F746 wired
   ST-LINK-only + restored, CardMan=076b:3021, OTA seats, coordinator
-  env), conwrt-lab single-source-of-truth section recovered from a
-  lost stash, rust-toolchain.toml comment re-aligned with the
-  one-Rust-version policy, README USB-identity lines corrected to the
-  Cherry default.
+  env, nucula HIL pretest blocked by its backup-first guard — board
+  alive at flash-id level), conwrt-lab single-source-of-truth section
+  recovered from a lost stash, rust-toolchain.toml comment re-aligned
+  with the one-Rust-version policy, README USB-identity lines corrected
+  to the Cherry default.
 
 ### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
 
