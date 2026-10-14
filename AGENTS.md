@@ -1456,13 +1456,14 @@ Repo-side: `.gitignore` already covers `/target/` + `**/target/` and
 
 ### 2. Worktree farm: close lanes by pushing, then removing
 
-ccid sessions spawn parallel worktrees under `/tmp/opencode` (39 dirs
-at the 2026-10-11 survey). Unpushed branches in scratch worktrees are
-**fixes that exist only on this disk** — the 2026-10-10 audit found
-five (stm32-perf-fix, nucula-rearm-fix, sisyphus/ccid-49-50,
-sisyphus/presence-ttl, sisyphus/pn7160-drvab) sitting unpushed for
-days. The pattern recurred on 2026-10-11 (`triage-refresh` held one
-unpushed docs commit).
+ccid sessions spawn parallel worktrees (historically under
+`/tmp/opencode` — 39 dirs at the 2026-10-11 survey; NEW lanes go to
+`~/src/worktrees/<repo>/<branch>`, see section 3). Unpushed branches in
+scratch worktrees are **fixes that exist only on this disk** — the
+2026-10-10 audit found five (stm32-perf-fix, nucula-rearm-fix,
+sisyphus/ccid-49-50, sisyphus/presence-ttl, sisyphus/pn7160-drvab)
+sitting unpushed for days. The pattern recurred on 2026-10-11
+(`triage-refresh` held one unpushed docs commit).
 
 **Rule — at lane close, in order:**
 
@@ -1475,6 +1476,45 @@ git branch -d <merged-branch>            # labels already on origin/main
 Before any disk cleanup that touches `/tmp/opencode`, audit for
 unpushed work: for each worktree, `git log origin/main..<branch>` must
 be empty (or the branch pushed) before that worktree is deletable.
+
+### 3. Durable session artifacts — nothing load-bearing in /tmp (2026-10-14)
+
+The 2026-10-14 PR-158/168/174 session paid for the /tmp habit three
+ways on one dev box: a per-user tmpfs quota killed a background esp
+build mid-compile (`Disk quota exceeded` — /tmp is a 7.8 GB tmpfs, far
+too small for an esp-idf build tree regardless), quota-pressure writes
+TRUNCATED worktree files silently (symptom: `git status` reporting mass
+deletions in files nobody touched; recovery `git checkout -- .`), and
+session-scoped background jobs died with their launching shell. Between
+sessions the same day /tmp was then wiped outright: the Codex sweep
+dumps and dispatch briefs for PRs 158–161 and two session worktrees
+vanished (the branch labels survived on origin — the wipe cost the
+artifacts and the briefs, not the git state).
+
+**Rules:**
+
+1. **Worktrees live on persistent disk**: `~/src/worktrees/<repo>/<branch>`
+   (the main checkout's disk class, ~100 GB+ free) — never /tmp. That
+   disk also fits an esp-idf target dir, making local target-compile
+   verification possible where the tmpfs quota made it hopeless.
+2. **Session artifacts** (Codex sweep dumps, dispatch briefs, battery
+   logs, cached binaries an AGENTS row points at) live under
+   `<checkout>/.omo/` — gitignored, persistent, per-checkout (existing
+   convention: `.omo/pr-sweep/`, `.omo/logs/`, `.omo/evidence/`). New
+   AGENTS rows citing an artifact path cite the `.omo` one. /tmp is
+   acceptable only for genuinely disposable cache you would not miss
+   after a reboot. Codex sweep dumps regenerate anytime:
+   `scripts/codex_sweep.sh <pr> [<pr> ...]` (writes `.omo/pr-sweep/`).
+3. **Long builds/jobs must outlive their shell**: `setsid nohup …
+   </dev/null &` is the floor; better, launch from a persistent
+   worktree so outputs are durable too.
+4. **Recognize the truncation signature**: mass "deleted" hunks in
+   `git diff` for files never edited = the filesystem ate writes.
+   Recover with `git checkout -- <paths>` (or `.`), then re-verify the
+   files you DID edit were not clipped (tail-check + full gates) before
+   committing.
+
+The worktree-farm rules in section 2 apply unchanged at the new path.
 
 ## Session Lessons: PN7160 Card Path + Reader Fuzzing (2026-10-09)
 
