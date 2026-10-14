@@ -4,7 +4,6 @@ Single registration point for --hil (Codex PR 86: previously registered
 in three separate conftests — nucula, labgrid, nfc — causing ValueError
 on combined-suite runs).
 """
-import pytest
 
 
 def pytest_addoption(parser):

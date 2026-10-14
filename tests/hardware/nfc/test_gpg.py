@@ -19,7 +19,6 @@ Usage:
 
 import shutil
 import subprocess
-import time
 
 import pytest
 

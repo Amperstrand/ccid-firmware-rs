@@ -6,7 +6,6 @@ Never runs otherwise. Not executed during authoring (bench busy) - this
 is the bench-facing half of the suite.
 """
 
-import pytest
 
 from .conftest import RECOVERY_TIMEOUT_S, probe, wait_for_healthy
 from .ota_push import push_ex

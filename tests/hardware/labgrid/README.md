@@ -116,9 +116,14 @@ stale (F746 missing, dead m5stick-ftdi still present).
 ```bash
 apt install stlink-tools pcscd pcsc-tools opensc libpcsclite-dev
 pip3 install --break-system-packages --ignore-installed \
-    typing_extensions pyscard labgrid pytest
+    -r tools/hil/requirements-bench.txt
 rustup target add thumbv7em-none-eabihf   # for STM32 firmware builds
 ```
+
+`tools/hil/requirements-bench.txt` is the pinned set — it includes
+**pytest-timeout**, which the hil-bench nightly hard-depends on (per-test
+wedge protection; a bench without it loses the nightly to 240 s hangs,
+the 2026-10-14 class).
 
 ## Available test fixtures
 

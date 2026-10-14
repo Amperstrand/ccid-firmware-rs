@@ -705,6 +705,13 @@ jobs:
           python-version: "3.12"
       - name: Install pytest only
         run: pip install pytest
+      - name: Ruff — correctness classes (F + E9)
+        # pyflakes + syntax for the Python trees; config in ruff.toml
+        # (doctrine-aware per-file-ignores for the lazy-import rule).
+        # Pinned: the config targets 0.17.0 behavior.
+        run: pip install ruff==0.17.0 && ruff check scripts tests/hardware host-tools
+      - name: Unit tests — scripts (stdlib only, fits this minimal env)
+        run: python3 scripts/test_gen_status.py
       - name: Collect tests/hardware (exit-code discipline)
         run: |
           set +e

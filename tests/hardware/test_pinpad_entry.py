@@ -24,7 +24,6 @@ For manual testing (enter PIN on device touchscreen):
 
 import sys
 import argparse
-import time
 
 import pytest
 

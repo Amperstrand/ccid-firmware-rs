@@ -42,12 +42,8 @@ tools/hil/labgrid-place.sh                           # idempotent place (re)crea
 The unit lives at `/etc/systemd/system/labgrid-exporter-ccid.service`
 with the config at `/etc/labgrid/exporter-ccid.yaml` (source of truth:
 `tools/hil/labgrid-exporter.yaml` — copy + restart after edits, per the
-conwrt-bench config-sync rule)
-(install instructions in `tools/hil/labgrid-exporter.service`). It points
-at this worktree's yaml — when the checkout moves to a stable path, update
-the `ExecStart` line and re-`daemon-reload`. User units start with root's
-user manager; for boot persistence without a login session run
-`loginctl enable-linger root` (deliberately NOT enabled here).
+conwrt-bench config-sync rule; install instructions in
+`tools/hil/labgrid-exporter.service`).
 
 Never run `labgrid-exporter` interactively — it holds connections and
 blocks the shell (bolty-rs lesson).

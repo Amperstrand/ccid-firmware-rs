@@ -1,0 +1,14 @@
+# Bench-host Python deps for the HIL nightly + suites (issue #183).
+# Versions = the bench-verified set (ai-legion .208, 2026-10-14); loose
+# pins — exact-pinning matters for the toolchains, these are the lab's
+# known-good floor. Install (Debian bench host):
+#   pip3 install --break-system-packages -r tools/hil/requirements-bench.txt
+#
+# The nightly hil-bench.yml HARD-DEPENDS on pytest-timeout (per-test
+# wedges) — a bench rebuilt without this file loses the nightly to
+# 240 s hangs (the 2026-10-14 class).
+pytest>=9.1
+pytest-timeout>=2.4
+pyserial>=3.5
+pyscard>=2.3
+labgrid>=26.0
