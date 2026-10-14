@@ -121,3 +121,27 @@ contain that fix — it is dispositioned here, in the 159 lane).
 | 159 | P1 | Echo stash `[u8; 2+261+3]`=266 < 274 max wire frame — `arm()` silently truncates max XfrBlock echoes | **ADDRESSED** | `30b40f7` — stash is `[u8; MAX_FRAME_SIZE]`; `full_size_xfrblock_echo_survives_the_stash_verbatim` locks a 274-byte echo round-trip |
 | 159 | P2 | XfrBlock time extension emitted as SlotStatus (0x81) instead of the in-flight command's response type | **ADDRESSED** | `a29e695` — interim is `RDR_to_PC_DataBlock` (0x80), CCID Rev 1.1 §6.1.4; byte-lock test updated; host tolerance verified in `reference/CCID/src` (ReadSerial type-agnostic, commands.c:1598 keys on bStatus) |
 | 159 | P2 | `wtx_hammer.py` exits on ANY second frame — interim treated as final, real response discarded by next `reset_input_buffer()` | **ADDRESSED** | `a29e695` — `final_index()`: terminate only on a non-time-extension reader frame with the expected bSeq; echo-only timeout counts as no-response; interim check accepts 0x80+0x81 |
+
+# Codex Review Sweep — 2026-10-14 round (PR 158 + follow-ups)
+
+Scope: `/tmp/opencode/pr-sweep/158.txt` (PR #158, merged d4666e2) plus the bot's
+round-2/round-3 findings on the fix PRs themselves. All items verified against
+the tree by reading the flagged code; each row cites its landing commit.
+
+| PR | Finding | Verdict | Evidence |
+|---|---|---|---|
+| 158 | P1 tick-vs-ms deadline (`ccid_serial_server.rs:173`) | ADDRESSED | c0e53b9 — `response_window_ticks(configTICK_RATE_HZ)` (pdMS_TO_TICKS expansion); host tests lock 100 Hz → 250 |
+| 158 | P1 SPP deadline sampled pre-handler (`spp_server.rs:1148`) | ADDRESSED | c0e53b9 — `pump_rx<F: Fn() -> u32>` sampled per Respond after `feed_byte` |
+| 158 | P2 parked retry bypasses expiry (`spp_server.rs:365`) | ADDRESSED | c0e53b9 — `SppLink::park(…, Option<deadline>)` + `pending_expired` wraparound-safe retry drop |
+| 158 | P2 stale 0xD1 flag on late-drop (`ccid_serial_server.rs:372`) | ADDRESSED | c0e53b9 — `record_late_response()` consumes the flag |
+| 158 | P1 drain-time stamping of queued frames (`main.rs:212`, round 2) | ADDRESSED | #168 ab30919 → refined #174 eb70765 — arrival floors advance only on drain evidence (short/empty read); UART drain = single pre-dispatch floor |
+| 158 | P2 parked-0xD1 flag outlives its packet (`spp_server.rs:1400`, round 2) | ADDRESSED | #168 9d164b4 → reworked #174 24f5e97 — intent rides in `SppLink.pending_snapshot`, consumed only by the retry that writes the bytes |
+| 168 | P1 floor advances to last_dispatch (round 3) | ADDRESSED | #174 eb70765 |
+| 168 | P2 replacement park inherits 0xD1 reboot (round 3) | ADDRESSED | #174 24f5e97 |
+
+Note: the 2026-10-14 brief for PR 158 listed a fifth finding (266-byte echo
+stash / `arm()` truncation) that does NOT exist in the PR-158 review — it was
+misattributed from PR 159's sweep (`159.txt`). PR 159's own brief tracks it.
+
+Open follow-ups: #172 (bench hardware verification of #153 + floors),
+#173 (esp32-build matrix lacks m5stick-spp/wifi-ccid; no esp32 clippy CI gate).

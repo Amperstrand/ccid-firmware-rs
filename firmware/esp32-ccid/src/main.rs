@@ -335,25 +335,23 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
         let read_start = unsafe { esp_idf_sys::xTaskGetTickCount() };
         match uart.read(&mut byte_buf, timeout_ticks) {
             Ok(1) => {
-                // Bytes queued behind this byte's handler arrived at or
-                // after its dispatch tick.
+                // #153: EVERY byte the drain returns queued behind this
+                // dispatch (or behind handlers of this drain itself) —
+                // one conservative floor for the whole drain. The floor
+                // may only advance on proof the queue is empty, and the
+                // drain's terminating Ok(0) is that proof for the next
+                // outer read's `read_start` (Codex round 3 on #168:
+                // advancing per drain-read overstated arrivals that
+                // queued mid-burst).
                 let pre_dispatch = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 serve_byte(uart, &mut server, byte_buf[0], read_start);
-                let mut floor = pre_dispatch;
                 loop {
                     match uart.read(&mut drain_buf, drain_ticks) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
-                            // One read = one burst: every byte in it
-                            // shares the floor captured before it.
-                            let burst_floor = floor;
-                            let mut last_dispatch = burst_floor;
                             for &b in &drain_buf[..n] {
-                                let pre = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                                serve_byte(uart, &mut server, b, burst_floor);
-                                last_dispatch = pre;
+                                serve_byte(uart, &mut server, b, pre_dispatch);
                             }
-                            floor = last_dispatch;
                         }
                     }
                 }

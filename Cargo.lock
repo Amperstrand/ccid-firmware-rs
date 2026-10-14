@@ -262,6 +262,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ccid-pcsc-host"
+version = "0.1.0"
+dependencies = [
+ "pcsc",
+]
+
+[[package]]
 name = "ccid-protocol"
 version = "0.1.0"
 

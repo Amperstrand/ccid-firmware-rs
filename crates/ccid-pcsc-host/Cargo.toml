@@ -1,0 +1,10 @@
+[package]
+name = "ccid-pcsc-host"
+version = "0.1.0"
+edition = "2021"
+description = "Host-side PC/SC client for Amperstrand CCID readers: reader discovery, verified APDU case forms, exchange + SW split"
+
+[dependencies]
+pcsc = "2.9"
+
+[dev-dependencies]
