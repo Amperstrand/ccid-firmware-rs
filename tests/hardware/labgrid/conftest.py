@@ -195,6 +195,20 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "hil" in item.keywords:
                 item.add_marker(skip_hil)
+    # Hold identity (bench canon: sign every hold with who-and-why).
+    # Shows in `labgrid-client who` as e.g.
+    #   ccid-hil~places=m5stick~sha=3ab1e4a@<host>
+    # Export LG_USERNAME yourself for richer text (project#issue~est=~...).
+    if config.getoption("--hil") and not os.environ.get("LG_USERNAME"):
+        try:
+            sha = subprocess.run(
+                ["git", "rev-parse", "--short=7", "HEAD"],
+                capture_output=True, text=True, timeout=10, cwd=os.path.dirname(__file__),
+            ).stdout.strip()
+        except Exception:
+            sha = "nogit"
+        places = config.getoption("--places")
+        os.environ["LG_USERNAME"] = f"ccid-hil~places={places}~sha={sha}"
 
 
 # ---------------------------------------------------------------- fixtures
