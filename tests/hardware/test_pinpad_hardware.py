@@ -13,12 +13,11 @@ Usage:
 """
 
 import sys
-import time
 from typing import Optional, List, Tuple
 
 try:
     from smartcard.System import readers
-    from smartcard.util import toHexString, toBytes
+    from smartcard.util import toHexString
     from smartcard.Exceptions import NoCardException, CardConnectionException
 except ImportError:
     if "pytest" in sys.modules:
@@ -147,7 +146,7 @@ class PinpadTest:
         This sends a PC_to_RDR_Secure command to trigger pinpad entry.
         The user should enter the PIN on the device's touchscreen.
         """
-        print(f"\n=== Pinpad PIN Verification Test ===")
+        print("\n=== Pinpad PIN Verification Test ===")
         print(f"Expected PIN: {'*' * len(expected_pin)}")
         print(f"PIN type: {'User' if pin_type == self.USER_PIN_P2 else 'Admin'}")
         

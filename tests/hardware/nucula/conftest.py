@@ -20,7 +20,6 @@ FAILS HERE instead of silently testing the wrong binary.
 """
 
 import pytest
-import time
 from pathlib import Path
 
 from .board import BOARD

@@ -1,0 +1,24 @@
+# Ruff for the bench/host Python trees — correctness classes only (F =
+# pyflakes, E9 = syntax). Style classes are deliberately OFF: this tree
+# spans hand-run bench scripts and CI-collected tests; the value here is
+# catching undefined names / dead imports / syntax rot, not reformatting
+# prose-y probe scripts. Bumping the ruleset is fine — run
+# `uvx ruff check scripts tests host-tools` and fix findings first.
+extend-exclude = [
+    "reference",   # quote-only class-1 sources — upstream bytes, never ours
+    "vendor",      # patched dependency tree
+    ".omo",
+    "firmware",    # no Python under firmware/
+]
+
+target-version = "py312"  # the bench host runs 3.12
+
+[lint]
+select = ["F", "E9"]
+
+[lint.per-file-ignores]
+# Lazy-import doctrine (AGENTS.md python-collect rules): collected files
+# keep hardware imports INSIDE functions and annotations lazy via
+# `from __future__ import annotations` — names in annotations are never
+# resolved at runtime, so F821 on them is a false positive.
+"tests/hardware/nucula/console.py" = ["F821"]

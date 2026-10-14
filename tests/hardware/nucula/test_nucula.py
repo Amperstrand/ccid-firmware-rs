@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-from .console import ConsoleCapture, BootMarker
+from .console import BootMarker
 
 
 

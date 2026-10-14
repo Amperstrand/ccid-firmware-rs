@@ -466,9 +466,9 @@ def build_plan(cli_readers=None):
         "APDUs (read-only): RTT " + " / ".join(f"{n}={a.hex().upper()}" for n, a in RTT_APDUS),
         f"                streams small({len(STREAM_SMALL_APDU)}B)={STREAM_SMALL_APDU.hex().upper()}"
         f" large({len(STREAM_LARGE_APDU)}B)={STREAM_LARGE_APDU[:8].hex().upper()}...",
-        f"metrics: atr_latency_ms, apdu_rtt_select_ms, apdu_rtt_get_data_ms,",
-        f"         stream_{{small,large}}_apdu_ms, throughput_{{small,large}}_apdus_per_sec,",
-        f"         throughput_{{small,large}}_bytes_per_sec",
+        "metrics: atr_latency_ms, apdu_rtt_select_ms, apdu_rtt_get_data_ms,",
+        "         stream_{small,large}_apdu_ms, throughput_{small,large}_apdus_per_sec,",
+        "         throughput_{small,large}_bytes_per_sec",
         f"ledger: {LEDGER_DEFAULT}",
         "real run: NUCULA_PERF=1 python3 -m pytest tests/hardware/perf/ -v",
         "report:   python3 tests/hardware/perf/report.py",

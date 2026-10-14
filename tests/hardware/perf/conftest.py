@@ -115,7 +115,7 @@ def ledger(perf_gate):
     led = PerfLedger(path, fw_rev=os.environ.get(PARAMS["env"]["fw_rev"]) or None)
     yield led
     print(f"\n[perf] ledger written: {path}")
-    print(f"[perf] comparison table: python3 tests/hardware/perf/report.py"
+    print("[perf] comparison table: python3 tests/hardware/perf/report.py"
           + (f" --ledger {path}" if path != LEDGER_DEFAULT else ""))
 
 

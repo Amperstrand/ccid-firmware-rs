@@ -480,7 +480,7 @@ carries its reason.
 | `stm32-test` | Host-side workspace tests | `cargo test --workspace --target x86_64-unknown-linux-gnu` |
 | `esp32-host-test` | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
 | `iso14443-host-test` | Vendored iso14443 crate tests | `cargo test --features std --target x86_64-unknown-linux-gnu` (from `vendor/iso14443-rs/`) |
-| `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) | `python3 -m pytest tests/hardware/ --collect-only -q` |
+| `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) + ruff correctness lint (F+E9, `ruff.toml`) + stdlib unit tests for scripts | `ruff check scripts tests/hardware host-tools`; `python3 scripts/test_gen_status.py`; `python3 -m pytest tests/hardware/ --collect-only -q` |
 
 **Why `python-collect` exists** (found live 2026-10-11): a duplicate
 `--hil` `addoption` in `labgrid/conftest.py` made every combined-suite

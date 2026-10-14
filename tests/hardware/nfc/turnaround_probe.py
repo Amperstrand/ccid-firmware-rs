@@ -16,7 +16,6 @@ Usage:
   python3 turnaround_probe.py --status-only
 """
 import argparse
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -26,8 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # tests/hardwar
 import serial  # noqa: E402
 
 from nfc.conformance_battery import (  # noqa: E402
-    CTRL_ACK, MSG_ESCAPE, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_ON, MSG_XFR_BLOCK,
-    SYNC, frame, lrc, parse_frames,
+    MSG_ESCAPE, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_ON, MSG_XFR_BLOCK,
+    frame, parse_frames,
 )
 from serial_ports import resolve  # noqa: E402
 
