@@ -54,7 +54,10 @@ fn write_wire_tcp(bytes: &[u8]) {
     if fd < 0 {
         return;
     }
-    let borrowed = std::net::TcpStream::from_raw_fd(fd);
+    // SAFETY: the fd is owned by the accept loop's live `TcpStream`
+    // (published via SESSION_FD). The borrowed handle is forgotten
+    // before drop could close the fd — the owning stream stays valid.
+    let mut borrowed = unsafe { std::net::TcpStream::from_raw_fd(fd) };
     let _ = borrowed.write_all(bytes);
     std::mem::forget(borrowed);
 }
