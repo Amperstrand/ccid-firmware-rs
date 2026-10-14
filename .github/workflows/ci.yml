@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly full-matrix lane: secondary-tier legs that PRs no longer build
+  # would bitrot silently (toolchain/IDF drift) — 03:00 UTC rebuilds BOTH
+  # tiers (the changes job defaults every family to true on schedule).
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      full-matrix:
+        description: "Run the FULL matrix incl. secondary-tier legs"
+        type: boolean
+        default: false
 
 # A superseded run (new push to the same branch/PR) is cancelled instead of
 # burning a full obsolete matrix run behind the newest commit.
@@ -28,11 +39,17 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      stm32: ${{ steps.filter.outputs.stm32 }}
-      esp32: ${{ steps.filter.outputs.esp32 }}
-      lint: ${{ steps.filter.outputs.lint }}
+      # schedule/workflow_dispatch: paths-filter diffs against a base with
+      # no changes for those events and would silence the whole run
+      # (PostHog CI lesson: paths filters must not silence scheduled runs)
+      # — default every family to true instead; the per-tier job gates
+      # decide how much of the matrix a dispatched run builds.
+      stm32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.stm32 }}
+      esp32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.esp32 }}
+      lint: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.lint }}
     steps:
       - uses: actions/checkout@v5
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
       # Path sets follow what each job group actually consumes (esp32-ccid and
       # host-tools are root-workspace members, so cross-effects exist):
       # - stm32: ccid-firmware, shared crates, host-tools (its tests run via
@@ -46,6 +63,7 @@ jobs:
       # protection); only their execution is skipped.
       - uses: dorny/paths-filter@v3
         id: filter
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         with:
           filters: |
             stm32:
@@ -89,6 +107,20 @@ jobs:
       - name: Check sdkconfig console families
         run: python3 tools/check_sdkconfigs.py
 
+  # Matrix tiers (owner directive 2026-10-14) are expressed as JOB pairs,
+  # not a matrix field: the `matrix` context is not available in a
+  # job-level `if:`, and split jobs let each tier carry its own gate.
+  # PRIMARY = the bench-shipped boards (cherry ST2xxx / F469; nucula
+  # c3-ccid + bringup; m5stick) — every firmware-touching event builds
+  # them. SECONDARY = gemalto ct30/k30, F746 bitbang, m5atom-default,
+  # pn532 — built on main pushes (every merge stays firmware-verified),
+  # the nightly schedule, dispatch with full-matrix=true, or a PR
+  # labeled `ci-full-matrix`. Label note: apply the label BEFORE the
+  # triggering push — re-runs replay the original event payload, so
+  # labeling an existing run does not light the legs up; push a commit
+  # (empty is fine) after labeling. Skipped legs report SUCCESS
+  # (job-level if, never workflow paths: a paths filter would leave
+  # required checks pending forever).
   stm32-build:
     needs: changes
     if: needs.changes.outputs.stm32 == 'true'
@@ -98,12 +130,6 @@ jobs:
         include:
           - profile: profile-cherry-smartterminal-st2xxx
             features: ""
-          - profile: profile-gemalto-idbridge-ct30
-            features: "stm32f469,profile-gemalto-idbridge-ct30"
-          - profile: profile-gemalto-idbridge-k30
-            features: "stm32f469,profile-gemalto-idbridge-k30"
-          - profile: stm32f746-bitbang
-            features: "stm32f746,profile-cherry-smartterminal-st2xxx"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -121,8 +147,15 @@ jobs:
           cargo install cargo-binutils
 
       - name: Cache cargo dependencies
+        # shared-key per profile: rust-cache's automatic key is job-scoped
+        # (GITHUB_JOB — identical for every matrix leg), so the four
+        # profiles contend on ONE entry and evict each other under the
+        # 10 GB repo budget; a per-profile shared-key gives each leg its
+        # own stable entry.
         uses: Swatinem/rust-cache@v2
-      
+        with:
+          shared-key: stm32-build-${{ matrix.profile }}
+
       - name: Build firmware
         run: |
           if [[ -z "${{ matrix.features }}" ]]; then
@@ -153,7 +186,83 @@ jobs:
             ccid-firmware.bin.sha256
             ccid-firmware.hex.sha256
 
+  stm32-build-secondary:
+    # Secondary tier of stm32-build (tier policy above). Steps mirror
+    # stm32-build — keep the two bodies in sync.
+    needs: changes
+    if: >-
+      needs.changes.outputs.stm32 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.full-matrix) ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'ci-full-matrix')))
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - profile: profile-gemalto-idbridge-ct30
+            features: "stm32f469,profile-gemalto-idbridge-ct30"
+          - profile: profile-gemalto-idbridge-k30
+            features: "stm32f469,profile-gemalto-idbridge-k30"
+          - profile: stm32f746-bitbang
+            features: "stm32f746,profile-cherry-smartterminal-st2xxx"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          targets: thumbv7em-none-eabihf
+
+      - name: Install cargo-binutils
+        run: |
+          rustup component add llvm-tools
+          cargo install cargo-binutils
+
+      - name: Cache cargo dependencies
+        # Same per-profile shared-key rationale as stm32-build (rust-cache
+        # keys are job-scoped otherwise — and these legs have their own job
+        # id now, so the explicit key keeps entries stable and private).
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: stm32-build-${{ matrix.profile }}
+
+      - name: Build firmware
+        run: |
+          if [[ -z "${{ matrix.features }}" ]]; then
+            cargo build --release --target thumbv7em-none-eabihf
+          else
+            cargo build --release --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }}
+          fi
+
+      - name: Generate binary artifacts
+        run: |
+          if [[ -z "${{ matrix.features }}" ]]; then
+            cargo objcopy --release -- -O binary ccid-firmware.bin
+            cargo objcopy --release -- -O ihex ccid-firmware.hex
+          else
+            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O binary ccid-firmware.bin
+            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O ihex ccid-firmware.hex
+          fi
+          sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
+          sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ matrix.profile }}
+          path: |
+            ccid-firmware.bin
+            ccid-firmware.hex
+            ccid-firmware.bin.sha256
+            ccid-firmware.hex.sha256
+
   esp32-build:
+    # Primary tier (see the tier-policy note on stm32-build).
     needs: changes
     if: needs.changes.outputs.esp32 == 'true'
     # The esp32-ccid package had no CI coverage at all: broken builds for
@@ -169,24 +278,6 @@ jobs:
             features: "backend-mfrc522,board-m5stick"
             no-default-features: true
             gate: true
-            toolchain: esp
-            profile: "--release"
-            target: xtensa-esp32-espidf
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
-            sdkconfig_full: false
-          - name: m5atom-default
-            features: ""
-            no-default-features: false
-            gate: false
-            toolchain: esp
-            profile: "--release"
-            target: xtensa-esp32-espidf
-            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
-            sdkconfig_full: false
-          - name: pn532
-            features: "backend-pn532"
-            no-default-features: true
-            gate: false
             toolchain: esp
             profile: "--release"
             target: xtensa-esp32-espidf
@@ -241,8 +332,26 @@ jobs:
         run: |
           cargo install ldproxy
 
+      # espup's output (the esp Rust toolchain in ~/.rustup/toolchains/esp*
+      # plus ~/export-esp.sh) is NOT covered by any cache below and was
+      # re-paid on EVERY leg of EVERY run: `cargo install espup` (2m05s,
+      # m5stick leg 2026-10-14) + `espup install` (1m10s) vs a 1m02s warm
+      # build — the installs were ~50% of a warm leg. Exact key on BOTH
+      # espup pins (the -v/-c strings from the one-Rust-version policy);
+      # NO restore-keys on purpose: a cross-generation toolchain fallback
+      # is the poison class documented on the espressif cache below.
+      # Bump the v<N> generation when either pin changes.
+      - name: Cache esp Rust toolchain (espup pins)
+        id: esp_toolchain_cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/esp*
+            ~/export-esp.sh
+          key: espup-toolchain-v1-v1.98.1.0-c14.2.0_20260121
+
       - name: Install espup + espflash (xtensa only)
-        if: matrix.toolchain == 'esp'
+        if: matrix.toolchain == 'esp' && steps.esp_toolchain_cache.outputs.cache-hit != 'true'
         run: |
           cargo install espup
 
@@ -296,7 +405,176 @@ jobs:
             espressif-${{ runner.os }}-v7-
 
       - name: Install ESP toolchain (pinned fork + crosstool, all esp32 entries)
-        if: matrix.toolchain == 'esp'
+        if: matrix.toolchain == 'esp' && steps.esp_toolchain_cache.outputs.cache-hit != 'true'
+        run: |
+          # BOTH pins matter (one-Rust-version policy, 2026-10-12):
+          # - crosstool 'esp-14.2.0_20260121': what IDF v5.5.5's
+          #   tool_version_check accepts — it matches the FULL
+          #   crosstool-NG build string from `gcc --version`; the LATEST
+          #   install broke CI once already (esp-16.2.0_20260914).
+          # - fork '1.98.1.0' (-v): the esp toolchain is espup-LATEST by
+          #   default (a moving nightly-derived compiler). Pinning it to
+          #   v1.98.1.0 aligns BOTH esp32 targets (xtensa + C3) on the
+          #   same Rust version as the stable pin and retires the dated
+          #   upstream nightly entirely.
+          espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
+          . ${HOME}/export-esp.sh
+          rustup component add rustfmt --toolchain esp || true
+
+      - name: Build firmware (${{ matrix.name }})
+        working-directory: firmware/esp32-ccid
+        run: |
+          # xtensa toolchain env (espup) — harmless no-op for the C3/nightly
+          # variant, which self-provisions everything under .embuild.
+          [ "${{ matrix.toolchain }}" = "esp" ] && . ${HOME}/export-esp.sh
+          # sdkconfig defaults only apply via this env var (metadata paths are
+          # dropped silently by esp-idf-sys) — without it the build succeeds with
+          # IDF defaults and the gate below fails. Bench flow: flash_and_test.sh
+          # (xtensa) / build.sh (c3, sdkconfig.full + custom partitions).
+          if [ "${{ matrix.sdkconfig_full }}" = "true" ]; then
+            export ESP_IDF_SDKCONFIG="$PWD/${{ matrix.sdkconfig }}"
+            export ESP_IDF_GLOB_PARTCSV_BASE="$PWD"
+            export ESP_IDF_GLOB_PARTCSV_1="/partitions-ota.csv"
+          else
+            export ESP_IDF_SDKCONFIG_DEFAULTS="$PWD/${{ matrix.sdkconfig }}"
+          fi
+          if [ "${{ matrix.no-default-features }}" = "true" ]; then
+            cargo +${{ matrix.toolchain }} build ${{ matrix.profile }} --target ${{ matrix.target }} --no-default-features --features "${{ matrix.features }}"
+          else
+            cargo +${{ matrix.toolchain }} build ${{ matrix.profile }} --target ${{ matrix.target }}
+          fi
+
+      - name: sdkconfig gate
+        if: matrix.gate
+        working-directory: firmware/esp32-ccid
+        run: |
+          . ${HOME}/export-esp.sh
+          ./s_check_sdkconfig
+
+  esp32-build-secondary:
+    # Secondary tier of esp32-build (tier policy on stm32-build):
+    # m5atom-default + pn532. Steps mirror esp32-build — keep the two
+    # bodies in sync.
+    needs: changes
+    if: >-
+      needs.changes.outputs.esp32 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'schedule' ||
+       (github.event_name == 'workflow_dispatch' && inputs.full-matrix) ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'ci-full-matrix')))
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: m5atom-default
+            features: ""
+            no-default-features: false
+            gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
+            sdkconfig_full: false
+          - name: pn532
+            features: "backend-pn532"
+            no-default-features: true
+            gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
+            sdkconfig_full: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install host build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3-pip python3-venv libssl-dev libffi-dev
+          pip install --user pyelftools
+
+      - name: Install ldproxy
+        run: |
+          cargo install ldproxy
+
+      # espup's output (the esp Rust toolchain in ~/.rustup/toolchains/esp*
+      # plus ~/export-esp.sh) is NOT covered by any cache below and was
+      # re-paid on EVERY leg of EVERY run: `cargo install espup` (2m05s,
+      # m5stick leg 2026-10-14) + `espup install` (1m10s) vs a 1m02s warm
+      # build — the installs were ~50% of a warm leg. Exact key on BOTH
+      # espup pins (the -v/-c strings from the one-Rust-version policy);
+      # NO restore-keys on purpose: a cross-generation toolchain fallback
+      # is the poison class documented on the espressif cache below.
+      # Bump the v<N> generation when either pin changes.
+      - name: Cache esp Rust toolchain (espup pins)
+        id: esp_toolchain_cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains/esp*
+            ~/export-esp.sh
+          key: espup-toolchain-v1-v1.98.1.0-c14.2.0_20260121
+
+      - name: Install espup + espflash (xtensa only)
+        if: matrix.toolchain == 'esp' && steps.esp_toolchain_cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install espup
+
+      # Cache the cargo target dir too: esp-idf-sys compiles the whole ESP-IDF
+      # C framework + Rust std (-Z build-std) there — the dominant ~80% of
+      # build time that previously recompiled on every run. embuild's IDF
+      # clone + self-provisioned tools ride along BUT in one of TWO places
+      # depending on the flow (Codex review on #76): the nightly/C3 path puts
+      # them under target/.embuild, the espup/Xtensa path under the repo-root
+      # .embuild — both paths are cached.
+      #
+      # Path note: esp32-ccid is a member of the ROOT cargo workspace, so its
+      # artifacts land in the repo-root target/ (same dir s_check_sdkconfig
+      # reads), NOT firmware/esp32-ccid/target.
+      #
+      # Budget note: GitHub evicts at 10 GB per repo (LRU). Each matrix entry
+      # stores a full target dir + ~/.espressif copy (~1-1.5 GB compressed
+      # each), so this table can hold ~4-5 GB on its own. Keep key inputs
+      # minimal; stale entries age out via LRU.
+      - name: Cache espressif tools + esp32 target dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.espressif
+            ~/.cargo/registry
+            target
+            .embuild
+          # Do not cache ~/.cargo/bin: cargo-installed tools are provisioned
+          # explicitly above and a cached binary can silently outlive its
+          # requested version. Per-variant key on the manifests, toolchain,
+          # SDK configuration, and partition table; fallback
+          # chain: any prior hash of the same variant, then the pre-target
+          # tools-only cache (keeps the ~/.espressif benefit on misses).
+          # KEY-VERSION RULE: bump v4→v5 when the ESP-IDF pin changes — a
+          # restored target dir built against a different IDF dies at cmake
+          # configure with a source-directory mismatch (observed when a
+          # v5.2.3 experiment cache poisoned v5.2.4 runs; failed jobs still
+          # save their cache, which is how the poison spreads).
+          # Cache-generation bump discipline: when the toolchain/IDF world
+          # moves (espup release, IDF pin, embuild tools), bump the v<N>
+          # prefix in key AND restore-keys. Restore-keys only fall back
+          # within the SAME generation — a cross-generation fallback once
+          # restored v5.2-era 13.2.0 tools against IDF v5.5.1 (which wants
+          # esp-14.2.0_20241119) and the red run then SAVED that poison
+          # under a fresh exact key (2026-10-09). v6 evicted that; v7 is
+          # the IDF v5.5.5 generation (2026-10-12, crosstool 20260121).
+          key: espressif-${{ runner.os }}-v7-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-${{ hashFiles('firmware/esp32-ccid/Cargo.toml', '**/Cargo.lock', 'firmware/esp32-ccid/sdkconfig*', 'firmware/esp32-ccid/partitions-ota.csv', 'rust-toolchain.toml') }}
+          restore-keys: |
+            espressif-${{ runner.os }}-v7-${{ matrix.name }}-${{ matrix.toolchain }}-${{ matrix.target }}-
+            espressif-${{ runner.os }}-v7-${{ matrix.name }}-
+            espressif-${{ runner.os }}-v7-
+
+      - name: Install ESP toolchain (pinned fork + crosstool, all esp32 entries)
+        if: matrix.toolchain == 'esp' && steps.esp_toolchain_cache.outputs.cache-hit != 'true'
         run: |
           # BOTH pins matter (one-Rust-version policy, 2026-10-12):
           # - crosstool 'esp-14.2.0_20260121': what IDF v5.5.5's
@@ -477,3 +755,33 @@ jobs:
       # invocation its 53 tests never run in CI.
       - name: Run ESP32 host-side tests (backend-pn7160)
         run: cargo test --target x86_64-unknown-linux-gnu --no-default-features --features backend-pn7160
+
+  ci-ok:
+    # Required-check aggregator for branch protection: tier-gated legs skip
+    # as SUCCESS (job-level if), so this one stable job name — not the
+    # per-leg names — is the only thing protection needs. Runs even when
+    # something failed (!cancelled()) so a red run can never report green;
+    # fails on failure/cancelled anywhere in needs, passes on success and
+    # skipped.
+    needs:
+      - changes
+      - sdkconfig-clean-wire-gate
+      - stm32-build
+      - stm32-build-secondary
+      - stm32-lint
+      - stm32-test
+      - python-collect
+      - esp32-build
+      - esp32-build-secondary
+      - esp32-host-test
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: All required jobs succeeded or skipped
+        run: |
+          results='${{ toJSON(needs.*.result) }}'
+          echo "needs results: $results"
+          if echo "$results" | grep -Eq '"(failure|cancelled)"'; then
+            echo "::error::one or more required jobs failed or were cancelled"
+            exit 1
+          fi
