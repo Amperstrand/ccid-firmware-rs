@@ -90,3 +90,5 @@ makes those paths *look* missing locally), CODEX triage table (all 53
 rows ADDRESSED, consistent with closed #113/#114), and
 PERF_AND_DRY_STRATEGY's open-issue citations (#87/#92/#121 all genuinely
 open).
+
+<!-- CI docs-only skip probe (2026-10-14): no firmware leg should run for a docs-only diff. -->
