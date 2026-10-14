@@ -41,13 +41,17 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|m5stick|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|c3-ccid-ble|m5stick|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
                sdkconfig.full, ota_0 slot @ 0x40000, baud 460800)
   c3-ccid      ESP32-C3 nucula, PN7160 CCID over USB-CDC (as c3; the full
                reader firmware — flash + host pcscd via libccidtwin)
+  c3-ccid-ble  as c3-ccid + BLE debug console (issue #66): CCID stays on the
+               USB-CDC wire, logs ride NUS GATT notifications
+               (sdkconfig-c3-ble.full, +ble feature). Capture:
+               tests/hardware/ble/ble_log_capture.py
   m5stick      ESP32 M5StickC, MFRC522 CCID (esp toolchain, release,
                sdkconfig-xtensa.full, ota_0 slot @ 0x40000, baud 115200)
   m5stick-ble  as m5stick + BLE debug console (issue #66): logs ride NUS GATT
@@ -61,10 +65,6 @@ Boards:
                (README "pcscd over Bluetooth SPP"). Classic BT = ESP32 only.
   m5atom       ESP32 M5Stack Atom, MFRC522 CCID (as m5stick, default features)
 
-Note: there is no c3-ccid-ble yet — the C3 controller rejects LE Set
-Advertising Parameters with Command Disallowed (0x0c) on this bench
-(bench findings in AGENTS.md "BLE Debug Console" > C3 traps). The Rust
-side compiles and runs on riscv32; only advertising is blocked.
 
 Options:
   --flash <port>  esptool write-flash after a successful build
@@ -130,6 +130,22 @@ case "${BOARD}" in
         PROFILE="debug"
         RELEASE_ARGS=()
         FEATURE_ARGS=(--no-default-features --features pn7160-ccid)
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
+    c3-ccid-ble)
+        # nucula + BLE debug console: CCID stays on the USB-CDC wire, logs
+        # ride BLE GATT notifications (issue #66). Built through build.sh so
+        # the sdkconfig stamp forces the cmake cache to pick up
+        # sdkconfig-c3-ble.full (the 2026-10-09 ad-hoc build risked the
+        # documented stale-cache trap — see AGENTS.md ESP_IDF_SDKCONFIG note).
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-c3-ble.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features pn7160-ccid,ble)
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
@@ -216,7 +232,7 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, m5stick, m5stick-ble, m5stick-spp, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, m5stick, m5stick-ble, m5stick-spp, or m5atom)" >&2
         exit 1
         ;;
 esac

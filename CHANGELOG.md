@@ -38,6 +38,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the one-Rust-version policy, README USB-identity lines corrected
   to the Cherry default.
 
+### Added — `c3-ccid-ble` build.sh board (nucula BLE debug console path)
+
+New board entry builds the nucula BLE console variant through the
+cache-stamped flow (`sdkconfig-c3-ble.full` + `pn7160-ccid,ble`), replacing
+ad-hoc `ESP_IDF_SDKCONFIG` exports. Bench result 2026-10-14 (issue #66):
+the C3 LE Set Advertising Parameters → Command Disallowed (0x0c) rejection
+reproduces with a verified BT-enabled config — config/cache hypotheses
+eliminated; ranked follow-ups in `docs/BLE_ROADMAP.md`.
+
 ### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
 
 `pn7160-nci` now speaks NCI §3.4.3/§3.5 segmentation: TX chunks APDUs
