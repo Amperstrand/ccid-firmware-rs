@@ -33,9 +33,16 @@ pub fn compiled_token() -> Option<Token> {
         // A wrong-length build-time token cannot be matched on the wire;
         // treat as unarmed would SILENTLY disable auth — fail loudly at
         // runtime instead (build.rs-style validation is overkill here).
-        panic!("OTA_TOKEN must be exactly {TOKEN_LEN} bytes, got {}", bytes.len());
+        panic!(
+            "OTA_TOKEN must be exactly {TOKEN_LEN} bytes, got {}",
+            bytes.len()
+        );
     }
-    Some(*bytes.first_chunk::<TOKEN_LEN>().expect("length checked above"))
+    Some(
+        *bytes
+            .first_chunk::<TOKEN_LEN>()
+            .expect("length checked above"),
+    )
 }
 
 pub fn authorize(
