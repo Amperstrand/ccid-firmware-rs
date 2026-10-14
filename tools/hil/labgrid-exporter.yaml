@@ -26,9 +26,19 @@
 ## The same physical ports are ALSO exported as pure acquisition tokens
 ## by the system exporter ai-legion-nfc (groups nucula-c3 / m5stick-usb,
 ## plain SerialPort class — no ser2net on acquire). Two token families
-## for one port do NOT exclude each other via labgrid; cross-session
-## exclusivity is the bench flock, /tmp/amperstrand-bench.lock
-## (tests/hardware/labgrid/bench.py bench_lock, AB-BA: flock first).
+## for one port do not exclude each other BY THEMSELVES — since
+## 2026-10-14 the cross-place exclusion is COORDINATOR-ENFORCED by
+## matching each NetworkService below into its USB sibling place:
+##   m5stick    matches ai-legion-ccid/m5stick/NetworkService   (live, verified)
+##   nucula-c3  matches ai-legion-ccid/nucula/NetworkService    (pending: the
+##     place was held when the match was attempted — run
+##     `labgrid-client -p nucula-c3 add-match ai-legion-ccid/nucula/NetworkService`
+##     once idle; labgrid refuses match changes on acquired places)
+## Acquiring either place of a pair now acquires the shared resource and
+## the coordinator refuses the sibling ("Matching resource ... already
+## acquired"). The bench flock (/tmp/amperstrand-bench.lock,
+## tests/hardware/labgrid/bench.py bench_lock, AB-BA: flock first)
+## remains for cross-project serial discipline.
 ##
 ## Paths are /dev/serial/by-id — stable across reboots and replug seat
 ## changes (busnum/devnum and ttyNX names drift). Verified live
