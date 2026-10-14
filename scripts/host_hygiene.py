@@ -35,7 +35,28 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-DEFAULT_TARGET_DIR = Path("/root/.cargo-target")
+def _default_target_dir() -> Path:
+    """Resolve the invoking user's real cargo target dir.
+
+    The original /root/.cargo-target hardcode only fit the ai-legion
+    root bench user — on any other account the audit died with
+    PermissionError before reporting anything. The shared-target-dir
+    pin (when present) lives in ~/.cargo/config.toml; fall back to the
+    conventional per-user path, then ./target.
+    """
+    cfg = Path.home() / ".cargo" / "config.toml"
+    if cfg.is_file():
+        for line in cfg.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("target-dir") and "=" in line:
+                return Path(line.split("=", 1)[1].strip().strip('"'))
+    per_user = Path.home() / ".cargo-target"
+    if per_user.is_dir():
+        return per_user
+    return Path("/root/.cargo-target")
+
+
+DEFAULT_TARGET_DIR = _default_target_dir()
 DEFAULT_WORKTREE_ROOT = Path("/tmp/opencode")
 
 # Protected branch names — never proposed for deletion, never counted as
