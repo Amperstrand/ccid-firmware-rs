@@ -89,11 +89,39 @@ def probe_m5stick() -> dict:
     return {"ok": ok, "detail": frames[0][1][:40] if frames else "no response"}
 
 
+def nucula_broker_serving() -> list[str]:
+    """The nucula's broker pcscd readers, if it is serving that way.
+
+    While the PTY broker holds the USB-CDC port, a raw GemPC probe
+    WEDGES: the pyserial write blocks on the not-draining CDC (2026-10-14
+    nightly, twice — 240 s timeouts on identity + battery). The broker
+    path is the nucula's sanctioned serving mode; its live reader name
+    is the identity evidence, so probes consult it before touching the
+    port."""
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "from smartcard.System import readers; "
+             "print('|'.join(str(x) for x in readers() if 'Nucula CCID' in str(x)))"],
+            capture_output=True, text=True, timeout=30,
+        )
+        return [n for n in r.stdout.strip().split("|") if n]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
 def probe_nucula() -> dict:
     """Escape 0x02 over the USB-CDC GemPC wire. All serial mains route
     through the shared ccid_handler, so the nucula answers the SAME
     FIRMWARE_VERSION string as the m5stick — assert it, don't accept any
-    non-empty payload (issue #110: a wrong string must fail loudly)."""
+    non-empty payload (issue #110: a wrong string must fail loudly).
+
+    Broker-serving fast path: when the broker holds the CDC, the raw
+    probe would wedge — the live broker reader proves the identity."""
+    serving = nucula_broker_serving()
+    if serving:
+        return {"ok": True,
+                "detail": f"serving pcscd via broker ({serving[0][:40]})"}
     port = resolve("nucula")
     frames = [f for f in serial_exchange(port, escape_frame(b"\x02")) if f[0] >= 0x80]
     ok = bool(frames) and frames[0][0] == 0x83 and GEMPC_VERSION_STRING in frames[0][1]

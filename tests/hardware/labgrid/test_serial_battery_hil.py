@@ -157,6 +157,18 @@ def test_serial_dut_battery(place_name, bench_lock):
     if absent:
         pytest.skip(f"{place_name}: {absent}")
 
+    if place_name == "nucula-c3":
+        # The broker holding the CDC makes the direct-serial Reader wedge
+        # (pyserial write blocks — nightly-proven twice 2026-10-14); the
+        # pcscd/broker surface is the verified one for this board.
+        from board_identity import nucula_broker_serving
+
+        serving = nucula_broker_serving()
+        if serving:
+            pytest.skip("nucula-c3: broker serving pcscd (CDC held) — "
+                        "direct-serial battery needs the port free; the "
+                        "broker surface is covered by its own suites")
+
     port_name = PLACE_TO_PORT[place_name]
     from serial_ports import resolve
 
