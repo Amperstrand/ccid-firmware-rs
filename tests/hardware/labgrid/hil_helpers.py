@@ -15,7 +15,10 @@ import pytest
 
 EXPECTED_ATR = "3B D5 18 FF 81 91 FE 1F C3 80 73 C8 21 10 0A"
 CARD_CMD_ATTEMPTS = 3
-HELPER_DIR = "/tmp/hil-ccid-bench"
+# uid-scoped: the bench is multi-user root/ubuntu and a bare /tmp path
+# collides across sessions with PermissionError (found live when the
+# runner moved to unprivileged runsvc, 2026-10-15).
+HELPER_DIR = f"/tmp/hil-ccid-bench-{__import__('os').getuid()}"
 
 
 def remote_apdu(bench, apdu_hex: str, timeout: int = 15) -> tuple[bytes, int, int]:
