@@ -781,9 +781,14 @@ disable when idle per the nucula row above.
   `Nucula VPCD` readers in pcscd). **m5stick restore lesson**: the bench
   vpcd image runs from **ota_0@0x40000** — writing it at 0x30000 under
   the OTA table boot-loops with `0x40000 has invalid magic byte
-  (nothing flashed here?)`. Restore recipe:
+  (nothing flashed here?)`. Restore recipe (PT already on board):
   `esptool --chip esp32 -b 115200 -p <hades-by-id> write-flash 0x40000
-  ~/.cargo-target/esp32-ccid-m5stick-vpcd.bin` (PT already on board).
+  ~/.cargo-target/esp32-ccid-m5stick-vpcd.bin` **then erase the otadata
+  selector** (`esptool --chip esp32 -p <hades-by-id> erase-region
+  0x30000 0x2000` — otadata sits at 0x30000 in partitions-ota.csv) so a
+  stale ota_1 selection cannot keep booting the old image; erased
+  otadata makes the bootloader take the first valid slot (ota_0). The
+  FWID banner on the console is the boot proof either way.
 - **Mint service live on .208:3338** (micronuts-audit-adapter fronts
   mint_server, FakeWallet auto-settling; durable start =
   Amperstrand/nucula `rig/scripts/start-mint.sh` in the fork worktree;
