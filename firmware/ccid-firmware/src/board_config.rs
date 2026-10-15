@@ -21,10 +21,27 @@ pub mod f469 {
     pub type UsbDmPin = PA11<Alternate<10>>;
     pub type UsbDpPin = PA12<Alternate<10>>;
 
+    // Leftover pins from the smartcard port splits that the display init
+    // consumes: pc0 (SDRAM FMC SDNWE), pc1 (touch IRQ), pg0/pg1/pg4/pg5/
+    // pg8/pg15 (SDRAM FMC addr/bank/clk/cas).
+    #[cfg(feature = "display")]
+    pub struct DisplayPins {
+        pub pc0: PC0<Input>,
+        pub pc1: PC1<Input>,
+        pub pg0: PG0<Input>,
+        pub pg1: PG1<Input>,
+        pub pg4: PG4<Input>,
+        pub pg5: PG5<Input>,
+        pub pg8: PG8<Input>,
+        pub pg15: PG15<Input>,
+    }
+
     pub struct Hardware {
         pub wrapper: SmartcardWrapper,
         pub usb_dm: UsbDmPin,
         pub usb_dp: UsbDpPin,
+        #[cfg(feature = "display")]
+        pub display: DisplayPins,
     }
 
     pub fn setup(
@@ -37,7 +54,6 @@ pub mod f469 {
         let mut gpioa = gpioa.split(rcc);
         let mut gpioc = gpioc.split(rcc);
         let mut gpiog = gpiog.split(rcc);
-
         let io_pin: PA2<Alternate<7, OpenDrain>> = gpioa
             .pa2
             .into_alternate_open_drain::<7>()
@@ -79,6 +95,17 @@ pub mod f469 {
             wrapper: SmartcardWrapper::new(uart),
             usb_dm,
             usb_dp,
+            #[cfg(feature = "display")]
+            display: DisplayPins {
+                pc0: gpioc.pc0,
+                pc1: gpioc.pc1,
+                pg0: gpiog.pg0,
+                pg1: gpiog.pg1,
+                pg4: gpiog.pg4,
+                pg5: gpiog.pg5,
+                pg8: gpiog.pg8,
+                pg15: gpiog.pg15,
+            },
         }
     }
 }

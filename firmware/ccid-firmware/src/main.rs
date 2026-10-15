@@ -780,14 +780,15 @@ fn main() -> ! {
         defmt::info!("Initializing display/touch...");
 
         // GPIO splits for display
-        // Note: gpioc and gpiog already split above for smartcard pins
-        // We use the remaining pins from those splits
+        // GPIOC/GPIOG were split inside board_config::f469::setup (smartcard
+        // pins); their display-relevant leftovers come back on Hardware.
         let gpiob = dp.GPIOB.split(&mut rcc);
         let gpiod = dp.GPIOD.split(&mut rcc);
         let gpioe = dp.GPIOE.split(&mut rcc);
         let gpiof = dp.GPIOF.split(&mut rcc);
         let gpioh = dp.GPIOH.split(&mut rcc);
         let gpioi = dp.GPIOI.split(&mut rcc);
+        let display_pins = hw.display;
 
         // LCD reset
         let mut lcd_reset = gpioh.ph7.into_push_pull_output();
@@ -799,13 +800,15 @@ fn main() -> ! {
         // Touch I2C - MUST extract ts_int BEFORE sdram_pins!
         defmt::info!("Initializing touch I2C...");
         let mut i2c = touch::init_i2c(dp.I2C1, gpiob.pb8, gpiob.pb9, &mut rcc);
-        let ts_int = gpioc.pc1.into_pull_down_input();
+        let ts_int = display_pins.pc1.into_pull_down_input();
 
         // SDRAM for framebuffer
         defmt::info!("Initializing SDRAM...");
         let sdram = Sdram::new(
             dp.FMC,
-            sdram_pins! {gpioc, gpiod, gpioe, gpiof, gpiog, gpioh, gpioi},
+            // The macro wants port-shaped values; display_pins carries the
+            // leftover GPIOC (pc0) and GPIOG (pg*) SDRAM pins
+            sdram_pins! {display_pins, gpiod, gpioe, gpiof, display_pins, gpioh, gpioi},
             &rcc.clocks,
             &mut delay,
         );
@@ -1004,7 +1007,7 @@ fn main() -> ! {
                     // Check if complete
                     if context.is_complete() {
                         if let Some(result) = context.result() {
-                            defmt::info!("PIN entry complete: {:?}", result);
+                            defmt::info!("PIN entry complete: {}", result.as_str());
                             let params = context.params;
                             let buffer = context.buffer.clone();
                             ccid_class.set_pin_result(*seq, result, buffer, params);
@@ -1059,7 +1062,10 @@ fn main() -> ! {
                             }
                             ButtonId::Ok => {
                                 let result = context.submit();
-                                defmt::info!("PIN modify step submitted, result={:?}", result);
+                                defmt::info!(
+                                    "PIN modify step submitted, result={}",
+                                    result.as_str()
+                                );
                             }
                             ButtonId::Cancel => {
                                 context.cancel();
@@ -1084,7 +1090,7 @@ fn main() -> ! {
 
                     if context.is_complete() {
                         if let Some(result) = context.result() {
-                            defmt::info!("PIN modify complete: {:?}", result);
+                            defmt::info!("PIN modify complete: {}", result.as_str());
                             ccid_class.set_pin_modify_result(
                                 *seq,
                                 result,

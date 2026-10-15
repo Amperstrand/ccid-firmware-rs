@@ -21,6 +21,13 @@ synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
 # Cargo.lock. Rebase/drop when upstream >=0.48 ships equivalents.
 esp-idf-hal = { git = "https://github.com/Amperstrand/esp-idf-hal", branch = "ai-experiments" }
 
+# Patched BSP — local copy of Amperstrand/stm32f469i-disc sdio-support
+# (fa6dc86) with its HAL dep realigned to this repo's pin 05d999d (the BSP
+# pins ancestor 789e5e8; two HAL instances made display-init Pin/Rcc types
+# from different crates — issue #193). Lift to a BSP branch when pushing.
+[patch."https://github.com/Amperstrand/stm32f469i-disc.git"]
+stm32f469i-disc = { path = "vendor/stm32f469i-disc" }
+
 [profile.release]
 debug = 2
 opt-level = "z"
