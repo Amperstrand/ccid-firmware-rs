@@ -97,8 +97,11 @@ EXPECTATION locks: the AXP192 register sequence, panel geometry
 (135x240 @ 52,40 inverted), and battery decode are data tables with
 citations + host tests. GPIO27 note: the StickC backlight means the
 Atom LED matrix stays off on lcd builds (RMT pulses would fight it).
-Bench flash/verify pending (hardware reserved by another session) —
-CI build-verifies the xtensa target via the new matrix leg.
+Bench-verified 2026-10-15: no reboot loop (ticker stack fixed 4K→12K —
+the fmt+eg+I2C tick path overflowed and looped the board), 30 s wire
+silence after the banner, Escape 0x02 identity, and the FULL serial
+battery PASS with the ticker running. Visual panel check pending owner
+eyes (the only thing a remote session cannot verify).
 
 ### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
 
