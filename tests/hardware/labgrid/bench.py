@@ -208,9 +208,6 @@ def dut_absent_reason(place: str) -> str | None:
         # (broker OR wifi-IFD) and a CDC that does not answer the GemPC
         # identity probe is in an unknown/sibling-lane state — not
         # evidence about the code under test.
-        import sys  # noqa: PLC0415
-
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
         from board_identity import probe_nucula  # noqa: PLC0415
 
         probe = probe_nucula()
