@@ -143,7 +143,6 @@ def dut_absent_reason(place: str) -> str | None:
         by_id = sorted(os.listdir("/dev/serial/by-id"))
     except OSError:
         by_id = []
-    lsusb = subprocess.run(["lsusb"], capture_output=True, text=True).stdout
 
     if place == "stm32-ccid":
         stlink = any(F469_STLINK_SERIAL in p for p in by_id)
