@@ -159,3 +159,48 @@ PR #161: all three findings superseded by c0e53b9-era main fixes.
 PR #162: README stale claim fixed in #179 2305e50. Every finding across
 158–168–174–179 now carries a reply on its PR with a commit hash or an
 issue number.
+
+# Codex Review Sweep — 2026-10-15 round (merged-PR gap: 111–191)
+
+Scope: the merged PRs since the last full sweep (77–107) NOT already
+dispositioned by the 2026-10-14 refreshes (which covered 158–162, 168,
+174): PRs 111, 116, 145, 148, 150, 169, 184, 185, 187, 188, 190, 191.
+Dumps in `/tmp/opencode/pr-sweep2/`. Every item verified against main at
+`0ce8667` by reading the flagged code. PRs 174/175/178/179/186/189 carry
+no badged Codex findings. 31 findings total.
+
+**Totals this round: 17 ADDRESSED, 14 UNADDRESSED/partial → issues
+#195–#198. Every PR carries a disposition reply.**
+
+| PR | Sev | Finding | Verdict | Evidence |
+|---|---|---|---|---|
+| 111 | P1 | MCU feature missing from CT30/K30 legs | ADDRESSED | 7263087 — full `stm32f469,profile-…` legs + check_release_config.sh pairing guard |
+| 111 | P1 | Release checkouts lack submodules | ADDRESSED | `submodules: true` on both release.yml checkouts |
+| 111 | P2 | verify-reproducibility example drops MCU | ADDRESSED | `PROFILE="${1:-default}"`; examples use `default` |
+| 116 | P1 | ARM target not installed for pinned toolchain | ADDRESSED | rust-toolchain.toml `targets = [...]` |
+| 116 | P1 | C3 nightly default for xtensa | ADDRESSED | per-dir toml removed (67bcfbc, one-Rust-version) |
+| 116 | P1 | rust-src missing for pinned nightly | ADDRESSED | same removal; fork ships rust-src |
+| 145 | P2 | wire-silence tail accepts control bytes | ADDRESSED | test rejects all but CR/LF/TAB (comment cites Codex #145 P2) |
+| 145 | P1 | ESP_LOG_NONE suppresses the FWID banner | ADDRESSED | ordering C-silence→EspLogger→FWID→Off; HIL-proven; inline comment |
+| 145 | P2 | rust-src for dated nightly (HIL) | ADDRESSED | nightly retired |
+| 145 | P1 | HAL backport in compiled vendor | **UNADDRESSED → #195** | vendor/esp-idf-hal path-patch live; no canonical fork exists |
+| 145 | P2 | silence check: port-drop = false PASS | PARTIAL → #197 | reopen-retry landed; quiet window not restarted after reconnect |
+| 148 | P2 | precompiled-std doc claim | **UNADDRESSED → #198** | AGENTS passage unchanged |
+| 150 | P2 | mutable `esp` alias for bench builds | **UNADDRESSED (low) → #198** | board.py:605 alias; CI pins via espup -v |
+| 150 | P2 | build_firmware lacks espup env | **UNADDRESSED (low) → #198** | env has RUSTUP_TOOLCHAIN only; loud-failure mitigation |
+| 169 | P2 | apdu() wraps Lc >255 | **UNADDRESSED → #196** | `data.len() as u8` live in ccid-pcsc-host |
+| 184 | P1×2 | detached F469 fails nightly instead of skip | ADDRESSED | SKIP≠FAIL #183: dut_absent_reason gates every leg |
+| 184 | P2 | silent place-release failure | **UNADDRESSED → #197** | release check=False, rc ignored |
+| 184 | P1 | unsafe nucula CDC probe on schedule | PARTIAL → #197 | broker fast path (#190); raw opener still pyserial-defaults |
+| 185 | P1 | thread timeout bypasses teardown | ADDRESSED | #186 `--timeout-method=signal` + 45m job cap |
+| 185 | P1 | bench lock not gating CCID suite | **UNADDRESSED → #197** | test_ccid_hil has no bench_lock dependency |
+| 187 | P1 | runbook hard-codes bench host | **UNADDRESSED → #198** | tools/hil/README.md re-registration |
+| 187 | P1 | hand-maintained device state in AGENTS | ADDRESSED | generated STATUS.md doctrine (#183); legacy table is historical |
+| 187 | P1 | service must ExecStart runsvc.sh | **UNADDRESSED → #198** | unit ExecStarts Runner.Listener directly |
+| 188 | P2 | F469 skip gate matches VID:PID not serial | **UNADDRESSED → #197** | `046a:003e in lsusb` gate; F746 shares it |
+| 188 | P2 | SystemExit escapes absence gate | **UNADDRESSED → #197** | resolve raises SystemExit; `except Exception` misses it |
+| 188 | P2 | pcscd pause before m5stick UART probe | UNVERIFIED → #197 | folded into the cluster |
+| 190 | P1 | broker check before pausing pcscd | ADDRESSED | #190 broker-aware fast path |
+| 190 | P2 | 'Nucula CCID' substring matches wifi IFD | **UNADDRESSED → #197** | substring match live |
+| 191 | P2 | install docs point at the unit | ADDRESSED | tools/hil README system-unit pass (2026-10-15) |
+| 191 | P2 | lint filter misses scripts/ruff inputs | **UNADDRESSED → #198** | filter lacks scripts/**, ruff.toml |
