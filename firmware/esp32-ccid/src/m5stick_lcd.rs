@@ -538,10 +538,12 @@ mod imp {
 
     /// 1 Hz ticker — owns nothing but the clock; all state flows through
     /// the mutex. Spawned from main; panics here never reach the CCID
-    /// serve loop (independent FreeRTOS task).
+    /// serve loop (independent FreeRTOS task). Stack: 12 KB — the tick
+    /// path is fmt + embedded-graphics + I2C (bench lesson 2026-10-15:
+    /// 4 KB overflowed and reboot-looped the board ~2 s after boot).
     pub fn spawn_ticker() {
         std::thread::Builder::new()
-            .stack_size(4096)
+            .stack_size(12288)
             .spawn(|| {
                 let mut uptime = 0u32;
                 loop {
