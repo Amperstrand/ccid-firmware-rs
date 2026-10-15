@@ -41,7 +41,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|c3-ccid-ble|m5stick|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|c3-ccid-ble|m5stick|m5stick-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
@@ -198,6 +198,20 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
         ;;
+    m5stick-lcd)
+        # m5stick + MFRC522 CCID + the ST7789 status screen (bolty-rs
+        # display.rs port): AXP192 backlight, FWID/variant/battery/uptime.
+        # GPIO27 (backlight) means no Atom LED matrix on this variant.
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa.full"
+        TRIPLE="xtensa-esp32-espidf"
+        PROFILE="release"
+        RELEASE_ARGS=(--release)
+        FEATURE_ARGS=(--no-default-features --features backend-mfrc522,board-m5stick,lcd)
+        CHIP="esp32"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="115200"
+        ;;
     m5stick-ble)
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa-ble.full"
@@ -232,7 +246,7 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, m5stick, m5stick-ble, m5stick-spp, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, m5stick, m5stick-lcd, m5stick-ble, m5stick-spp, or m5atom)" >&2
         exit 1
         ;;
 esac

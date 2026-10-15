@@ -288,6 +288,17 @@ jobs:
             target: xtensa-esp32-espidf
             sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
             sdkconfig_full: false
+          # ST7789 status screen variant (bolty display.rs port) — CI
+          # build-verifies the lcd feature pair on the xtensa target.
+          - name: m5stick-lcd
+            features: "backend-mfrc522,board-m5stick,lcd"
+            no-default-features: true
+            gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig.defaults;sdkconfig.defaults.esp32"
+            sdkconfig_full: false
           # C3/nucula (issue #70): riscv32imc-esp-espidf via nightly + build-std,
           # on the BENCH sdkconfig.full flow (coredump partition, USB-JTAG
           # console — CI validates the config the bench actually ships) rather

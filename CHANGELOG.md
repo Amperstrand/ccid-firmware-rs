@@ -86,6 +86,23 @@ final response (non-time-extension reader frame with the expected
 bSeq — an echo + interim pair no longer terminates the wait, and an
 echo-only timeout counts as no-response).
 
+### Added — `m5stick-lcd`: ST7789 status screen (bolty-rs display.rs port)
+
+New `lcd` feature + `m5stick-lcd` board: the M5StickC(-Plus) LCD shows
+FWID/rev, variant, card state, battery % (AXP192 telemetry) and uptime.
+Ported from bolty-rs `apps/bolty-esp32/src/display.rs` (same esp-idf
+0.46.2/0.52.1 stack, bench-proven) onto `mipidsi` =0.9.0 +
+embedded-graphics =0.8.2 — bolty's exact dependency pair. GREAT
+EXPECTATION locks: the AXP192 register sequence, panel geometry
+(135x240 @ 52,40 inverted), and battery decode are data tables with
+citations + host tests. GPIO27 note: the StickC backlight means the
+Atom LED matrix stays off on lcd builds (RMT pulses would fight it).
+Bench-verified 2026-10-15: no reboot loop (ticker stack fixed 4K→12K —
+the fmt+eg+I2C tick path overflowed and looped the board), 30 s wire
+silence after the banner, Escape 0x02 identity, and the FULL serial
+battery PASS with the ticker running. Visual panel check pending owner
+eyes (the only thing a remote session cannot verify).
+
 ### Fixed — NCI DATA fragmentation (full-size APDUs over PN7160)
 
 `pn7160-nci` now speaks NCI §3.4.3/§3.5 segmentation: TX chunks APDUs

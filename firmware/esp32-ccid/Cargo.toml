@@ -50,6 +50,9 @@ pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 pn7160-m1 = ["backend-pn7160", "board-nucula"]
 pn7160-v10raw = ["backend-pn7160", "board-nucula"]
 pn7160-actdiag = ["backend-pn7160", "board-nucula"]
+# M5StickC(-Plus) LCD status screen (bolty-rs display.rs port):
+# mipidsi/embedded-graphics pinned to bolty's exact proven pair.
+lcd = ["dep:mipidsi", "dep:embedded-graphics"]
 ble = []
 # pcscd over Bluetooth Classic SPP: RFCOMM replaces UART0 as the GemPC CCID
 # wire (console moves to UART0, logs stay on). REQUIRES the classic-BT+SPP
@@ -76,6 +79,11 @@ mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
 pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
+
+# LCD status screen (bolty-rs display.rs port) — pinned to bolty's exact
+# bench-proven pair (apps/bolty-esp32/Cargo.toml):
+mipidsi = { version = "=0.9.0", optional = true }
+embedded-graphics = { version = "=0.8.2", optional = true }
 
 # ESP-IDF is used on both Xtensa (ESP32/S2/S3) and RISC-V (ESP32-C3/C2/C6/H2).
 [target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]

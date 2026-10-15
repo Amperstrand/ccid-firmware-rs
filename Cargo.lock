@@ -865,6 +865,7 @@ dependencies = [
  "ccid-core",
  "ccid-protocol",
  "ccid-transport-serial",
+ "embedded-graphics",
  "embedded-hal 1.0.0",
  "embuild",
  "esp-idf-hal",
@@ -875,6 +876,7 @@ dependencies = [
  "log",
  "mfrc522",
  "mfrc522-pcd",
+ "mipidsi",
  "nb 1.1.0",
  "pn532",
  "pn532-transport",
@@ -1319,6 +1321,18 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "mipidsi"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ba34dcbf61182ffa6992b5a4d9b566d5a99df127fd93f6d314213347329e92f"
+dependencies = [
+ "embedded-graphics-core",
+ "embedded-hal 1.0.0",
+ "heapless 0.8.0",
+ "nb 1.1.0",
+]
 
 [[package]]
 name = "nb"
