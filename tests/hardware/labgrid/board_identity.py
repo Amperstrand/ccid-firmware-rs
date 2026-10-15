@@ -59,7 +59,12 @@ def serial_exchange(port: str, raw: bytes, settle: float = 0.15,
     pcscd stopped (it holds the port)."""
     import serial as pyserial
 
+    # Safe opener (Codex #184): pyserial asserts DTR on open and the C3
+    # latches host line state across resets — clear both lines immediately
+    # or a broker-down probe can reset/download-latch the board.
     s = pyserial.Serial(port, 115200, timeout=0.15)
+    s.setDTR(False)
+    s.setRTS(False)
     try:
         s.reset_input_buffer()
         s.write(raw)
@@ -102,7 +107,8 @@ def nucula_broker_serving() -> list[str]:
         r = subprocess.run(
             [sys.executable, "-c",
              "from smartcard.System import readers; "
-             "print('|'.join(str(x) for x in readers() if 'Nucula CCID' in str(x)))"],
+             "print('|'.join(str(x) for x in readers()"
+             " if 'Nucula CCID' in str(x) and '(wifi)' not in str(x)))"],
             capture_output=True, text=True, timeout=30,
         )
         return [n for n in r.stdout.strip().split("|") if n]

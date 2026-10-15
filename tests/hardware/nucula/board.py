@@ -598,10 +598,23 @@ class NuculaBoard:
     def build_firmware(self, features: str = "pn7160-bringup,pn7160-verdict-b") -> Optional[Path]:
         """Build the firmware and return the path to the app binary."""
         env = os.environ.copy()
+        # Codex #150: source the espup environment when the caller's
+        # shell hasn't (PATH for ldproxy, LIBCLANG_PATH) — without it a
+        # fresh-shell --test-firmware build fails in esp-idf-sys.
+        export_esp = Path.home() / "export-esp.sh"
+        if env.get("LIBCLANG_PATH") is None and export_esp.is_file():
+            for line in export_esp.read_text().splitlines():
+                if line.startswith("export "):
+                    k, _, v = line[len("export "):].partition("=")
+                    env.setdefault(k.strip(), v.strip().strip('"'))
         env.update({
             # Pinned esp fork v1.98.1.0 — matches build.sh/CI (one-Rust-
             # version policy 2026-10-12: both esp32 targets ride the
-            # pinned fork; the fork ships rust-src for build-std).
+            # pinned fork; the fork ships rust-src for build-std). The
+            # alias is what espup installed at the pinned version; a
+            # host that re-runs espup with another version builds wrong
+            # (Codex #150 residual — version-check deliberately not
+            # enforced here, documented in the runbook issue).
             "RUSTUP_TOOLCHAIN": "esp",
             "ESP_IDF_SDKCONFIG_DEFAULTS": f"{self.firmware_dir}/sdkconfig.wallet-test",
             "ESP_IDF_GLOB_PARTCSV_BASE": str(self.firmware_dir),

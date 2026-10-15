@@ -143,12 +143,17 @@ def run_body():
             check(f"place {place}: acquire/release", False, f"probe error: {e}")
             continue
         if r.returncode == 0:
+            # Codex #184: a silent release failure leaves the place stuck
+            # acquired while the check reports green — record it.
             try:
-                subprocess.run(["labgrid-client", "-p", place, "release"],
-                               capture_output=True, timeout=15)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            check(f"place {place}: acquire/release", True)
+                rel = subprocess.run(["labgrid-client", "-p", place, "release"],
+                                     capture_output=True, text=True, timeout=15)
+                rel_ok = rel.returncode == 0
+                rel_detail = "" if rel_ok else rel.stderr.strip()[:80]
+            except (OSError, subprocess.TimeoutExpired) as e:
+                rel_ok, rel_detail = False, str(e)[:80]
+            check(f"place {place}: acquire/release", rel_ok,
+                  f"acquired but release failed: {rel_detail}")
         else:
             check(f"place {place}: acquire/release", False, r.stderr.strip()[:100])
 

@@ -235,7 +235,8 @@ def test_wire_silence_after_banner(flashed_ccid_firmware):
     s.setRTS(False)
 
     buf = bytearray()
-    deadline = time.time() + 14
+    QUIET_WINDOW_S = 14
+    deadline = time.time() + QUIET_WINDOW_S
     while time.time() < deadline:
         try:
             data = s.read(4096)
@@ -253,6 +254,11 @@ def test_wire_silence_after_banner(flashed_ccid_firmware):
                 except (pyserial.SerialException, OSError):
                     s = None
                     time.sleep(0.05)
+            # Codex #145 P2: a successful reconnect restarts the FULL
+            # quiet window — post-reconnect observation must be as long
+            # as the original, not whatever the reconnect left over.
+            if s is not None:
+                deadline = time.time() + QUIET_WINDOW_S
     text = bytes(buf).decode("utf-8", "replace")
 
     assert "FWID pn7160-ccid" in text, (

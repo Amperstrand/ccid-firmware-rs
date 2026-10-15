@@ -116,6 +116,19 @@ class PlaceBusy(Exception):
 # F469 ST-LINK serial, pinned by the exporter config (flashed_firmware
 # resolves it from there too — one place to be right).
 F469_STLINK_SERIAL = "066FFF515786534867184152"
+F469_ISERIAL = "ST2XXX-001"
+
+
+def lsusb_serials(vidpid: str) -> str:
+    """Concatenated iSerial strings of the given VID:PID device(s) —
+    cheap enough for one targeted `-d` query (vs full lsusb -v)."""
+    try:
+        out = subprocess.run(["lsusb", "-d", vidpid, "-v"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return " ".join(line.split()[-1] for line in out.stdout.splitlines()
+                    if line.strip().startswith("iSerial"))
 
 
 def dut_absent_reason(place: str) -> str | None:
@@ -134,7 +147,10 @@ def dut_absent_reason(place: str) -> str | None:
 
     if place == "stm32-ccid":
         stlink = any(F469_STLINK_SERIAL in p for p in by_id)
-        cherry = "046a:003e" in lsusb
+        # Serial-precise, not VID:PID: the F746 shares 046a:003e with a
+        # different iSerial (Codex #188) — a VID:PID match would treat an
+        # F746-plugged bench as a testable F469 and fail red, not skip.
+        cherry = F469_ISERIAL in lsusb_serials("046a:003e")
         if not stlink and not cherry:
             return ("F469 physically detached — its ST-LINK ("
                     f"{F469_STLINK_SERIAL[:8]}…) is not on USB and no "

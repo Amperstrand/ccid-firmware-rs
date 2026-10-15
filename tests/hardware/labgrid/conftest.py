@@ -213,6 +213,18 @@ def pytest_collection_modifyitems(config, items):
 
 # ---------------------------------------------------------------- fixtures
 
+@pytest.fixture(autouse=True, scope="session")
+def bench_lock_gate(request):
+    """Codex #185: under --hil the flock gates the WHOLE invocation —
+    test_ccid_hil drives pcscd without requesting bench_lock, so a
+    per-test lock let its legs race concurrent serial sessions."""
+    if not request.config.getoption("--hil"):
+        yield None
+        return
+    request.getfixturevalue("bench_lock")
+    yield
+
+
 @pytest.fixture(scope="session")
 def bench_lock(request):
     """Cross-project bench flock (bolty-rs protocol, layer 1) for tests
