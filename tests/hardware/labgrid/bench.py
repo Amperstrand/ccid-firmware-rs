@@ -201,6 +201,24 @@ def dut_absent_reason(place: str) -> str | None:
             return ("m5stick is streaming on UART0 — the wifi-vpcd console "
                     "variant is flashed (another lane's active firmware); "
                     "GemPC legs skip until the standard image returns")
+    elif place == "nucula-c3":
+        # Codex #188 residual (found live 2026-10-15: the nightly failed
+        # red instead of skipping when the board sat in a non-serving
+        # state). SKIP≠FAIL doctrine: a nucula with NO serving reader
+        # (broker OR wifi-IFD) and a CDC that does not answer the GemPC
+        # identity probe is in an unknown/sibling-lane state — not
+        # evidence about the code under test.
+        import sys  # noqa: PLC0415
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from board_identity import probe_nucula  # noqa: PLC0415
+
+        probe = probe_nucula()
+        if not probe.get("ok"):
+            return ("nucula CDC present but not serving (no broker reader, "
+                    f"no raw GemPC answer: {probe.get('detail', '?')[:60]}) "
+                    "— unknown/sibling-lane board state; legs skip per "
+                    "SKIP≠FAIL (#183)")
     return None
 
 
