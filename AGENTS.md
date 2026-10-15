@@ -774,6 +774,54 @@ disable when idle per the nucula row above.
   NOT the bench host; USB readers and the classic HIL suites live on
   .208 — run them there).
 
+### Bench state delta (2026-10-15 session — nucula-fork test-framework night)
+
+- Both ESP32 boards ended the day BACK on ccid wifi-vpcd serving VPCD
+  (nucula rev=40d391e, m5stick rev=683c879; FWID-verified; both
+  `Nucula VPCD` readers in pcscd). **m5stick restore lesson**: the bench
+  vpcd image runs from **ota_0@0x40000** — writing it at 0x30000 under
+  the OTA table boot-loops with `0x40000 has invalid magic byte
+  (nothing flashed here?)`. Restore recipe (PT already on board):
+  `esptool --chip esp32 -b 115200 -p <hades-by-id> write-flash 0x40000
+  ~/.cargo-target/esp32-ccid-m5stick-vpcd.bin` **then erase the otadata
+  selector** (`esptool --chip esp32 -p <hades-by-id> erase-region
+  0x30000 0x2000` — otadata sits at 0x30000 in partitions-ota.csv) so a
+  stale ota_1 selection cannot keep booting the old image; erased
+  otadata makes the bootloader take the first valid slot (ota_0). The
+  FWID banner on the console is the boot proof either way.
+- **Mint service live on .208:3338** (micronuts-audit-adapter fronts
+  mint_server, FakeWallet auto-settling; durable start =
+  Amperstrand/nucula `rig/scripts/start-mint.sh` in the fork worktree;
+  ufw open to the bench LAN) — deliberately left running as cross-project
+  test infra (the fork rig's money-loop e2e + soak ride it).
+- **Shared IDF v5.5.5 tree** at `/root/esp/esp-idf-v5.5.5` on .208 — the
+  Amperstrand/nucula fork builds ride the bench-unified version
+  deliberately (its upstream pin is 5.5.1; deviation recorded in the
+  fork's session branch). Retire candidates (owner-executed):
+  `/root/esp/esp-idf` (v5.3.1) and the stale global `.embuild`
+  esp-idf v5.2.3.
+- **`nucula-rig` labgrid place** now exists on the .208 coordinator (the
+  fork rig's cross-project lock; matches `m5stick-usb` + the ACR —
+  acquiring it excludes ccid's `m5stick`/`ref-acr1252` properly).
+- Fork session branch `sisyphus/test-framework` → **PR #13** (bench
+  migration, classic-esp32 console SoC fix, plain-http mint fix — that
+  one line blocked every mint op — NUCULAPCB board lane, e2e/soak
+  invisible-success guards). Micronuts parity: **PR #105** (49-row
+  cited matrix) + gap issues #98–#104. Full session report:
+  `micronuts/reports/2026-10-15-parity-audit-session.md` (49 money-loop
+  cycles green on hardware; crash-consistency boundary observed at
+  ~714 sat).
+- **PN7160 on the nucula: chip ALIVE** — answers ccid's window-rule
+  probe at boot (`pn7160_i2c: probe @0x28 right after VEN cycle:
+  Ok(())`); the fork's `nci_init` (+50 ms probe) fails against the same
+  silicon — evidence + init-port plan on fork issue #12.
+- **esp toolchain gotcha (#199)**: `RUSTUP_TOOLCHAIN=esp` does not
+  resolve on .208 (version-named toolchains only; `-Z build-std`
+  rejected) — actdiag/C3 Rust builds blocked there until
+  `espup install -c 14.2.0_20260121 -v 1.98.1.0` per the pin above.
+- hil-bench nightly was disabled for the session day and re-enabled
+  (verified active) at close.
+
 ### Recovery events (2026-10-09, all resolved)
 
 - **m5stick re-flashed by micronuts** (display showed their app,
