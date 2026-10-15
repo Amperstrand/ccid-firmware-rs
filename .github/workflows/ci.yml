@@ -92,6 +92,11 @@ jobs:
               - 'tools/**'
               - 'tests/**'
               - 'host-tools/*.py'
+              # Codex #191: python-collect consumes these too — a change
+              # that skips the gate is a change that never gets checked.
+              - 'host-tools/**/*.py'
+              - 'scripts/**'
+              - 'ruff.toml'
 
   sdkconfig-clean-wire-gate:
     # Static clean-wire gate (issue #78 class): every shipped sdkconfig must

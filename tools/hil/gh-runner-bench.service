@@ -13,7 +13,11 @@ Type=simple
 # schedule/workflow_dispatch-only by design. Hardening tracked in #183.
 User=root
 WorkingDirectory=/opt/actions-runner
-ExecStart=/opt/actions-runner/bin/Runner.Listener run --startuptype service
+# Codex #187: runsvc.sh is the required service entry point (self-update
+# coordination); the service runs as the unprivileged owner because
+# run.sh/config.sh refuse root.
+User=ubuntu
+ExecStart=/opt/actions-runner/bin/runsvc.sh
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT

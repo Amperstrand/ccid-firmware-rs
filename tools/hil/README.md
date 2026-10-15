@@ -160,17 +160,22 @@ gh api /repos/Amperstrand/ccid-firmware-rs/actions/runners/registration-token \
    --method POST --jq .token > /tmp/runner-tok.txt
 # 2. Transfer as a FILE (scp) — never pipe through `> file 2>&1` and
 #    never read via ssh stdin: a stderr line in the file = 401 mysteries.
-scp /tmp/runner-tok.txt root@192.168.13.208:/tmp/runner-tok.txt
+BENCH=$(python3 "$CONWRT_BENCH/scripts/lab_registry.py" host bench 2>/dev/null \
+  || echo '<bench-host>')  # registry-resolved, never hard-coded (Codex #187)
+scp /tmp/runner-tok.txt root@"$BENCH":/tmp/runner-tok.txt
 # 3. On the bench: config.sh REFUSES root — configure as a mortal user,
 #    then hand the tree back to root (the SERVICE runs as root):
-ssh root@192.168.13.208 'cd /opt/actions-runner && chown -R ubuntu:ubuntu . && \
+ssh root@"$BENCH" 'cd /opt/actions-runner && chown -R ubuntu:ubuntu . && \
   TOK=$(cat /tmp/runner-tok.txt) && rm -f /tmp/runner-tok.txt && \
   sudo -u ubuntu ./config.sh --url https://github.com/Amperstrand/ccid-firmware-rs \
     --token "$TOK" --labels bench --name ai-legion-bench --unattended && \
   chown -R root:root .'
-# 4. The unit ExecStarts bin/Runner.Listener DIRECTLY (run.sh and
-#    config.sh both refuse root); restart:
-ssh root@192.168.13.208 'systemctl restart gh-runner-bench'
+# 4. The unit runs the listener through bin/runsvc.sh as the ubuntu
+#    user (Codex #187: GitHub's service docs require the runsvc.sh entry
+#    point — a direct Runner.Listener ExecStart races systemd's restart
+#    during self-update; run.sh/config.sh refuse root, so the service
+#    runs unprivileged and root only owns the tree):
+ssh root@"$BENCH" 'systemctl restart gh-runner-bench'
 ```
 
 Update procedure: `systemctl stop gh-runner-bench`, swap the
