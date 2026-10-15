@@ -799,6 +799,7 @@ dependencies = [
 [[package]]
 name = "esp-idf-hal"
 version = "0.46.2"
+source = "git+https://github.com/Amperstrand/esp-idf-hal?branch=ai-experiments#ff6225759d6ce54713f57025adebf6435615574b"
 dependencies = [
  "atomic-waker",
  "embassy-sync",
