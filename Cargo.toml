@@ -15,11 +15,12 @@ resolver = "2"
 
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
-# Patched hal — canonical Amperstrand fork (issue #195; was a compiled
-# vendor/ path-patch): ai-experiments = upstream v0.46.2 + legacy-i2c
-# opt-in (issues #63/#80) + IDF v5.5.5 sd.rs backport. Rev pinned by
-# Cargo.lock. Rebase/drop when upstream >=0.48 ships equivalents.
-esp-idf-hal = { git = "https://github.com/Amperstrand/esp-idf-hal", branch = "ai-experiments" }
+# Patched hal — canonical Amperstrand fork (issue #195): ai-experiments-0.47
+# = the legacy-i2c opt-in (issues #63/#80) + sd.rs backport, rebased onto
+# upstream v0.47.0 (2026-10-15 unification wave; the sd.rs backport hunks
+# were redundant there — upstream already carries the field). Rev pinned by
+# Cargo.lock. Drop when upstream >=0.48 ships legacy-i2c equivalents.
+esp-idf-hal = { git = "https://github.com/Amperstrand/esp-idf-hal", branch = "ai-experiments-0.47" }
 
 # Patched BSP — local copy of Amperstrand/stm32f469i-disc sdio-support
 # (fa6dc86) with its HAL dep realigned to this repo's pin 05d999d (the BSP

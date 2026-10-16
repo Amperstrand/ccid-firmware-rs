@@ -75,10 +75,10 @@ iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "268d
 # Transceiver bridge + bus recovery shared with bolty-rs; only the
 # backend-mfrc522 feature pulls it (dep: wiring keeps PN7160/PN532 builds
 # from compiling — and warning about — an unused git dependency.
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "3808ba9", optional = true }
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "dccf86e3660073291a59a5569141a4093024fd14", optional = true }
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
-pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "5f1215da", optional = true }
+pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "dccf86e3660073291a59a5569141a4093024fd14", optional = true }
 
 # LCD status screen (bolty-rs display.rs port) — pinned to bolty's exact
 # bench-proven pair (apps/bolty-esp32/Cargo.toml):
@@ -87,17 +87,17 @@ embedded-graphics = { version = "=0.8.2", optional = true }
 
 # ESP-IDF is used on both Xtensa (ESP32/S2/S3) and RISC-V (ESP32-C3/C2/C6/H2).
 [target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
-esp-idf-sys = { version = "0.37", features = ["binstart"] }
-esp-idf-hal = "0.46"
-esp-idf-svc = "0.52.1"
+esp-idf-sys = { version = "0.38", features = ["binstart"] }
+esp-idf-hal = "0.47"
+esp-idf-svc = "0.53"
 
 [build-dependencies]
 embuild = { version = "0.33", features = ["espidf"] }
 
 [package.metadata.esp-idf-sys]
 # v5.5.5 (2026-10-12 unification bump from v5.5.1): requires crosstool
-# esp-14.2.0_20260121 (exact build-string tool_version_check). esp-idf-svc
-# stays 0.52.1: 0.53.0 requires the hal-0.47/sys-0.38 generation, which
-# conflicts with the vendored legacy-I2C hal 0.46.2 (follow-up lane).
+# esp-14.2.0_20260121 (exact build-string tool_version_check). 2026-10-15
+# wave: svc 0.53 + sys 0.38 + hal-fork rebased on v0.47.0 — the legacy-I2C
+# lane closed (fork branch ai-experiments-0.47).
 esp_idf_version = "tag:v5.5.5"
 
