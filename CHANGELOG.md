@@ -21,6 +21,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   empty-INF re-frame delivered SUCCESS + 0 bytes to the app, the exact
   gp crash). Both failure frames byte-locked by host tests.
 
+- **#181 (bench-verified 2026-10-16, m5stick)**: per-command
+  answer-or-silence windows — the #153 flat 2.5 s drop window silently
+  killed legitimate slow XfrBlock/PowerOn exchanges the host still
+  waited on. Window table (host-contract lower bounds,
+  `docs/PCSC_HOST_CONTRACT_AUDIT.md` §3.1): tight 2.5 s
+  (GetSlotStatus/escape/mechanical; defs.h:76 3 s − 500 ms), XfrBlock
+  7.5 s (T1_card_timeout @ BWI=4 ≈ 3.76 s × min-WTX 2,
+  ifdhandler.c:2402-2447 + commands.c:560), IccPowerOn 59.5 s (60 s ATR
+  budget, ifdhandler.c:1330-1336, − 500 ms). Selected per in-flight
+  command at frame-parse time; #156/#179 time-extension interplay
+  extends by the class window (750 ticks/XfrBlock frame @ 100 Hz,
+  test-locked). Host tests: 643/0 workspace + 203 esp32. Bench
+  (m5stick-lcd @ ota_0, sha256 read-back verified, otadata erased past
+  a stale ota_1 wifi-vpcd selection): `test_serial_battery_hil[m5stick]`
+  **PASSED** (42.11 s: conformance subset + fuzz resync + 50-round
+  soak).
+- Bench ops notes from the same session: (1) the m5stick's ota_1 slot
+  still held the 2026-10-15 wifi-vpcd image and otadata selected it —
+  flashing ota_0 alone kept booting vpcd; fixed by erasing otadata
+  (0x30000, 0x2000) per the documented restore recipe. (2) This pcscd
+  parses EVERY file in `/etc/reader.conf.d/` regardless of extension —
+  the `.disabled`-rename convention is a placebo; the vpcd reader entry
+  was moved out entirely (backup: `/root/vpcd.conf.disabled-backup` on
+  the bench; `mv` back + flock pcscd restart re-enables the vpcd serving
+  mode). Zero vpcd connections existed at removal — nothing was serving.
+
 ### Housekeeping — 2026-10-14 unattended session
 
 - `cargo fmt` restored over the NCI-fragmentation + wifi-vpcd lanes
