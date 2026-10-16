@@ -162,10 +162,24 @@ mod imp {
         }
 
         fn on_gap_event(&self, event: BleGapEvent) -> Result<(), EspError> {
+            // #165 diagnostic: print the REAL BtStatus (Debug) per
+            // advertising event — `check_bt_status` collapses every
+            // non-Success to a bare ESP_FAIL, which is how the 0x0c
+            // (Command Disallowed) label got lost (it came from an
+            // older unsilenced build). Logging only, no behavior delta.
             match event {
-                BleGapEvent::AdvertisingConfigured(status)
-                | BleGapEvent::AdvertisingStarted(status)
-                | BleGapEvent::AdvertisingStopped(status) => self.check_bt_status(status)?,
+                BleGapEvent::AdvertisingConfigured(status) => {
+                    println!("ble: AdvertisingConfigured status={status:?}");
+                    self.check_bt_status(status)?
+                }
+                BleGapEvent::AdvertisingStarted(status) => {
+                    println!("ble: AdvertisingStarted status={status:?}");
+                    self.check_bt_status(status)?
+                }
+                BleGapEvent::AdvertisingStopped(status) => {
+                    println!("ble: AdvertisingStopped status={status:?}");
+                    self.check_bt_status(status)?
+                }
                 _ => {}
             }
 

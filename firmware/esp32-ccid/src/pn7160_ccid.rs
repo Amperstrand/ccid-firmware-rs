@@ -78,7 +78,9 @@ pub fn run() -> ! {
     // central to attach; it no longer appears on the console in ble
     // builds (verify those via the capture tool or a non-ble build).
     #[cfg(feature = "ble")]
-    let ble_console = crate::ble_console::BleConsole::init(peripherals.modem, true);
+    // `ble-diag` (#165): keep C-level BT stack logs on the console.
+    let ble_console =
+        crate::ble_console::BleConsole::init(peripherals.modem, !cfg!(feature = "ble-diag"));
 
     log::warn!(
         "FWID pn7160-ccid rev={} build={}",

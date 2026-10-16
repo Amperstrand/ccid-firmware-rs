@@ -41,7 +41,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|c3-ccid-ble|m5stick|m5stick-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
@@ -146,6 +146,22 @@ case "${BOARD}" in
         PROFILE="debug"
         RELEASE_ARGS=()
         FEATURE_ARGS=(--no-default-features --features pn7160-ccid,ble)
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
+    c3-ccid-ble-diag)
+        # #165 DIAGNOSTIC build (NEVER a serving image): c3-ccid-ble with
+        # C-level BT stack logs unsilenced + raised to DEBUG
+        # (sdkconfig-c3-ble-diag.full + the ble-diag feature) — the
+        # on-device capture of what the controller really returns when
+        # start_advertising runs.
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig-c3-ble-diag.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features pn7160-ccid,ble-diag)
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
