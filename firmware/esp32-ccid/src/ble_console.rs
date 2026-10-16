@@ -70,32 +70,11 @@ impl BleConsole {
             "EspBleGap",
             EspBleGap::new(driver.clone()),
         )?);
-
-        // Dual-address trap (issue #163, bench 2026-10-16): modern BlueZ
-        // (5.72-0ubuntu5.8 AND 5.87, both verified) PAGES public-address
-        // LE peers over classic BR/EDR on dual-mode centrals (Create
-        // Connection 0x0005 + Page Timeout, deterministic across
-        // bluetoothd/driver resets and virgin adapters), while
-        // random-address peers connect via LE on the same stacks
-        // (control-verified). Advertise with a STATIC RANDOM address so
-        // this device sits in the address class every modern central
-        // connects. ESP-IDF: esp_ble_gap_set_rand_addr after controller
-        // up, before any advertising/scan use; bd_addr arrays are
-        // LSB-first, and the MSB (array tail) must carry the
-        // static-random top bits 11. Per-board tails (from each board's
-        // public address) keep the two ble builds distinct on air.
-        #[cfg(target_arch = "xtensa")]
-        const BLE_RANDOM_ADDR: [u8; 6] = [0x9E, 0x92, 0xCB, 0x25, 0x75, 0xC4];
-        // displayed C4:75:25:CB:92:9E (m5stick tail)
-        #[cfg(target_arch = "riscv32")]
-        const BLE_RANDOM_ADDR: [u8; 6] = [0x18, 0x50, 0x9A, 0x72, 0xDA, 0xD4];
-        // displayed D4:DA:72:9A:50:18 (nucula tail)
-        let mut ble_random_addr = BLE_RANDOM_ADDR;
-        let rc = unsafe { esp_idf_sys::esp_ble_gap_set_rand_addr(ble_random_addr.as_mut_ptr()) };
-        if rc != 0 {
-            println!("ble: set_rand_addr FAILED: esp_err={rc}");
-        }
-
+        // The static-random BLE address (the #163 dual-address-trap fix)
+        // is set in ble_debug's ScanResponseConfigured arm, immediately
+        // before the raw adv-start with own_addr_type=RANDOM — a
+        // bring-up-time call returns rc=0 but does not stick (the stack
+        // is not ready; bench-verified 2026-10-16).
         let gatts = Arc::new(unwrap_or_report("EspGatts", EspGatts::new(driver.clone()))?);
         let server = BleDebugServer::new(gap, gatts);
         unwrap_or_report("subscribe", server.subscribe())?;
