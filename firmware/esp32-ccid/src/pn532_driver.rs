@@ -54,9 +54,12 @@ impl NfcDriver for Pn532NfcDriver {
 use core::convert::Infallible;
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-use pn532::{spi::SPIInterfaceWithIrq, Pn532};
+use core::time::Duration;
+
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
-use pn532_transport::{EspDelayTimer, Pn532Device};
+use pn532::{spi::SPIInterfaceWithIrq, CountDown, Pn532};
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
+use pn532_transport::Pn532Device;
 
 /// PN532 internal buffer: must satisfy N-9 >= max(response_len, request_data_len).
 /// 64 → 55 byte payload, enough for standard short APDUs.
@@ -75,6 +78,45 @@ fn map_transport_error(e: pn532_transport::Error) -> NfcError {
         pn532_transport::Error::NoCard => NfcError::NoCard,
         pn532_transport::Error::Communication => NfcError::CommunicationError,
         pn532_transport::Error::BufferOverflow => NfcError::BufferOverflow,
+    }
+}
+
+/// Blocking ESP32 count-down timer for the `pn532` crate's protocol
+/// waits. Ported verbatim from bolty-rs `pn532-transport` @ 5f1215d —
+/// the type was removed upstream at our dccf86e pin, which kept only
+/// the `BlockingMs` delay path (issue #211).
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
+struct EspDelayTimer {
+    deadline: Duration,
+}
+
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
+impl EspDelayTimer {
+    fn new() -> Self {
+        Self {
+            deadline: Duration::ZERO,
+        }
+    }
+}
+
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
+impl CountDown for EspDelayTimer {
+    type Time = Duration;
+
+    fn start<T>(&mut self, count: T)
+    where
+        T: Into<Self::Time>,
+    {
+        self.deadline = count.into();
+    }
+
+    fn wait(&mut self) -> pn532::nb::Result<(), Infallible> {
+        let ms = self.deadline.as_millis() as u32;
+        if ms > 0 {
+            esp_idf_hal::delay::Delay::new_default().delay_ms(ms);
+            self.deadline = Duration::ZERO;
+        }
+        Ok(())
     }
 }
 
