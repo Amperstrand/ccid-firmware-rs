@@ -72,13 +72,13 @@ impl<D: NfcDriver> NfcDriver for RetryFrontend<D> {
     type Error = D::Error;
 
     fn init(&mut self) -> Result<(), Self::Error> {
-        let result = self.inner.init();
+        let result = self.inner.init_recovering();
         self.degraded = result.is_err();
         result
     }
 
     fn poll_card_presence(&mut self) -> PresenceState {
-        if self.degraded && self.inner.init().is_ok() {
+        if self.degraded && self.inner.init_recovering().is_ok() {
             self.degraded = false;
         }
         if self.degraded {
@@ -441,6 +441,57 @@ mod tests {
         assert!(frontend.poll_card_presence().present);
         assert_eq!(frontend.exchange_decomposition(), Some((1, 2, 3, 4)));
         assert_eq!(frontend.configured_fwt_ms(), 42);
+    }
+
+    /// The MFRC522 shape (Codex P1 on #222): plain `init()` keeps
+    /// failing but the recovery-aware initializer succeeds — degraded
+    /// retries MUST route through `init_recovering()` or the frontend
+    /// stays card-absent forever despite the retries.
+    #[test]
+    fn degraded_retries_route_through_recovery_initializer() {
+        struct NeedsFullReinitDriver;
+
+        impl NfcDriver for NeedsFullReinitDriver {
+            type Error = NfcError;
+
+            fn init(&mut self) -> Result<(), Self::Error> {
+                Err(NfcError::CommunicationError)
+            }
+
+            fn init_recovering(&mut self) -> Result<(), Self::Error> {
+                // The threshold-triggered full re-init fixes the chip.
+                Ok(())
+            }
+
+            fn is_card_present(&mut self) -> bool {
+                true
+            }
+
+            fn poll_card_presence(&mut self) -> PresenceState {
+                PresenceState { present: true }
+            }
+
+            fn power_on(&mut self, _atr_buf: &mut [u8]) -> Result<usize, Self::Error> {
+                Ok(2)
+            }
+
+            fn power_off(&mut self) {}
+
+            fn transmit_apdu(
+                &mut self,
+                _command: &[u8],
+                _response: &mut [u8],
+            ) -> Result<usize, Self::Error> {
+                Ok(2)
+            }
+        }
+
+        let mut frontend = RetryFrontend::degraded(NeedsFullReinitDriver);
+
+        // First presence poll: the recovery initializer runs and the
+        // card appears — a plain-init retry loop would stay absent.
+        assert!(frontend.poll_card_presence().present);
+        assert!(!frontend.is_degraded());
     }
 
     #[test]
