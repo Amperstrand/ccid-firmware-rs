@@ -85,11 +85,36 @@ class FlashArgTests(unittest.TestCase):
 
         def run(cmd, timeout=60):
             n["i"] += 1
-            # write ok, reset fails
+            # write ok, reset fails even after the recovery retry
             return FakeResult(0 if n["i"] == 1 else 1)
 
         ok, _ = stm32_flash.flash_f469("/tmp/fw.bin", "ABC123", run=run)
         self.assertFalse(ok)
+
+    def test_latched_post_write_reset_recovers_and_succeeds(self):
+        # Codex P2 on #216: the ST-LINK can latch BETWEEN the write and
+        # the reset — the reset step gets the same USBDEVFS_RESET +
+        # single-retry recovery as the write.
+        n = {"i": 0}
+        resets = []
+
+        def run(cmd, timeout=60):
+            n["i"] += 1
+            # write ok; first reset latches; retry reset ok
+            return FakeResult(1 if n["i"] == 2 else 0)
+
+        orig = stm32_flash.stlink_usb_path
+        stm32_flash.stlink_usb_path = lambda s, sysfs_root=None: \
+            "/dev/bus/usb/001/104"
+        try:
+            ok, log = stm32_flash.flash_f469(
+                "/tmp/fw.bin", "ABC123", run=run,
+                reset=lambda d: resets.append(d) or True)
+        finally:
+            stm32_flash.stlink_usb_path = orig
+        self.assertTrue(ok)
+        self.assertEqual(resets, ["/dev/bus/usb/001/104"])
+        self.assertEqual(n["i"], 3)  # write + reset + reset-retry
 
 
 class ParserTests(unittest.TestCase):
