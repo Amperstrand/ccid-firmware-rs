@@ -991,13 +991,27 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 )
             }
             Err(_) => {
+                // Card timeout or death mid-exchange — same convention as
+                // the contact arm above (#152): FAILED DataBlock +
+                // bError 0xF0 (card timeout) + honest dwLength=0.
+                // libccid's CCID_Receive maps this exact shape to a
+                // host-side synthesized SW 64 00 + IFD_SUCCESS
+                // (reference/CCID/src/commands.c "case 0xF0: rx_buffer
+                // 64 00, *rx_length=2") so direct TPDU consumers get a
+                // clean status word instead of empty data — the
+                // GlobalPlatformPro ByteBuffer crash class (gp #307).
+                // The old bError 0xFB (hw error) fell into CCID_Receive's
+                // `default:` → IFD_COMMUNICATION_ERROR. The T=1-armed
+                // serial route never exposes this frame (the endpoint
+                // re-frames the payload — see ccid_handler.rs #152
+                // synthesis).
                 self.slot_state = SlotState::PresentInactive;
                 write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
                     build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
-                    CCID_ERR_HW_ERROR,
+                    CCID_ERR_CARD_TIMEOUT,
                     0,
                     &[],
                     response,
@@ -1826,6 +1840,49 @@ mod tests {
                 SlotState::PresentInactive.icc_status()
             )
         );
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
+    }
+
+    // GREAT EXPECTATION (#152): the NFC/serial relay-failure frame is
+    // byte-locked here — DataBlock, FAILED + post-failure ICC status,
+    // bError 0xF0 (card timeout, NOT hw error), dwLength honestly 0.
+    // Convention: libccid CCID_Receive "case 0xF0" synthesizes SW 64 00
+    // host-side (reference/CCID/src/commands.c) — sibling of the contact
+    // arm's xfr_block_relay_failure_answers_datablock_timeout_sw_and_
+    // stays_active golden.
+    #[test]
+    fn xfr_block_relay_failure_nfc_answers_datablock_card_timeout_error() {
+        let mut handler = new_handler(true);
+        handler.check_card_change();
+
+        let mut response = [0u8; 271];
+        let power_on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 6, &[]);
+        handler.process_command(&power_on, &mut response);
+        handler.driver_mut().set_card_present(false);
+
+        let cmd = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 7, &[0x00, 0xA4, 0x04, 0x00]);
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(
+            header.specific[0],
+            build_bstatus(
+                COMMAND_STATUS_FAILED,
+                SlotState::PresentInactive.icc_status()
+            )
+        );
+        assert_eq!(header.specific[1], CCID_ERR_CARD_TIMEOUT);
+        assert!(payload.is_empty());
+        // dwLength honesty is implied by the empty payload parse; lock
+        // the wire bytes explicitly (header layout: type, dwLength LE,
+        // slot, seq, bStatus, bError, bSpecific).
+        assert_eq!(response[0], RDR_TO_PC_DATABLOCK);
+        assert_eq!(u32::from_le_bytes(response[1..5].try_into().unwrap()), 0);
+        assert_eq!(response[5], 0);
+        assert_eq!(response[6], 7);
+        assert_eq!(response[8], CCID_ERR_CARD_TIMEOUT);
+        assert_eq!(len, 10);
         assert_eq!(handler.slot_state(), SlotState::PresentInactive);
     }
 
