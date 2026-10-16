@@ -10,28 +10,28 @@ emulated tag — ENABLED ONLY after the coupling verification documented
 in acr1252_emu.py STATUS (first bench run 2026-10-16: not yet observed).
 """
 
+import sys
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("smartcard", reason="bench host only")
 
-from tests.hardware.labgrid import acr1252_emu  # noqa: E402
+# Sibling import via path insertion (suite convention — the absolute
+# `tests.hardware.labgrid` package path does not resolve under pytest's
+# import mode; same pattern as test_serial_battery_hil).
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import acr1252_emu  # noqa: E402
 
-def pytest_addoption(parser):
-    parser.addoption("--acr-emu", action="store_true", default=False,
-                     help="enable ACR1252 card-emulation HIL tests")
+pytestmark = pytest.mark.hil
 
 
 def _acr_enabled(request):
     return request.config.getoption("--acr-emu", False)
 
 
-@pytest.fixture()
-def bench(request):
-    return request.getfixturevalue("bench") if "bench" in request.fixturenames else None
-
-
-def test_helper_install_and_control_plane(request, bench):
+def test_helper_install_and_control_plane(request, bench, bench_lock):
     if not _acr_enabled(request):
         pytest.skip("ACR1252 emulation tier-1 needs --acr-emu")
     acr1252_emu.install_helper(bench)
@@ -45,7 +45,7 @@ def test_helper_install_and_control_plane(request, bench):
     assert out in ("OK", "SENT-NO-REPLY")  # reply-drop is documented firmware behavior
 
 
-def test_emu_context_roundtrip(request, bench):
+def test_emu_context_roundtrip(request, bench, bench_lock):
     if not _acr_enabled(request):
         pytest.skip("ACR1252 emulation tier-1 needs --acr-emu")
     with acr1252_emu.Acr1252Emu(bench, ndef_uri="https://bench.test/acr-emu"):
@@ -58,7 +58,7 @@ def test_emu_context_roundtrip(request, bench):
 @pytest.mark.xfail(reason="tier-2: emulated tag not yet observed on bench readers "
                           "(RF coupling unverified 2026-10-16) — see acr1252_emu.py STATUS",
                    strict=False)
-def test_nucula_vpcd_sees_emulated_tag(request, bench):
+def test_nucula_vpcd_sees_emulated_tag(request, bench, bench_lock):
     if not _acr_enabled(request):
         pytest.skip("ACR1252 emulation tier-2 needs --acr-emu")
     with acr1252_emu.Acr1252Emu(bench, ndef_uri="https://bench.test/acr-emu"):
