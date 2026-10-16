@@ -1,34 +1,31 @@
 """ACR1252 card-emulation fixture (NFC Forum Type-2 / MIFARE Ultralight).
 
-STATUS (2026-10-16, overnight bench session — ccid issue #<auto>): the
-control plane works to the CCID layer; the emulated tag is NOT yet
-observed by bench readers. Details:
-
-- pcscd CANNOT reach the escape interface: the ACR1252U does not
-  advertise FEATURE_CCID_ESC (features TLV: 0x12, 0x13 only), so
-  SCardControl returns "Feature not supported" for every escape code.
-- Transport that DOES reach the reader: raw USB CCID PC_to_RDR_Escape
-  (type 0x6B) on interface 1 (PICC) via pyusb, with pcscd.socket +
-  pcscd.service stopped for the window (sudo -n works on the bench
-  runner; the flock/place acquisition in bench.py covers exclusivity —
-  same discipline as the pcscd battery toggle).
-- With a CORRECT CCID header ([type][dwLength LE][slot][seq][RFU2]),
-  the reader accepts the ENTER command (E0 00 00 40 03 01 00 00) but
-  returns no payload within 800 ms — unknown whether emulation engaged
-  (firmware may drop the reply while switching the RF front-end) or
-  the command was ignored. The ACS-documented ack is
-  E1 00 00 00 03 01 01 01.
+STATUS (updated 2026-10-16 after the #207 merge + first tier-1 run on
+hardware): the CONTROL PLANE now works — with the corrected ten-byte
+CCID header, tier-1 PASSED (enter + exit exchanges complete under the
+pcscd flock; place-acquired). The NDEF WRITE path returns no reply
+within 3 s (`write not confirmed: no-reply`) — the enter/exit frames
+use this same transport, so the write command itself is the suspect:
+per-command chunking and/or the ACS API §5.6 write format need
+verification against the ACR1252U doc before the next run. History
+(overnight 2026-10-16 session, salvaged + review-fixed via #207):
+pcscd cannot reach the escape interface (no FEATURE_CCID_ESC
+advertised); the raw-USB PICC transport with pcscd paused works.
 
 NEXT SESSION (verify in this order):
-1. RF coupling: confirm the ACR1252 antenna is physically within range
+1. ACS API §5.6: the write escape's exact APDU layout (block address
+   units, max data per command — the current single-shot 28-byte NDEF
+   image write may exceed it) and whether writes require emulation
+   CONFIRMED first (the enter reply-drop ambiguity below).
+2. RF coupling: confirm the ACR1252 antenna is physically within range
    of the nucula PN7160 and the m5stick RC522 (user reports shared
    field; unverified remotely).
-2. Enter emulation, restart pcscd, watch `SCardGetStatusChange` on the
-   Nucula VPCD slots for card arrival (first run: no card observed).
-3. If still dark: try the ACS Android-library byte order for the enter
+3. Enter emulation, restart pcscd, watch `SCardGetStatusChange` on the
+   serving readers for card arrival.
+4. If still dark: try the ACS Android-library byte order for the enter
    command, and the §5.6.2 Read Card Emulation Data escape as a
    control-plane probe (does not need RF).
-4. ISO-DEP (Type-4 / NTAG424) flows are NOT emulatable on this
+5. ISO-DEP (Type-4 / NTAG424) flows are NOT emulatable on this
    hardware — those stay on the real-card plan regardless.
 
 Commands (ACR1252U API §5.6):
