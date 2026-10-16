@@ -5,6 +5,7 @@ Run: python3 -m unittest tests/hardware/labgrid/test_stm32_flash.py
 """
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -92,19 +93,36 @@ class FlashArgTests(unittest.TestCase):
 
 
 class ParserTests(unittest.TestCase):
-    def test_stlink_usb_path_finds_pinned_serial(self):
-        lsusb = ("Bus 001 Device 104: ID 0483:374b STMicroelectronics ST-LINK/V2.1 066FFF5157\n"
-                 "Bus 001 Device 105: ID 0483:374b STMicroelectronics ST-LINK/V2.1 066EFF3837\n")
-        self.assertEqual(
-            stm32_flash.stlink_usb_path("066FFF5157", lsusb),
-            "/dev/bus/usb/001/104")
-        self.assertEqual(
-            stm32_flash.stlink_usb_path("066EFF3837", lsusb),
-            "/dev/bus/usb/001/105")
+    def _sysfs_tree(self, base, serial, busnum, devnum):
+        d = base / "1-1"
+        d.mkdir(parents=True)
+        (d / "serial").write_text(serial)
+        (d / "busnum").write_text(str(busnum))
+        (d / "devnum").write_text(str(devnum))
+        return base
 
-    def test_stlink_usb_path_ignores_other_devices(self):
-        lsusb = "Bus 001 Device 003: ID 8087:0026 Intel Corp. AX201 Bluetooth\n"
-        self.assertIsNone(stm32_flash.stlink_usb_path("066FFF", lsusb))
+    def test_stlink_usb_path_resolves_serial_via_sysfs(self, tmp=None):
+        # sysfs shape, NOT lsusb text (plain lsusb carries no serials —
+        # the Codex P1 on #216: an lsusb-text matcher is dead code).
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            from pathlib import Path as P
+            base = self._sysfs_tree(P(td), "066FFF515786534867184152", 1, 104)
+            self.assertEqual(
+                stm32_flash.stlink_usb_path("066FFF515786534867184152",
+                                            sysfs_root=str(base)),
+                "/dev/bus/usb/001/104")
+
+    def test_stlink_usb_path_no_match_returns_none(self):
+        with tempfile.TemporaryDirectory() as td:
+            from pathlib import Path as P
+            base = self._sysfs_tree(P(td), "066EFF3837334D4E", 1, 105)
+            self.assertIsNone(
+                stm32_flash.stlink_usb_path("066FFF5157", sysfs_root=str(base)))
+
+    def test_stlink_usb_path_missing_sysfs_returns_none(self):
+        self.assertIsNone(
+            stm32_flash.stlink_usb_path("066FFF", sysfs_root="/nonexistent"))
 
 
 if __name__ == "__main__":

@@ -48,19 +48,33 @@ def _run_local(cmd: str, timeout: int = 60) -> CmdResult:
     return CmdResult(r.returncode, r.stdout, r.stderr)
 
 
-def stlink_usb_path(stlink_serial: str, lsusb_output: str | None = None) -> str | None:
-    """/dev/bus/usb/BBB/DDD for the ST-LINK with this serial (or None).
+def stlink_usb_path(stlink_serial: str,
+                    sysfs_root: str = "/sys/bus/usb/devices") -> str | None:
+    """/dev/bus/usb/BBB/DDD for the USB device with this serial, or None.
 
-    Pure parser over `lsusb` output — injectable for tests.
+    sysfs is the reliable source: plain `lsusb` output does NOT include
+    device serials (only -v descriptors do), so an lsusb-text match can
+    never succeed on a real host (Codex P1 on #216). Each device dir
+    exposes `serial`, `busnum` and `devnum` files. `sysfs_root` is
+    injectable for tests.
     """
-    if lsusb_output is None:
-        lsusb_output = subprocess.run(["lsusb"], capture_output=True,
-                                      text=True).stdout
-    for line in lsusb_output.splitlines():
-        m = re.match(r"Bus (\d+) Device (\d+): ID 0483:374[bd]", line)
-        if m and stlink_serial.lower() in line.lower():
-            bus, dev = int(m.group(1)), int(m.group(2))
-            return f"/dev/bus/usb/{bus:03d}/{dev:03d}"
+    root = Path(sysfs_root)
+    if not root.is_dir():
+        return None
+    for dev_dir in sorted(root.iterdir()):
+        serial_file = dev_dir / "serial"
+        try:
+            serial = serial_file.read_text().strip()
+        except OSError:
+            continue
+        if serial.lower() != stlink_serial.lower():
+            continue
+        try:
+            bus = int((dev_dir / "busnum").read_text().strip())
+            devnum = int((dev_dir / "devnum").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        return f"/dev/bus/usb/{bus:03d}/{devnum:03d}"
     return None
 
 
