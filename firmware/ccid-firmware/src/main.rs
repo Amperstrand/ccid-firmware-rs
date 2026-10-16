@@ -52,9 +52,6 @@ mod t1_engine;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod usb_identity;
 
-#[cfg(feature = "display")]
-use ccid_firmware_rs::pinpad;
-
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use cortex_m_rt::entry;
 

@@ -117,8 +117,9 @@ jobs:
   # job-level `if:`, and split jobs let each tier carry its own gate.
   # PRIMARY = the bench-shipped boards (cherry ST2xxx / F469; nucula
   # c3-ccid + bringup; m5stick) — every firmware-touching event builds
-  # them. SECONDARY = gemalto ct30/k30, F746 bitbang, m5atom-default,
-  # pn532 — built on main pushes (every merge stays firmware-verified),
+  # them. SECONDARY = gemalto ct30/k30, F746 bitbang, F469 display,
+  # m5atom-default, pn532 — built on main pushes (every merge stays
+  # firmware-verified),
   # the nightly schedule, dispatch with full-matrix=true, or a PR
   # labeled `ci-full-matrix`. Label note: apply the label BEFORE the
   # triggering push — re-runs replay the original event payload, so
@@ -212,6 +213,8 @@ jobs:
             features: "stm32f469,profile-gemalto-idbridge-k30"
           - profile: stm32f746-bitbang
             features: "stm32f746,profile-cherry-smartterminal-st2xxx"
+          - profile: stm32f469-display
+            features: "stm32f469,profile-cherry-smartterminal-st2xxx,display"
     steps:
       - uses: actions/checkout@v5
         with:
