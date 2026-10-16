@@ -277,15 +277,16 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
 
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
-    // #153 window in TICKS — the tick rate is 100 Hz in production, so
-    // 2500 ms must be converted (Codex #158 P1), never written as raw
-    // ticks.
-    let response_deadline_ticks =
-        esp32_ccid::ccid_serial_server::response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
+    // #153/#181 windows in TICKS — the tick rate is 100 Hz in
+    // production, so the ms values must be converted (Codex #158 P1),
+    // never written as raw ticks.
+    let response_windows = esp32_ccid::ccid_serial_server::ResponseWindows::from_tick_hz(
+        esp_idf_sys::configTICK_RATE_HZ,
+    );
     let mut server = CcidSerialServer::with_config(
         handler,
         poll_interval_ticks,
-        response_deadline_ticks,
+        response_windows,
         unsafe { esp_idf_sys::xTaskGetTickCount() },
         esp32_ccid::ccid_serial_server::ServeConfig {
             nak_on_error: true,

@@ -24,7 +24,9 @@
 
 use crate::ccid_handler::CcidHandler;
 use crate::nfc::NfcDriver;
-use ccid_protocol::types::{PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_XFR_BLOCK};
+use ccid_protocol::types::{
+    PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_XFR_BLOCK,
+};
 use ccid_transport_serial::{
     build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent, FrameParser,
 };
@@ -190,7 +192,50 @@ pub mod time_extension {
 /// `DEFAULT_COM_READ_TIMEOUT = 3*1000` ms (`reference/CCID/src/defs.h:76`);
 /// 500 ms margin for wire + host scheduling leaves 2500. Aligned with
 /// #156's 2.4 s card-exchange budget so the healthy path never trips it.
+///
+/// #181: this is now the TIGHT window — the answer-or-silence budget for
+/// GetSlotStatus, escapes and mechanical-class commands. XfrBlock and
+/// IccPowerOn carry their own, host-contract-derived windows (see
+/// [`XFR_BLOCK_RESPONSE_WINDOW_MS`] / [`ICC_POWER_ON_RESPONSE_WINDOW_MS`]).
 pub const RESPONSE_WINDOW_MS: u32 = 2_500;
+
+/// #181: PC_to_RDR_XfrBlock answer-or-silence window, in MILLISECONDS.
+///
+/// Host-contract lower bound (`docs/PCSC_HOST_CONTRACT_AUDIT.md` §3.1,
+/// XfrBlock TPDU row): libccid's per-exchange `readTimeout` for a T=1
+/// TPDU exchange at a BWI=4 negotiation — the BWI the audit bench-runs
+/// ("BWT 1.43 s @ BWI=4/10752 baud", §F-7; libccid's own OpenPGP hack
+/// comment calls BWI 4 "BWT 1.4s", ifdhandler.c:1075-1077) — computes
+/// to ≈3.76 s at 4 MHz defaults:
+/// `T1_card_timeout(f=372, d=1, TC1=0, BWI=4, CWI=5, 4000 kHz)`
+/// = 260·EGT(1.116 ms) + BWT(1429 ms) + 260·CWT(4.0 ms) + 1000
+/// (`reference/CCID/src/ifdhandler.c:2402-2447`). Any answer SLOWER than
+/// BWT only reaches the host through a WTX round, and each WTX round
+/// multiplies that window by the requested m ≥ 2
+/// (`ccid_descriptor->readTimeout *= t1->wtx`, commands.c:560; our
+/// endpoint's minimum m=2, t1.rs G-04) — so the lower bound of "the
+/// host is still listening at t" for t > BWT is 3.76 s × 2 = **7.5 s**.
+/// This also covers one full ISO-DEP frame wait at FWI=4 (FWT ≈ 4.8 s —
+/// the "~5 s per frame" the MFRC522 driver accepts; the driver comment
+/// is out of scope here). Slower exchanges ride interim time-extension
+/// frames (#156 B / #179), each extending this window server-side.
+///
+/// Deliberately NOT taken (upper bounds of the audit's range): the
+/// no-TB3 default `param[3]=0x4D` → BWI=4/CWI=13 (ifdhandler.c:1032)
+/// computes ≈201 s (260·CWT dominates), and non-ISO params floor at 60 s
+/// (ifdhandler.c:2423) — a drop decision must arrive in seconds, not
+/// minutes, to ever recover the session.
+pub const XFR_BLOCK_RESPONSE_WINDOW_MS: u32 = 7_500;
+
+/// #181: PC_to_RDR_IccPowerOn answer-or-silence window, in MILLISECONDS.
+///
+/// Host contract (`docs/PCSC_HOST_CONTRACT_AUDIT.md` §3.1, IccPowerOn
+/// row): libccid budgets the ATR wait at 60 s —
+/// `ccid_descriptor->readTimeout = 60*1000` after deriving a 29 s worst
+/// case for a 33-byte ATR at 4 MHz (`reference/CCID/src/ifdhandler.c:1330-1336`).
+/// Same margin shape as the tight window (3.0 s host → 2.5 s ours):
+/// 60 s − 500 ms wire/host scheduling margin.
+pub const ICC_POWER_ON_RESPONSE_WINDOW_MS: u32 = 59_500;
 
 /// [`RESPONSE_WINDOW_MS`] expressed in FreeRTOS ticks — the
 /// `pdMS_TO_TICKS(ms) = ms * configTICK_RATE_HZ / 1000` expansion
@@ -203,6 +248,50 @@ pub const RESPONSE_WINDOW_MS: u32 = 2_500;
 /// `esp_idf_sys::configTICK_RATE_HZ` on target.
 pub const fn response_window_ticks(tick_hz: u32) -> u32 {
     RESPONSE_WINDOW_MS * tick_hz / 1000
+}
+
+/// [`XFR_BLOCK_RESPONSE_WINDOW_MS`] in FreeRTOS ticks (see
+/// [`response_window_ticks`] for the pdMS_TO_TICKS expansion).
+pub const fn xfr_block_response_window_ticks(tick_hz: u32) -> u32 {
+    XFR_BLOCK_RESPONSE_WINDOW_MS * tick_hz / 1000
+}
+
+/// [`ICC_POWER_ON_RESPONSE_WINDOW_MS`] in FreeRTOS ticks (see
+/// [`response_window_ticks`] for the pdMS_TO_TICKS expansion).
+pub const fn icc_power_on_response_window_ticks(tick_hz: u32) -> u32 {
+    ICC_POWER_ON_RESPONSE_WINDOW_MS * tick_hz / 1000
+}
+
+/// #181 per-command answer-or-silence windows, in TICKS — selected per
+/// in-flight command at frame-parse time (`feed_byte`). Derive with
+/// [`Self::from_tick_hz`] so every window honors the device tick rate
+/// (the flat-window tick-rate trap is Codex #158 P1's lesson).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseWindows {
+    /// GetSlotStatus / escape / mechanical-class commands (#153 window).
+    pub tight: u32,
+    /// PC_to_RDR_XfrBlock (host-contract lower bound, see
+    /// [`XFR_BLOCK_RESPONSE_WINDOW_MS`]).
+    pub xfr_block: u32,
+    /// PC_to_RDR_IccPowerOn (60 s ATR budget minus margin, see
+    /// [`ICC_POWER_ON_RESPONSE_WINDOW_MS`]).
+    pub power_on: u32,
+}
+
+impl ResponseWindows {
+    /// All three windows for a device's tick rate
+    /// (`esp_idf_sys::configTICK_RATE_HZ` on target). Each is clamped to
+    /// ≥ 1 tick so a slow tick rate can never produce a zero window.
+    pub const fn from_tick_hz(tick_hz: u32) -> Self {
+        let tight = response_window_ticks(tick_hz);
+        let xfr_block = xfr_block_response_window_ticks(tick_hz);
+        let power_on = icc_power_on_response_window_ticks(tick_hz);
+        Self {
+            tight: if tight < 1 { 1 } else { tight },
+            xfr_block: if xfr_block < 1 { 1 } else { xfr_block },
+            power_on: if power_on < 1 { 1 } else { power_on },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,10 +364,15 @@ pub struct CcidSerialServer<D: NfcDriver> {
     resp_buf: [u8; MAX_FRAME_SIZE],
     resp_len: usize,
     poll_interval_ticks: u32,
-    /// #153 window in TICKS (see [`response_window_ticks`]) — supplied by
-    /// the caller because the tick rate is a device property
-    /// (`configTICK_RATE_HZ`), not a property of this device-agnostic core.
-    response_deadline_ticks: u32,
+    /// #181 per-command answer-or-silence windows in TICKS (see
+    /// [`ResponseWindows`]) — supplied by the caller because the tick
+    /// rate is a device property (`configTICK_RATE_HZ`), not a property
+    /// of this device-agnostic core. The in-flight command's class
+    /// selects the active one at frame-parse time.
+    windows: ResponseWindows,
+    /// Window (ticks) of the CURRENT in-flight command — the #153/#181
+    /// verdict window for `response_expired`/`response_deadline_tick`.
+    active_deadline_ticks: u32,
     last_poll_tick: u32,
     frame_done_tick: u32,
     late_drop_count: u32,
@@ -294,19 +388,20 @@ impl<D: NfcDriver> CcidSerialServer<D> {
 
     /// `now_ticks` seeds the poll gate the same way the on-device loop
     /// captures the boot tick, so the first poll fires only after one full
-    /// interval. `response_deadline_ticks` is the #153 window in ticks —
-    /// derive it with [`response_window_ticks`] so the tick rate is
-    /// honored (`CONFIG_FREERTOS_HZ=100` in production: 250, not 2500).
+    /// interval. `windows` are the #181 per-command windows in ticks —
+    /// derive them with [`ResponseWindows::from_tick_hz`] so the tick rate
+    /// is honored (`CONFIG_FREERTOS_HZ=100` in production: 250/750/5950,
+    /// not ms read as ticks).
     pub fn new(
         handler: CcidHandler<D>,
         poll_interval_ticks: u32,
-        response_deadline_ticks: u32,
+        windows: ResponseWindows,
         now_ticks: u32,
     ) -> Self {
         Self::with_config(
             handler,
             poll_interval_ticks,
-            response_deadline_ticks,
+            windows,
             now_ticks,
             ServeConfig::default(),
         )
@@ -315,10 +410,15 @@ impl<D: NfcDriver> CcidSerialServer<D> {
     pub fn with_config(
         handler: CcidHandler<D>,
         poll_interval_ticks: u32,
-        response_deadline_ticks: u32,
+        windows: ResponseWindows,
         now_ticks: u32,
         config: ServeConfig,
     ) -> Self {
+        let windows = ResponseWindows {
+            tight: windows.tight.max(1),
+            xfr_block: windows.xfr_block.max(1),
+            power_on: windows.power_on.max(1),
+        };
         Self {
             handler,
             config,
@@ -334,7 +434,8 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             resp_buf: [0; MAX_FRAME_SIZE],
             resp_len: 0,
             poll_interval_ticks: poll_interval_ticks.max(1),
-            response_deadline_ticks: response_deadline_ticks.max(1),
+            active_deadline_ticks: windows.tight,
+            windows,
             last_poll_tick: now_ticks,
             frame_done_tick: now_ticks,
             late_drop_count: 0,
@@ -371,9 +472,24 @@ impl<D: NfcDriver> CcidSerialServer<D> {
             None => return ServeAction::None,
         };
 
-        // #153: the completing byte's arrival opens the host's 3 s read
+        // #153: the completing byte's arrival opens the host's read
         // window — the deadline anchor for answer-or-silence.
         self.frame_done_tick = now_ticks;
+
+        // #181: per-command answer-or-silence window, selected at frame
+        // parse time from the in-flight command class (the server knows
+        // the PC_to_RDR type here). XfrBlock / IccPowerOn legitimately
+        // run seconds longer than the host's flat 3 s default — a
+        // legitimate slow APDU (FWI ~5 s per frame; WTX chains) exceeds
+        // the tight window while libccid is still legitimately waiting,
+        // and dropping it silently kills the exchange. Everything else
+        // (GetSlotStatus poll, escapes, mechanical class) keeps the
+        // tight #153 window.
+        self.active_deadline_ticks = match ccid_bytes.first() {
+            Some(&PC_TO_RDR_XFR_BLOCK) => self.windows.xfr_block,
+            Some(&PC_TO_RDR_ICC_POWER_ON) => self.windows.power_on,
+            _ => self.windows.tight,
+        };
 
         // Echo the received frame (GemPC Twin protocol). The parser's
         // received-frame snapshot survives its post-event reset.
@@ -432,12 +548,13 @@ impl<D: NfcDriver> CcidSerialServer<D> {
                 // Codex PR159 P1: every interim frame multiplied the
                 // host's read window (commands.c CCID_TIME_EXTENSION →
                 // readTimeout ×= bError) — extend OUR deadline to match,
-                // or a ~2.4 s stall + teardown cleanup self-drops the
-                // final response at the original 2.5 s window while the
-                // host is still waiting on the extended one. One window
-                // per frame: a conservative under-estimate of the
-                // host's multiplicative growth (3 s × 2 per frame).
-                self.extend_response_deadline(self.response_deadline_ticks * u32::from(emitted));
+                // or a stall + teardown cleanup self-drops the final
+                // response at the original window while the host is
+                // still waiting on the extended one. One window per
+                // frame — the IN-FLIGHT command's class window (#181;
+                // XfrBlock here, the only armed class): a conservative
+                // under-estimate of the host's multiplicative growth.
+                self.extend_response_deadline(self.active_deadline_ticks * u32::from(emitted));
             }
         }
         self.resp_len = build_response_frame(&self.ccid_resp_buf[..resp_len], &mut self.resp_buf);
@@ -508,27 +625,26 @@ impl<D: NfcDriver> CcidSerialServer<D> {
         self.poll_and_stash(now_ticks)
     }
 
-    /// #153 answer-or-silence: has the pending response outlived the
-    /// host's read window? Call with a tick captured AFTER the handler
+    /// #153/#181 answer-or-silence: has the pending response outlived
+    /// the host's read window? Call with a tick captured AFTER the handler
     /// ran (the handler is what consumes the window) and BEFORE writing
     /// echo/notify/response to the wire. The host parser
     /// (`ReadSerial()`) has no mid-stream resync — an expired response
     /// must be dropped via [`Self::record_late_response()`], never
-    /// written. The window is the constructor-supplied
-    /// `response_deadline_ticks` (tick-rate-derived, see
-    /// [`response_window_ticks`]).
+    /// written. The window is the in-flight command's class window,
+    /// selected at frame-parse time (see [`ResponseWindows`]).
     pub fn response_expired(&self, now_ticks: u32) -> bool {
-        now_ticks.wrapping_sub(self.frame_done_tick) > self.response_deadline_ticks
+        now_ticks.wrapping_sub(self.frame_done_tick) > self.active_deadline_ticks
     }
 
     /// Absolute tick at which the pending response's host read window
-    /// closes: `frame_done_tick + response_deadline_ticks` (#153). Write
-    /// sites that park bytes for a later retry (the SPP path) re-check
-    /// parked data against THIS — a window restarted at park time would
-    /// grant the response a second lifetime.
+    /// closes: `frame_done_tick + active_deadline_ticks` (#153/#181).
+    /// Write sites that park bytes for a later retry (the SPP path)
+    /// re-check parked data against THIS — a window restarted at park
+    /// time would grant the response a second lifetime.
     pub fn response_deadline_tick(&self) -> u32 {
         self.frame_done_tick
-            .wrapping_add(self.response_deadline_ticks)
+            .wrapping_add(self.active_deadline_ticks)
     }
 
     /// #156 B hook: refresh the deadline baseline after an interim
@@ -618,10 +734,11 @@ mod tests {
     const POLL_INTERVAL: u32 = 500;
     /// Tests model a 1 kHz tick rate (ticks == ms — like the
     /// `sdkconfig.wallet-test` fragment), keeping the numeric
-    /// expectations tick-shaped. Production runs 100 Hz where the #153
-    /// window is 250 ticks — locked separately below.
+    /// expectations tick-shaped. Production runs 100 Hz where the
+    /// #153/#181 windows are 250/750/5950 ticks — locked separately
+    /// below.
     const TEST_TICK_HZ: u32 = 1_000;
-    const TEST_DEADLINE_TICKS: u32 = 2_500;
+    const TEST_WINDOWS: ResponseWindows = ResponseWindows::from_tick_hz(TEST_TICK_HZ);
 
     fn mock_driver(card_present: bool) -> MockNfcDriver {
         let atr = [0x3B, 0x80, 0x01, 0x01];
@@ -632,12 +749,7 @@ mod tests {
     fn server_with(card_present: bool) -> CcidSerialServer<MockNfcDriver> {
         let mut driver = mock_driver(card_present);
         driver.init().unwrap();
-        CcidSerialServer::new(
-            CcidHandler::new(driver),
-            POLL_INTERVAL,
-            TEST_DEADLINE_TICKS,
-            0,
-        )
+        CcidSerialServer::new(CcidHandler::new(driver), POLL_INTERVAL, TEST_WINDOWS, 0)
     }
 
     /// Build a host→reader command frame: SYNC + ACK + 10-byte CCID header
@@ -818,7 +930,7 @@ mod tests {
         let mut server = CcidSerialServer::new(
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
-            TEST_DEADLINE_TICKS,
+            TEST_WINDOWS,
             1_000, // constructed "late" in uptime
         );
 
@@ -840,7 +952,7 @@ mod tests {
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(driver),
             POLL_INTERVAL,
-            TEST_DEADLINE_TICKS,
+            TEST_WINDOWS,
             0,
             ServeConfig {
                 nak_on_error: true,
@@ -885,7 +997,7 @@ mod tests {
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
-            TEST_DEADLINE_TICKS,
+            TEST_WINDOWS,
             0,
             ServeConfig {
                 nak_on_error: false,
@@ -924,7 +1036,7 @@ mod tests {
         CcidSerialServer::with_config(
             CcidHandler::new(driver),
             POLL_INTERVAL,
-            TEST_DEADLINE_TICKS,
+            TEST_WINDOWS,
             0,
             ServeConfig {
                 nak_on_error: true,
@@ -1063,7 +1175,7 @@ mod tests {
         let mut server = CcidSerialServer::with_config(
             CcidHandler::new(mock_driver(true)),
             POLL_INTERVAL,
-            TEST_DEADLINE_TICKS,
+            TEST_WINDOWS,
             0,
             ServeConfig::default(),
         );
@@ -1154,7 +1266,7 @@ mod tests {
         let mut server = CcidSerialServer::new(
             CcidHandler::new(mock_driver(false)),
             POLL_INTERVAL,
-            response_window_ticks(100),
+            ResponseWindows::from_tick_hz(100),
             0,
         );
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
@@ -1171,6 +1283,93 @@ mod tests {
             server.response_expired(done + 251),
             "past the window: silence"
         );
+    }
+
+    // GREAT EXPECTATION (#181): the per-command window table, locked in
+    // ms AND in tick derivation. Citations live on the constants — if a
+    // value here breaks, re-verify against docs/PCSC_HOST_CONTRACT_AUDIT.md
+    // §3.1 and the quoted libccid lines before "fixing" the number.
+    #[test]
+    fn per_command_window_table_locked() {
+        // ms table: tight 2.5 s (defs.h:76 3 s − 500 ms), XfrBlock 7.5 s
+        // (T1_card_timeout @ BWI=4 ≈ 3.76 s × min-WTX 2), PowerOn 59.5 s
+        // (ifdhandler.c:1336 60 s budget − 500 ms).
+        assert_eq!(RESPONSE_WINDOW_MS, 2_500);
+        assert_eq!(XFR_BLOCK_RESPONSE_WINDOW_MS, 7_500);
+        assert_eq!(ICC_POWER_ON_RESPONSE_WINDOW_MS, 59_500);
+        // Production tick rate 100 Hz: 250/750/5950 — never raw ticks.
+        assert_eq!(response_window_ticks(100), 250);
+        assert_eq!(xfr_block_response_window_ticks(100), 750);
+        assert_eq!(icc_power_on_response_window_ticks(100), 5_950);
+        // 1 kHz (wallet-test fragment): ticks == ms.
+        assert_eq!(xfr_block_response_window_ticks(1_000), 7_500);
+        assert_eq!(icc_power_on_response_window_ticks(1_000), 59_500);
+        // Truncating integer math, like the pdMS_TO_TICKS macro.
+        assert_eq!(xfr_block_response_window_ticks(500), 3_750);
+        assert_eq!(
+            ResponseWindows::from_tick_hz(100),
+            ResponseWindows {
+                tight: 250,
+                xfr_block: 750,
+                power_on: 5_950
+            }
+        );
+    }
+
+    #[test]
+    fn get_slot_status_stays_on_the_tight_window() {
+        // Brief-shaped lock: a GetSlotStatus response judged at +3 s is
+        // LATE (tight window 2.5 s) — the poll must never inherit the
+        // XfrBlock/PowerOn budgets.
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        feed_frame(&mut server, &frame, 1_000);
+
+        assert_eq!(server.response_deadline_tick(), 1_012 + 2_500);
+        assert!(
+            server.response_expired(1_012 + 3_000),
+            "GetSlotStatus at +3 s: silence"
+        );
+    }
+
+    #[test]
+    fn xfr_block_window_covers_slow_apdus_and_wtx_rounds() {
+        // #181 core lock: an XfrBlock response is STILL DELIVERED at
+        // +5 s (a full-FWT frame at FWI=4 ≈ 4.8 s), and drops exactly at
+        // the 7.5 s bound (3.76 s host base × min WTX 2).
+        let mut server = server_with(true);
+        let frame = command_frame_with_payload(PC_TO_RDR_XFR_BLOCK, 1, &[0x00, 0xA4, 0x04, 0x00]);
+        let frame_len = frame.len();
+        feed_frame(&mut server, &frame, 0);
+        let done = frame_len as u32 - 1;
+
+        assert_eq!(server.response_deadline_tick(), done + 7_500);
+        assert!(
+            !server.response_expired(done + 5_000),
+            "slow-but-legal APDU at +5 s: still delivered"
+        );
+        assert!(
+            !server.response_expired(done + 7_500),
+            "at-window: still fresh"
+        );
+        assert!(
+            server.response_expired(done + 7_501),
+            "past the WTX-extended bound: silence"
+        );
+    }
+
+    #[test]
+    fn power_on_window_matches_the_host_atr_budget() {
+        // IccPowerOn: the host budgets 60 s for the ATR (ifdhandler.c:1336)
+        // — our 59.5 s window keeps the answer deliverable for the whole
+        // budget minus wire/host margin, then silences.
+        let mut server = server_with(true);
+        let frame = command_frame(PC_TO_RDR_ICC_POWER_ON, 1);
+        feed_frame(&mut server, &frame, 0);
+
+        assert_eq!(server.response_deadline_tick(), 12 + 59_500);
+        assert!(!server.response_expired(12 + 59_500));
+        assert!(server.response_expired(12 + 59_501));
     }
 
     #[test]
@@ -1416,7 +1615,7 @@ mod tests {
             let mut server = CcidSerialServer::new(
                 CcidHandler::new(driver),
                 POLL_INTERVAL,
-                response_window_ticks(100),
+                ResponseWindows::from_tick_hz(100),
                 0,
             );
             // Prime presence + power on so the XfrBlock reaches
@@ -1454,6 +1653,16 @@ mod tests {
             assert_eq!(server.echo().len(), 0, "echo already on the wire");
             let resp = server.response();
             assert_eq!(resp[2], 0x80, "RDR_to_PC_DataBlock still served");
+
+            // #179 interplay under #181 windows: the one interim frame
+            // must have extended the deadline by ONE XFR-CLASS window
+            // (750 ticks at this 100 Hz server), not the tight window —
+            // frame completed at tick 26 (feed base 10, 17-byte frame).
+            assert_eq!(server.response_deadline_tick(), 26 + 750 + 750);
+            assert!(
+                !server.response_expired(26 + 1_000),
+                "stall + extension: still inside the extended window"
+            );
         }
 
         #[test]
