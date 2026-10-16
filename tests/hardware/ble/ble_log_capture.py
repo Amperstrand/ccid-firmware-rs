@@ -100,7 +100,12 @@ async def connect_fresh(bleak, prefix: str, connect_timeout: float = 15.0):
     drop_stale_peer(address)
 
     # Second pass with a LIVE scanner: fresh object from the LE
-    # advertisement, Connect issued before the scan stops.
+    # advertisement, Connect issued before the scan stops. Match the
+    # address saved from the first pass — scan ordering is not stable
+    # and multiple boards share the ESP32-CCID-Debug name (Codex P2 on
+    # #212): a prefix rematch could pick the WRONG board and connect to
+    # it without dropping ITS stale object.
+    target_address = matches[0].address
     scanner = bleak.BleakScanner()
     await scanner.start()
     deadline = asyncio.get_event_loop().time() + 10.0
@@ -108,7 +113,7 @@ async def connect_fresh(bleak, prefix: str, connect_timeout: float = 15.0):
     try:
         while fresh is None and asyncio.get_event_loop().time() < deadline:
             for d in scanner.discovered_devices:  # bleak 3.x property
-                if d.name and d.name.startswith(prefix):
+                if d.address == target_address:
                     fresh = d
                     break
             if fresh is None:
@@ -149,15 +154,26 @@ async def follow(device, scanner, send_line: str | None) -> None:
             print(f"[{stamp()}] following (Ctrl-C to stop)", file=sys.stderr)
             await disconnected
             print(f"\n[{stamp()}] device disconnected", file=sys.stderr)
-    except (asyncio.TimeoutError, TimeoutError):
+    except Exception as e:
+        # bleak 3.x surfaces BlueZ's classic-page failure as
+        # BleakDBusError("br-connection-page-timeout") when bluetoothd
+        # answers before our timer — catch broadly so the scanner stops
+        # and the diagnostic prints for the trap this tool exists to
+        # explain (Codex P2 on #212), then re-raise.
         if scanner is not None:
             await scanner.stop()
-        print(f"\n[{stamp()}] connect timed out. If btmon shows "
-              f"'Create Connection (0x0005)' + 'Page Timeout', bluetoothd is "
-              f"PAGING the peer over classic BR/EDR (the bluez 5.72-0ubuntu5.8 "
-              f"dual-address trap — see module docstring). Remedy host-side: "
-              f"pin bluez 5.72-0ubuntu5.7 or use a different central adapter.",
-              file=sys.stderr)
+        name = getattr(getattr(e, "error_name", None), "split", lambda _s: [])()
+        is_page_timeout = (isinstance(e, (asyncio.TimeoutError, TimeoutError))
+                           or "page-timeout" in str(name).lower()
+                           or "page-timeout" in str(e).lower())
+        if is_page_timeout:
+            print(f"\n[{stamp()}] connect failed "
+                  f"({type(e).__name__}). If btmon shows "
+                  f"'Create Connection (0x0005)' + 'Page Timeout', bluetoothd is "
+                  f"PAGING the peer over classic BR/EDR (the bluez 5.72-0ubuntu5.8 "
+                  f"dual-address trap — see module docstring). Remedy host-side: "
+                  f"pin bluez 5.72-0ubuntu5.7 or use a different central adapter.",
+                  file=sys.stderr)
         raise
 
 
