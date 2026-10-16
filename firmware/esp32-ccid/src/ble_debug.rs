@@ -167,17 +167,29 @@ mod imp {
             // non-Success to a bare ESP_FAIL, which is how the 0x0c
             // (Command Disallowed) label got lost (it came from an
             // older unsilenced build). Logging only, no behavior delta.
+            // Gated on `ble-diag` (Codex P1 on #205): these events fire
+            // asynchronously, and a raw println after the transport is
+            // claimed would put unsolicited ASCII on a CCID-shared
+            // console — clean-wire violation in every standard `ble`
+            // build.
+            let diag = cfg!(feature = "ble-diag");
             match event {
                 BleGapEvent::AdvertisingConfigured(status) => {
-                    println!("ble: AdvertisingConfigured status={status:?}");
+                    if diag {
+                        println!("ble: AdvertisingConfigured status={status:?}");
+                    }
                     self.check_bt_status(status)?
                 }
                 BleGapEvent::AdvertisingStarted(status) => {
-                    println!("ble: AdvertisingStarted status={status:?}");
+                    if diag {
+                        println!("ble: AdvertisingStarted status={status:?}");
+                    }
                     self.check_bt_status(status)?
                 }
                 BleGapEvent::AdvertisingStopped(status) => {
-                    println!("ble: AdvertisingStopped status={status:?}");
+                    if diag {
+                        println!("ble: AdvertisingStopped status={status:?}");
+                    }
                     self.check_bt_status(status)?
                 }
                 _ => {}
