@@ -210,8 +210,25 @@ mod imp {
             if let BleGapEvent::ScanResponseConfigured(status) = event {
                 self.check_bt_status(status)?;
                 println!("ble: adv + scan rsp configured — starting advertising");
-                if let Err(e) = self.gap.start_advertising() {
-                    println!("ble: start_advertising FAILED: {e}");
+                // esp-idf-svc's start_advertising hardcodes
+                // own_addr_type = PUBLIC (esp-idf-svc 0.53 gap.rs:1082, a
+                // literal TODO) — our static-random address (set at
+                // bring-up, ble_console) would never be used. Same
+                // params as the svc call, but own_addr_type = RANDOM
+                // (BLE_ADDR_TYPE_RANDOM = 0x01, esp_bt_defs.h).
+                let mut adv_param = esp_idf_sys::esp_ble_adv_params_t {
+                    adv_int_min: 0x20,
+                    adv_int_max: 0x40,
+                    adv_type: 0x00,      // ADV_TYPE_IND
+                    own_addr_type: 0x01, // BLE_ADDR_TYPE_RANDOM
+                    peer_addr: [0; 6],
+                    peer_addr_type: 0x00,    // BLE_ADDR_TYPE_PUBLIC
+                    channel_map: 0x07,       // ADV_CHNL_ALL
+                    adv_filter_policy: 0x00, // ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
+                };
+                let rc = unsafe { esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_param) };
+                if rc != 0 {
+                    println!("ble: start_advertising FAILED: esp_err={rc}");
                 }
             }
 

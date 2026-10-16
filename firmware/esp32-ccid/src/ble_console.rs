@@ -91,9 +91,7 @@ impl BleConsole {
         const BLE_RANDOM_ADDR: [u8; 6] = [0x18, 0x50, 0x9A, 0x72, 0xDA, 0xD4];
         // displayed D4:DA:72:9A:50:18 (nucula tail)
         let mut ble_random_addr = BLE_RANDOM_ADDR;
-        let rc = unsafe {
-            esp_idf_sys::esp_ble_gap_set_rand_addr(ble_random_addr.as_mut_ptr())
-        };
+        let rc = unsafe { esp_idf_sys::esp_ble_gap_set_rand_addr(ble_random_addr.as_mut_ptr()) };
         if rc != 0 {
             println!("ble: set_rand_addr FAILED: esp_err={rc}");
         }
