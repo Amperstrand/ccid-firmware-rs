@@ -231,9 +231,7 @@ mod imp {
                 const BLE_RANDOM_ADDR: [u8; 6] = [0xD4, 0xDA, 0x72, 0x9A, 0x50, 0x18];
                 // displayed D4:DA:72:9A:50:18 (nucula tail)
                 let mut rand_addr = BLE_RANDOM_ADDR;
-                let rc = unsafe {
-                    esp_idf_sys::esp_ble_gap_set_rand_addr(rand_addr.as_mut_ptr())
-                };
+                let rc = unsafe { esp_idf_sys::esp_ble_gap_set_rand_addr(rand_addr.as_mut_ptr()) };
                 if rc != 0 {
                     println!("ble: set_rand_addr FAILED: esp_err={rc}");
                 }
@@ -245,16 +243,14 @@ mod imp {
                 let mut adv_param = esp_idf_sys::esp_ble_adv_params_t {
                     adv_int_min: 0x20,
                     adv_int_max: 0x40,
-                    adv_type: 0x00,          // ADV_TYPE_IND
-                    own_addr_type: 0x01,     // BLE_ADDR_TYPE_RANDOM
+                    adv_type: 0x00,      // ADV_TYPE_IND
+                    own_addr_type: 0x01, // BLE_ADDR_TYPE_RANDOM
                     peer_addr: [0; 6],
                     peer_addr_type: 0x00,    // BLE_ADDR_TYPE_PUBLIC
                     channel_map: 0x07,       // ADV_CHNL_ALL
                     adv_filter_policy: 0x00, // ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
                 };
-                let rc2 = unsafe {
-                    esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_param)
-                };
+                let rc2 = unsafe { esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_param) };
                 if rc2 != 0 {
                     println!("ble: start_advertising FAILED: esp_err={rc2}");
                 }
