@@ -133,7 +133,7 @@ the 2026-10-14 class).
 | `place_name` | function | Parametrized place acquire/release; busy → skip with holder, or queue with `--reserve` |
 | `labgrid_place` | session | Session hold of `stm32-ccid`; `--reserve` queues via coordinator reservation |
 | `bench` | session | Local host command runner (no SSH) |
-| `flashed_firmware` | session | Flashes `.bin` via `st-flash --serial <F469 ST-LINK> --reset write` — adapter pinned from the exporter config (board-crossing guard, 2026-10-14) |
+| `flashed_firmware` | session | Flashes `.bin` via the canonical shared-board path (`stm32_flash.py`: connect-under-reset write + reset, ST-LINK latch recovery) — adapter pinned from the exporter config (board-crossing guard, 2026-10-14) |
 | `cherry_reader` | session | Verifies Cherry ST-2xxx (046A:003E) in `lsusb` |
 | `pcscd_running` | session | Ensures `pcscd.socket` + `pcscd.service` active |
 | `pcsc_reader_name` | session | The DUT reader by USB serial (never enumeration order) |
@@ -158,10 +158,13 @@ and `bench_lock` when they drive pcscd or a serial port.
 ## Teardown / cleanup
 
 To restore different firmware to the STM32 (e.g. gm65-scanner) after a
-run — locally on the bench host:
+run — locally on the bench host, ALWAYS the canonical shared-board
+sequence (a bare `--reset write` wedges foreign firmware's USB — see
+the AGENTS.md F469 wedge table):
 
 ```bash
-st-flash --reset write /path/to/gm65-firmware.bin 0x08000000
+st-flash --connect-under-reset --serial <F469 ST-LINK serial> write /path/to/gm65-firmware.bin 0x08000000
+st-flash --connect-under-reset --serial <F469 ST-LINK serial> reset
 ```
 
 ## Troubleshooting

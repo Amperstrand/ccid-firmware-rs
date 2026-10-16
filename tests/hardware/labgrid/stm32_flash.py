@@ -115,22 +115,25 @@ def flash_f469(bin_path: str, stlink_serial: str, run=None, reset=None,
         log.append(f"$ {cmd}\nrc={r.returncode}\n{r.stdout}{r.stderr}")
         return r
 
-    write = attempt("write")
-    if write.returncode != 0:
-        # ST-LINK latch class: one USBDEVFS_RESET + one retry before
-        # giving up (the .208 lesson — never a bare second attempt).
-        dev = stlink_usb_path(stlink_serial)
-        if dev:
-            log.append(f"# st-link latch recovery: USBDEVFS_RESET {dev} "
-                       f"-> {reset(dev)}")
-            write = attempt("write")
-        if write.returncode != 0:
-            return False, "\n".join(log)
+    def attempt_with_recovery(tag: str) -> CmdResult:
+        # One USBDEVFS_RESET + one retry on failure (the .208 latch
+        # lesson) — applies to BOTH the write and the post-write reset:
+        # the ST-LINK can latch between them too (Codex P2 on #216).
+        r = attempt(tag)
+        if r.returncode != 0:
+            dev = stlink_usb_path(stlink_serial)
+            if dev:
+                log.append(f"# st-link latch recovery: USBDEVFS_RESET {dev} "
+                           f"-> {reset(dev)}")
+                r = attempt(tag)
+        return r
+
+    if attempt_with_recovery("write").returncode != 0:
+        return False, "\n".join(log)
 
     # Post-write reset (the gm65 lesson): the write's own reset is a
     # SYSRESETREQ; a connect-under-reset reset is the proven unwedge.
-    reset_result = attempt("reset")
-    if reset_result.returncode != 0:
+    if attempt_with_recovery("reset").returncode != 0:
         return False, "\n".join(log)
     return True, "\n".join(log)
 
