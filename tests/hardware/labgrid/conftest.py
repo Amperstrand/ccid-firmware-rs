@@ -30,8 +30,6 @@ Usage:
 
 import os
 import re
-import shlex
-import subprocess
 import time
 from pathlib import Path
 
@@ -48,6 +46,8 @@ from bench import (  # noqa: F401  (PLACES re-exported for addoption default)
     place_holder as _place_holder,
 )
 
+import stm32_flash  # noqa: E402  (sibling module, after the bench import block)
+
 # APDU helpers live in hil_helpers.py (uniquely named): bare
 # `from conftest import ...` in test modules breaks when several suite
 # directories are collected together — whichever conftest.py claims the
@@ -62,7 +62,6 @@ from hil_helpers import (  # noqa: F401  (re-exported for fixture use)
 PLACE = "stm32-ccid"
 DUT_READER_SERIAL = "ST2XXX-001"
 CHERRY_VID_PID = "046a:003e"
-DEFAULT_FLASH_BASE = "0x08000000"
 USB_RESCAN_DELAY_S = 3
 
 # ---------------------------------------------------------------- helpers
@@ -391,25 +390,20 @@ def flashed_firmware(request, helpers):
         pytest.fail(f"Firmware binary not found: {bin_path}")
 
     exporter_cfg = Path(__file__).parent / "exporter-ai-legion-nfc.yaml"
-    match = re.search(
-        r"stm32f469-stlink:.*?usb-STMicroelectronics_STM32_STLink_([0-9A-Fa-f]+)-if02",
-        exporter_cfg.read_text(),
-        re.S,
-    )
-    if not match:
-        pytest.fail(
-            f"cannot resolve the F469 ST-LINK serial from {exporter_cfg} — "
-            "refusing to flash an unpinned adapter (board-crossing hazard)"
-        )
-    stlink_serial = match.group(1)
+    try:
+        stlink_serial = stm32_flash.resolve_stlink_serial(exporter_cfg)
+    except ValueError as e:
+        pytest.fail(str(e))
 
-    result = helpers.run(
-        f"st-flash --serial {stlink_serial} --reset write "
-        f"{shlex.quote(str(bin_path))} {DEFAULT_FLASH_BASE}",
-        timeout=60,
-    )
-    if result.returncode != 0:
-        pytest.fail(f"st-flash failed:\nstdout: {result.stdout}\nstderr: {result.stderr}")
+    # Canonical shared-board flash path (stm32_flash module docstring):
+    # --connect-under-reset write + reset, ST-LINK USBDEVFS_RESET + one
+    # retry on latch. A plain `--reset write` wedges the target's USB
+    # under foreign firmware (bolty bench-sharing lesson) and cannot
+    # attach at all when running USB-CDC firmware has locked out SWD
+    # (micronuts lesson) — the two recurring F469 wedge classes.
+    ok, log = stm32_flash.flash_f469(str(bin_path), stlink_serial)
+    if not ok:
+        pytest.fail(f"st-flash failed (recovery attempted, see log):\n{log}")
     time.sleep(USB_RESCAN_DELAY_S)
     yield str(bin_path)
 

@@ -2202,6 +2202,22 @@ retains stale state and the device will not enumerate without the in-firmware
 PHY reset sequence. If you remove or break that sequence, flashing via st-flash
 will appear to succeed but the reader will not appear on USB.
 
+**F469 shared-board wedge table (cross-project audit 2026-10-16).** The
+F469-DISCO is flashed by THREE projects (ccid Cherry reader, micronuts
+wallet, bolty/gm65 scanner) and each documented half the wedge pair —
+collected here; the HIL flash path
+(`tests/hardware/labgrid/stm32_flash.py`) now encodes all of it:
+
+| Wedge class | Symptom | Recovery | Automated where |
+|---|---|---|---|
+| Plain `st-flash write` (SYSRESETREQ) wedges target USB under FOREIGN firmware | flash "succeeds", Cherry/CDC never re-enumerates | `st-flash --connect-under-reset reset` after every write (bolty bench-sharing lesson; ccid's own firmware survives via the #22 PHY reset, other projects' does not) | `stm32_flash.flash_f469` (write + reset both connect-under-reset) |
+| Running USB-CDC firmware locks out SWD | `st-flash` cannot attach (SwdDpWait) | `--connect-under-reset` attaches (micronuts firmware/AGENTS lesson); last resort: full power cycle with NRST held | same — connect-under-reset by default |
+| ST-LINK dongle latch | adapter unresponsive | USBDEVFS_RESET (ioctl 0x5514) on its `/dev/bus/usb` node (.208 delta lesson) | one reset + single retry inside `flash_f469` |
+| xHCI port wedge | port dead even after adapter reset | PCI remove/rescan of the port (bolty campaign lesson) | manual — rarest class |
+
+Rule: NEVER a bare `st-flash --reset write` on this board — foreign
+firmware may be on it, and the next project's session inherits the wedge.
+
 ### 3. espflash DTR/RTS wedge — physical replug required (issue #12)
 
 After `espflash flash ...` on the M5Stack Atom Matrix (FTDI FT232 bridge), the
