@@ -1,22 +1,27 @@
 """ACR1252 card-emulation fixture (NFC Forum Type-2 / MIFARE Ultralight).
 
 STATUS (updated 2026-10-16 after the #207 merge + first tier-1 run on
-hardware): the CONTROL PLANE now works — with the corrected ten-byte
-CCID header, tier-1 PASSED (enter + exit exchanges complete under the
-pcscd flock; place-acquired). The NDEF WRITE path returns no reply
-within 3 s (`write not confirmed: no-reply`) — the enter/exit frames
-use this same transport, so the write command itself is the suspect:
-per-command chunking and/or the ACS API §5.6 write format need
-verification against the ACR1252U doc before the next run. History
-(overnight 2026-10-16 session, salvaged + review-fixed via #207):
-pcscd cannot reach the escape interface (no FEATURE_CCID_ESC
-advertised); the raw-USB PICC transport with pcscd paused works.
+hardware): tier-1 PASSED at the TRANSPORT level — the corrected
+ten-byte CCID header changed behavior (no framing errors), enter/exit
+exchanges complete without error under the pcscd flock, place-acquired.
+CAVEAT (Codex P2 on #213): `exit` discards the reply and `enter`
+tolerates SENT-NO-REPLY, so the pass does NOT prove emulation ENGAGED
+— only that the transport is sound. The NDEF WRITE path returns no
+reply within 3 s (`write not confirmed: no-reply`); with engagement
+unconfirmed, the suspect list is BOTH the write format AND the enter
+command itself. History (overnight 2026-10-16 session, salvaged +
+review-fixed via #207): pcscd cannot reach the escape interface (no
+FEATURE_CCID_ESC advertised); the raw-USB PICC transport with pcscd
+paused works.
 
 NEXT SESSION (verify in this order):
+0. Close the engagement question FIRST: make the helper's exit path
+   surface its reply (it currently discards it — Codex P2 on #213) and
+   use the §5.6.2 Read Card Emulation Data probe to prove emulation is
+   active before touching the write format.
 1. ACS API §5.6: the write escape's exact APDU layout (block address
    units, max data per command — the current single-shot 28-byte NDEF
-   image write may exceed it) and whether writes require emulation
-   CONFIRMED first (the enter reply-drop ambiguity below).
+   image write may exceed it).
 2. RF coupling: confirm the ACR1252 antenna is physically within range
    of the nucula PN7160 and the m5stick RC522 (user reports shared
    field; unverified remotely).
