@@ -97,6 +97,49 @@ auto-restore covers on-demand pins (1.94.1/1.97.1).
 The cache-zombie class (dead-worktree stamps) deserves a build.sh pre-check
 refusing caches whose `esp-idf_SOURCE_DIR` no longer exists (tracked #183).
 
+## D-8: audit-wave4 reconciliation — drop the serial consolidation, salvage the feature guards, rework frontend isolation separately
+
+**Authority**: this entry + the preserved `sisyphus/audit-wave4` branch
+(d5920a9 / c47d38b / e0c41f9, base #82 — 361 main commits past its base) +
+issues #218/#219.
+**Decision**: four dispositions for the unlanded branch —
+- **DROP** c47d38b's UART-main consolidation (`ccid_uart_serve.rs`,
+  `MalformedFramePolicy`, `PollOutcome`, thin mains): main independently
+  landed BOTH headline semantics — `ServeConfig::nak_on_error` (UART NAK /
+  USB-CDC drop) and `pending_notify` echo→notify→response in-band ordering —
+  on a bench-verified superset the branch predates entirely (ResponseWindows
+  #181, response deadlines + time-extension #156, answer-or-silence
+  late-drops #153, serve-loop arrival floors). Rebasing a 528-line server
+  into main's 1779-line machine is a reimplementation, not a reconciliation.
+- **SUPERSEDED** (no action): d5920a9's release.yml / Dockerfile /
+  check_release_config.sh / check_sdkconfigs.py + #78 console fix, and
+  e0c41f9's `.omo/` gitignore — all landed via #111 and later, and evolved
+  further (the release checker gained the #25 MCU/profile pairing rule; the
+  sdkconfig gate gained per-family rules).
+- **SALVAGED**: the NFC-backend `compile_error!` guards — backend mutex (the
+  silent two-driver trap: `default` enables backend-mfrc522, so
+  `--features backend-pn7160` builds two drivers), pn532⊕pn7160,
+  select-a-backend, backend-pn7160 ⇒ board-nucula (arch-gated),
+  pn7160-verdict pairwise mutex. Verified by a feature-matrix harness (7
+  trip cases assert the messages; every build.sh/CI combo compiles clean).
+- **REWORK-LATER** (tracked): frontend fault isolation → #218 (main still
+  HALTS the CCID service on NFC-frontend init failure in both classic
+  mains); bench-net security gate + ota.rs hardening → #219.
+- `sisyphus/omo-evidence-c3-bringup`: NOT folded — its 7-line
+  `sdkconfig.defaults.nucula-v2` is byte-identical to main's
+  `sdkconfig.defaults.esp32c3`, and the 409-line companion patch
+  self-describes as superseded; `.omo/` is gitignored by policy. The branch
+  stays on origin as evidence.
+**Evidence**: branch-vs-main diff at reconciliation time:
+ccid_serial_server.rs 1773 diff lines (16 main commits since the branch
+base), main.rs 905 (29), pn7160_ccid.rs 290 (19), nfc.rs 272 (5), lib.rs
+154 (21); main's server docstrings pin the per-transport policies the
+branch encoded as enums.
+**Change triggers**: a bench build wedges on a dead NFC frontend → pick up
+#218; an untrusted network ever sees a default build's OTA listener → pick
+up #219; the per-transport malformed-frame policy ever diverges again →
+revisit whether it belongs in a policy enum.
+
 ---
 
 *Register discipline: new load-bearing decisions get an entry HERE with an
