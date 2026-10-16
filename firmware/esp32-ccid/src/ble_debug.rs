@@ -256,10 +256,6 @@ mod imp {
 
             Ok(())
         }
-            }
-
-            Ok(())
-        }
 
         fn on_gatts_event(
             &self,
