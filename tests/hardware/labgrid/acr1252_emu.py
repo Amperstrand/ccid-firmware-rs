@@ -43,12 +43,19 @@ NDEF image = CC (E1 10 06 00) + NDEF TLV (03 <len> <msg>) + terminator
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
 import shlex
+import subprocess
 import time
 
 HELPER_DIR = f"/tmp/hil-ccid-bench-{os.getuid()}"
 HELPER_PATH = f"{HELPER_DIR}/acr_emu.py"
+# pcscd serialization (AGENTS.md bench rules): every stop/start window
+# holds THIS lock, so compliant probes/batteries never see pcscd flap
+# under them.
+PCSCD_LOCK = "/run/lock/bench-pcscd.lock"
 
 
 class ACR1252EmulationError(RuntimeError):
@@ -99,8 +106,13 @@ _seq = 0
 
 def escape(ep_out, ep_in, data, reply_timeout_ms=800):
     global _seq
+    # Full TEN-byte CCID header (Codex P1 on #207): type + dwLength(LE)
+    # + bSlot + bSeq + bBWI/specific + RFU(2) — same layout as
+    # board_identity.escape_frame's raw header. The salvaged version
+    # emitted nine bytes, so the first payload byte (E0) was absorbed as
+    # the last header byte and every command was misaligned.
     msg = (bytes([0x6B]) + len(data).to_bytes(4, "little")
-           + bytes([0x00, _seq, 0x00, 0x00]) + data)
+           + bytes([0x00, _seq, 0x00, 0x00, 0x00]) + data)
     _seq = (_seq + 1) & 0xFF
     ep_out.write(msg, timeout=5000)
     try:
@@ -150,56 +162,82 @@ def ndef_uri_block_image(uri: str) -> str:
     return data.hex()
 
 
-def _pcscd(bench, action: str) -> None:
-    r = bench.run(f"sudo -n systemctl {action} pcscd.socket pcscd.service")
-    if r.returncode != 0:
-        raise ACR1252EmulationError(f"pcscd {action} failed: {r.stderr.strip()[:150]}")
-
-
-def _run(bench, args: str, timeout: int = 20) -> str:
-    r = bench.run(f"python3 {HELPER_PATH} {args}", timeout=timeout)
+def _run(args: str, timeout: int = 20) -> str:
+    r = subprocess.run(f"python3 {HELPER_PATH} {args}", shell=True,
+                       capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise ACR1252EmulationError(
             f"acr_emu {args!r} rc={r.returncode}: {r.stdout.strip()[:120]} {r.stderr.strip()[:180]}")
     return r.stdout.strip()
 
 
-def install_helper(bench) -> None:
-    r = bench.run(
-        f"mkdir -p {HELPER_DIR} && cat > {HELPER_PATH} <<'PYEOF'\n{HELPER}\nPYEOF")
+def install_helper() -> None:
+    r = subprocess.run(
+        f"mkdir -p {HELPER_DIR} && cat > {HELPER_PATH} <<'PYEOF'\n{HELPER}\nPYEOF",
+        shell=True, capture_output=True, text=True)
     if r.returncode != 0:
         raise ACR1252EmulationError(f"helper install failed: {r.stderr[:150]}")
 
 
-class Acr1252Emu:
-    """Context: enter emulation (pcscd paused), write NDEF URI, exit.
+def _systemctl(action: str) -> None:
+    r = subprocess.run(["sudo", "-n", "systemctl", action,
+                        "pcscd.socket", "pcscd.service"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise ACR1252EmulationError(f"pcscd {action} failed: {r.stderr.strip()[:150]}")
 
-    The pcscd pause window is the enter/exit exchange only — seconds —
-    under the bench flock, matching the existing battery discipline.
+
+@contextlib.contextmanager
+def pcscd_locked_paused():
+    """pcscd paused for the window, holding /run/lock/bench-pcscd.lock
+    across the WHOLE stop→operation→start span (Codex P1 on #207: a
+    bare toggle can race any compliant lock-holding probe/battery).
+    Start polls for readiness like test_bench_state._pcscd — rapid
+    toggles need longer than a fixed sleep (bench-observed flake).
+    """
+    fd = os.open(PCSCD_LOCK, os.O_CREAT | os.O_WRONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _systemctl("stop")
+        time.sleep(1.0)
+        try:
+            yield
+        finally:
+            _systemctl("start")
+            for _ in range(20):
+                r = subprocess.run(["systemctl", "is-active", "pcscd.service"],
+                                   capture_output=True, text=True)
+                if r.returncode == 0 and r.stdout.strip() == "active":
+                    break
+                time.sleep(0.5)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+class Acr1252Emu:
+    """Context: enter emulation (pcscd paused under the pcscd flock),
+    write NDEF URI, exit. The pcscd pause window is the enter/exit
+    exchange only — seconds — under the bench flock, matching the
+    existing battery discipline.
     """
 
-    def __init__(self, bench, ndef_uri: str | None = None, settle_s: float = 0.5):
-        self.bench = bench
+    def __init__(self, ndef_uri: str | None = None, settle_s: float = 0.5):
         self.ndef_uri = ndef_uri
         self.settle_s = settle_s
 
     def __enter__(self) -> "Acr1252Emu":
-        install_helper(self.bench)
-        _pcscd(self.bench, "stop")
-        try:
-            _run(self.bench, "enter")
+        install_helper()
+        with pcscd_locked_paused():
+            _run("enter")
             if self.ndef_uri:
-                _run(self.bench, f"write {shlex.quote(ndef_uri_block_image(self.ndef_uri))}")
-        finally:
-            _pcscd(self.bench, "start")
+                _run(f"write {shlex.quote(ndef_uri_block_image(self.ndef_uri))}")
         time.sleep(self.settle_s)
         return self
 
     def __exit__(self, *exc) -> None:
-        _pcscd(self.bench, "stop")
-        try:
-            _run(self.bench, "exit")
-        except ACR1252EmulationError:
-            pass  # reader power-cycle also clears emulation
-        finally:
-            _pcscd(self.bench, "start")
+        with pcscd_locked_paused():
+            try:
+                _run("exit")
+            except ACR1252EmulationError:
+                pass  # reader power-cycle also clears emulation
