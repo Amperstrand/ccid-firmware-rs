@@ -38,7 +38,7 @@ def _acr_enabled(request):
     return request.config.getoption("--acr-emu", False)
 
 
-def test_helper_install_and_control_plane(request, bench_lock):
+def test_helper_install_and_control_plane(request, place_name, bench_lock):
     if not _acr_enabled(request):
         pytest.skip("ACR1252 emulation tier-1 needs --acr-emu")
     acr1252_emu.install_helper()
@@ -54,7 +54,7 @@ def test_helper_install_and_control_plane(request, bench_lock):
     assert out in ("OK", "SENT-NO-REPLY")  # reply-drop is documented firmware behavior
 
 
-def test_emu_context_roundtrip(request, bench_lock):
+def test_emu_context_roundtrip(request, place_name, bench_lock):
     if not _acr_enabled(request):
         pytest.skip("ACR1252 emulation tier-1 needs --acr-emu")
     with acr1252_emu.Acr1252Emu(ndef_uri="https://bench.test/acr-emu"):
@@ -70,7 +70,7 @@ def test_emu_context_roundtrip(request, bench_lock):
 @pytest.mark.xfail(reason="tier-2: emulated tag not yet observed on bench readers "
                           "(RF coupling unverified 2026-10-16) — see acr1252_emu.py STATUS",
                    strict=False)
-def test_nucula_vpcd_sees_emulated_tag(request, bench_lock):
+def test_nucula_vpcd_sees_emulated_tag(request, place_name, bench_lock):
     if not _acr_enabled(request):
         pytest.skip("ACR1252 emulation tier-2 needs --acr-emu")
     with acr1252_emu.Acr1252Emu(ndef_uri="https://bench.test/acr-emu"):
