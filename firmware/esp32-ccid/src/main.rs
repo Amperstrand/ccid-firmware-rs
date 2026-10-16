@@ -28,6 +28,44 @@ compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), boar
 compile_error!(
     "features ble and spp are mutually exclusive (both claim the single Bluetooth modem)"
 );
+// NFC backend guards (salvaged from the unlanded audit-wave4 branch,
+// d5920a9): `default` enables backend-mfrc522, so adding another backend
+// without --no-default-features silently builds two drivers.
+#[cfg(all(
+    feature = "backend-mfrc522",
+    any(feature = "backend-pn532", feature = "backend-pn7160")
+))]
+compile_error!(
+    "NFC backends are mutually exclusive — add --no-default-features when \
+     selecting backend-pn532 or backend-pn7160 (defaults enable backend-mfrc522)"
+);
+#[cfg(all(feature = "backend-pn532", feature = "backend-pn7160"))]
+compile_error!("NFC backends are mutually exclusive (backend-pn532 vs backend-pn7160)");
+#[cfg(not(any(
+    feature = "backend-mfrc522",
+    feature = "backend-pn532",
+    feature = "backend-pn7160"
+)))]
+compile_error!(
+    "select an NFC backend: backend-mfrc522 (default), backend-pn532, or backend-pn7160"
+);
+// The pn7160-* wrapper features all carry board-nucula; a bare
+// backend-pn7160 build without the board selects the wrong I2C pins.
+#[cfg(all(
+    feature = "backend-pn7160",
+    not(feature = "board-nucula"),
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+compile_error!("backend-pn7160 requires board-nucula (PN7160 pads SDA=4/SCL=5/IRQ=6/VEN=7)");
+// Verdict features select ONE bring-up electrical hypothesis; an
+// accidental a+b build must fail loudly.
+#[cfg(all(
+    feature = "pn7160-verdict-a",
+    any(feature = "pn7160-verdict-b", feature = "pn7160-verdict-c")
+))]
+compile_error!("pn7160-verdict features are mutually exclusive — select exactly one");
+#[cfg(all(feature = "pn7160-verdict-b", feature = "pn7160-verdict-c"))]
+compile_error!("pn7160-verdict features are mutually exclusive — select exactly one");
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
