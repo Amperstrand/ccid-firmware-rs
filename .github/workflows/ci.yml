@@ -173,11 +173,11 @@ jobs:
       - name: Generate binary artifacts
         run: |
           if [[ -z "${{ matrix.features }}" ]]; then
-            cargo objcopy --release -- -O binary ccid-firmware.bin
-            cargo objcopy --release -- -O ihex ccid-firmware.hex
+            cargo objcopy --release --target thumbv7em-none-eabihf -- -O binary ccid-firmware.bin
+            cargo objcopy --release --target thumbv7em-none-eabihf -- -O ihex ccid-firmware.hex
           else
-            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O binary ccid-firmware.bin
-            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O ihex ccid-firmware.hex
+            cargo objcopy --release --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }} -- -O binary ccid-firmware.bin
+            cargo objcopy --release --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }} -- -O ihex ccid-firmware.hex
           fi
           sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
           sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256
@@ -250,11 +250,11 @@ jobs:
       - name: Generate binary artifacts
         run: |
           if [[ -z "${{ matrix.features }}" ]]; then
-            cargo objcopy --release -- -O binary ccid-firmware.bin
-            cargo objcopy --release -- -O ihex ccid-firmware.hex
+            cargo objcopy --release --target thumbv7em-none-eabihf -- -O binary ccid-firmware.bin
+            cargo objcopy --release --target thumbv7em-none-eabihf -- -O ihex ccid-firmware.hex
           else
-            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O binary ccid-firmware.bin
-            cargo objcopy --release --no-default-features --features ${{ matrix.features }} -- -O ihex ccid-firmware.hex
+            cargo objcopy --release --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }} -- -O binary ccid-firmware.bin
+            cargo objcopy --release --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }} -- -O ihex ccid-firmware.hex
           fi
           sha256sum ccid-firmware.bin > ccid-firmware.bin.sha256
           sha256sum ccid-firmware.hex > ccid-firmware.hex.sha256

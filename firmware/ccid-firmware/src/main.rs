@@ -78,21 +78,21 @@ use usb_device::endpoint::In;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use usb_device::prelude::*;
 
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use board::hal::ltdc::{Layer, PixelFormat};
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use board::lcd;
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use board::sdram::{alt, sdram_pins, Sdram};
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use board::touch;
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use ccid_firmware_rs::pinpad::ui::{
     ButtonId, Keypad, TouchHandler, BUTTON_SIZE, COLOR_ACCENT, COLOR_BG, COLOR_TEXT,
 };
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use ccid_firmware_rs::pinpad::{PinEntryContext, PinModifyContext, PinModifyStep};
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb565,
@@ -101,10 +101,10 @@ use embedded_graphics::{
     text::Text,
     Drawable,
 };
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use stm32f469i_disc as board;
 
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use app_enum::AppEnumerationState;
 #[cfg(all(
     any(feature = "stm32f469", feature = "stm32f746"),
@@ -132,17 +132,17 @@ use usb_identity::{
 static mut USB_EP_MEMORY: [u32; 1024] = [0; 1024];
 
 /// Tick counter for timeout handling (milliseconds since boot)
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 static mut TICK_COUNT: u32 = 0;
 
 /// Get current tick count in milliseconds
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 fn get_tick_ms() -> u32 {
     unsafe { TICK_COUNT }
 }
 
 /// SysTick exception handler - increments tick counter every 1ms
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 #[cortex_m_rt::exception]
 fn SysTick() {
     unsafe {
@@ -151,7 +151,7 @@ fn SysTick() {
 }
 
 /// Application mode state machine
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 enum AppMode {
     /// Normal CCID operation - USB polling, idle screen
     Normal,
@@ -348,14 +348,14 @@ impl CcidSmartcardDriver for SmartcardWrapper {
 }
 
 /// Framebuffer draw target for embedded-graphics
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 struct FrameBufferDrawTarget {
     framebuffer: &'static mut [u16],
     width: u32,
     height: u32,
 }
 
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 impl FrameBufferDrawTarget {
     fn new(framebuffer: &'static mut [u16]) -> Self {
         Self {
@@ -373,13 +373,13 @@ impl FrameBufferDrawTarget {
     }
 }
 
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 impl Dimensions for FrameBufferDrawTarget {
     fn bounding_box(&self) -> Rectangle {
         Rectangle::new(Point::zero(), Size::new(self.width, self.height))
     }
 }
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 impl DrawTarget for FrameBufferDrawTarget {
     type Color = Rgb565;
     type Error = core::convert::Infallible;
@@ -405,7 +405,7 @@ impl DrawTarget for FrameBufferDrawTarget {
 }
 
 /// Draw the PIN entry keypad screen
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 fn draw_pin_screen(
     display: &mut FrameBufferDrawTarget,
     context: &PinEntryContext,
@@ -456,7 +456,7 @@ fn draw_pin_screen(
 }
 
 /// Draw the PIN modification keypad screen with step-aware prompts (CCID Rev 1.1 §6.1.12)
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 fn draw_pin_modify_screen(
     display: &mut FrameBufferDrawTarget,
     context: &PinModifyContext,
@@ -517,7 +517,7 @@ fn draw_pin_modify_screen(
 }
 
 /// Draw idle/status screen
-#[cfg(feature = "display")]
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 fn draw_idle_screen(
     display: &mut FrameBufferDrawTarget,
     card_present: bool,
@@ -772,7 +772,7 @@ fn main() -> ! {
     // =========================================================================
     // Step 7: Display/Touch initialization (feature-gated)
     // =========================================================================
-    #[cfg(feature = "display")]
+    #[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
     let mut display_state = {
         defmt::info!("Initializing display/touch...");
 
@@ -858,20 +858,20 @@ fn main() -> ! {
     // =========================================================================
     // Step 8: Main loop
     // =========================================================================
-    #[cfg(feature = "display")]
+    #[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
     let mut mode = AppMode::Normal;
 
-    #[cfg(feature = "display")]
+    #[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
     let mut last_card_present = false;
 
-    #[cfg(feature = "display")]
+    #[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
     let mut app_enum_state = AppEnumerationState::new();
 
     loop {
         // Always poll USB - required for both normal CCID and PIN entry modes
         usb_device.poll(&mut [&mut ccid_class]);
 
-        #[cfg(feature = "display")]
+        #[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
         {
             match &mut mode {
                 AppMode::Normal => {
