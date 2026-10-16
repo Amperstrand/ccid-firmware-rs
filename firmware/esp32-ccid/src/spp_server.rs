@@ -43,7 +43,7 @@
 //! the parser on connection close so the next host gets a clean SYNC).
 
 use crate::ccid_handler::CcidHandler;
-use crate::ccid_serial_server::{CcidSerialServer, ServeConfig};
+use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows, ServeConfig};
 use crate::nfc::NfcDriver;
 
 /// One received byte plus the tick it arrived at. The tick rides with the
@@ -391,14 +391,14 @@ impl<D: NfcDriver> SppPump<D> {
     pub fn new(
         handler: CcidHandler<D>,
         poll_interval_ticks: u32,
-        response_deadline_ticks: u32,
+        windows: ResponseWindows,
         now_ticks: u32,
     ) -> Self {
         Self {
             server: CcidSerialServer::with_config(
                 handler,
                 poll_interval_ticks,
-                response_deadline_ticks,
+                windows,
                 now_ticks,
                 ServeConfig {
                     nak_on_error: true,
@@ -550,7 +550,7 @@ fn append_slice(buf: &mut [u8], len: &mut usize, bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ccid_serial_server::response_window_ticks;
+    use crate::ccid_serial_server::ResponseWindows;
     use crate::nfc::MockNfcDriver;
     use ccid_protocol::types::PC_TO_RDR_GET_SLOT_STATUS;
     use ccid_transport_serial::{calculate_lrc, CTRL_ACK, SYNC};
@@ -576,7 +576,7 @@ mod tests {
         SppPump::new(
             CcidHandler::new(driver),
             POLL_INTERVAL,
-            response_window_ticks(1_000),
+            ResponseWindows::from_tick_hz(1_000),
             0,
         )
     }
@@ -1119,7 +1119,7 @@ pub mod shell {
 
     use super::{delivery_plan, Deliver, PumpOutcome, RxByte, SppLink, SppPump, SppRxRing};
     use crate::ccid_handler::CcidHandler;
-    use crate::ccid_serial_server::response_window_ticks;
+    use crate::ccid_serial_server::ResponseWindows;
     use crate::nfc::NfcDriver;
 
     /// Read-idle timeout — mirrors `UART_RX_TIMEOUT_MS` in the UART mains:
@@ -1357,15 +1357,11 @@ pub mod shell {
         // --- Serve loop: serve_uart's cadence over the SPP byte pipe ---
         let poll_interval_ticks =
             esp_idf_hal::delay::TickType::new_millis(SPP_POLL_INTERVAL_MS as u64).ticks() as u32;
-        // #153 window in TICKS — tick-rate-derived (Codex #158 P1);
-        // CONFIG_FREERTOS_HZ=100 here, so 2500 ms is 250 ticks.
-        let response_deadline_ticks = response_window_ticks(esp_idf_sys::configTICK_RATE_HZ);
-        let mut pump = SppPump::new(
-            handler,
-            poll_interval_ticks,
-            response_deadline_ticks,
-            tick(),
-        );
+        // #153/#181 windows in TICKS — tick-rate-derived (Codex #158
+        // P1); CONFIG_FREERTOS_HZ=100 here, so 2500/7500/59500 ms are
+        // 250/750/5950 ticks.
+        let response_windows = ResponseWindows::from_tick_hz(esp_idf_sys::configTICK_RATE_HZ);
+        let mut pump = SppPump::new(handler, poll_interval_ticks, response_windows, tick());
         let mut batch = [RxByte { byte: 0, tick: 0 }; SPP_POP_BATCH];
         let mut retry_buf = [0u8; super::SPP_TX_BUF_SIZE];
 
