@@ -107,7 +107,7 @@ async def connect_fresh(bleak, prefix: str, connect_timeout: float = 15.0):
     fresh = None
     try:
         while fresh is None and asyncio.get_event_loop().time() < deadline:
-            for d in await scanner.get_discovered_devices():
+            for d in scanner.discovered_devices:  # bleak 3.x property
                 if d.name and d.name.startswith(prefix):
                     fresh = d
                     break
