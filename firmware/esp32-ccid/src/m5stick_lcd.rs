@@ -38,7 +38,7 @@ pub const REG_CHARGE_CTL1: u8 = 0x33; // §8.24 — charge target/rate
 pub const REG_PEK_KEY_MODE: u8 = 0x36; // §8.28 — power-on/off timing
 pub const REG_ADC_EN_1: u8 = 0x82; // §8.33 — ADC channel enables (battery telemetry)
 pub const REG_GPIO0_FUNCTION: u8 = 0x90; // §8.38 — GPIO0 LDO mode
-pub const REG_GPIO1_FUNCTION: u8 = 0x92; // §8.40 — RTC 3.3V via GPIO1 LDO
+pub const REG_GPIO0_LDO_VOLTAGE: u8 = 0x91; // §8.39 — GPIO0 LDO voltage (RTC rail 3.3V on M5StickC)
 pub const REG_LDO2_LDO3_VOLTAGE: u8 = 0x28; // §8.22 — hi-nibble LDO2, lo-nibble LDO3, 1.8V + 0.1V/step
 pub const REG_BATT_VOLTAGE_H: u8 = 0x78; // §8.26 — battery mV, high byte
 pub const REG_BATT_VOLTAGE_L: u8 = 0x79; // §8.26 — battery mV, low nibble
@@ -114,7 +114,7 @@ pub const AXP192_INIT_SEQUENCE: &[AxpOp] = &[
         why: "poweron/off timing",
     },
     AxpOp::Set {
-        reg: REG_GPIO1_FUNCTION,
+        reg: REG_GPIO0_LDO_VOLTAGE,
         value: 0xF0,
         why: "RTC 3.3V",
     },
