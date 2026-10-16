@@ -416,7 +416,7 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
 CI lives in `.github/workflows/ci.yml`. All jobs check out with
 `submodules: true` (required — see Gotchas).
 
-### Rust toolchain policy (2026-10-12) — the map and the why
+### Rust toolchain policy (2026-10-12; FLEET STANDARD 2026-10-15) — the map and the why
 
 House stance: **stable-first, early adoption by deliberate bumps,
 nightlies ONLY where upstream forces them.** Every pin is exact and
@@ -427,6 +427,31 @@ carries its reason.
 | Host crates, STM32 firmware, all `cargo install` tooling | **Stable, exact-pinned: 1.99.0** — the root `rust-toolchain.toml` is the single authority (rustfmt + clippy + `thumbv7em-none-eabihf` declared) | nothing we ship needs unstable features; the exact pin keeps CI, the release Docker build (#115), and every bench checkout bit-identical. 1.92.0 was retired when modern tooling (espflash 4.x class) stopped building under it |
 | ESP32 — BOTH targets (xtensa m5stick/m5atom AND C3 nucula) | **pinned esp fork `v1.98.1.0`** + crosstool `esp-14.2.0_20260121` — `espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3` | upstream rustc has no xtensa-espidf backend (fork is the only compiler there), and no `-Zbuild-std`-capable stable exists for espidf std — so BOTH targets ride the fork (2026-10-12 one-Rust-version change: same version NUMBER as the stable pin, one vendor-frozen compiler instead of fork + dated upstream nightly). `-v` is load-bearing: espup installs the LATEST fork by default (a moving nightly-derived compiler) |
 | CI mirrors | exact same strings: dtolnay `1.99.0`, `cargo +esp`, espup pins `-c 14.2.0_20260121 -v 1.98.1.0` | one authority; the strings must match the toml + bench EXACTLY |
+| Upstream `jmcorgan/fips` builds (conwrt/fieldlab lanes) | **1.94.1** — upstream's own `rust-toolchain.toml` pin (their README/release notes: "Rust 1.94.1 per rust-toolchain.toml", edition 2024) | align with what upstream does; NOT installed fleet-wide — rustup auto-restores it on demand when a fips checkout is entered |
+
+**FLEET STANDARD (2026-10-15 cleanup — the only three allowed):**
+
+1. **1.99.0** — every Amperstrand Rust repo pins it via `rust-toolchain.toml`;
+   CI installs read the toml (`dtolnay/rust-toolchain@master` with no
+   version input, or `actions-rust-lang/setup-rust-toolchain@v1` like
+   upstream fips). Repos aligned tonight: bolty-rs, conwrt, micronuts,
+   physical-router-test-automation, tollgate-rs, tollgate-rs-amperstrand
+   (each carries the fleet-standard commit). ccid was already exact.
+   NOT touched (other sessions' in-flight checkouts — align when their
+   lanes close): cln8-wt (detached HEAD), prta-secrets-og (feature
+   branch); micronuts' push rides with its active session.
+2. **esp fork 1.98.1.0** — structural, esp-idf targets only.
+3. **1.94.1** — upstream-fips alignment, on-demand only.
+
+Nightly exception: instrumented fuzzing legs (micronuts
+`fuzz-nightly.yml`) — structural, documented in place. Bench .208 now
+carries exactly: `stable`, `1.99.0`, `esp` (11.5 GB of dead toolchains
+removed: 1.92, 1.92.0, 1.94.1, 1.97.1, 1.98.1-stable,
+nightly-2026-09-29; 1.94.1/1.97.1 auto-restore from their checkouts'
+tomls when those lanes run). The 2026-10-14 lesson stands: env first —
+a bare non-login shell resolves toolchain names differently than a
+login shell (issue #199's root cause); `. ~/export-esp.sh` before every
+ESP build.
 
 **Rules:**
 
