@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **#152**: failed-DataBlock shape on the serial/NFC relay crashed
+  GlobalPlatformPro (`newPosition < 0: -2`, gp issue #307 class). Two
+  sites fixed to one convention: the APDU-pipeline error arm now answers
+  FAILED DataBlock + `bError=0xF0` (card timeout, was 0xFB hw error) +
+  honest `dwLength=0` — libccid's `CCID_Receive` "case 0xF0" synthesizes
+  SW `64 00` host-side (reference/CCID/src/commands.c) — byte-identical
+  to the contact arm; and the T=1-armed route (`ccid_handler.rs`)
+  synthesizes SW `64 00` as the I-block INF when the pipeline fails (at
+  TPDU level the host's own T=1 engine sees only the INF — the previous
+  empty-INF re-frame delivered SUCCESS + 0 bytes to the app, the exact
+  gp crash). Both failure frames byte-locked by host tests.
+
 ### Housekeeping — 2026-10-14 unattended session
 
 - `cargo fmt` restored over the NCI-fragmentation + wifi-vpcd lanes

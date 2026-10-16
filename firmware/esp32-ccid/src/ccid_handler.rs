@@ -310,10 +310,28 @@ impl<D: NfcDriver> CcidHandler<D> {
                     .core
                     .apdu_pipeline(header, &apdu_buf[..an], &mut scratch);
                 let took = elapsed_ms_since(started_us);
-                // The pipeline returns a full DataBlock message; T=1
-                // INF carries only the APDU-level payload — strip the
-                // 10-byte CCID header.
-                let payload = &scratch[10.min(n)..n];
+                // #152: at TPDU exchange level the host runs its own
+                // T=1 engine (libccid proto-t1.c t1_xcv → CCID_Receive)
+                // and only ever sees the I-block INF we frame here — a
+                // DataBlock bStatus never reaches the application. When
+                // the card dies mid-exchange the pipeline answers a
+                // FAILED DataBlock whose payload is empty; framing that
+                // empty payload as a SUCCESS I-block (LEN=0) delivers
+                // SUCCESS + 0 bytes to the app — the GlobalPlatformPro
+                // ByteBuffer crash (gp #307, "newPosition < 0: -2").
+                // Synthesize the card-timeout SW 64 00 as the INF: the
+                // same SW libccid itself synthesizes for bError 0xF0
+                // (commands.c CCID_Receive, "case 0xF0") — one
+                // convention for both serial sub-paths.
+                const CARD_TIMEOUT_SW: [u8; 2] = [0x64, 0x00];
+                let payload: &[u8] = if scratch[7] & (COMMAND_STATUS_FAILED << 6) != 0 {
+                    &CARD_TIMEOUT_SW
+                } else {
+                    // The pipeline returns a full DataBlock message;
+                    // T=1 INF carries only the APDU-level payload —
+                    // strip the 10-byte CCID header.
+                    &scratch[10.min(n)..n]
+                };
                 let blocks = self.t1.card_response(payload, took);
                 write_message(
                     RDR_TO_PC_DATABLOCK,
@@ -1336,5 +1354,49 @@ mod tests {
             tx_after_first,
             "no second card exchange"
         );
+    }
+
+    // GREAT EXPECTATION (#152): card death mid-exchange under an armed
+    // T=1 route must answer with a synthesized card-timeout SW in the
+    // I-block INF — NOT an empty INF. At TPDU level the host's own T=1
+    // engine (libccid proto-t1.c t1_xcv) sees only the INF; an empty
+    // INF delivers SUCCESS + 0 bytes to the app — the GlobalPlatformPro
+    // ByteBuffer crash (gp #307). SW 64 00 = the same SW libccid
+    // synthesizes for bError 0xF0 (commands.c CCID_Receive "case 0xF0").
+    #[test]
+    fn t1_card_death_mid_exchange_answers_synthesized_timeout_sw() {
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        handler.set_current_protocol(1);
+        handler.t1_armed = true;
+        // Card dies mid-session: transmit_apdu now fails (mock: NoCard).
+        handler.core.driver_mut().0.set_card_present(false);
+        let mut resp = [0u8; 512];
+
+        let apdu = [0x00u8, 0xA4, 0x04, 0x00, 0x00];
+        let mut iblock = [0u8; 3 + 5 + 1];
+        iblock[0] = 0x00;
+        iblock[1] = 0x00;
+        iblock[2] = apdu.len() as u8;
+        iblock[3..3 + apdu.len()].copy_from_slice(&apdu);
+        let end = 3 + apdu.len();
+        iblock[end] = iblock[..end].iter().fold(0u8, |a, b| a ^ b);
+
+        let msg = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 2, &iblock[..end + 1]);
+        let n = handler.process_command(&msg, &mut resp);
+        let (header, payload) = parse_response(&resp[..n]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(header.specific[1], 0);
+        // T=1 block = NAD + PCB + LEN + INF + LRC: I-block (PCB bit7=0)
+        // whose INF is the synthesized SW: LEN=2, 64 00, valid LRC —
+        // the app sees SW 6400, never empty data.
+        assert_eq!(payload.len(), 6);
+        assert_eq!(payload[0], 0x00);
+        assert_eq!(payload[1] & 0x80, 0x00);
+        assert_eq!(payload[2], 2);
+        assert_eq!(payload[3..5], [0x64, 0x00]);
+        assert_eq!(payload[5], payload[..5].iter().fold(0u8, |a, b| a ^ b));
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
     }
 }
