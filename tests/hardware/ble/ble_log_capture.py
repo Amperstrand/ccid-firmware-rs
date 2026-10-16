@@ -13,11 +13,27 @@ Usage:
     ./ble_log_capture.py --name ESP32-CCID-Debug
     ./ble_log_capture.py --list                # just scan and exit
     ./ble_log_capture.py --send 'help'         # write a line to the NUS RX char
+
+BlueZ dual-address trap (bench 2026-10-16, bluez 5.72-0ubuntu5.8 — the
+2026-10-15 distro upgrade changed peer typing): for an address bluetoothd
+has typed BR/EDR (the m5stick's 4C:75:25… carries SPP-era classic
+history on this adapter), Device1.Connect() PAGES over classic —
+Create Connection (0x0005) + Page Timeout in btmon — while the
+peripheral (BLE-only firmware) keeps advertising fine. Passing the
+discovery object alone stopped being enough after that upgrade. This
+tool therefore connects with the FRESHEST possible LE-typed object:
+remove any existing peer object, then discover-and-connect in one
+process with the scanner still running when Connect is issued. If
+connects still time out, check `btmon` for the classic-page signature —
+the remedy is then host-side (pin bluez 5.72-0ubuntu5.7, or use a
+central adapter with no classic memory of the address, e.g. a USB BLE
+dongle as hci1).
 """
 
 import argparse
 import asyncio
 import datetime
+import subprocess
 import sys
 
 NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -31,9 +47,24 @@ def stamp() -> str:
     return datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 
+def drop_stale_peer(address: str) -> None:
+    """Drop any existing BlueZ Device object for the peer so the next
+    LE advertisement recreates it LE-typed (see module docstring)."""
+    r = subprocess.run(["bluetoothctl", "remove", address],
+                       capture_output=True, text=True, timeout=10)
+    # "not available" simply means no stale object existed.
+    print(f"[{stamp()}] bluetoothctl remove {address}: "
+          f"{(r.stdout + r.stderr).strip().splitlines()[-1] if (r.stdout + r.stderr).strip() else 'ok'}",
+          file=sys.stderr)
+
+
+async def discover_target(bleak, prefix: str, timeout: float = 8.0):
+    devices = await bleak.BleakScanner.discover(timeout=timeout)
+    return devices, [d for d in devices if d.name and d.name.startswith(prefix)]
+
+
 async def scan_and_pick(bleak, prefix: str, list_only: bool):
-    devices = await bleak.BleakScanner.discover(timeout=8.0)
-    matches = [d for d in devices if d.name and d.name.startswith(prefix)]
+    devices, matches = await discover_target(bleak, prefix)
     if list_only or not matches:
         for d in devices:
             mark = "*" if d in matches else " "
@@ -50,13 +81,49 @@ async def scan_and_pick(bleak, prefix: str, list_only: bool):
             print(f"  {d.address}  {d.name!r}", file=sys.stderr)
     chosen = matches[0]
     print(f"[{stamp()}] connecting to {chosen.name} @ {chosen.address}", file=sys.stderr)
-    # BlueZ resolves a bare address to a stale BR/EDR Device object and
-    # pages it over classic (Page Timeout); the discovery object carries
-    # the LE transport explicitly.
     return chosen
 
 
-async def follow(device, send_line: str | None) -> None:
+async def connect_fresh(bleak, prefix: str, connect_timeout: float = 15.0):
+    """Scan → (re)discover the peer on a FRESH LE-typed object → connect
+    while a scan is still live, so bluetoothd sees an in-scan LE peer at
+    Connect time (dual-address trap, module docstring).
+
+    Returns (client_context_manager, device); the caller enters the
+    context and stops the scanner once connected.
+    """
+    # First pass: find the address (also serves --list semantics upstream).
+    _, matches = await discover_target(bleak, prefix)
+    if not matches:
+        return None, None
+    address = matches[0].address
+    drop_stale_peer(address)
+
+    # Second pass with a LIVE scanner: fresh object from the LE
+    # advertisement, Connect issued before the scan stops.
+    scanner = bleak.BleakScanner()
+    await scanner.start()
+    deadline = asyncio.get_event_loop().time() + 10.0
+    fresh = None
+    try:
+        while fresh is None and asyncio.get_event_loop().time() < deadline:
+            for d in await scanner.get_discovered_devices():
+                if d.name and d.name.startswith(prefix):
+                    fresh = d
+                    break
+            if fresh is None:
+                await asyncio.sleep(0.3)
+    finally:
+        pass  # scanner kept running through Connect; caller stops it
+    if fresh is None:
+        await scanner.stop()
+        return None, None
+    print(f"[{stamp()}] connecting to {fresh.name} @ {fresh.address} "
+          f"(live-scan fresh object)", file=sys.stderr)
+    return fresh, scanner
+
+
+async def follow(device, scanner, send_line: str | None) -> None:
     from bleak import BleakClient
 
     def on_notify(_char_spec, data: bytearray):
@@ -69,15 +136,29 @@ async def follow(device, send_line: str | None) -> None:
         if not disconnected.done():
             disconnected.set_result(None)
 
-    async with BleakClient(device, disconnected_callback=on_disconnect) as client:
-        print(f"[{stamp()}] connected; MTU={client.mtu_size}; "
-              f"notifications on {NUS_TX_CHAR}", file=sys.stderr)
-        await client.start_notify(NUS_TX_CHAR, on_notify)
-        if send_line:
-            await client.write_gatt_char(NUS_RX_CHAR, (send_line + "\n").encode())
-        print(f"[{stamp()}] following (Ctrl-C to stop)", file=sys.stderr)
-        await disconnected
-        print(f"\n[{stamp()}] device disconnected", file=sys.stderr)
+    try:
+        async with BleakClient(device, disconnected_callback=on_disconnect,
+                               timeout=15.0) as client:
+            if scanner is not None:
+                await scanner.stop()
+            print(f"[{stamp()}] connected; MTU={client.mtu_size}; "
+                  f"notifications on {NUS_TX_CHAR}", file=sys.stderr)
+            await client.start_notify(NUS_TX_CHAR, on_notify)
+            if send_line:
+                await client.write_gatt_char(NUS_RX_CHAR, (send_line + "\n").encode())
+            print(f"[{stamp()}] following (Ctrl-C to stop)", file=sys.stderr)
+            await disconnected
+            print(f"\n[{stamp()}] device disconnected", file=sys.stderr)
+    except (asyncio.TimeoutError, TimeoutError):
+        if scanner is not None:
+            await scanner.stop()
+        print(f"\n[{stamp()}] connect timed out. If btmon shows "
+              f"'Create Connection (0x0005)' + 'Page Timeout', bluetoothd is "
+              f"PAGING the peer over classic BR/EDR (the bluez 5.72-0ubuntu5.8 "
+              f"dual-address trap — see module docstring). Remedy host-side: "
+              f"pin bluez 5.72-0ubuntu5.7 or use a different central adapter.",
+              file=sys.stderr)
+        raise
 
 
 async def main() -> None:
@@ -91,8 +172,15 @@ async def main() -> None:
 
     import bleak  # deferred so --help works without bleak installed
 
-    address = await scan_and_pick(bleak, args.name, args.list)
-    await follow(address, args.send)
+    if args.list:
+        await scan_and_pick(bleak, args.name, True)
+        return
+    device, scanner = await connect_fresh(bleak, args.name)
+    if device is None:
+        print(f"no BLE peripheral named {args.name}* found (is the -ble build "
+              f"flashed and advertising?)", file=sys.stderr)
+        sys.exit(1)
+    await follow(device, scanner, args.send)
 
 
 if __name__ == "__main__":

@@ -22,10 +22,16 @@ nobody is connected), then retained history, then live lines.
 
 Gotchas (see also AGENTS.md "BLE Debug Console"):
 
-- If connects time out while the device keeps advertising, restart
-  bluetoothd (`systemctl restart bluetooth`) and retry — BlueZ
-  sometimes resolves the address to a stale BR/EDR device object and
-  pages it over classic instead of opening the GATT link.
+- If connects time out while the device keeps advertising, check `btmon`:
+  `Create Connection (0x0005)` + `Page Timeout` means bluetoothd is PAGING
+  the peer over classic BR/EDR instead of opening the LE link. Since the
+  2026-10-15 bluez upgrade (5.72-0ubuntu5.7 → 5.72-0ubuntu5.8), passing
+  the discovery object to BleakClient is no longer sufficient for an
+  address with classic history on the adapter (the m5stick's SPP-era
+  address). The capture tool now drops the stale peer object and connects
+  against a fresh live-scan discovery; if that regresses again, the remedy
+  is host-side — pin bluez 5.72-0ubuntu5.7 or use a central adapter with
+  no classic memory of the address (e.g. a USB BLE dongle as hci1).
 - A phone with nRF Connect (or any NUS terminal app) works as an
   alternative central: service `6e400001-…`, notify characteristic
   `6e400003-…`.

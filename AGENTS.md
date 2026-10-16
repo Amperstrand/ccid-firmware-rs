@@ -1331,11 +1331,22 @@ BLE queue stayed empty forever while logs kept hitting the console.
 
 ### Bench central (BlueZ) gotchas
 
-- The capture tool passes the **discovery object** (not a bare
-  address) to `BleakClient` — a bare address lets bluetoothd resolve a
-  stale BR/EDR Device object and PAGE the peripheral over classic
-  (symptom: `Create Connection (0x0005)` + `Page Timeout` in btmon,
-  bleak `TimeoutError` while the device keeps advertising fine).
+- **The classic-page trap (updated 2026-10-16)**: for a peer address
+  bluetoothd has typed BR/EDR, `Device1.Connect()` PAGES over classic —
+  `Create Connection (0x0005)` + `Page Timeout` in btmon while the
+  BLE-only peripheral keeps advertising fine. The old mitigation
+  (pass the discovery object, not a bare address) became INSUFFICIENT
+  with the **2026-10-15 bluez upgrade (5.72-0ubuntu5.7→5.7.8)** and
+  bleak 3.x: verified on the bench, bluetoothd deterministically types
+  the m5stick's SPP-era address classic even after bluetoothd restart,
+  mgmt power cycle, rfkill, btusb module reload, and full
+  /var/lib/bluetooth per-peer purge — while an LE-only-history peer
+  (smoke-alarm control) connects via LE Extended Create Connection on
+  the same adapter (#163). The capture tool now drops the stale peer
+  object and connects against a fresh live-scan discovery; if that
+  regresses, the remedy is host-side: pin bluez 5.72-0ubuntu5.7, or use
+  a central adapter with no classic memory of the address (USB BLE
+  dongle as hci1).
 - If connects keep timing out: `systemctl restart bluetooth`, ensure
   `hciconfig hci0` shows UP, and prefer a fresh scan in the same
   process as the connect.
