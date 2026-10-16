@@ -483,7 +483,8 @@ fn main() {
     // `log` sink — no EspLogger::initialize_default() under `ble` (first
     // installer wins and would permanently displace the BLE logger).
     #[cfg(feature = "ble")]
-    let ble_console = BleConsole::init(peripherals.modem, true);
+    // `ble-diag` (#165): keep C-level BT stack logs on the console.
+    let ble_console = BleConsole::init(peripherals.modem, !cfg!(feature = "ble-diag"));
 
     // WiFi + OTA for serial-free bring-up (bench power bricks): the
     // modem is exclusive with the `ble` and `spp` feature builds, and

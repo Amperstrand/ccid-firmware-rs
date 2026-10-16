@@ -54,6 +54,13 @@ pn7160-actdiag = ["backend-pn7160", "board-nucula"]
 # mipidsi/embedded-graphics pinned to bolty's exact proven pair.
 lcd = ["dep:mipidsi", "dep:embedded-graphics"]
 ble = []
+# DIAGNOSTIC-ONLY BLE variant (issue #165): keeps C-level ESP_LOGx/BT
+# stack traces UNSILENCED on the console (the standard `ble` build
+# silences them — clean-wire doctrine). Pair ONLY with
+# `sdkconfig-c3-ble-diag.full` via build.sh `c3-ccid-ble-diag`. The
+# extra console output is this build's purpose — it must NEVER become a
+# serving build.
+ble-diag = ["ble"]
 # pcscd over Bluetooth Classic SPP: RFCOMM replaces UART0 as the GemPC CCID
 # wire (console moves to UART0, logs stay on). REQUIRES the classic-BT+SPP
 # sdkconfig (`sdkconfig-xtensa-spp.full`) — a mismatched pair fails loudly

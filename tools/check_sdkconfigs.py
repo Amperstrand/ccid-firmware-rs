@@ -42,11 +42,16 @@ UART0_CCID = {
 }
 # C3 boards: CCID + console share the USB-Serial/JTAG CDC; firmware gates
 # logging after the boot banner (clean-wire #131).
+# sdkconfig-c3-ble-diag.full is the #165 DIAGNOSTIC exception: same CDC
+# console pinning, but BT stack logs deliberately UNSILENCED at DEBUG —
+# it exists only for on-device capture via build.sh c3-ccid-ble-diag and
+# must never be flashed as a serving image.
 C3_CDC = {
     "sdkconfig.defaults.esp32c3",
     "sdkconfig.full",
     "sdkconfig.wallet-test",
     "sdkconfig-c3-ble.full",
+    "sdkconfig-c3-ble-diag.full",
 }
 # CCID on another transport; UART0 console is intended. See module docstring.
 EXEMPT = {
