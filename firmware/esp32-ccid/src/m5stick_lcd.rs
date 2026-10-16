@@ -545,7 +545,7 @@ mod imp {
         with_screen(|s| {
             s.data.battery_pct = pct;
             s.data.usb_power = usb;
-            s.data.dirty = true;
+            s.dirty = true;
         });
         true
     }
