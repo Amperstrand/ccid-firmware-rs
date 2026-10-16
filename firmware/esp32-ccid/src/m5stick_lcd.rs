@@ -26,6 +26,23 @@ use core::fmt::Write as _;
 /// M5GFX.cpp:288-291), AXP192 datasheet §7.1 (7-bit 0110100).
 pub const AXP192_I2C_ADDR: u8 = 0x34;
 
+/// AXP192 register map — names track the datasheet (the pmic.rs
+/// precedent: jl1nie/mfsk-core embedded-poc, "register addresses we
+/// touch, names track the AXP192 datasheet"). Every literal below was
+/// previously an unexplained magic number in the op-table.
+pub const REG_POWER_STATUS: u8 = 0x01; // §8.2 — VBUS bit5 = USB powered
+pub const REG_CHIP_ID: u8 = 0x03; // §8.3 — reads 0x03 on AXP192 (liveness probe)
+pub const REG_DCDC1_VOLTAGE: u8 = 0x10; // §8.19 — bit2 = Grove 5V boost EXTEN
+pub const REG_POWER_OUT_CTL: u8 = 0x12; // §8.5 — DCDC1|DCDC3|LDO2|LDO3|EXTEN enables
+pub const REG_CHARGE_CTL1: u8 = 0x33; // §8.24 — charge target/rate
+pub const REG_PEK_KEY_MODE: u8 = 0x36; // §8.28 — power-on/off timing
+pub const REG_ADC_EN_1: u8 = 0x82; // §8.33 — ADC channel enables (battery telemetry)
+pub const REG_GPIO0_FUNCTION: u8 = 0x90; // §8.38 — GPIO0 LDO mode
+pub const REG_GPIO1_FUNCTION: u8 = 0x92; // §8.40 — RTC 3.3V via GPIO1 LDO
+pub const REG_LDO2_LDO3_VOLTAGE: u8 = 0x28; // §8.22 — hi-nibble LDO2, lo-nibble LDO3, 1.8V + 0.1V/step
+pub const REG_BATT_VOLTAGE_H: u8 = 0x78; // §8.26 — battery mV, high byte
+pub const REG_BATT_VOLTAGE_L: u8 = 0x79; // §8.26 — battery mV, low nibble
+
 /// LDO2/LDO3 voltages: 0xCC → both 3.0 V (high nibble = LDO2 in 100 mV
 /// steps above 1.8 V: 0xC = 12 → 3.0 V). LDO2 = LCD backlight rail,
 /// LDO3 = display rail. Source: bolty display.rs `init_axp192` reg 0x28
@@ -72,42 +89,42 @@ pub enum AxpOp {
 
 pub const AXP192_INIT_SEQUENCE: &[AxpOp] = &[
     AxpOp::Set {
-        reg: 0x28,
+        reg: REG_LDO2_LDO3_VOLTAGE,
         value: AXP192_REG28_LDO_VOLTAGE,
         why: "LDO2=3.0V (backlight) LDO3=3.0V (display)",
     },
     AxpOp::Or {
-        reg: 0x12,
+        reg: REG_POWER_OUT_CTL,
         bits: AXP192_REG12_ENABLE_BITS,
         why: "enable DCDC1+LDO2+LDO3+EXTEN",
     },
     AxpOp::Set {
-        reg: 0x82,
+        reg: REG_ADC_EN_1,
         value: 0xFF,
         why: "ADC all enabled (battery telemetry)",
     },
     AxpOp::Set {
-        reg: 0x33,
+        reg: REG_CHARGE_CTL1,
         value: 0xC0,
         why: "charge 4.2V/100mA",
     },
     AxpOp::Set {
-        reg: 0x36,
+        reg: REG_PEK_KEY_MODE,
         value: 0x0C,
         why: "poweron/off timing",
     },
     AxpOp::Set {
-        reg: 0x91,
+        reg: REG_GPIO1_FUNCTION,
         value: 0xF0,
         why: "RTC 3.3V",
     },
     AxpOp::Set {
-        reg: 0x90,
+        reg: REG_GPIO0_FUNCTION,
         value: 0x02,
         why: "GPIO0 LDO mode",
     },
     AxpOp::Or {
-        reg: 0x10,
+        reg: REG_DCDC1_VOLTAGE,
         bits: AXP192_REG10_GROVE_BOOST_BIT,
         why: "Grove 5V boost enable (MFRC522 rail)",
     },
@@ -119,8 +136,8 @@ pub const AXP192_INIT_SEQUENCE: &[AxpOp] = &[
 
 /// Battery register decode (AXP192 datasheet §8.26 reg 78h/79h):
 /// raw = reg78[7:0] << 4 | reg79[7:4], 1.1 mV/LSB → (raw * 11) / 10 mV.
-pub fn battery_mv_from_regs(reg78: u8, reg79: u8) -> u32 {
-    let raw = ((reg78 as u32) << 4) | ((reg79 as u32) >> 4);
+pub fn battery_mv_from_regs(reg_batt_h: u8, reg_batt_l: u8) -> u32 {
+    let raw = ((reg_batt_h as u32) << 4) | ((reg_batt_l as u32) >> 4);
     (raw * 11) / 10
 }
 
@@ -300,7 +317,7 @@ mod imp {
                 }
             }
         }
-        let verify = axp_read(i2c, 0x12)?;
+        let verify = axp_read(i2c, REG_POWER_OUT_CTL)?;
         if verify & super::AXP192_REG12_ENABLE_BITS != super::AXP192_REG12_ENABLE_BITS {
             warn!(
                 "AXP192: power ctrl verify mismatch: 0x{verify:02X} (want bits 0x{:02X})",
@@ -533,9 +550,9 @@ mod imp {
             return false;
         };
         let (r78, r79, r01) = (
-            axp_read(i2c, 0x78).ok(),
-            axp_read(i2c, 0x79).ok(),
-            axp_read(i2c, 0x01).ok(),
+            axp_read(i2c, REG_BATT_VOLTAGE_H).ok(),
+            axp_read(i2c, REG_BATT_VOLTAGE_L).ok(),
+            axp_read(i2c, REG_POWER_STATUS).ok(),
         );
         let (Some(r78), Some(r79), Some(r01)) = (r78, r79, r01) else {
             return false;
