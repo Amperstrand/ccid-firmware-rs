@@ -533,9 +533,9 @@ mod imp {
             return false;
         };
         let (r78, r79, r01) = (
-            axp_read(i2c, 0x78),
-            axp_read(i2c, 0x79),
-            axp_read(i2c, 0x01),
+            axp_read(i2c, 0x78).ok(),
+            axp_read(i2c, 0x79).ok(),
+            axp_read(i2c, 0x01).ok(),
         );
         let (Some(r78), Some(r79), Some(r01)) = (r78, r79, r01) else {
             return false;
