@@ -170,7 +170,7 @@ fn handle_message<D: NfcDriver>(
     } else if !payload.is_empty() {
         match handler.driver_mut().transmit_apdu(payload, rx_buf) {
             Ok(len) => Some(rx_buf[..len].to_vec()),
-            Err(_) => Some(vec![0x64, 0x00]),
+            Err(_) => Some(crate::ccid_handler::CARD_TIMEOUT_SW.to_vec()),
         }
     } else {
         None

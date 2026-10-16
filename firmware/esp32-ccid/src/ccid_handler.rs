@@ -21,6 +21,12 @@ use ccid_core::Diagnostics;
 // GEMPC: idVendor: 0x08E6 iManufacturer: Gemplus idProduct: 0x3437 iProduct: USB SmartCard Reader
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
+/// Card-timeout status word, the SW libccid synthesizes host-side for
+/// bError 0xF0 (reference/CCID/src/commands.c CCID_Receive "case 0xF0").
+/// ONE definition for every failure path that answers a dead card —
+/// the T=1 INF synthesis and the vpcd APDU arm (Codex #203 P1).
+pub const CARD_TIMEOUT_SW: [u8; 2] = [0x64, 0x00];
+
 pub struct CcidHandler<D: NfcDriver> {
     core: CcidHandlerCore<CardDriverAdapter<D>>,
     t1: T1Endpoint,
@@ -323,7 +329,6 @@ impl<D: NfcDriver> CcidHandler<D> {
                 // same SW libccid itself synthesizes for bError 0xF0
                 // (commands.c CCID_Receive, "case 0xF0") — one
                 // convention for both serial sub-paths.
-                const CARD_TIMEOUT_SW: [u8; 2] = [0x64, 0x00];
                 let payload: &[u8] = if scratch[7] & (COMMAND_STATUS_FAILED << 6) != 0 {
                     &CARD_TIMEOUT_SW
                 } else {
