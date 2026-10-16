@@ -508,32 +508,46 @@ mod imp {
         });
     }
 
-    /// Refresh battery + uptime from the retained AXP192 I2C handle;
-    /// called periodically (1 Hz) by the display ticker task.
+    /// Pure uptime update (1 Hz, called by the display ticker).
+    /// Deliberately I2C-free: bench 2026-10-16 — polling the AXP every
+    /// second wedged the legacy-i2c driver at ~4 min uptime and froze
+    /// the whole screen while CCID kept serving (the recover_i2c_bus
+    /// class, on the AXP bus). The clock must survive a wedged PMU bus.
     pub fn tick(uptime_s: u32) {
-        let (pct, usb) = {
-            let Ok(mut guard) = I2C1_DRIVER.lock() else {
-                return;
-            };
-            let Some(i2c) = guard.as_mut() else {
-                return;
-            };
-            let r78 = axp_read(i2c, 0x78).unwrap_or(0);
-            let r79 = axp_read(i2c, 0x79).unwrap_or(0);
-            let r01 = axp_read(i2c, 0x01).unwrap_or(0);
-            let pct = super::battery_pct_from_mv(super::battery_mv_from_regs(r78, r79));
-            (pct, super::usb_powered_from_reg01(r01))
-        };
         with_screen(|s| {
-            // Redraw only on change — ADC jitter would flicker the
-            // screen at 1 Hz otherwise (bolty lesson).
-            if s.data.battery_pct != pct || s.data.usb_power != usb || s.data.uptime_s != uptime_s {
-                s.data.battery_pct = pct;
-                s.data.usb_power = usb;
+            if s.data.uptime_s != uptime_s {
                 s.data.uptime_s = uptime_s;
                 s.dirty = true;
             }
         });
+    }
+
+    /// Slow battery refresh (own thread, 10-min cadence): a wedged I2C
+    /// bus can at worst stall THIS thread — the battery field goes
+    /// stale, the uptime clock does not.
+    fn refresh_battery() -> bool {
+        let Ok(mut guard) = I2C1_DRIVER.lock() else {
+            return false;
+        };
+        let Some(i2c) = guard.as_mut() else {
+            return false;
+        };
+        let (r78, r79, r01) = (
+            axp_read(i2c, 0x78),
+            axp_read(i2c, 0x79),
+            axp_read(i2c, 0x01),
+        );
+        let (Some(r78), Some(r79), Some(r01)) = (r78, r79, r01) else {
+            return false;
+        };
+        let pct = super::battery_pct_from_mv(super::battery_mv_from_regs(r78, r79));
+        let usb = super::usb_powered_from_reg01(r01);
+        with_screen(|s| {
+            s.data.battery_pct = pct;
+            s.data.usb_power = usb;
+            s.data.dirty = true;
+        });
+        true
     }
 
     /// 1 Hz ticker — owns nothing but the clock; all state flows through
@@ -553,6 +567,29 @@ mod imp {
                 }
             })
             .expect("display ticker spawn");
+        // Battery: init read + 10-min cadence; three consecutive failures
+        // park the thread (battery "?"-equivalent: shows the last good
+        // value) instead of poking a possibly-wedged bus forever.
+        std::thread::Builder::new()
+            .stack_size(8192)
+            .spawn(|| {
+                let mut failures = 0u8;
+                if !refresh_battery() {
+                    failures = 1;
+                }
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(600));
+                    if failures >= 3 {
+                        continue;
+                    }
+                    if refresh_battery() {
+                        failures = 0;
+                    } else {
+                        failures += 1;
+                    }
+                }
+            })
+            .expect("battery refresh spawn");
     }
 }
 
