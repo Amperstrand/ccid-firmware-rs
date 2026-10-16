@@ -864,6 +864,106 @@ mod tests {
         assert_eq!(server.echo(), &frame);
     }
 
+    // #218 acceptance: a degraded NFC frontend keeps the CCID service
+    // answering — GetSlotStatus reports card-absent even with a card on
+    // the coil — and recovers to present once init starts succeeding.
+    #[test]
+    fn degraded_frontend_serves_absent_then_recovers() {
+        struct FlakyInitDriver {
+            inner: MockNfcDriver,
+            fail_inits: usize,
+        }
+
+        impl crate::nfc::NfcDriver for FlakyInitDriver {
+            type Error = crate::nfc::NfcError;
+
+            fn init(&mut self) -> Result<(), Self::Error> {
+                if self.fail_inits > 0 {
+                    self.fail_inits -= 1;
+                    return Err(crate::nfc::NfcError::CommunicationError);
+                }
+                self.inner.init()
+            }
+
+            fn is_card_present(&mut self) -> bool {
+                self.inner.is_card_present()
+            }
+
+            fn poll_card_presence(&mut self) -> crate::nfc::PresenceState {
+                self.inner.poll_card_presence()
+            }
+
+            fn session_active(&self) -> bool {
+                self.inner.session_active()
+            }
+
+            fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, Self::Error> {
+                self.inner.power_on(atr_buf)
+            }
+
+            fn power_off(&mut self) {
+                self.inner.power_off()
+            }
+
+            fn transmit_apdu(
+                &mut self,
+                command: &[u8],
+                response: &mut [u8],
+            ) -> Result<usize, Self::Error> {
+                self.inner.transmit_apdu(command, response)
+            }
+        }
+
+        let inner = mock_driver(true); // card on the coil the whole time
+        let frontend = crate::frontend::RetryFrontend::degraded(FlakyInitDriver {
+            inner,
+            fail_inits: 1,
+        });
+        let mut server =
+            CcidSerialServer::new(CcidHandler::new(frontend), POLL_INTERVAL, TEST_WINDOWS, 0);
+
+        // Poll #1 while degraded: init retried and failed → absent.
+        assert!(server.poll_if_due(POLL_INTERVAL));
+        assert!(
+            server.handler_mut().driver_mut().is_degraded(),
+            "init retry failed — still degraded"
+        );
+
+        let status = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(
+            feed_frame(&mut server, &status, POLL_INTERVAL + 10),
+            ServeAction::Respond
+        );
+        let resp = server.response();
+        assert_eq!(resp[2], 0x81, "RDR_to_PC_SlotStatus");
+        assert_eq!(
+            resp[9] & 0x03,
+            0x02,
+            "ICC absent — the degraded frontend hides the card on the coil"
+        );
+
+        // Poll #2: init retry succeeds → healthy → present + active.
+        assert!(server.poll_if_due(POLL_INTERVAL * 2 + 10));
+        assert!(
+            !server.handler_mut().driver_mut().is_degraded(),
+            "init retry succeeded — recovered"
+        );
+
+        let status2 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        assert_eq!(
+            feed_frame(&mut server, &status2, POLL_INTERVAL * 2 + 20),
+            ServeAction::Respond
+        );
+        let resp2 = server.response();
+        // Present + INACTIVE: recovery makes the card visible again;
+        // ACTIVE comes at IccPowerOn, exactly like a fresh boot.
+        assert_eq!(
+            resp2[9] & 0x03,
+            0x01,
+            "ICC present + inactive after recovery"
+        );
+    }
+
     #[test]
     fn slot_status_poll_is_interval_gated() {
         let mut server = server_with(true);
