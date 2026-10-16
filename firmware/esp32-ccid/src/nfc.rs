@@ -32,6 +32,16 @@ pub trait NfcDriver {
     /// Must be called before any other operations.
     fn init(&mut self) -> Result<(), Self::Error>;
 
+    /// Init routed through the backend's recovery machinery when it has
+    /// one (MFRC522: the failure tracker + threshold-triggered
+    /// `full_reinit`, Codex reviews on #43/#40/#38). Retry paths — the
+    /// `RetryFrontend` degraded-retry loop above all — must call this
+    /// so a backend needing the hardware reset actually gets it; a
+    /// plain `init()` cannot trigger the self-healing path.
+    fn init_recovering(&mut self) -> Result<(), Self::Error> {
+        self.init()
+    }
+
     /// Check if an NFC card is present
     ///
     /// Returns true if a card is detected in the field.

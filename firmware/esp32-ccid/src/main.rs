@@ -476,25 +476,20 @@ fn main() {
         }
     });
 
-    // Reader-down visibility (bolty-rs docs/lessons-learned.md B5): without a
-    // PN532 the CCID loop would run silently dead — worse, a blocking IRQ wait
-    // in the transport could hang it forever now that the task WDT is off.
-    // Halt CCID, hold LED Error, and log periodically instead.
-    if !pn532_ok {
-        // DevKitC targets have no LED matrix (the led module is mfrc522-gated);
-        // visibility is log-only here.
-        log::error!("PN532 init failed — CCID offline, halting card loop");
-        let mut tick: u32 = 0;
-        loop {
-            if tick % 30 == 0 {
-                log::warn!("reader absent ({}x5s) — CCID still offline", tick);
-            }
-            tick += 1;
-            FreeRtos::delay_ms(5000);
-        }
-    }
+    // Frontend fault isolation (#218 — supersedes the bolty-rs B5 halt
+    // loop this replaced): a failed boot init no longer halts the CCID
+    // service. The degraded frontend answers GetSlotStatus card-absent
+    // (Escape 0xD0 diagnostics keep responding), and every
+    // interval-gated presence poll retries init() — a controller that
+    // comes back is picked up without a reboot.
+    let frontend = if pn532_ok {
+        esp32_ccid::frontend::RetryFrontend::healthy(pn532_driver)
+    } else {
+        log::error!("PN532 init failed — serving degraded (card absent), init retried on every presence poll");
+        esp32_ccid::frontend::RetryFrontend::degraded(pn532_driver)
+    };
 
-    serve_uart(&uart, CcidHandler::new(pn532_driver));
+    serve_uart(&uart, CcidHandler::new(frontend));
 }
 
 #[cfg(all(
@@ -690,58 +685,68 @@ fn main() {
     #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
     let mut led = esp32_ccid::led::LedStatus::new();
 
-    let mfrc522_hw = match mfrc522_result {
-        Ok(hw) => hw,
-        Err(e) => {
-            // No reader frontend: CCID cannot be serviced. Stay visible instead of
-            // silently dead — LED in Error state and a periodic log line (bolty-rs
-            // docs/lessons-learned.md B5: log-and-continue hides months-long outages;
-            // here the reader is load-bearing so CCID halts but keeps signalling).
-            log::error!("MFRC522 init failed ({e:?}) — CCID offline, LED=Error, halting card loop");
-            let mut tick: u32 = 0;
-            loop {
+    // Frontend fault isolation (#218 — supersedes the bolty-rs B5 halt
+    // loop this replaced): neither failure class takes the CCID service
+    // down. A failed driver init serves degraded (card-absent) and
+    // retries init() on every interval-gated presence poll. A hw-init
+    // failure cannot construct the Mfrc522 typestate at all, so the
+    // fallback arm serves the UnavailableNfcDriver stand-in —
+    // GetSlotStatus and Escape 0xD0 keep answering; a reseat still
+    // needs a reboot (same as the old halt loop, minus the dead
+    // reader). LED Error is held until reboot; recovery is
+    // host-visible via GetSlotStatus flipping present.
+    let frontend = match mfrc522_result {
+        Ok(hw) => {
+            let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(hw);
+            let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
+
+            let init_ok = (0..5).any(|_| {
+                // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
+                // P1): plain init() never reaches the failure tracker, so repeated
+                // startup failures could not trigger the self-healing full re-init.
+                if mfrc522_driver.init_with_recovery().is_ok() {
+                    true
+                } else {
+                    FreeRtos::delay_ms(1000);
+                    false
+                }
+            });
+
+            if init_ok {
+                #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
+                led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
+                esp32_ccid::frontend::EitherFrontend::Primary(
+                    esp32_ccid::frontend::RetryFrontend::healthy(mfrc522_driver),
+                )
+            } else {
                 #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
                 led.set_state(esp32_ccid::led::LedState::Error);
-                if tick % 30 == 0 {
-                    log::warn!("reader absent ({}x5s) — CCID still offline", tick);
-                }
-                tick += 1;
-                FreeRtos::delay_ms(5000);
+                log::error!("MFRC522 init failed — serving degraded (card absent), init retried on every presence poll");
+                esp32_ccid::frontend::EitherFrontend::Primary(
+                    esp32_ccid::frontend::RetryFrontend::degraded(mfrc522_driver),
+                )
             }
         }
-    };
-
-    let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(mfrc522_hw);
-    let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
-
-    let init_ok = (0..5).any(|_| {
-        // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
-        // P1): plain init() never reaches the failure tracker, so repeated
-        // startup failures could not trigger the self-healing full re-init.
-        if mfrc522_driver.init_with_recovery().is_ok() {
-            true
-        } else {
-            FreeRtos::delay_ms(1000);
-            false
+        Err(e) => {
+            #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
+            led.set_state(esp32_ccid::led::LedState::Error);
+            log::error!("MFRC522 hw init failed ({e:?}) — no frontend; CCID stays up card-absent");
+            esp32_ccid::frontend::EitherFrontend::Fallback(
+                esp32_ccid::frontend::RetryFrontend::degraded(
+                    esp32_ccid::frontend::UnavailableNfcDriver,
+                ),
+            )
         }
-    });
-
-    if init_ok {
-        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-        led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
-    } else {
-        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-        led.set_state(esp32_ccid::led::LedState::Error);
-    }
+    };
 
     // Transport split: `spp` builds serve the same CcidHandler over the
     // BT-Classic SPP byte pipe (spp_server::shell::serve_spp — same
     // echo/response/poll cadence as serve_uart, REFERENCE
     // esp-idf-svc bt_spp_acceptor.rs); everything else stays on UART0.
     #[cfg(feature = "spp")]
-    esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(mfrc522_driver));
+    esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
     #[cfg(not(feature = "spp"))]
-    serve_uart(&uart, CcidHandler::new(mfrc522_driver));
+    serve_uart(&uart, CcidHandler::new(frontend));
 }
 
 #[cfg(any(

@@ -436,6 +436,13 @@ where
 {
     type Error = NfcError;
 
+    // Plain init() bypasses the failure tracker; retry paths (the
+    // RetryFrontend degraded loop) route through the recovery-aware
+    // initializer so threshold-triggered full re-inits still fire.
+    fn init_recovering(&mut self) -> Result<(), NfcError> {
+        self.init_with_recovery()
+    }
+
     fn init(&mut self) -> Result<(), NfcError> {
         let version = self
             .transceiver
