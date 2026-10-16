@@ -187,6 +187,10 @@ def pytest_addoption(parser):
     parser.addoption("--reserve-timeout-min", action="store", type=int, default=120,
                      help="How long --reserve may block waiting for a place "
                           "(minutes, default 120).")
+    parser.addoption("--acr-emu", action="store_true", default=False,
+                     help="enable ACR1252 card-emulation HIL tests "
+                          "(test_acr1252_emu_hil.py; tier-2 is xfail until "
+                          "RF coupling is verified — see acr1252_emu.py STATUS)")
 
 
 def pytest_collection_modifyitems(config, items):
