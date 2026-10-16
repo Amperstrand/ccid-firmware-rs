@@ -218,11 +218,17 @@ mod imp {
                 // commands serialize, so the random-address write completes
                 // before the adv-start is processed (the ESP-IDF ibeacon
                 // example uses the same set-then-start sequence).
+                // ESP-IDF bd_addr arrays are MSB-FIRST (displayed order,
+                // bench-verified: the reversed order drew
+                // "BT_BTC: Invalid random address type" — the controller
+                // checks the FIRST array byte for the static-random top
+                // bits). Static random: MSB top bits 11; per-board tails
+                // from each board's public address.
                 #[cfg(target_arch = "xtensa")]
-                const BLE_RANDOM_ADDR: [u8; 6] = [0x9E, 0x92, 0xCB, 0x25, 0x75, 0xC4];
+                const BLE_RANDOM_ADDR: [u8; 6] = [0xC4, 0x75, 0x25, 0xCB, 0x92, 0x9E];
                 // displayed C4:75:25:CB:92:9E (m5stick tail)
                 #[cfg(target_arch = "riscv32")]
-                const BLE_RANDOM_ADDR: [u8; 6] = [0x18, 0x50, 0x9A, 0x72, 0xDA, 0xD4];
+                const BLE_RANDOM_ADDR: [u8; 6] = [0xD4, 0xDA, 0x72, 0x9A, 0x50, 0x18];
                 // displayed D4:DA:72:9A:50:18 (nucula tail)
                 let mut rand_addr = BLE_RANDOM_ADDR;
                 let rc = unsafe {
