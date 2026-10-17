@@ -643,13 +643,15 @@ impl<T: Transport> Pn7160Driver<T> {
                 // Resync teardown (issue #156 A): the chip may still be
                 // mid-WTX on a live interface — tear it down and empty
                 // the link so no late DATA response pollutes the next
-                // command window. drain-until-EMPTY, bounded (Codex
-                // PR159 P1): a single drain read one frame while the
-                // teardown leaves several pending.
+                // command window. drain-until-EMPTY with a settle beat
+                // (issue #170): WTX-honoring chips deliver the late
+                // response AFTER the burst — the settle round catches
+                // it (Codex PR159 P1 bounded the burst; this bounds the
+                // just-missed tail).
                 if reader::deactivate_to_discovery(&mut self.transport).is_err() {
                     let _ = reader::restart_discovery(&mut self.transport);
                 }
-                reader::drain_link(&mut self.transport);
+                reader::settle_drain(&mut self.transport);
                 self.clear_tag();
                 self.active = false;
                 self.uid_len = 0;

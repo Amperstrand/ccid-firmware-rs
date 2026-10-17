@@ -774,7 +774,7 @@ pub mod reader {
 
     /// Nominal wait per collect round (host mocks make `wait_ms` a
     /// no-op, so elapsed is tracked as rounds × this value).
-    const DATA_COLLECT_WAIT_MS: u64 = 200;
+    pub const DATA_COLLECT_WAIT_MS: u64 = 200;
 
     /// Stall-report cadence (issue #156 B): the stall hook fires once
     /// the nominal elapsed crosses 1.5 s and every 1.5 s after —
@@ -1012,10 +1012,33 @@ pub mod reader {
     /// queue several — any survivor lands in the next command's poll
     /// window (#101-class desync). The cap returns control on a chatty
     /// or wedged chip instead of looping forever.
-    pub fn drain_link<T: Transport>(t: &mut T) {
+    pub fn drain_link<T: Transport>(t: &mut T) -> usize {
+        let mut drained = 0usize;
         for _ in 0..DRAIN_LINK_CAP {
             if t.drain().is_none() {
-                return;
+                return drained;
+            }
+            drained += 1;
+        }
+        drained
+    }
+
+    /// #170: teardown drain with settle beats. The NFCC keeps honoring
+    /// the card's WTX past the DH's exchange budget (bench 2026-10-13:
+    /// a 13 s stall) — the late DATA response can land AFTER the drain
+    /// burst, queue-empty at that instant. Repeat drain → wait one
+    /// collect round → drain until a full beat consumes NOTHING new
+    /// (Codex P1 on #232: one fixed beat cannot bound a long tail),
+    /// capped so a live-but-quiet link cannot pin the serve loop:
+    /// worst case `SETTLE_MAX_BEATS` × 200 ms.
+    pub const SETTLE_MAX_BEATS: usize = 3;
+
+    pub fn settle_drain<T: Transport>(t: &mut T) {
+        for _ in 0..SETTLE_MAX_BEATS {
+            drain_link(t);
+            t.wait_ms(DATA_COLLECT_WAIT_MS);
+            if drain_link(t) == 0 {
+                break;
             }
         }
     }
@@ -1198,6 +1221,13 @@ pub mod mock {
         /// Blocking `transact` call count — lets tests assert the
         /// presence path never waits for a reply.
         pub transacts: usize,
+        /// Total ms passed to `wait_ms` — proves settle beats happened.
+        pub waited_ms: u64,
+        /// Frames materializing on `wait_ms` calls (one per call, front
+        /// first) — models a WTX-honoring chip delivering a response
+        /// AFTER the caller's drain burst found the link empty (#170:
+        /// the settle-drain contract).
+        pub late_on_wait: VecDeque<StdVec<u8>>,
     }
 
     impl MockTransport {
@@ -1209,6 +1239,8 @@ pub mod mock {
                 drained: 0,
                 pending_rsp: None,
                 transacts: 0,
+                waited_ms: 0,
+                late_on_wait: VecDeque::new(),
             }
         }
 
@@ -1258,6 +1290,12 @@ pub mod mock {
                 self.drained += 1;
             }
             f
+        }
+        fn wait_ms(&mut self, ms: u64) {
+            self.waited_ms += ms;
+            if let Some(raw) = self.late_on_wait.pop_front() {
+                self.notifications.push_back(raw);
+            }
         }
     }
 }
@@ -1849,6 +1887,70 @@ mod tests {
             chatty.drained,
             reader::DRAIN_LINK_CAP,
             "cap bounds a chatty chip"
+        );
+    }
+
+    #[test]
+    fn settle_drain_runs_multiple_beats_until_a_quiet_one() {
+        // Codex P1 on #232: a single fixed beat cannot bound a long
+        // tail. Two late frames (one per wait) must both be consumed,
+        // and the loop must then EXIT on the first fully-quiet beat —
+        // never running the full cap on an already-quiet link.
+        let mut t = mock::MockTransport::new();
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x67, 0x00]);
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x90, 0x00]);
+        reader::settle_drain(&mut t);
+        assert_eq!(t.drained, 2, "both late frames consumed");
+        assert!(
+            t.waited_ms >= 2 * reader::DATA_COLLECT_WAIT_MS,
+            "at least two settle beats ran"
+        );
+        assert!(
+            t.waited_ms < (reader::SETTLE_MAX_BEATS as u64 + 1) * reader::DATA_COLLECT_WAIT_MS,
+            "bounded: exits on the first quiet beat, not the cap"
+        );
+    }
+
+    #[test]
+    fn settle_drain_consumes_frames_arriving_after_the_burst() {
+        // #170: a WTX-honoring chip can deliver the timed-out
+        // exchange's DATA response after the drain burst already found
+        // the link empty — the plain burst stops at the first None and
+        // the survivor answers the NEXT command's poll window
+        // (#101-class desync, the wifi-vpcd zero-data wedge shape).
+        // The settle beat (drain → wait → drain) catches it.
+        let mut t = mock::MockTransport::new();
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x67, 0x00]); // the card's late 6700
+        reader::settle_drain(&mut t);
+        assert!(
+            t.waited_ms >= reader::DATA_COLLECT_WAIT_MS,
+            "a settle beat ran"
+        );
+        assert_eq!(
+            t.drained, 1,
+            "the post-settle burst consumed the late frame"
+        );
+        assert!(t.drain().is_none(), "link actually empty");
+        assert!(
+            t.poll_frame().is_none(),
+            "nothing rides the next poll window"
+        );
+    }
+
+    #[test]
+    fn plain_drain_burst_misses_frames_arriving_after_it() {
+        // The contrast that justifies settle_drain: drain_link alone
+        // stops at the first empty poll and the late frame stays
+        // queued for the next command to mis-read as its response.
+        let mut t = mock::MockTransport::new();
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x67, 0x00]);
+        reader::drain_link(&mut t);
+        assert_eq!(t.drained, 0, "burst found nothing — frame not yet arrived");
+        t.wait_ms(reader::DATA_COLLECT_WAIT_MS); // the chip delivers late
+        let poisoned = t.poll_frame();
+        assert!(
+            poisoned.is_some(),
+            "the hazard: a survivor rides the next command's window"
         );
     }
 

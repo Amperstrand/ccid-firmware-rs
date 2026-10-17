@@ -108,9 +108,13 @@ pub mod netlog;
 ))]
 pub mod ota;
 
-#[cfg(all(
-    feature = "wifi-vpcd",
-    any(target_arch = "xtensa", target_arch = "riscv32")
+// x86_64: pure std, always host-tested. Targets: wifi-vpcd builds only.
+#[cfg(any(
+    target_arch = "x86_64",
+    all(
+        feature = "wifi-vpcd",
+        any(target_arch = "xtensa", target_arch = "riscv32")
+    )
 ))]
 pub mod vpcd;
 
