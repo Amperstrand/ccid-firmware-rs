@@ -12,15 +12,47 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 
 use esp_idf_sys::{
-    esp_ota_begin, esp_ota_end, esp_ota_get_next_update_partition, esp_ota_set_boot_partition,
-    esp_ota_write, esp_restart,
+    esp_ota_abort, esp_ota_begin, esp_ota_end, esp_ota_get_next_update_partition,
+    esp_ota_set_boot_partition, esp_ota_write, esp_restart,
 };
 
 use crate::ota_header::{self, MAGIC_V2, TOKEN_LEN};
 
+use core::time::Duration;
+
 const PORT: u16 = 3232;
 const OTA_SIZE_UNKNOWN: usize = 0xFFFF_FFFF;
 const CHUNK: usize = 1024;
+
+/// Read the announced image size off the socket and write it to the
+/// OTA partition. Fails (pre-commit) on any stalled read or write
+/// reject — the caller aborts the handle (#223).
+fn stream_image(
+    stream: &mut impl Read,
+    handle: esp_idf_sys::esp_ota_handle_t,
+    size: usize,
+) -> Result<(), &'static str> {
+    let mut remaining = size;
+    let mut buf = [0u8; CHUNK];
+    while remaining > 0 {
+        let want = remaining.min(CHUNK);
+        stream
+            .read_exact(&mut buf[..want])
+            .map_err(|_| "image read failed")?;
+        let rc = unsafe {
+            esp_ota_write(
+                handle,
+                buf[..want].as_ptr() as *const core::ffi::c_void,
+                want,
+            )
+        };
+        if rc != 0 {
+            return Err("esp_ota_write failed");
+        }
+        remaining -= want;
+    }
+    Ok(())
+}
 
 pub fn spawn() {
     let _ = std::thread::Builder::new()
@@ -41,6 +73,12 @@ fn server() {
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // #223: deadline every read/write on the connection — a
+                // stalled client fails out instead of pinning this
+                // accept thread forever.
+                let io_timeout = Duration::from_millis(ota_header::OTA_IO_TIMEOUT_MS);
+                let _ = stream.set_read_timeout(Some(io_timeout));
+                let _ = stream.set_write_timeout(Some(io_timeout));
                 if let Err(msg) = handle(&mut stream) {
                     log::warn!("ota: update failed: {}", msg);
                     let _ = stream.write_all(&[b'E']);
@@ -58,9 +96,18 @@ fn handle(stream: &mut impl Read) -> Result<(), &'static str> {
         .map_err(|_| "header read failed")?;
     let magic: [u8; 4] = hdr[..4].try_into().expect("fixed slice");
     let size = u32::from_le_bytes([hdr[4], hdr[5], hdr[6], hdr[7]]) as usize;
-    if size == 0 || size > 4 * 1024 * 1024 {
-        return Err("bad size");
+
+    // #223: size gate against the ACTUAL OTA partition (the old 4 MiB
+    // constant was a proxy) — fetched before auth so oversize is
+    // rejected pre-token, pre-erase.
+    // Safety: read-only use of the partition-table-owned pointer.
+    let part = unsafe { esp_ota_get_next_update_partition(core::ptr::null()) };
+    if part.is_null() {
+        return Err("no OTA partition — partition table lacks ota slots");
     }
+    // Safety: aligned read of the fixed esp_partition_t layout.
+    let partition_size = unsafe { (*part).size } as usize;
+    ota_header::validate_size(size, partition_size)?;
 
     let expected = ota_header::compiled_token();
     if magic == MAGIC_V2 {
@@ -73,47 +120,29 @@ fn handle(stream: &mut impl Read) -> Result<(), &'static str> {
         ota_header::authorize(&magic, None, expected.as_ref())?;
     }
 
-    // Safety: single-threaded use of the app_update API on a partition
-    // pointer owned by the esp-idf partition table.
-    let part = unsafe { esp_ota_get_next_update_partition(core::ptr::null()) };
-    if part.is_null() {
-        return Err("no OTA partition — partition table lacks ota slots");
-    }
     let mut handle: esp_idf_sys::esp_ota_handle_t = 0;
     let rc = unsafe { esp_ota_begin(part, OTA_SIZE_UNKNOWN, &mut handle) };
     if rc != 0 {
         return Err("esp_ota_begin failed");
     }
 
-    let mut remaining = size;
-    let mut buf = [0u8; CHUNK];
-    while remaining > 0 {
-        let want = remaining.min(CHUNK);
-        stream
-            .read_exact(&mut buf[..want])
-            .map_err(|_| "image read failed")?;
-        let rc = unsafe {
-            esp_ota_write(
-                handle,
-                buf[..want].as_ptr() as *const core::ffi::c_void,
-                want,
-            )
-        };
-        if rc != 0 {
-            return Err("esp_ota_write failed");
-        }
-        remaining -= want;
+    // #223: every failure after esp_ota_begin aborts the OTA handle — a
+    // leaked handle left the next attempt wedged until reboot.
+    if let Err(msg) = stream_image(stream, handle, size) {
+        // Safety: single-threaded app_update API use on our own handle.
+        unsafe { esp_ota_abort(handle) };
+        return Err(msg);
     }
 
+    // Accounting invariant: stream_image only returns Ok when the full
+    // announced size was written (remaining reaches 0 by construction —
+    // the old post-loop `remaining != 0` check could never fire).
+    // esp_ota_end is the commit gate: it validates image integrity
+    // (checksum/signature) BEFORE the boot switch below; a failed end
+    // finalizes the handle itself, so no abort on that path.
     let rc = unsafe { esp_ota_end(handle) };
     if rc != 0 {
         return Err("esp_ota_end failed — image rejected (bad checksum or size)");
-    }
-    // Verify the written size matches the announced size before committing
-    // the boot switch (OTA_ROLLBACK hardening: a partial write that passes
-    // esp_ota_end but has wrong length must not brick the board).
-    if remaining != 0 {
-        return Err("short write — bytes lost, refusing to switch boot");
     }
     let rc = unsafe { esp_ota_set_boot_partition(part) };
     if rc != 0 {

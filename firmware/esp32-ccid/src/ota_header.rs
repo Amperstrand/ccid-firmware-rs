@@ -26,6 +26,28 @@ pub const HEADER_V2_LEN: usize = 40;
 
 pub type Token = [u8; TOKEN_LEN];
 
+/// Announced-size gate (pure logic, #223): validated against the ACTUAL
+/// OTA partition size before any erase/write — `0` is never a valid app
+/// image, and an image larger than the target partition can never
+/// succeed (the old 4 MiB constant was a proxy for this check).
+pub fn validate_size(announced: usize, partition_size: usize) -> Result<(), &'static str> {
+    if announced == 0 {
+        Err("bad size")
+    } else if announced > partition_size {
+        Err("announced image larger than the OTA partition")
+    } else {
+        Ok(())
+    }
+}
+
+/// Per-connection socket deadline policy (#223): a stalled client fails
+/// the connection instead of pinning the OTA accept thread forever.
+/// 10 s is generous for bench-WiFi chunk gaps (measured pushes sustain
+/// well over 100 KiB/s) and short enough that a wedged client cannot
+/// hold the single-threaded server meaningfully. Bounds locked by a
+/// host test.
+pub const OTA_IO_TIMEOUT_MS: u64 = 10_000;
+
 pub fn compiled_token() -> Option<Token> {
     let tok = option_env!("OTA_TOKEN")?;
     let bytes = tok.as_bytes();
@@ -121,5 +143,31 @@ mod tests {
     #[test]
     fn unknown_magic_refused() {
         assert_eq!(authorize(b"XXXX", None, None), Err("bad magic"));
+    }
+
+    #[test]
+    fn size_gate_rejects_zero_and_oversize_accepts_fitting() {
+        assert_eq!(validate_size(0, 2 * 1024 * 1024), Err("bad size"));
+        assert_eq!(
+            validate_size(2 * 1024 * 1024 + 1, 2 * 1024 * 1024),
+            Err("announced image larger than the OTA partition")
+        );
+        assert!(validate_size(2 * 1024 * 1024, 2 * 1024 * 1024).is_ok());
+        assert!(validate_size(1_572_864, 2 * 1024 * 1024).is_ok());
+    }
+
+    #[test]
+    fn io_timeout_policy_stays_within_bench_sane_bounds() {
+        // Lock the deadline policy (#223): long enough that a slow bench
+        // push never false-fails on chunk gaps, short enough that a dead
+        // client cannot pin the OTA thread for long.
+        assert!(
+            OTA_IO_TIMEOUT_MS >= 5_000,
+            "too tight — slow pushes false-fail"
+        );
+        assert!(
+            OTA_IO_TIMEOUT_MS <= 60_000,
+            "too loose — a wedged client pins the thread"
+        );
     }
 }
