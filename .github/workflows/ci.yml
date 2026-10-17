@@ -840,16 +840,20 @@ jobs:
     # something failed (!cancelled()) so a red run can never report green;
     # fails on failure/cancelled anywhere in needs, passes on success and
     # skipped.
+    # Tier policy (owner directive 2026-10-17): aggregates PRIMARY-tier jobs
+    # ONLY. Secondary-tier legs (stm32-build-secondary, esp32-build-secondary)
+    # stay visible as red jobs on the run + are caught by the nightly
+    # full-matrix lane, but a secondary rot must never block all merges —
+    # exactly what happened 2026-10-16 (pn532 build break, #211: ~24 h of
+    # admin-override merges on every PR).
     needs:
       - changes
       - sdkconfig-clean-wire-gate
       - stm32-build
-      - stm32-build-secondary
       - stm32-lint
       - stm32-test
       - python-collect
       - esp32-build
-      - esp32-build-secondary
       - esp32-host-test
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
