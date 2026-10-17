@@ -43,8 +43,9 @@ pub fn validate_size(announced: usize, partition_size: usize) -> Result<(), &'st
 /// Per-connection socket deadline policy (#223): a stalled client fails
 /// the connection instead of pinning the OTA accept thread forever.
 /// 10 s is generous for bench-WiFi chunk gaps (measured pushes sustain
-/// >100 KiB/s) and short enough that a wedged client cannot hold the
-/// single-threaded server meaningfully. Bounds locked by a host test.
+/// well over 100 KiB/s) and short enough that a wedged client cannot
+/// hold the single-threaded server meaningfully. Bounds locked by a
+/// host test.
 pub const OTA_IO_TIMEOUT_MS: u64 = 10_000;
 
 pub fn compiled_token() -> Option<Token> {

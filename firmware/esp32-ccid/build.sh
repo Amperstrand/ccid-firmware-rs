@@ -291,8 +291,13 @@ fi
 # token; a wrong-length token would arm nothing (ota_header panics at
 # runtime) — refuse it here, at the build, loudly.
 if [ -n "${OTA_TOKEN:-}" ]; then
-    if [ "${#OTA_TOKEN}" -eq 32 ]; then
-        info "OTA_TOKEN: set (32 chars — OTA2 authenticated pushes armed)"
+    # BYTE length, not ${#...} character length: compiled_token()
+    # compares 32 bytes on the wire (Codex review on #225) — under a
+    # UTF-8 locale a 32-multibyte-char token would pass a char count
+    # and arm a firmware that panics at the first push.
+    OTA_TOKEN_BYTES="$(printf '%s' "${OTA_TOKEN}" | wc -c)"
+    if [ "${OTA_TOKEN_BYTES}" -eq 32 ]; then
+        info "OTA_TOKEN: set (32 bytes — OTA2 authenticated pushes armed)"
     else
         echo "error: OTA_TOKEN must be exactly 32 chars (ota_header::TOKEN_LEN)" >&2
         exit 1
