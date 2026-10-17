@@ -13,7 +13,12 @@ name: hil-bench
 on:
   schedule:
     - cron: '17 3 * * *'  # nightly, off-peak minutes
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      rollup_issues:
+        description: "Comma-separated issue numbers for the STATUS rollup (empty = none)"
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -113,3 +118,39 @@ jobs:
           git add docs/STATUS.md
           git commit -qm "bench status @ ${GITHUB_SHA:0:12} [skip ci]"
           git push -q --force origin HEAD:refs/heads/bench/status
+
+  rollup:
+    runs-on: ubuntu-latest
+    name: rollup comment on tracked issues
+    needs: status
+    if: always() && needs.status.result == 'success'
+    # #183 Phase 2, third bullet: post the generated STATUS.md on
+    # tracked hardware-verification issues — ONLY when outcomes changed
+    # (status_rollup digests the rows and stays silent on identical
+    # nights). Opt-in both directions: the dispatch input above, or the
+    # STATUS_ROLLUP_ISSUES repo variable for the nightly (absent
+    # variable = silent nightly until the operator opts in). API-only
+    # job — it never runs on the bench runner.
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts }
+      - name: regenerate STATUS.md (publishing stays in the status job)
+        run: |
+          mkdir -p docs
+          inv=$(ls artifacts/bench-inventory/inventory.json 2>/dev/null || true)
+          junit=$(ls artifacts/hil-junit/hil-junit.xml 2>/dev/null || true)
+          python3 scripts/gen_status.py \
+            --inventory "${inv:-/dev/null}" \
+            --junit "${junit:-/dev/null}" \
+            --commit "$GITHUB_SHA" --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      - name: post rollups (opt-in via input or STATUS_ROLLUP_ISSUES)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUES="${{ inputs.rollup_issues || vars.STATUS_ROLLUP_ISSUES }}"
+          python3 scripts/status_rollup.py --status docs/STATUS.md \
+            --repo "$GITHUB_REPOSITORY" --issues "${ISSUES}" \
+            --token "$GITHUB_TOKEN"

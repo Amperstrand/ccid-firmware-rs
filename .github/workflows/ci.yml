@@ -747,7 +747,9 @@ jobs:
         # Pinned: the config targets 0.17.0 behavior.
         run: pip install ruff==0.17.0 && ruff check scripts tests/hardware host-tools
       - name: Unit tests — scripts (stdlib only, fits this minimal env)
-        run: python3 scripts/test_gen_status.py
+        run: |
+          python3 scripts/test_gen_status.py
+          python3 scripts/test_status_rollup.py
       - name: Collect tests/hardware (exit-code discipline)
         run: |
           set +e
