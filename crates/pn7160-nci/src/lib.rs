@@ -143,6 +143,65 @@ pub fn is_conn_credits_ntf(f: &Frame) -> bool {
     f.mt == MT_NTF && f.gid == GID_CORE && f.oid == OID_CORE_CONN_CREDITS
 }
 
+/// #149 P4 — the `transact` reply-routing rule, ONE shared decision for
+/// every [`Transport`] implementation: **the reply to a command is the
+/// first NON-NTF frame the link produces after the write** (MT_RSP
+/// answers commands, MT_DATA answers DATA packets — the DATA arm is
+/// the whole point: returning only MT_RSP stashed every APDU response
+/// as a "notification" and starved all card exchanges,
+/// mock/hardware-divergence bench 2026-10-08). NTFs arriving ahead of
+/// the reply are stash-and-continue: the esp I2C transport pushes them
+/// into its NTF ring ([`crate::esp_transport`]), the mock queues them
+/// for `drain` — same wire contract either way.
+///
+/// Both call sites route through this one function precisely so a
+/// host test ([`is_transact_reply_pins_the_non_ntf_first_contract`],
+/// [`mock_transact_matches_the_esp_transport_reply_contract`]) pins
+/// the mock's filtering semantics to the silicon behavior — the mock
+/// once answered "any queued reply" while the hardware filtered, and
+/// 13/13 protocol tests passed while the silicon starved (this repo's
+/// #1 bug class; issue #112's sibling lesson).
+pub const fn is_transact_reply(f: &Frame) -> bool {
+    f.mt != MT_NTF
+}
+
+/// #149 P4 / Codex P2 on #238 — capacity of the transact NTF stash,
+/// ONE definition point shared by silicon and the mock: the esp I2C
+/// transport's drop-oldest ring (`push_ntf`/`pop_ntf`) and the host
+/// mock's stash deque both hold at most this many frames — a fifth
+/// NTF ahead of a reply evicts the OLDEST (silicon-faithful: an
+/// unbounded mock stash models a transport that does not exist and
+/// lets host tests observe behavior the ring makes impossible).
+/// Surfaced by `drain()` only, ring-before-wire — silicon's
+/// `poll_frame` never reads the ring.
+pub const NTF_STASH_SLOTS: usize = 4;
+
+/// #149 P4 — one FreeRtos tick in µs, derived from the sdkconfig tick
+/// rate, never a hardcoded HZ=100 assumption: any sdkconfig with a
+/// different tick rate silently corrupts every wait budget — the #112
+/// bug class (a bench constant that tracks one sdkconfig instead of
+/// the target's actual configuration). The esp transport's
+/// `RTOS_TICK_US`/`IRQ_WAIT_BUDGET_US` arithmetic is built on this,
+/// and the host regression test
+/// [`tick_period_us_derives_from_the_sdkconfig_tick_rate`] locks the
+/// "budget counts ELAPSED ticks, not requested ms" invariant.
+///
+/// GREAT EXPECTATION (reference-locked formula — do not "fix" without
+/// re-verifying against the cited references): this is FreeRTOS's own
+/// tick-period arithmetic in µs form — `portTICK_PERIOD_MS =
+/// (TickType_t)(1000 / configTICK_RATE_HZ)` (esp-idf
+/// FreeRTOS-Kernel-SMP `portable/riscv/include/freertos/portmacro.h`
+/// and the xtensa sibling; bindgen exports the macro's INPUT
+/// `configTICK_RATE_HZ` but not the macro itself — it is a division
+/// expression), and the microsecond analogue
+/// `portTICK_RATE_MICROSECONDS = (TickType_t)(1000000 /
+/// configTICK_RATE_HZ)` (esp-idf FreeRTOS-Kernel portable/linux
+/// portmacro.h). `1_000_000 / hz` (not `(1000/hz) × 1000`) avoids
+/// double truncation at non-decimal rates.
+pub const fn tick_period_us(config_tick_rate_hz: u32) -> u32 {
+    1_000_000 / config_tick_rate_hz
+}
+
 // --- DATA packet header bits (NCI §5.4.1; NXP nci_defs.h NCI_CID/PBF) ------
 pub const CID_MASK: u8 = 0x0F;
 pub const PBF_MASK: u8 = 0x10;
@@ -799,9 +858,10 @@ pub mod reader {
     /// Strict-RSP collect budget for [`transact_strict`]: 20 polls ×
     /// 10 ms = 200 ms — parity with the firmware I2C transport's
     /// blocking transact IRQ budget (`IRQ_WAIT_BUDGET_US`,
-    /// pn7160_i2c.rs; a FreeRtos 1 ms request rounds up to a 10 ms
-    /// tick, so the ESP32 wall budget matches). Host mocks no-op
-    /// `wait_ms` and just spend the polls.
+    /// esp_transport.rs — #149 P1 moved it out of pn7160_i2c.rs; a
+    /// FreeRtos 1 ms request rounds up to a 10 ms tick, so the ESP32
+    /// wall budget matches). Host mocks no-op `wait_ms` and just spend
+    /// the polls.
     pub const STRICT_RSP_POLLS: usize = 20;
     const STRICT_RSP_WAIT_MS: u64 = 10;
 
@@ -997,11 +1057,12 @@ pub mod reader {
     /// ([`Frame::is_rsp_to`]) terminates the wait.
     ///
     /// [`Transport::transact`] cannot offer this contract: its
-    /// "first non-NTF frame" rule (the firmware I2C transport,
-    /// pn7160_i2c.rs) is exactly what lets a late DATA packet
-    /// masquerade as the RF_DEACTIVATE_RSP — the real RSP then stays
-    /// pending and cascades mismatches through the teardown fallback
-    /// chain. Budget: [`STRICT_RSP_POLLS`] × 10 ms (see the const).
+    /// "first non-NTF frame" rule ([`is_transact_reply`]; the firmware
+    /// I2C transport, esp_transport.rs) is exactly what lets a late
+    /// DATA packet masquerade as the RF_DEACTIVATE_RSP — the real RSP
+    /// then stays pending and cascades mismatches through the teardown
+    /// fallback chain. Budget: [`STRICT_RSP_POLLS`] × 10 ms (see the
+    /// const).
     pub fn transact_strict<T: Transport>(t: &mut T, cmd: &[u8]) -> Result<Frame, &'static str> {
         if !t.send(cmd) {
             return Err("write failed");
@@ -1212,9 +1273,13 @@ pub fn run_ladder<T: Transport>(t: &mut T) -> Result<(), &'static str> {
 }
 
 /// Mock transport for unit tests, modeling the real link's semantics:
-/// `transact` consumes from the scripted reply queue (one RSP per command,
-/// in order); `drain` consumes from the notification queue (unsolicited,
-/// IRQ-gated — an empty queue returns None, never a future RSP).
+/// `transact` consumes from the scripted reply queue but routes it
+/// through the shared NON-NTF-first rule ([`is_transact_reply`]) —
+/// NTFs queued ahead of the reply are stashed into the notification
+/// queue and surface via `drain`, exactly like silicon's transact
+/// (#149 P4 parity lock); `drain` consumes from the notification queue
+/// (unsolicited, IRQ-gated — an empty queue returns None, never a
+/// future RSP).
 #[cfg(any(test, feature = "std"))]
 pub mod mock {
     use super::*;
@@ -1231,6 +1296,12 @@ pub mod mock {
         /// models the chip answering (IRQ rise) shortly after the
         /// command write, without the caller blocking.
         pub pending_rsp: Option<StdVec<u8>>,
+        /// NTFs stashed by `transact` (frames read ahead of the reply)
+        /// — mirrors silicon's `NTF_STASH_SLOTS` drop-oldest ring:
+        /// at most 4 frames, oldest evicted, surfaced by `drain()`
+        /// only (Codex P2 on #238: the stash must model the ring,
+        /// never an unbounded queue).
+        pub stash: VecDeque<StdVec<u8>>,
         /// Blocking `transact` call count — lets tests assert the
         /// presence path never waits for a reply.
         pub transacts: usize,
@@ -1251,6 +1322,7 @@ pub mod mock {
                 notifications: VecDeque::new(),
                 drained: 0,
                 pending_rsp: None,
+                stash: VecDeque::new(),
                 transacts: 0,
                 waited_ms: 0,
                 late_on_wait: VecDeque::new(),
@@ -1265,6 +1337,15 @@ pub mod mock {
         /// Script an unsolicited notification (consumed by `drain`).
         pub fn push_notification(&mut self, raw: &[u8]) {
             self.notifications.push_back(raw.to_vec());
+        }
+
+        /// Silicon-parity stash (`EspPn7160Transport::push_ntf`):
+        /// drop-oldest once the ring is full at [`NTF_STASH_SLOTS`].
+        fn stash_ntf(&mut self, raw: StdVec<u8>) {
+            if self.stash.len() == NTF_STASH_SLOTS {
+                self.stash.pop_front();
+            }
+            self.stash.push_back(raw);
         }
     }
 
@@ -1292,12 +1373,37 @@ pub mod mock {
         fn transact(&mut self, cmd: &[u8]) -> Option<Frame> {
             self.transacts += 1;
             self.sent.push(cmd.to_vec());
-            self.replies.pop_front().and_then(|raw| Frame::decode(&raw))
+            // #149 P4 mock/hardware parity: silicon's transact contract
+            // is "reply = the first NON-NTF frame after the write"
+            // (is_transact_reply — the esp I2C transport's push_ntf
+            // stash). NTFs scripted ahead of the reply are stashed for
+            // drain() instead of being returned as the reply — through
+            // the SAME drop-oldest 4-slot ring semantics
+            // (stash_ntf; Codex P2 on #238: the stash models
+            // push_ntf's ring, never an unbounded queue). The mock
+            // once returned ANY queued reply and passed 13/13 protocol
+            // tests while the silicon starved (bench 2026-10-08, this
+            // repo's #1 bug class) — this routing plus
+            // mock_transact_matches_the_esp_transport_reply_contract
+            // pins the two together.
+            while let Some(raw) = self.replies.pop_front() {
+                let f = Frame::decode(&raw)?;
+                if is_transact_reply(&f) {
+                    return Some(f);
+                }
+                self.stash_ntf(raw);
+            }
+            None
         }
         fn drain(&mut self) -> Option<Frame> {
+            // Ring before wire, exactly silicon's drain: pop_ntf
+            // (the transact stash) first, then the pending-on-wire
+            // notifications. poll_frame never reads the ring — a
+            // stashed NTF must not ride a later command's poll window.
             let f = self
-                .notifications
+                .stash
                 .pop_front()
+                .or_else(|| self.notifications.pop_front())
                 .and_then(|raw| Frame::decode(&raw));
             if f.is_some() {
                 self.drained += 1;
@@ -1928,6 +2034,162 @@ mod tests {
             t.polls,
             reader::STRICT_RSP_POLLS,
             "bounded — no infinite churn loop"
+        );
+    }
+
+    // #149 P4 parity lock, part 1: the shared routing decision itself.
+    // given the transact reply rule is ONE function shared by the esp
+    // I2C transport and the mock, when any frame shape reaches it,
+    // then exactly the NON-NTF shapes classify as replies — MT_RSP
+    // (command answers) and MT_DATA (DATA-packet answers, the arm
+    // whose absence once starved every card exchange on silicon while
+    // the mock's tests stayed green, bench 2026-10-08).
+    #[test]
+    fn is_transact_reply_pins_the_non_ntf_first_contract() {
+        let rsp_frame = Frame::decode(&rsp(0x40, OID_CORE_RESET, &[0x00])).unwrap();
+        assert!(is_transact_reply(&rsp_frame), "MT_RSP is a reply");
+        let data = Frame::decode(&[0x00, 0x00, 0x02, 0x90, 0x00]).unwrap();
+        assert!(is_transact_reply(&data), "MT_DATA is a reply (APDU path)");
+        let frag = Frame::decode(&[0x10, 0x00, 0x02, 0xAA, 0xBB]).unwrap();
+        assert!(is_transact_reply(&frag), "PBF DATA fragment is a reply");
+
+        let core_ntf = Frame::decode(&rsp(0x60, OID_CORE_RESET, &[0x00])).unwrap();
+        assert!(!is_transact_reply(&core_ntf), "core NTF is churn");
+        let wtx = Frame::decode(&[0x6F, 0x17, 0x00]).unwrap();
+        assert!(!is_transact_reply(&wtx), "WTX advisory is churn");
+        let credits = Frame::decode(&[0x60, 0x06, 0x02, 0x01, 0x00]).unwrap();
+        assert!(!is_transact_reply(&credits), "credits NTF is churn");
+        let deactivate_ntf =
+            Frame::decode(&[MT_NTF | GID_RF, NTF_RF_DEACTIVATE, 0x01, 0x00]).unwrap();
+        assert!(!is_transact_reply(&deactivate_ntf), "RF NTF is churn");
+    }
+
+    // #149 P4 parity lock, part 2: the MOCK must implement the esp
+    // transport's transact contract, not a laxer one. given the
+    // scripted wire order after a command write is [credits NTF, WTX
+    // advisory, RF_DEACTIVATE_RSP] — the exact churn shape silicon
+    // produces (the esp I2C transport stashes both NTFs into its ring
+    // and returns the first non-NTF frame) — when transact collects
+    // the reply, then it returns ONLY the RSP and both NTFs surface
+    // later via drain(). A mock that returned "any queued reply"
+    // passes ladder tests while diverging from silicon (the #1
+    // firmware-bug class, bench 2026-10-08: the transport filtered for
+    // MT_RSP only and stashed every APDU DATA response as a
+    // notification, starving all card exchanges).
+    #[test]
+    fn mock_transact_matches_the_esp_transport_reply_contract() {
+        let mut t = mock::MockTransport::new();
+        t.push_reply(&[0x60, 0x06, 0x02, 0x01, 0x00]); // credits NTF first
+        t.push_reply(&[0x6F, 0x17, 0x00]); // WTX advisory
+        t.push_reply(&[0x41, 0x06, 0x01, 0x00]); // RF_DEACTIVATE_RSP OK
+
+        let f = t
+            .transact(&reader::RF_DEACTIVATE_DISCOVERY)
+            .expect("reply must be the first NON-NTF frame");
+        assert_eq!(f.mt, MT_RSP);
+        assert_eq!(f.oid, OID_RF_DEACTIVATE);
+        assert_eq!(f.status(), Some(STATUS_OK));
+
+        // both NTFs were stashed silicon-style and drain() surfaces
+        // them in arrival order — never lost, never the reply.
+        let n1 = t.drain().expect("credits NTF stashed, not consumed");
+        assert!(is_conn_credits_ntf(&n1));
+        let n2 = t.drain().expect("WTX advisory stashed, not consumed");
+        assert!(is_wtx_ntf(&n2));
+        assert!(t.drain().is_none(), "link actually empty");
+
+        // ring-vs-wire routing (silicon drain pops push_ntf's ring
+        // BEFORE reading the wire; poll_frame NEVER reads the ring):
+        // stashed NTFs must not ride a later command's poll window.
+        let mut t3 = mock::MockTransport::new();
+        t3.push_reply(&[0x6F, 0x17, 0x00]); // WTX advisory ahead of reply
+        t3.push_reply(&[0x41, 0x06, 0x01, 0x00]);
+        let _ = t3.transact(&reader::RF_DEACTIVATE_DISCOVERY).unwrap();
+        assert!(
+            t3.poll_frame().is_none(),
+            "stashed NTF must surface via drain only, never poll_frame"
+        );
+        assert!(is_wtx_ntf(&t3.drain().expect("stash surfaces via drain")));
+
+        // DATA frames ride the same rule: a DATA reply to a DATA send
+        // is returned, not stashed.
+        let mut t2 = mock::MockTransport::new();
+        t2.push_reply(&[0x00, 0x00, 0x02, 0x90, 0x00]);
+        let d = t2.transact(&[0x00, 0x00, 0x00]).expect("DATA is a reply");
+        assert_eq!(d.mt, MT_DATA);
+    }
+
+    // Codex P2 on #238: the mock stash is a RING, not a queue. given
+    // FIVE NTFs are scripted ahead of the reply (one more than
+    // silicon's NTF_SLOTS=4 push_ntf ring holds), when transact
+    // collects, then the OLDEST NTF is evicted — drain surfaces
+    // exactly the four NEWEST in arrival order, and an unbounded
+    // stash (the reviewed bug: every frame retained in the VecDeque)
+    // would have surfaced all five.
+    #[test]
+    fn mock_ntf_stash_mirrors_the_four_slot_drop_oldest_ring() {
+        let mut t = mock::MockTransport::new();
+        for i in 0..5u8 {
+            // core NTF, payload marker = arrival index
+            t.push_reply(&[MT_NTF | GID_CORE, OID_CORE_RESET, 0x01, i]);
+        }
+        t.push_reply(&[0x41, 0x06, 0x01, 0x00]); // the reply
+
+        let f = t
+            .transact(&reader::RF_DEACTIVATE_DISCOVERY)
+            .expect("reply collected after the churn burst");
+        assert_eq!(f.mt, MT_RSP);
+
+        assert_eq!(t.stash.len(), NTF_STASH_SLOTS, "ring full, not grown");
+        for expected in 1..=4u8 {
+            let n = t.drain().expect("four survivors remain");
+            assert_eq!(n.mt, MT_NTF);
+            assert_eq!(
+                n.payload[0], expected,
+                "marker {expected} — marker 0 (oldest) was evicted, newest kept"
+            );
+        }
+        assert!(t.drain().is_none(), "exactly NTF_STASH_SLOTS surfaced");
+    }
+
+    // #149 P4 / #112 regression lock: the transact RSP budget counts
+    // ELAPSED ticks, not REQUESTED ms. One wait iteration is
+    // `FreeRtos::delay_ms(1)` — which rounds UP to one full tick — so
+    // the accumulated budget must grow by the tick period
+    // (1_000_000 / CONFIG_FREERTOS_HZ µs — FreeRTOS's own
+    // portTICK_PERIOD_MS arithmetic; see tick_period_us) per
+    // iteration. The pre-#112 code counted the 1 000 µs request while
+    // 10 000 µs elapsed and silently stretched the 200 ms RSP budget
+    // to ~2 s of wall time at HZ=100; the fix (waited += RTOS_TICK_US)
+    // stays locked by pinning the derivation the esp transport's
+    // const is built from (esp_transport.rs: RTOS_TICK_US =
+    // tick_period_us(esp_idf_sys::configTICK_RATE_HZ) — bindgen
+    // exports the rate constant, not the portTICK_PERIOD_MS division
+    // macro).
+    #[test]
+    fn tick_period_us_derives_from_the_sdkconfig_tick_rate() {
+        // bench sdkconfig.full today: CONFIG_FREERTOS_HZ=100 →
+        // configTICK_RATE_HZ=100 → one 10 ms tick (portTICK_PERIOD_MS=10).
+        assert_eq!(tick_period_us(100), 10_000);
+        // the invariant that broke #112: whenever the tick is slower
+        // than the requested 1 ms (HZ < 1000), one iteration elapses
+        // STRICTLY more than the request — counting the request
+        // instead of the tick is the budget-stretch bug.
+        assert!(tick_period_us(100) > 1_000);
+        // a different sdkconfig moves the arithmetic with it — no
+        // hardcoded 10 000 survives an HZ change.
+        assert_eq!(tick_period_us(1000), 1_000); // HZ=1000: request == tick
+        assert_eq!(tick_period_us(10), 100_000); // HZ=10 vendor trees
+                                                 // the µs form FreeRTOS itself defines (portTICK_RATE_MICROSECONDS,
+                                                 // esp-idf linux portmacro.h) matches at non-decimal rates where
+                                                 // (1000/hz)×1000 would double-truncate.
+        assert_eq!(tick_period_us(32768), 30); // 1_000_000/32768 = 30.5 → 30
+                                               // budget arithmetic sanity at the bench config: the 200 ms
+                                               // IRQ_WAIT_BUDGET_US admits ceil(200_000 / 10_000) = 20 wait
+                                               // iterations — the same 20 as STRICT_RSP_POLLS × 10 ms.
+        assert_eq!(
+            200_000 / tick_period_us(100),
+            reader::STRICT_RSP_POLLS as u32
         );
     }
 
