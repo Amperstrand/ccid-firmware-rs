@@ -72,22 +72,42 @@ def should_post(last_rollup_body: str | None, new_status_md: str) -> bool:
 
 def fetch_last_rollup(repo: str, issue: str, token: str) -> str | None:
     """Body of the issue's newest comment, or None (API errors -> None:
-    a fetch failure must degrade to 'post', never silently skip)."""
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{repo}/issues/{issue}/comments?per_page=100",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "ccid-status-rollup",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            comments = json.loads(resp.read().decode())
-    except (OSError, ValueError) as e:
-        print(f"status_rollup: fetch failed for #{issue} ({e}) — will post", file=sys.stderr)
-        return None
-    return comments[-1]["body"] if comments else None
+    a fetch failure must degrade to 'post', never silently skip).
+
+    Paginated (Codex P2 on #226/#227): the API caps per_page at 100 and
+    orders ascending by id — `comments[-1]` of page 1 is the 100th
+    comment, not the newest, once an issue crosses 100 comments. Walk
+    pages until a short/empty one; the last comment of the last page is
+    the newest.
+    """
+    page = 1
+    last_body = None
+    while True:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/issues/{issue}/comments"
+            f"?per_page=100&page={page}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "ccid-status-rollup",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                batch = json.loads(resp.read().decode())
+        except (OSError, ValueError) as e:
+            print(
+                f"status_rollup: fetch failed for #{issue} page {page} ({e}) — will post",
+                file=sys.stderr,
+            )
+            return None
+        if not batch:
+            break
+        last_body = batch[-1]["body"]
+        if len(batch) < 100:
+            break
+        page += 1
+    return last_body
 
 
 def post_comment(repo: str, issue: str, body: str, token: str) -> bool:

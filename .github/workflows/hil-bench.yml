@@ -149,6 +149,10 @@ jobs:
     # variable = silent nightly until the operator opts in). API-only
     # job — it never runs on the bench runner.
     permissions:
+      # Job-level permissions reset every omitted permission to none —
+      # checkout needs contents: read alongside the issues grant
+      # (Codex P1 on #226).
+      contents: read
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -167,7 +171,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ISSUES="${{ inputs.rollup_issues || vars.STATUS_ROLLUP_ISSUES }}"
+          # The repo variable arms the NIGHTLY only. An empty manual
+          # selection means "none" — `||` made it fall through to the
+          # nightly set and comment on issues the operator explicitly
+          # left unselected (Codex P2 on #226).
+          ISSUES="${{ inputs.rollup_issues }}"
+          if [ -z "$ISSUES" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            ISSUES="${{ vars.STATUS_ROLLUP_ISSUES }}"
+          fi
           python3 scripts/status_rollup.py --status docs/STATUS.md \
             --repo "$GITHUB_REPOSITORY" --issues "${ISSUES}" \
             --token "$GITHUB_TOKEN"

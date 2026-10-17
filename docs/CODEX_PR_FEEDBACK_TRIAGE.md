@@ -30,6 +30,39 @@ flagged inline (PR 85 items 4/11/13/15, PR 86 items 3/14/15/17, PR 98).
 
 ---
 
+## Sweep 4 (2026-10-17) — PRs 108–249: the never-swept window
+
+The prior sweeps covered PRs 77–107. The 2026-10-17 quality survey
+found the window since then unswept: 38 PRs in 108–249 carry Codex
+comments (~110 total; full per-PR inventory in the tracking issue).
+Note the connector bot relays OWNER replies as top-level comments too
+(no `in_reply_to_id`) — presence of a comment is not evidence of an
+open finding.
+
+**Fixed this sweep (verified unaddressed in-tree, then fixed — see the
+`sisyphus/review-debt-sweep` branch):**
+
+| PR | Priority | Finding | Fix |
+|----|----------|---------|-----|
+| 233 | P1 | `ccid-pcsc-host/LICENSE` is an abbreviated notice — GPLv2 requires the complete text travel with the published crate archive | LICENSE = preamble + byte-exact canonical GPL-2.0 text (md5 `b234ee4d69f5fce4486a80fdaf4a4263` verified) |
+| 226 | P1 | `hil-bench.yml` rollup job: job-level `permissions` omits `contents: read` — checkout gets NO repo access | `contents: read` added alongside `issues: write` |
+| 226 | P2 | empty manual `rollup_issues` dispatch input falls through to the nightly repo variable (`\|\|`) | variable arms scheduled runs only; empty manual input = "none" |
+| 227 | P2 | `status_rollup.py` reads `comments[-1]` of page 1 — permanently the 100th comment once an issue crosses 100 comments (digest compares stale data) | `fetch_last_rollup` paginates to the last page; 4 new regression tests (`FetchLastRollupPaginationTests`) |
+| 226 | P2 | duplicate of the #227 pagination finding on the same line | same fix, same tests |
+
+**Flagged follow-up (not this sweep):** the repo-ROOT `LICENSE` is the
+same abbreviated notice — same GPLv2 §1 reasoning applies to source
+distribution of the whole tree; owner call whether to expand it.
+
+**Remaining window (P1-deferred rule → tracking issue):** PRs 108–249
+beyond the five above are UNVERIFIED (comments exist; addressed-status
+unknown — several PRs show owner-relayed replies like #229/#231/#236
+which read as closed). Filed as a tracking issue with the full
+inventory; the next sweep verifies each against the tree per the
+standard procedure. Do NOT assume the window is clean.
+
+---
+
 ## UNADDRESSED (0)
 
 _None — all 53 rows verified against the tree and closed with commit-hash evidence._
