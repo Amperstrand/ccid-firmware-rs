@@ -74,6 +74,9 @@ Options:
 Env:
   CARGO_TARGET_DIR             honored; defaults to ~/.cargo-target
   NUCULA_WIFI_SSID/_PASS       passed through (baked at build time)
+  OTA_TOKEN                    32 chars — arms the authenticated OTA2
+                               push protocol (ota_header); unset builds
+                               keep the OTA1 (unauthenticated) form
 EOF
 }
 
@@ -283,6 +286,19 @@ if [ -n "${NUCULA_WIFI_SSID:-}" ]; then
     info "NUCULA_WIFI_SSID: set (inherited)"
 else
     warn "NUCULA_WIFI_SSID: unset — credential-baking crates will compile without it"
+fi
+# #223: arm the authenticated OTA2 push protocol when the bench passes a
+# token; a wrong-length token would arm nothing (ota_header panics at
+# runtime) — refuse it here, at the build, loudly.
+if [ -n "${OTA_TOKEN:-}" ]; then
+    if [ "${#OTA_TOKEN}" -eq 32 ]; then
+        info "OTA_TOKEN: set (32 chars — OTA2 authenticated pushes armed)"
+    else
+        echo "error: OTA_TOKEN must be exactly 32 chars (ota_header::TOKEN_LEN)" >&2
+        exit 1
+    fi
+else
+    info "OTA_TOKEN: unset — OTA1 (unauthenticated) push protocol"
 fi
 
 echo "+ cd ${SCRIPT_DIR}"
