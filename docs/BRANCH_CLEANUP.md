@@ -69,3 +69,28 @@ This is the current development branch for the shared CCID architecture refactor
 | `sisyphus/finish-shared-ccid-core` | Keep — active work | — |
 | `origin/copilot/add-nfc-only-build-variant` | Delete remote after PR review | Low |
 | `sisyphus/finish-shared-ccid-core` (after merge) | Delete local | After PR merged |
+
+
+## Sweep 2026-10-17 (#166, ops5-orc S5wC)
+
+Main @ 718e014. 23 branches deleted — every tip verified
+`git merge-base --is-ancestor <tip> origin/main` before deletion
+(journal of tip SHAs in issue #166). Audit discipline note: the first
+pass produced false "merged" verdicts from a STALE origin/main ref
+(4afa3e5 vs 718e014) — always `git fetch <remote> refs/heads/main:
+refs/remotes/origin/main` before ancestry claims; a plain
+`fetch --prune` does not guarantee the tracking ref moves.
+
+KEPT (3 superseded/preserved, do not auto-delete):
+- `sisyphus/audit-wave4` — 3 commits, the DECISION_REGISTER D-8
+  preserved-evidence branch (citation anchor).
+- `sisyphus/181-per-command-windows` — 1 commit ahead (#204 Codex P1
+  variant, superseded by the landed implementation; end-state far
+  behind main).
+- `sisyphus/lcd-ticker-split` — 5 commits (#215 pre-squash variant;
+  the squash landed different final patches).
+
+Worktrees: `/tmp` farm (pr82/idf555/pr158-161) already gone from prior
+sweeps; `ccid-c3-wt` (May c3-port lane, 0 unique commits, local-only
+branch) removed this sweep. Remaining: the hub + tonight's open-PR
+lanes.
