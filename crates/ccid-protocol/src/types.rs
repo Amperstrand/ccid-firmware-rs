@@ -86,6 +86,15 @@ pub const CCID_ERR_PIN_TIMEOUT: u8 = 0xF0;
 /// commands.c L1605-L1638); do not confuse with PIN_TIMEOUT (same byte,
 /// disjoint command contexts).
 pub const CCID_ERR_CARD_TIMEOUT: u8 = 0xF0;
+
+/// bError of an interim CCID time-extension frame on T=1: the number of
+/// BWT units by which the host extends its read window (CCID Rev 1.1
+/// §6.1.4; honored verbatim by libccidtwin — `readTimeout *= bError`,
+/// `reference/CCID/src/commands.c:1598` CCID_Receive). Single source of
+/// truth: the serial time-extension emitter AND the DH-side WTX budget
+/// composition contract both consume this constant (do NOT mirror the
+/// value elsewhere — Codex P2 on #236).
+pub const CCID_TIME_EXTENSION_BWT_UNITS: u8 = 2;
 pub const CCID_ERR_BUSY_WITH_AUTO_SEQUENCE: u8 = 0xF2;
 pub const CCID_ERR_DEACTIVATED_PROTOCOL: u8 = 0xF3;
 pub const CCID_ERR_PROCEDURE_BYTE_CONFLICT: u8 = 0xF4;

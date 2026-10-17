@@ -78,7 +78,9 @@ pub mod time_extension {
     /// bError multiplier: libccidtwin multiplies its remaining read
     /// timeout by this value per extension frame (commands.c:1598) —
     /// 3 s × 2 comfortably covers the 2.4 s exchange budget's tail.
-    const BWT_UNIT_MULTIPLIER: u8 = 2;
+    /// Derived from the single wire-format source of truth in
+    /// ccid-protocol (Codex P2 on #236: no mirrored literals).
+    const BWT_UNIT_MULTIPLIER: u8 = ccid_protocol::types::CCID_TIME_EXTENSION_BWT_UNITS;
 
     /// Wire size of one framed interim DataBlock: SYNC + CTRL + the
     /// 10-byte CCID header (dwLength = 0) + LRC.

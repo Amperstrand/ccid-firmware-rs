@@ -1521,6 +1521,7 @@ dependencies = [
 name = "pn7160-nci"
 version = "0.1.0"
 dependencies = [
+ "ccid-protocol",
  "heapless 0.8.0",
 ]
 

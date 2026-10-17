@@ -9,6 +9,9 @@ description = "no_std NCI protocol core for the PN7160 NFC controller (reader mo
 
 [dependencies]
 heapless = "0.8"
+# Single wire-format source for the CCID time-extension bError (the
+# WTX-budget composition contract consumes it — Codex P2 on #236).
+ccid-protocol = { path = "../ccid-protocol" }
 
 [features]
 default = ["std"]
