@@ -796,7 +796,8 @@ dependencies = [
 [[package]]
 name = "esp-idf-hal"
 version = "0.47.0"
-source = "git+https://github.com/Amperstrand/esp-idf-hal?branch=ai-experiments-0.47#c1d4ec357e7a7f72bc3c8d736645d3300c544017"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52353908ed84c0290500557d7097ebf95985a6a9c98ea89cfb1ff9606ff7608f"
 dependencies = [
  "atomic-waker",
  "embassy-sync",
