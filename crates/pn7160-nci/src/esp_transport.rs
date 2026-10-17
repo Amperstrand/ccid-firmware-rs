@@ -10,7 +10,7 @@
 //! timing.
 
 pub use crate::board::{BoardPins, NUCULA};
-use crate::{Frame, Transport, MT_NTF};
+use crate::{is_transact_reply, tick_period_us, Frame, Transport};
 
 /// IRQ number for the ISR quench (the ISR cannot capture; the transport
 /// stores its board's IRQ pin here at bring-up).
@@ -24,12 +24,23 @@ use esp_idf_sys::EspError;
 
 const XFER_TIMEOUT_MS: i32 = 500;
 const IRQ_WAIT_BUDGET_US: u32 = 200_000;
-/// One FreeRtos tick in µs — `CONFIG_FREERTOS_HZ=100` (sdkconfig.full), so
-/// `FreeRtos::delay_ms(1)` rounds UP to one full 10 ms tick. The wait budget
-/// must count what actually elapses, not what was requested (Codex #85,
-/// issue #112): counting 1000 µs/iteration silently stretched the 200 ms
-/// RSP budget to ~2 s of wall time.
-const RTOS_TICK_US: u32 = 10_000;
+/// One FreeRtos tick in µs — DERIVED from the active sdkconfig's tick
+/// rate (`esp_idf_sys::configTICK_RATE_HZ` ← `CONFIG_FREERTOS_HZ`;
+/// esp-idf-sys exports the rate constant, not the
+/// `portTICK_PERIOD_MS` macro — bindgen cannot bind a division
+/// expression; see `tick_period_us` for the reference-locked
+/// formula), never a hardcoded HZ=100 assumption: any sdkconfig with
+/// a different tick rate silently corrupts every wait budget
+/// (#149 P4 — the #112 bug class: a bench constant tracking one
+/// sdkconfig instead of the target's actual configuration; locked
+/// host-side by
+/// `tick_period_us_derives_from_the_sdkconfig_tick_rate`). With the
+/// bench sdkconfig.full (`CONFIG_FREERTOS_HZ=100`) this is 10 000 µs
+/// and `FreeRtos::delay_ms(1)` rounds UP to one full 10 ms tick. The
+/// wait budget must count what actually elapses, not what was
+/// requested (Codex #85, issue #112): counting 1000 µs/iteration
+/// silently stretched the 200 ms RSP budget to ~2 s of wall time.
+const RTOS_TICK_US: u32 = tick_period_us(esp_idf_sys::configTICK_RATE_HZ);
 const NTF_SLOTS: usize = 4;
 /// Fire-and-forget write bound for the non-blocking presence re-arm
 /// (2026-10-10 serve-loop stall fix): a 4-byte NCI command is ~0.5 ms on
@@ -382,12 +393,16 @@ impl Transport for EspPn7160Transport {
         loop {
             if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
                 let f = self.read_frame()?;
-                // The reply to what we sent is the first NON-NTF frame:
-                // MT_RSP for commands, MT_DATA for DATA packets. Returning
-                // only MT_RSP stashed every APDU response as a notification
-                // and starved all card exchanges (mock/hardware divergence
-                // — the mock returns any queued reply; bench 2026-10-08).
-                if f.mt != MT_NTF {
+                // The reply to what we sent is the first NON-NTF frame
+                // (is_transact_reply — #149 P4: ONE shared routing
+                // decision with the host mock, pinned by
+                // mock_transact_matches_the_esp_transport_reply_contract):
+                // MT_RSP for commands, MT_DATA for DATA packets.
+                // Returning only MT_RSP stashed every APDU response as
+                // a notification and starved all card exchanges
+                // (mock/hardware divergence — the mock returns any
+                // queued reply; bench 2026-10-08).
+                if is_transact_reply(&f) {
                     return Some(f);
                 }
                 log::warn!("transact: stashing NTF gid={:#x} oid={:#x}", f.gid, f.oid);

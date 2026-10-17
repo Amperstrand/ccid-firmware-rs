@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — #149 P4: transport-extraction hardening tail (tick math + mock/hardware parity lock)
+
+- `pn7160-nci` `esp_transport`: `RTOS_TICK_US` is now DERIVED from the
+  sdkconfig tick rate (`esp_idf_sys::configTICK_RATE_HZ` ←
+  `CONFIG_FREERTOS_HZ`) via the new host-testable `tick_period_us()`
+  — FreeRTOS's own `portTICK_PERIOD_MS` arithmetic (bindgen cannot
+  bind the division-expression macro, so the rate constant it derives
+  from is used) — instead of the hardcoded `10_000` (HZ=100)
+  assumption: any sdkconfig with a different tick rate silently
+  corrupted every wait budget (#112 bug class). Value unchanged on
+  the bench sdkconfig (10 ms tick); regression test
+  `tick_period_us_derives_from_the_sdkconfig_tick_rate` locks the
+  "transact RSP budget counts ELAPSED ticks, not requested ms"
+  invariant that #112 fixed.
+- The transact reply-routing rule ("reply to a command = the first
+  NON-NTF frame; NTFs ahead of it are stashed") is now ONE shared
+  decision (`pn7160_nci::is_transact_reply`) used by BOTH the esp I2C
+  transport and the host mock — the mock previously returned any
+  queued reply while silicon filtered (the #1 mock/hardware-divergence
+  bug class, bench 2026-10-08). Mock `transact` now stashes NTFs into
+  its notification queue exactly like silicon's NTF ring; pinned by
+  `mock_transact_matches_the_esp_transport_reply_contract` and
+  `is_transact_reply_pins_the_non_ntf_first_contract`.
+
 ### Fixed
 
 - **#170**: nucula wifi-vpcd dead-session wedge after a failed exchange
