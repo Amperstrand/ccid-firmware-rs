@@ -59,21 +59,9 @@ pub fn run() -> ! {
         ven: peripherals.pins.gpio7,
     });
     #[cfg(all(feature = "backend-mfrc522", feature = "board-m5stick"))]
-    let driver = crate::wifi_common::mfrc522_bring_up(
-        peripherals.i2c0,
-        peripherals.pins.gpio32,
-        peripherals.pins.gpio33,
-        33,
-        32,
-    );
+    let driver = crate::wifi_common::mfrc522_bring_up(33, 32);
     #[cfg(all(feature = "backend-mfrc522", feature = "board-m5atom"))]
-    let driver = crate::wifi_common::mfrc522_bring_up(
-        peripherals.i2c0,
-        peripherals.pins.gpio26,
-        peripherals.pins.gpio32,
-        32,
-        26,
-    );
+    let driver = crate::wifi_common::mfrc522_bring_up(32, 26);
 
     crate::vpcd::spawn(driver, host, port);
     loop {

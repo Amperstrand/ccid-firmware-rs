@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — #149 P3: MFRC522 + AXP192 ride the driver_ng embedded-hal adapter; the esp-idf-hal patch is retired
+
+- `backend-mfrc522` no longer gates `esp-idf-hal/legacy-i2c`. Every
+  legacy `I2cDriver` site — the MFRC522 CDC main,
+  `wifi_common::mfrc522_bring_up` (shared by the wifi-vpcd mains), and
+  the m5stick LCD's AXP192 PMU on I2C1 — now constructs its bus/device
+  via `pn7160_nci::hal_i2c::I2cMasterBus`, the #230 shared adapter over
+  the raw `i2c_master` driver_ng FFI. Grove pin maps move to raw GPIO
+  numbers (driver_ng claims the controller by port; the
+  `Peripherals::i2cN` token and typed pins are no longer consumed).
+- `hal_i2c` gained its consumer surface:
+  `I2cMasterBus::{new, probe, add_hal_device}` — the
+  `esp_transport::from_peripherals` constructor pattern lifted to the
+  shared crate (glitch filter 7, `I2C_CLK_SRC_DEFAULT`, internal
+  pull-ups OFF: every board served carries external pulls) — plus the
+  fused Write→Read path: `transaction([Write, Read])` now rides ONE
+  repeated-START `i2c_master_transmit_receive`, the exact wire shape
+  the legacy `I2cDriver::write_read` produced (MFRC522/AXP192 register
+  reads; register-read parity is what the bench Escape 0xD3 cadence
+  compare checks). `[Write, Write]` (mfrc522 `write_many`) stays two
+  plain transmits, also the legacy shape. Host-pinned by
+  `write_read_pair_fuses_but_plain_sequences_do_not`.
+- The `[patch.crates-io] esp-idf-hal` entry (Amperstrand fork
+  `ai-experiments-0.47`) is deleted — its only delta was the
+  `legacy-i2c` opt-in, which now has zero consumers. esp-idf-hal
+  resolves from crates.io again (v0.47.0, the exact base the fork was
+  rebased onto). No `CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK` exists
+  anywhere (verified; there never was one).
+- Bench acceptance for P3 remains: flash on the m5stick place, Escape
+  0xD3 I2C-cadence compare legacy vs driver_ng, conformance battery,
+  card-level differential. CI covers compile parity for the
+  m5stick / m5stick-lcd / m5atom-default / m5stick-spp /
+  m5stick-vpcd-bench legs.
+
 ### Changed — #149 P4: transport-extraction hardening tail (tick math + mock/hardware parity lock)
 
 - `pn7160-nci` `esp_transport`: `RTOS_TICK_US` is now DERIVED from the
