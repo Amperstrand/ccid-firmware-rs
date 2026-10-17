@@ -94,7 +94,7 @@ pub struct BusPins {
 impl EspPn7160Transport {
     /// Verdict B (baseline): I2C bus first — the native firmware's
     /// nucula.cpp:181 position — then the VEN power cycle.
-    #[cfg(not(feature = "pn7160-ven-never"))]
+    #[cfg(not(feature = "ven-never"))]
     pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(board, p)?;
         t.ven_cycle();
@@ -112,7 +112,7 @@ impl EspPn7160Transport {
 
     /// ven-never experiment: assume the chip is ALIVE (wallet handover or
     /// warm board) — VEN raised in µs at construction, NO power cycle.
-    #[cfg(feature = "pn7160-ven-never")]
+    #[cfg(feature = "ven-never")]
     pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(board, p)?;
         // Codex PR 85: the constructor configures VEN as OUTPUT but

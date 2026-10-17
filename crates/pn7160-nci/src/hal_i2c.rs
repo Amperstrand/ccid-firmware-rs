@@ -37,6 +37,19 @@ pub struct RawDeviceHandle {
     pub(crate) handle: esp_idf_sys::i2c_master_dev_handle_t,
 }
 
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+impl RawDeviceHandle {
+    /// Wrap a raw driver_ng device handle.
+    ///
+    /// # Safety
+    /// `handle` must originate from `i2c_master_bus_add_device`, remain
+    /// valid for the adapter's lifetime, and not be used concurrently
+    /// from elsewhere (driver_ng handles are not thread-safe).
+    pub unsafe fn from_raw(handle: esp_idf_sys::i2c_master_dev_handle_t) -> Self {
+        Self { handle }
+    }
+}
+
 /// Pure, host-testable: which `ErrorKind` an esp-idf `esp_err_t`
 /// maps to on the embedded-hal surface. `ESP_ERR_TIMEOUT` (0x107) is
 /// the NAK/timeout class a bench probe must surface as

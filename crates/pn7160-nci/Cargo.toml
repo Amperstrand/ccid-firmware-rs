@@ -25,3 +25,8 @@ log = { version = "0.4", optional = true }
 default = ["std"]
 std = []
 esp = ["dep:esp-idf-sys", "dep:esp-idf-hal", "dep:log"]
+# Experiment: never cycle VEN (assumes the chip is alive at handover).
+# The firmware's pn7160-ven-never forwards here — cargo features are
+# package-scoped, so the cfg must live behind THIS crate's feature
+# (Codex review on #230).
+ven-never = []
