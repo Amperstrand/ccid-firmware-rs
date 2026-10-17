@@ -26,10 +26,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision (`pn7160_nci::is_transact_reply`) used by BOTH the esp I2C
   transport and the host mock — the mock previously returned any
   queued reply while silicon filtered (the #1 mock/hardware-divergence
-  bug class, bench 2026-10-08). Mock `transact` now stashes NTFs into
-  its notification queue exactly like silicon's NTF ring; pinned by
+  bug class, bench 2026-10-08). Mock `transact` now stashes NTFs for
+  `drain()` exactly like silicon's NTF ring (capacity detail in the
+  next bullet); pinned by
   `mock_transact_matches_the_esp_transport_reply_contract` and
   `is_transact_reply_pins_the_non_ntf_first_contract`.
+- Codex P2 on #238: the mock's NTF stash is a dedicated drop-oldest
+  ring capped at the NEW shared `NTF_STASH_SLOTS` (=4, one definition
+  point with `esp_transport`'s `push_ntf` ring) — not the unbounded
+  VecDeque the first cut stashed into. It also surfaces via `drain()`
+  only, ring-before-wire, matching silicon (`poll_frame` never reads
+  the ring — a stashed NTF cannot ride a later command's poll window).
+  Pinned by `mock_ntf_stash_mirrors_the_four_slot_drop_oldest_ring`
+  (5 NTFs ahead of a reply → oldest evicted, four newest kept).
 
 ### Fixed
 

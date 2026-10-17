@@ -10,7 +10,7 @@
 //! timing.
 
 pub use crate::board::{BoardPins, NUCULA};
-use crate::{is_transact_reply, tick_period_us, Frame, Transport};
+use crate::{is_transact_reply, tick_period_us, Frame, Transport, NTF_STASH_SLOTS};
 
 /// IRQ number for the ISR quench (the ISR cannot capture; the transport
 /// stores its board's IRQ pin here at bring-up).
@@ -41,7 +41,10 @@ const IRQ_WAIT_BUDGET_US: u32 = 200_000;
 /// requested (Codex #85, issue #112): counting 1000 µs/iteration
 /// silently stretched the 200 ms RSP budget to ~2 s of wall time.
 const RTOS_TICK_US: u32 = tick_period_us(esp_idf_sys::configTICK_RATE_HZ);
-const NTF_SLOTS: usize = 4;
+/// Transact NTF stash capacity — the shared [`crate::NTF_STASH_SLOTS`]
+/// (ONE definition point with the host mock's stash, Codex P2 on
+/// #238): drop-oldest ring, surfaced by `drain` only.
+const NTF_SLOTS: usize = NTF_STASH_SLOTS;
 /// Fire-and-forget write bound for the non-blocking presence re-arm
 /// (2026-10-10 serve-loop stall fix): a 4-byte NCI command is ~0.5 ms on
 /// the live 100 kHz bus; 50 ms only caps the pathological stuck-bus case

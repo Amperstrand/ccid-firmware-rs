@@ -165,6 +165,17 @@ pub const fn is_transact_reply(f: &Frame) -> bool {
     f.mt != MT_NTF
 }
 
+/// #149 P4 / Codex P2 on #238 — capacity of the transact NTF stash,
+/// ONE definition point shared by silicon and the mock: the esp I2C
+/// transport's drop-oldest ring (`push_ntf`/`pop_ntf`) and the host
+/// mock's stash deque both hold at most this many frames — a fifth
+/// NTF ahead of a reply evicts the OLDEST (silicon-faithful: an
+/// unbounded mock stash models a transport that does not exist and
+/// lets host tests observe behavior the ring makes impossible).
+/// Surfaced by `drain()` only, ring-before-wire — silicon's
+/// `poll_frame` never reads the ring.
+pub const NTF_STASH_SLOTS: usize = 4;
+
 /// #149 P4 — one FreeRtos tick in µs, derived from the sdkconfig tick
 /// rate, never a hardcoded HZ=100 assumption: any sdkconfig with a
 /// different tick rate silently corrupts every wait budget — the #112
@@ -1285,6 +1296,12 @@ pub mod mock {
         /// models the chip answering (IRQ rise) shortly after the
         /// command write, without the caller blocking.
         pub pending_rsp: Option<StdVec<u8>>,
+        /// NTFs stashed by `transact` (frames read ahead of the reply)
+        /// — mirrors silicon's `NTF_STASH_SLOTS` drop-oldest ring:
+        /// at most 4 frames, oldest evicted, surfaced by `drain()`
+        /// only (Codex P2 on #238: the stash must model the ring,
+        /// never an unbounded queue).
+        pub stash: VecDeque<StdVec<u8>>,
         /// Blocking `transact` call count — lets tests assert the
         /// presence path never waits for a reply.
         pub transacts: usize,
@@ -1305,6 +1322,7 @@ pub mod mock {
                 notifications: VecDeque::new(),
                 drained: 0,
                 pending_rsp: None,
+                stash: VecDeque::new(),
                 transacts: 0,
                 waited_ms: 0,
                 late_on_wait: VecDeque::new(),
@@ -1319,6 +1337,15 @@ pub mod mock {
         /// Script an unsolicited notification (consumed by `drain`).
         pub fn push_notification(&mut self, raw: &[u8]) {
             self.notifications.push_back(raw.to_vec());
+        }
+
+        /// Silicon-parity stash (`EspPn7160Transport::push_ntf`):
+        /// drop-oldest once the ring is full at [`NTF_STASH_SLOTS`].
+        fn stash_ntf(&mut self, raw: StdVec<u8>) {
+            if self.stash.len() == NTF_STASH_SLOTS {
+                self.stash.pop_front();
+            }
+            self.stash.push_back(raw);
         }
     }
 
@@ -1350,7 +1377,10 @@ pub mod mock {
             // is "reply = the first NON-NTF frame after the write"
             // (is_transact_reply — the esp I2C transport's push_ntf
             // stash). NTFs scripted ahead of the reply are stashed for
-            // drain() instead of being returned as the reply. The mock
+            // drain() instead of being returned as the reply — through
+            // the SAME drop-oldest 4-slot ring semantics
+            // (stash_ntf; Codex P2 on #238: the stash models
+            // push_ntf's ring, never an unbounded queue). The mock
             // once returned ANY queued reply and passed 13/13 protocol
             // tests while the silicon starved (bench 2026-10-08, this
             // repo's #1 bug class) — this routing plus
@@ -1361,14 +1391,19 @@ pub mod mock {
                 if is_transact_reply(&f) {
                     return Some(f);
                 }
-                self.notifications.push_back(raw);
+                self.stash_ntf(raw);
             }
             None
         }
         fn drain(&mut self) -> Option<Frame> {
+            // Ring before wire, exactly silicon's drain: pop_ntf
+            // (the transact stash) first, then the pending-on-wire
+            // notifications. poll_frame never reads the ring — a
+            // stashed NTF must not ride a later command's poll window.
             let f = self
-                .notifications
+                .stash
                 .pop_front()
+                .or_else(|| self.notifications.pop_front())
                 .and_then(|raw| Frame::decode(&raw));
             if f.is_some() {
                 self.drained += 1;
@@ -2063,12 +2098,58 @@ mod tests {
         assert!(is_wtx_ntf(&n2));
         assert!(t.drain().is_none(), "link actually empty");
 
+        // ring-vs-wire routing (silicon drain pops push_ntf's ring
+        // BEFORE reading the wire; poll_frame NEVER reads the ring):
+        // stashed NTFs must not ride a later command's poll window.
+        let mut t3 = mock::MockTransport::new();
+        t3.push_reply(&[0x6F, 0x17, 0x00]); // WTX advisory ahead of reply
+        t3.push_reply(&[0x41, 0x06, 0x01, 0x00]);
+        let _ = t3.transact(&reader::RF_DEACTIVATE_DISCOVERY).unwrap();
+        assert!(
+            t3.poll_frame().is_none(),
+            "stashed NTF must surface via drain only, never poll_frame"
+        );
+        assert!(is_wtx_ntf(&t3.drain().expect("stash surfaces via drain")));
+
         // DATA frames ride the same rule: a DATA reply to a DATA send
         // is returned, not stashed.
         let mut t2 = mock::MockTransport::new();
         t2.push_reply(&[0x00, 0x00, 0x02, 0x90, 0x00]);
         let d = t2.transact(&[0x00, 0x00, 0x00]).expect("DATA is a reply");
         assert_eq!(d.mt, MT_DATA);
+    }
+
+    // Codex P2 on #238: the mock stash is a RING, not a queue. given
+    // FIVE NTFs are scripted ahead of the reply (one more than
+    // silicon's NTF_SLOTS=4 push_ntf ring holds), when transact
+    // collects, then the OLDEST NTF is evicted — drain surfaces
+    // exactly the four NEWEST in arrival order, and an unbounded
+    // stash (the reviewed bug: every frame retained in the VecDeque)
+    // would have surfaced all five.
+    #[test]
+    fn mock_ntf_stash_mirrors_the_four_slot_drop_oldest_ring() {
+        let mut t = mock::MockTransport::new();
+        for i in 0..5u8 {
+            // core NTF, payload marker = arrival index
+            t.push_reply(&[MT_NTF | GID_CORE, OID_CORE_RESET, 0x01, i]);
+        }
+        t.push_reply(&[0x41, 0x06, 0x01, 0x00]); // the reply
+
+        let f = t
+            .transact(&reader::RF_DEACTIVATE_DISCOVERY)
+            .expect("reply collected after the churn burst");
+        assert_eq!(f.mt, MT_RSP);
+
+        assert_eq!(t.stash.len(), NTF_STASH_SLOTS, "ring full, not grown");
+        for expected in 1..=4u8 {
+            let n = t.drain().expect("four survivors remain");
+            assert_eq!(n.mt, MT_NTF);
+            assert_eq!(
+                n.payload[0], expected,
+                "marker {expected} — marker 0 (oldest) was evicted, newest kept"
+            );
+        }
+        assert!(t.drain().is_none(), "exactly NTF_STASH_SLOTS surfaced");
     }
 
     // #149 P4 / #112 regression lock: the transact RSP budget counts
