@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **#170**: nucula wifi-vpcd dead-session wedge after a failed exchange
+  (the 6-byte zero-data APDU repro). Root cause, relay side: the vpcd
+  APDU error arm answered SW `64 00` unconditionally — correct for a
+  transient RF fade on a live session, but a session-fatal failure
+  (the #156 resync teardown already ran) kept answering `64 00`
+  forever, so pcscd held the slot and every later exchange failed
+  until a board reboot (the observed "cached ATR as payload, garbage
+  SW, OTA-reboot-only recovery"). Fix: the error arm now distinguishes
+  via `NfcDriver::session_active()` — live session keeps `64 00`
+  (retry in place), dead session answers 0-length, the vpcd.h
+  "ICC absent" signal whose driver-side meaning is eject + re-poll, so
+  the next ATR request rebuilds from a fresh activation. Pinned by
+  host tests (`vpcd::tests`, module now host-compiled). Second layer:
+  the #156 timeout teardown's drain burst now has a settle beat
+  (`settle_drain`: drain → wait one collect round → drain) — a
+  WTX-honoring NFCC can deliver the timed-out exchange's DATA response
+  after the burst found the link empty (bench 2026-10-13: 13 s
+  stalls), and the survivor was served as the NEXT command's response
+  (#101-class desync). Bench leg staged:
+  `tests/hardware/nucula/vpcd_zerodata_repro.py` (host-side vpcd
+  driver emulator, exact byte sequence, wedge-signature detector).
+
 - **#152**: failed-DataBlock shape on the serial/NFC relay crashed
   GlobalPlatformPro (`newPosition < 0: -2`, gp issue #307 class). Two
   sites fixed to one convention: the APDU-pipeline error arm now answers

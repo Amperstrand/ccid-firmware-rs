@@ -170,7 +170,19 @@ fn handle_message<D: NfcDriver>(
     } else if !payload.is_empty() {
         match handler.driver_mut().transmit_apdu(payload, rx_buf) {
             Ok(len) => Some(rx_buf[..len].to_vec()),
-            Err(_) => Some(crate::ccid_handler::CARD_TIMEOUT_SW.to_vec()),
+            Err(_) => {
+                // #170: live session + Err = transient RF fade → 64 00
+                // (pcscd retries in place). Dead session (the #156
+                // resync teardown already ran) → 0-length = vpcd.h
+                // "ICC absent": the driver ejects + re-polls and the
+                // next ATR rebuilds from a fresh activation. 64 00 on
+                // a dead session wedges the reader until board reboot.
+                if handler.driver_mut().session_active() {
+                    Some(crate::ccid_handler::CARD_TIMEOUT_SW.to_vec())
+                } else {
+                    Some(Vec::new())
+                }
+            }
         }
     } else {
         None
@@ -198,4 +210,132 @@ fn send_message(stream: &mut impl Write, payload: &[u8]) -> std::io::Result<()> 
     stream.write_all(&len.to_be_bytes())?;
     stream.write_all(payload)?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nfc::NfcDriver;
+
+    #[derive(Debug)]
+    enum MockError {
+        Failed,
+    }
+
+    /// Scripted NfcDriver for #170: records the exact APDU bytes the
+    /// relay forwards and replays a scripted response, failure, and
+    /// session-liveness state.
+    struct ScriptedDriver {
+        response: Vec<u8>,
+        fail: bool,
+        session: bool,
+        last_apdu: Vec<u8>,
+    }
+
+    impl NfcDriver for ScriptedDriver {
+        type Error = MockError;
+
+        fn init(&mut self) -> Result<(), MockError> {
+            Ok(())
+        }
+        fn is_card_present(&mut self) -> bool {
+            true
+        }
+        fn power_on(&mut self, _atr_buf: &mut [u8]) -> Result<usize, MockError> {
+            Ok(0)
+        }
+        fn power_off(&mut self) {}
+        fn transmit_apdu(
+            &mut self,
+            command: &[u8],
+            response: &mut [u8],
+        ) -> Result<usize, MockError> {
+            self.last_apdu = command.to_vec();
+            if self.fail {
+                return Err(MockError::Failed);
+            }
+            response[..self.response.len()].copy_from_slice(&self.response);
+            Ok(self.response.len())
+        }
+        fn session_active(&self) -> bool {
+            self.session
+        }
+    }
+
+    fn harness(
+        driver: ScriptedDriver,
+    ) -> (crate::ccid_handler::CcidHandler<ScriptedDriver>, [u8; 1024]) {
+        (crate::ccid_handler::CcidHandler::new(driver), [0u8; 1024])
+    }
+
+    /// #170 bench sequence, relay side: the bare 6-byte zero-data APDU
+    /// (`B0 B0 00 00 00 00`, Lc=0 before Le) must be forwarded verbatim
+    /// — the relay never length-parses the APDU — and a clean card
+    /// answer (SW 6700 from the card's own length check) passes back
+    /// untouched with the session intact.
+    #[test]
+    fn zero_data_apdu_relays_verbatim_and_keeps_session() {
+        let driver = ScriptedDriver {
+            response: vec![0x67, 0x00],
+            fail: false,
+            session: true,
+            last_apdu: Vec::new(),
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        let resp = handle_message(
+            &mut handler,
+            &[0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
+            &mut rx_buf,
+        )
+        .expect("response expected");
+        assert_eq!(resp, vec![0x67, 0x00]);
+        assert_eq!(
+            handler.driver_mut().last_apdu,
+            vec![0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
+            "the relay must forward the 6-byte form untouched"
+        );
+    }
+
+    /// Transient failure on a live session keeps the historic contract:
+    /// SW 6400 so pcscd retries in place.
+    #[test]
+    fn transient_failure_on_live_session_keeps_6400() {
+        let driver = ScriptedDriver {
+            response: Vec::new(),
+            fail: true,
+            session: true,
+            last_apdu: Vec::new(),
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        let resp = handle_message(&mut handler, &[0xB0, 0xB0, 0x00, 0x00, 0x00], &mut rx_buf)
+            .expect("response expected");
+        assert_eq!(resp, vec![0x64, 0x00]);
+    }
+
+    /// #170 wedge heal: a session-fatal failure (the #156 resync
+    /// teardown already ran — `session_active() == false`) must answer
+    /// 0-length, the vpcd.h "ICC absent" signal: the driver ejects and
+    /// re-polls, the next ATR request rebuilds from a fresh activation.
+    /// 6400 here is the observed reader-wedge (dead session served as
+    /// retryable until board reboot).
+    #[test]
+    fn session_fatal_failure_answers_icc_absent() {
+        let driver = ScriptedDriver {
+            response: Vec::new(),
+            fail: true,
+            session: false,
+            last_apdu: Vec::new(),
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        let resp = handle_message(
+            &mut handler,
+            &[0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
+            &mut rx_buf,
+        )
+        .expect("response expected");
+        assert!(
+            resp.is_empty(),
+            "session-fatal failure must answer ICC-absent, got {resp:?}"
+        );
+    }
 }
