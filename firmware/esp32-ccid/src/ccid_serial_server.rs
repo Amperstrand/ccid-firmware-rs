@@ -909,6 +909,44 @@ mod tests {
         assert_eq!(payload, &[0x3B, 0x80, 0x01, 0x01], "the mock ATR");
     }
 
+    // #152 wire-level guard (GlobalPlatformPro crash class, gp #307):
+    // a card dying mid-session under an XfrBlock must answer a FAILED
+    // DataBlock with bError 0xF0 (card timeout) and honest dwLength=0 —
+    // the exact shape libccid maps to a host-synthesized SW 64 00
+    // (reference/CCID/src/commands.c CCID_Receive "case 0xF0"), so
+    // pcscd → pyscard → gp fail CLEANLY. An empty SUCCESS DataBlock
+    // here is the ByteBuffer "newPosition < 0: (-2 < 0)" crash; a
+    // SlotStatus here is the jnasmartcardio 0-byte SW-strip crash.
+    // Handler-level pins live in ccid-core; this locks the full GemPC
+    // frame (SYNC/ACK/LRC + dwLength honesty) on the wire.
+    #[test]
+    fn card_death_mid_exchange_xfr_answers_timeout_datablock_frame() {
+        let mut server = server_with(true);
+        assert!(server.poll_if_due(POLL_INTERVAL), "presence poll");
+        let power_on = command_frame(PC_TO_RDR_ICC_POWER_ON, 1);
+        assert_eq!(feed_frame(&mut server, &power_on, 10), ServeAction::Respond);
+        assert_eq!(server.response()[9] & 0x03, 0x00, "session active");
+        // The card dies mid-session (the #152 bench shape: RF drop under
+        // an in-flight exchange — presence latch still says active).
+        server.handler_mut().driver_mut().set_card_present(false);
+
+        let xfr = command_frame_with_payload(PC_TO_RDR_XFR_BLOCK, 2, &[0x00, 0xA4, 0x04, 0x00]);
+        assert_eq!(feed_frame(&mut server, &xfr, 20), ServeAction::Respond);
+        let resp = server.response();
+        assert_eq!(resp[2], 0x80, "RDR_to_PC_DataBlock — never SlotStatus");
+        assert_eq!(resp[9] & 0xC0, 0x40, "bmCommandStatus = failed");
+        assert_eq!(resp[10], 0xF0, "bError = card timeout (libccid case 0xF0)");
+        assert_eq!(resp[8], 2, "bSeq echoed");
+        let dw = u32::from_le_bytes([resp[3], resp[4], resp[5], resp[6]]);
+        assert_eq!(dw, 0, "honest dwLength = 0");
+        assert_eq!(resp.len(), 13, "no payload bytes on the wire");
+        assert_eq!(
+            resp[12],
+            ccid_transport_serial::calculate_lrc(&resp[..12]),
+            "LRC intact"
+        );
+    }
+
     // #218 acceptance: a degraded NFC frontend keeps the CCID service
     // answering — GetSlotStatus reports card-absent even with a card on
     // the coil — and recovers to present once init starts succeeding.
