@@ -12,8 +12,9 @@ against current HEAD, classifies every landed commit to its hardware
 targets (path map mirrored from ci.yml's stm32/esp32 filters), and
 emits a DRIFT section: per target, the commits awaiting bench
 verification, with a staleness flag when any exist. Output is a
-markdown fragment designed to be APPENDED by the nightly's status job
-(or run standalone: `make status-drift`).
+markdown fragment APPENDED by the nightly's status job
+(hil-bench.yml, wired in #237) or run standalone via the python3
+invocation below.
 
     python3 scripts/status_drift.py --repo . \
         --bench-commit 0f45f31 [--head origin/main] [--out drift.md]
