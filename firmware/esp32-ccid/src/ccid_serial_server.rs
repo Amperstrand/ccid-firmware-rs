@@ -864,6 +864,51 @@ mod tests {
         assert_eq!(server.echo(), &frame);
     }
 
+    // #147 regression guard (bench 2026-10-12 divergence): cardless
+    // IccPowerOn must answer CCID §6.1.1's failed-SlotStatus shape —
+    // type 0x81, bmCommandStatus=failed, bmICCStatus=absent (the
+    // nucula's 0x81/0x42) — never an empty success DataBlock (0x80/0x00
+    // was observed on the m5stick once). Pinned at the wire level, full
+    // server path, battery ordering (presence known absent first).
+    #[test]
+    fn cardless_icc_power_on_answers_failed_slot_status() {
+        let mut server = server_with(false);
+        // The battery probes GetSlotStatus first — presence is polled
+        // and known absent before the power-on lands.
+        let probe = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &probe, 0), ServeAction::Respond);
+        assert_eq!(server.response()[9] & 0x03, 0x02, "ICC absent");
+
+        let frame = command_frame(PC_TO_RDR_ICC_POWER_ON, 2);
+        assert_eq!(feed_frame(&mut server, &frame, 10), ServeAction::Respond);
+        let resp = server.response();
+        assert_eq!(resp[2], 0x81, "RDR_to_PC_SlotStatus, not DataBlock");
+        assert_eq!(resp[9] & 0xC0, 0x40, "bmCommandStatus = failed");
+        assert_eq!(resp[9] & 0x03, 0x02, "bmICCStatus = absent");
+        assert_eq!(resp[8], 2, "bSeq echoed");
+        assert_eq!(resp.len(), 13, "no payload on the error shape");
+    }
+
+    // The with-card counterpart of the #147 guard: IccPowerOn with a
+    // coupled card answers the success DataBlock carrying the ATR.
+    #[test]
+    fn carded_icc_power_on_answers_datablock_with_atr() {
+        let mut server = server_with(true);
+        // Presence poll first so the handler knows the card (same
+        // precondition the battery's GetSlotStatus probe establishes).
+        assert!(server.poll_if_due(POLL_INTERVAL));
+
+        let frame = command_frame(PC_TO_RDR_ICC_POWER_ON, 3);
+        assert_eq!(feed_frame(&mut server, &frame, 10), ServeAction::Respond);
+        let resp = server.response();
+        assert_eq!(resp[2], 0x80, "RDR_to_PC_DataBlock");
+        assert_eq!(resp[9] & 0xC0, 0x00, "bmCommandStatus = success");
+        assert_eq!(resp[9] & 0x03, 0x00, "bmICCStatus = present+active");
+        assert_eq!(resp[8], 3, "bSeq echoed");
+        let payload = &resp[12..resp.len() - 1];
+        assert_eq!(payload, &[0x3B, 0x80, 0x01, 0x01], "the mock ATR");
+    }
+
     // #218 acceptance: a degraded NFC frontend keeps the CCID service
     // answering — GetSlotStatus reports card-absent even with a card on
     // the coil — and recovers to present once init starts succeeding.
