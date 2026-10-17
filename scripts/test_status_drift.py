@@ -56,6 +56,13 @@ class ClassificationTests(unittest.TestCase):
         self.assertIn("esp32-m5stick", t)
         self.assertIn("esp32-shared", t)
 
+    def test_shared_crate_change_flags_both_targets(self):
+        # Codex P2 on #234: ci.yml's stm32 filter includes crates/** —
+        # a shared-crate change must stale BOTH stm32 and esp32 rows.
+        t = drift.classify(["crates/ccid-core/src/handler.rs"])
+        self.assertIn("stm32-f469-f746", t)
+        self.assertIn("esp32-shared", t)
+
     def test_docs_only_touches_nothing(self):
         self.assertEqual(drift.classify(["docs/SOME.md", "AGENTS.md"]), set())
 

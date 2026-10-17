@@ -35,9 +35,16 @@ from pathlib import Path
 # (single source of truth: if CI builds it for stm32/esp32, bench
 # verification for that target is stale when it changes).
 TARGET_PATHS: dict[str, tuple[str, ...]] = {
+    # Full ci.yml stm32 filter mirror (Codex P2 on #234): shared
+    # crates + workspace inputs flag BOTH targets, like the CI filter.
     "stm32-f469-f746": (
         "firmware/ccid-firmware/",
         "vendor/",
+        "crates/",
+        "Cargo.toml",
+        "Cargo.lock",
+        ".cargo/",
+        "host-tools/",
     ),
     "esp32-m5stick": (
         "firmware/esp32-ccid/src/mfrc522_driver.rs",

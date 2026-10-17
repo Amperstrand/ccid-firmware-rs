@@ -103,20 +103,6 @@ jobs:
             --inventory "${inv:-/dev/null}" \
             --junit "${junit:-/dev/null}" \
             --commit "$GITHUB_SHA" --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          # #183 drift layer: firmware landed since the previous bench
-          # stamp makes those claims stale — fetch the published
-          # bench/status, parse ITS stamp commit, diff to HEAD.
-          git fetch -q origin refs/heads/bench/status || true
-          PREV_STATUS_SHA=$(git show FETCH_HEAD:docs/STATUS.md 2>/dev/null \
-            | grep -m1 -oP 'Verified: .* @ \K[0-9a-f]{7,40}' || true)
-          if [ -n "$PREV_STATUS_SHA" ]; then
-            python3 scripts/status_drift.py --repo . \
-              --bench-commit "$PREV_STATUS_SHA" --head HEAD \
-              --out docs/DRIFT.md || true
-            printf '\n' >> docs/STATUS.md
-            cat docs/DRIFT.md >> docs/STATUS.md
-            cat docs/DRIFT.md >> "$GITHUB_STEP_SUMMARY"
-          fi
           cat docs/STATUS.md >> "$GITHUB_STEP_SUMMARY"
       - name: publish to bench/status branch
         run: |
