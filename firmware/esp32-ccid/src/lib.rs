@@ -103,12 +103,7 @@ pub mod wifi_vpcd;
 pub mod netlog;
 
 #[cfg(all(
-    any(
-        feature = "pn7160-bringup",
-        feature = "backend-mfrc522",
-        feature = "wifi-ccid",
-        feature = "wifi-vpcd"
-    ),
+    feature = "bench-net",
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod ota;
@@ -122,9 +117,9 @@ pub mod vpcd;
 #[cfg(all(
     any(
         feature = "pn7160-bringup",
-        feature = "backend-mfrc522",
         feature = "wifi-ccid",
-        feature = "wifi-vpcd"
+        feature = "wifi-vpcd",
+        feature = "bench-net"
     ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]

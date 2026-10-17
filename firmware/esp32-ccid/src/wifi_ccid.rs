@@ -106,10 +106,13 @@ pub fn run() -> ! {
         TCP_PORT
     );
 
-    // WiFi debug + OTA: bind the netlog UDP socket now that lwIP is up
-    // (binding earlier asserts); spawn the TCP OTA flash server (:3232)
-    // so the board can be updated without a USB link.
+    // WiFi debug + OTA (bench-net builds only, #219): bind the netlog
+    // UDP socket now that lwIP is up (binding earlier asserts); spawn
+    // the TCP OTA flash server (:3232) so bench boards can be updated
+    // without a USB link. Shipped builds compile neither surface.
+    #[cfg(feature = "bench-net")]
     crate::netlog::set_ip(&ip);
+    #[cfg(feature = "bench-net")]
     crate::ota::spawn();
 
     let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).expect("tcp bind");

@@ -20,7 +20,7 @@ use esp_idf_hal::peripherals::Peripherals;
 
 const INIT_ATTEMPTS: u32 = 5;
 
-/// WiFi station + netlog + OTA server + rollback mark-valid.
+/// WiFi station + (bench-net only) netlog/OTA + rollback mark-valid.
 /// Returns the station IP (never fails — on connect failure the board
 /// runs with "0.0.0.0" and keeps broadcasting its state on netlog).
 pub fn station_bring_up(
@@ -41,7 +41,11 @@ pub fn station_bring_up(
     // WiFi link. Leak it so the connection outlives this call.
     std::mem::forget(wifi);
 
+    // bench-net only (#219): shipped transports compile no OTA listener
+    // and no netlog UDP arm — the bench builds opt in via build.sh.
+    #[cfg(feature = "bench-net")]
     crate::netlog::set_ip(&ip);
+    #[cfg(feature = "bench-net")]
     crate::ota::spawn();
 
     // OTA_ROLLBACK: signal the bootloader that this image boots and serves
