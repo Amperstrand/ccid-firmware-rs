@@ -100,7 +100,11 @@ def commits_between(repo: Path, since: str, head: str) -> list[tuple[str, str, l
         if not entry:
             continue
         sha, subject = entry.split("\x00", 1)
-        files = git(repo, "show", "--name-only", "--format=", sha).splitlines()
+        # --no-renames: plain --name-only reports only a rename's
+        # DESTINATION, so firmware code moved out of tree would look
+        # "current"; this flag makes git report the source path too
+        # (Codex P2 on #234, bench-verified).
+        files = git(repo, "show", "--name-only", "--no-renames", "--format=", sha).splitlines()
         out.append((sha[:12], subject, [f for f in files if f]))
     return out
 
