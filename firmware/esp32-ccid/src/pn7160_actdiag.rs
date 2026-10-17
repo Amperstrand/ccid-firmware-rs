@@ -43,7 +43,9 @@ pub fn run() -> ! {
         irq: peripherals.pins.gpio6,
         ven: peripherals.pins.gpio7,
     };
-    let mut transport = EspPn7160Transport::bringup_config_order(bus).expect("transport");
+    let mut transport =
+        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
+            .expect("transport");
     let mut d = Pn7160NfcDriver::new(transport);
     d.init().expect("ladder");
 

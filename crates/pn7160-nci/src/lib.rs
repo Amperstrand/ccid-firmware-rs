@@ -24,6 +24,7 @@
 /// extracted from firmware/esp32-ccid/pn7160_i2c.rs verbatim so a second
 /// consumer (bolty-rs) inherits instead of forks. Opt-in `esp` feature +
 /// esp targets only: protocol-core consumers build none of it.
+pub mod board;
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod esp_transport;
 

@@ -87,7 +87,9 @@ pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
 /// retries, verbatim from the CDC main.
 #[cfg(feature = "backend-pn7160")]
 pub fn pn7160_bring_up(bus: BusPins) -> Pn7160NfcDriver<EspPn7160Transport> {
-    let transport = EspPn7160Transport::bringup_config_order(bus).expect("peripheral init");
+    let transport =
+        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
+            .expect("peripheral init");
     let mut transport = Some(transport);
     let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
     for attempt in 1..=INIT_ATTEMPTS {

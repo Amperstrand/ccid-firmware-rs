@@ -115,14 +115,14 @@ pub fn run() -> ! {
 
     let transport = {
         #[cfg(feature = "pn7160-verdict-a")]
-        let t = EspPn7160Transport::bringup_pad_hold_clear(bus);
+        let t = EspPn7160Transport::bringup_pad_hold_clear(pn7160_nci::esp_transport::NUCULA, bus);
         #[cfg(all(feature = "pn7160-verdict-b", not(feature = "pn7160-verdict-a")))]
-        let t = EspPn7160Transport::bringup_config_order(bus);
+        let t = EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus);
         #[cfg(all(
             feature = "pn7160-verdict-c",
             not(any(feature = "pn7160-verdict-a", feature = "pn7160-verdict-b"))
         ))]
-        let t = EspPn7160Transport::bringup_ven_timing(bus);
+        let t = EspPn7160Transport::bringup_ven_timing(pn7160_nci::esp_transport::NUCULA, bus);
         t
     };
 

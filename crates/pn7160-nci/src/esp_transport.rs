@@ -9,8 +9,12 @@
 //! A = pad-hold clear, B = config order (baseline), C = extended VEN
 //! timing.
 
-use crate::transport::{IRQ_PIN, PN7160_I2C_ADDR, SCL_PIN, SDA_PIN, VEN_PIN};
+pub use crate::board::{BoardPins, NUCULA};
 use crate::{Frame, Transport, MT_NTF};
+
+/// IRQ number for the ISR quench (the ISR cannot capture; the transport
+/// stores its board's IRQ pin here at bring-up).
+static IRQ_PIN_NO: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(6);
 use esp_idf_hal::delay::FreeRtos;
 use esp_idf_sys::EspError;
 
@@ -54,12 +58,16 @@ unsafe extern "C" fn dummy_irq_isr(_arg: *mut core::ffi::c_void) {
     // nci.c replica: the ISR must quench the level interrupt itself (the
     // PN7160 holds IRQ high until read); a no-op handler = interrupt storm
     // that starves the console/USB the moment the chip comes alive.
-    unsafe { esp_idf_sys::gpio_intr_disable(IRQ_PIN) };
+    unsafe {
+        esp_idf_sys::gpio_intr_disable(IRQ_PIN_NO.load(core::sync::atomic::Ordering::Relaxed))
+    };
 }
 
 pub struct EspPn7160Transport {
     bus: esp_idf_sys::i2c_master_bus_handle_t,
     dev: esp_idf_sys::i2c_master_dev_handle_t,
+    /// Board geometry this transport was brought up against (#149 P2).
+    pub board: BoardPins,
 
     ntf: [Option<Frame>; NTF_SLOTS],
     ntf_head: usize,
@@ -87,8 +95,8 @@ impl EspPn7160Transport {
     /// Verdict B (baseline): I2C bus first — the native firmware's
     /// nucula.cpp:181 position — then the VEN power cycle.
     #[cfg(not(feature = "pn7160-ven-never"))]
-    pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
-        let mut t = Self::from_peripherals(p)?;
+    pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(board, p)?;
         t.ven_cycle();
         // The PN7160 only ACKs within a window after VEN rise (bench-proven
         // 2026-10-08): probe IMMEDIATELY, like the wallet's nci_init. The
@@ -105,13 +113,13 @@ impl EspPn7160Transport {
     /// ven-never experiment: assume the chip is ALIVE (wallet handover or
     /// warm board) — VEN raised in µs at construction, NO power cycle.
     #[cfg(feature = "pn7160-ven-never")]
-    pub fn bringup_config_order(p: BusPins) -> Result<Self, EspError> {
-        let mut t = Self::from_peripherals(p)?;
+    pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(board, p)?;
         // Codex PR 85: the constructor configures VEN as OUTPUT but
         // never sets the level — the chip stays in power-down and the
         // ven-never experiment always fails. Drive VEN high before the
         // device is added to the bus.
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
+        unsafe { esp_idf_sys::gpio_set_level(board.ven, 1) };
         t.add_pn_device()?;
         Ok(t)
     }
@@ -124,7 +132,7 @@ impl EspPn7160Transport {
         }
         let mut dev_cfg: esp_idf_sys::i2c_device_config_t = unsafe { core::mem::zeroed() };
         dev_cfg.dev_addr_length = esp_idf_sys::i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7;
-        dev_cfg.device_address = PN7160_I2C_ADDR as u16;
+        dev_cfg.device_address = self.board.addr as u16;
         dev_cfg.scl_speed_hz = 100_000;
         unsafe {
             EspError::convert(esp_idf_sys::i2c_master_bus_add_device(
@@ -139,26 +147,26 @@ impl EspPn7160Transport {
     /// Verdict A (pads stuck): clear gpio hold + sleep isolation on the
     /// four NFC pads before reconfiguration. A latched hold ignores
     /// config changes until cleared (cf. Tasmota #20030).
-    pub fn bringup_pad_hold_clear(p: BusPins) -> Result<Self, EspError> {
+    pub fn bringup_pad_hold_clear(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
         unsafe {
             esp_idf_sys::gpio_deep_sleep_hold_dis();
-            for pin in [SDA_PIN, SCL_PIN, IRQ_PIN, VEN_PIN] {
+            for pin in [board.sda, board.scl, board.irq, board.ven] {
                 esp_idf_sys::gpio_hold_dis(pin);
                 esp_idf_sys::gpio_sleep_sel_dis(pin);
             }
         }
-        Self::bringup_config_order(p)
+        Self::bringup_config_order(board, p)
     }
 
     /// Verdict C: quiesce the core with extended VEN timing.
-    pub fn bringup_ven_timing(p: BusPins) -> Result<Self, EspError> {
-        let mut t = Self::from_peripherals(p)?;
+    pub fn bringup_ven_timing(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(board, p)?;
         t.ven_cycle_extended();
         t.add_pn_device()?;
         Ok(t)
     }
 
-    fn from_peripherals(p: BusPins) -> Result<Self, EspError> {
+    fn from_peripherals(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
         // Board rules (zeugmaster/nucula-board peripherals-design.md):
         // 100 kHz max (PCF8574T limit), external 2.2k pulls to 3.0 V —
         // ESP internal pull-ups must stay OFF.
@@ -168,8 +176,8 @@ impl EspPn7160Transport {
         unsafe {
             let mut bus_cfg: esp_idf_sys::i2c_master_bus_config_t = core::mem::zeroed();
             bus_cfg.i2c_port = 0;
-            bus_cfg.sda_io_num = SDA_PIN as esp_idf_sys::gpio_num_t;
-            bus_cfg.scl_io_num = SCL_PIN as esp_idf_sys::gpio_num_t;
+            bus_cfg.sda_io_num = board.sda as esp_idf_sys::gpio_num_t;
+            bus_cfg.scl_io_num = board.scl as esp_idf_sys::gpio_num_t;
             bus_cfg.__bindgen_anon_1.clk_source =
                 esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
             bus_cfg.glitch_ignore_cnt = 7;
@@ -181,7 +189,7 @@ impl EspPn7160Transport {
             // the hal wrapper was present in every failing build.
             unsafe {
                 let mut irq_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
-                irq_cfg.pin_bit_mask = 1u64 << IRQ_PIN;
+                irq_cfg.pin_bit_mask = 1u64 << board.irq;
                 irq_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
                 irq_cfg.pull_down_en = esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_ENABLE;
                 irq_cfg.intr_type = esp_idf_sys::gpio_int_type_t_GPIO_INTR_HIGH_LEVEL;
@@ -192,16 +200,19 @@ impl EspPn7160Transport {
                 );
                 ISR_ADD_RC.store(
                     esp_idf_sys::gpio_isr_handler_add(
-                        IRQ_PIN,
+                        board.irq,
                         Some(dummy_irq_isr),
                         core::ptr::null_mut(),
                     ),
                     core::sync::atomic::Ordering::Relaxed,
                 );
-                esp_idf_sys::gpio_intr_disable(IRQ_PIN);
+                esp_idf_sys::gpio_intr_disable(board.irq);
+                // The ISR quench cannot capture the board — publish the
+                // IRQ number for it (#149 P2).
+                IRQ_PIN_NO.store(board.irq, core::sync::atomic::Ordering::Relaxed);
 
                 let mut ven_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
-                ven_cfg.pin_bit_mask = 1u64 << VEN_PIN;
+                ven_cfg.pin_bit_mask = 1u64 << board.ven;
                 ven_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT;
                 esp_idf_sys::gpio_config(&ven_cfg);
             }
@@ -212,6 +223,7 @@ impl EspPn7160Transport {
         Ok(Self {
             bus,
             dev,
+            board,
             ntf: [None; NTF_SLOTS],
             ntf_head: 0,
             ntf_count: 0,
@@ -243,21 +255,21 @@ impl EspPn7160Transport {
     /// health loop re-applies it before every init-ladder retry.
     pub fn ven_cycle(&mut self) {
         log::warn!("step: ven_cycle begin");
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
         FreeRtos::delay_ms(10);
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 0) };
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 0) };
         FreeRtos::delay_ms(50);
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
         FreeRtos::delay_ms(50);
         log::warn!("step: ven_cycle done");
     }
 
     pub fn ven_cycle_extended(&mut self) {
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
         FreeRtos::delay_ms(10);
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 0) };
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 0) };
         FreeRtos::delay_ms(100);
-        unsafe { esp_idf_sys::gpio_set_level(VEN_PIN, 1) };
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
         FreeRtos::delay_ms(100);
     }
 
@@ -305,7 +317,7 @@ impl EspPn7160Transport {
     /// new driver's dedicated API. Ok(()) = chip ACKs (powered and off the
     /// DWL boot), Err = NAK/timeout (chip mute).
     pub fn probe(&mut self) -> Result<(), EspError> {
-        self.probe_addr(PN7160_I2C_ADDR)
+        self.probe_addr(self.board.addr)
     }
 
     /// Probe an arbitrary address (address-strap margin diagnostic:
@@ -324,8 +336,8 @@ impl EspPn7160Transport {
             if rc == 0 {
                 log::warn!("i2c scan: ACK at 0x{:02X}", addr);
                 found += 1;
-            } else if addr as u8 == PN7160_I2C_ADDR {
-                log::error!("i2c scan: 0x{:02X} err: {}", PN7160_I2C_ADDR, rc);
+            } else if addr as u8 == self.board.addr {
+                log::error!("i2c scan: 0x{:02X} err: {}", self.board.addr, rc);
             }
         }
         log::warn!("i2c scan done: {} responders", found);
@@ -351,7 +363,7 @@ impl Transport for EspPn7160Transport {
     /// Read ONE already-pending frame (any message type) if IRQ is high;
     /// never waits — returns None immediately on a quiet line.
     fn poll_frame(&mut self) -> Option<Frame> {
-        if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
+        if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
             self.read_frame()
         } else {
             None
@@ -368,7 +380,7 @@ impl Transport for EspPn7160Transport {
         }
         let mut waited = 0u32;
         loop {
-            if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
+            if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
                 let f = self.read_frame()?;
                 // The reply to what we sent is the first NON-NTF frame:
                 // MT_RSP for commands, MT_DATA for DATA packets. Returning
@@ -406,7 +418,7 @@ impl Transport for EspPn7160Transport {
         if let Some(f) = self.pop_ntf() {
             return Some(f);
         }
-        if unsafe { esp_idf_sys::gpio_get_level(IRQ_PIN) } == 1 {
+        if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
             self.read_frame()
         } else {
             None
