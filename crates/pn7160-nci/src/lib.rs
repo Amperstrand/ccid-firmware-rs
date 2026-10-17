@@ -27,6 +27,10 @@
 pub mod board;
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod esp_transport;
+/// #149 P3: the embedded-hal i2c adapter over driver_ng FFI. The pure
+/// mapping/validation surface and its tests compile everywhere; the
+/// FFI-touching device wrapper is esp-target-only.
+pub mod hal_i2c;
 
 use heapless::Vec;
 
