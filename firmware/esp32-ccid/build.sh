@@ -172,7 +172,7 @@ case "${BOARD}" in
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
         RELEASE_ARGS=()
-        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula")
+        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula,bench-net")
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
@@ -183,7 +183,7 @@ case "${BOARD}" in
         TRIPLE="riscv32imc-esp-espidf"
         PROFILE="debug"
         RELEASE_ARGS=()
-        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula")
+        FEATURE_ARGS=(--no-default-features --features "${BOARD},backend-pn7160,board-nucula,bench-net")
         CHIP="esp32c3"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
@@ -198,7 +198,7 @@ case "${BOARD}" in
         TRIPLE="xtensa-esp32-espidf"
         PROFILE="release"
         RELEASE_ARGS=(--release)
-        FEATURE_ARGS=(--no-default-features --features wifi-vpcd,backend-mfrc522,board-m5stick)
+        FEATURE_ARGS=(--no-default-features --features wifi-vpcd,backend-mfrc522,board-m5stick,bench-net)
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"

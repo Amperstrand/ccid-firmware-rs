@@ -28,7 +28,15 @@ board-m5stick = []
 # board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
 board-nucula = []
 backend-pn7160 = ["dep:pn7160-nci"]
-pn7160-bringup = ["backend-pn7160", "board-nucula"]
+pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
+# Bench network facilities — the surfaces an untrusted network must never
+# reach (#219, D-8): the TCP OTA flash server (:3232), the UDP netlog
+# broadcast arm (:4567), and the serial mains' NUCULA_WIFI_*-creds STA
+# bring-up. DEFAULT OFF — shipped builds compile none of them; bench
+# builds opt in via build.sh, and the OTA-seat boards ride it for
+# ota_push.py. The authenticated OTA2/token form (ota_header) exists;
+# arming tokens on bench builds is the tracked follow-up.
+bench-net = []
 pn7160-verdict-a = []
 pn7160-verdict-b = []
 # Experiment: never cycle VEN — assumes the chip is alive at handover

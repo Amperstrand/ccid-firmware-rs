@@ -519,8 +519,10 @@ jobs:
             sdkconfig: "sdkconfig-xtensa-spp.full"
             sdkconfig_full: true
           # wifi TCP CCID main (issue #173): wifi_ccid.rs is compiled by
-          # no other entry. C3 + PN7160 + sdkconfig.full, mirrors
-          # build.sh wifi-ccid (debug profile, bench parity).
+          # no other entry. C3 + PN7160 + sdkconfig.full — the SHIPPED
+          # shape: like every matrix entry it carries no bench-net
+          # (#219), proving the transport compiles without the OTA
+          # listener and the netlog UDP arm.
           - name: wifi-ccid
             features: "wifi-ccid,backend-pn7160,board-nucula"
             no-default-features: true
@@ -529,6 +531,21 @@ jobs:
             profile: ""
             target: riscv32imc-esp-espidf
             sdkconfig: "sdkconfig.full"
+            sdkconfig_full: true
+          # bench-net ON-path (#219): the ONLY matrix entry that opts
+          # into the bench network surfaces (OTA server + netlog UDP +
+          # STA bring-up) — mirrors build.sh m5stick-vpcd. Keeps the
+          # gated modules compiling; without an entry like this the
+          # gate would rot the bench builds silently (build.sh is not
+          # CI'd).
+          - name: m5stick-vpcd-bench
+            features: "wifi-vpcd,backend-mfrc522,board-m5stick,bench-net"
+            no-default-features: true
+            gate: false
+            toolchain: esp
+            profile: "--release"
+            target: xtensa-esp32-espidf
+            sdkconfig: "sdkconfig-xtensa-vpcd.full"
             sdkconfig_full: true
     steps:
       - uses: actions/checkout@v5

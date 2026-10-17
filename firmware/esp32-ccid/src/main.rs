@@ -522,8 +522,10 @@ fn main() {
     // WiFi + OTA for serial-free bring-up (bench power bricks): the
     // modem is exclusive with the `ble` and `spp` feature builds, and
     // credentials come from NUCULA_WIFI_SSID/PASS at build time — absent
-    // creds leave the board serial/CCID-only exactly as before.
-    #[cfg(not(any(feature = "ble", feature = "spp")))]
+    // creds leave the board serial/CCID-only exactly as before. The
+    // whole surface is bench-net-gated (#219): shipped builds compile
+    // neither the STA bring-up nor the OTA server nor netlog's UDP arm.
+    #[cfg(all(not(any(feature = "ble", feature = "spp")), feature = "bench-net"))]
     match (
         option_env!("NUCULA_WIFI_SSID"),
         option_env!("NUCULA_WIFI_PASS"),
