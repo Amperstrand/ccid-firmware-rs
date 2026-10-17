@@ -15,7 +15,10 @@ path = "src/lib.rs"
 
 [features]
 default = ["backend-mfrc522", "board-m5atom"]
-backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "esp-idf-hal/legacy-i2c"]
+# #149 P3: the MFRC522 frontend rides the shared driver_ng embedded-hal
+# adapter (`pn7160_nci::hal_i2c`) — the legacy esp-idf-hal i2c gate and
+# the vendored-hal `legacy-i2c` opt-in are retired with this wiring.
+backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "dep:pn7160-nci", "pn7160-nci/esp"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 # Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
 #   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
@@ -60,8 +63,10 @@ pn7160-m1 = ["backend-pn7160", "board-nucula"]
 pn7160-v10raw = ["backend-pn7160", "board-nucula"]
 pn7160-actdiag = ["backend-pn7160", "board-nucula"]
 # M5StickC(-Plus) LCD status screen (bolty-rs display.rs port):
-# mipidsi/embedded-graphics pinned to bolty's exact proven pair.
-lcd = ["dep:mipidsi", "dep:embedded-graphics"]
+# mipidsi/embedded-graphics pinned to bolty's exact proven pair. The
+# AXP192 PMU rides the same #149 P3 driver_ng adapter as the MFRC522
+# backend (m5stick_lcd.rs `imp` module).
+lcd = ["dep:mipidsi", "dep:embedded-graphics", "dep:pn7160-nci", "pn7160-nci/esp"]
 ble = []
 # DIAGNOSTIC-ONLY BLE variant (issue #165): keeps C-level ESP_LOGx/BT
 # stack traces UNSILENCED on the console (the standard `ble` build

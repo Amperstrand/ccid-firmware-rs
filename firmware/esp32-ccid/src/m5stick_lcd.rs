@@ -243,11 +243,7 @@ mod imp {
     };
     use esp_idf_hal::{
         delay::FreeRtos,
-        gpio::{
-            Gpio12, Gpio13, Gpio15, Gpio18, Gpio21, Gpio22, Gpio23, Gpio27, Gpio5, Output,
-            PinDriver,
-        },
-        i2c::{I2cConfig, I2cDriver, I2C1},
+        gpio::{Gpio12, Gpio13, Gpio15, Gpio18, Gpio23, Gpio27, Gpio5, Output, PinDriver},
         spi::{
             config::{Config, DriverConfig},
             SpiDeviceDriver, SpiDriver,
@@ -258,7 +254,6 @@ mod imp {
     use mipidsi::{models::ST7789, options::ColorInversion, Builder};
 
     const SPI_BUFFER_SIZE: usize = 512;
-    const AXP192_TIMEOUT_MS: u32 = 100;
 
     type LcdDisplay = mipidsi::Display<
         mipidsi::interface::SpiInterface<
@@ -280,19 +275,37 @@ mod imp {
 
     static SCREEN: std::sync::Mutex<Option<Screen>> = std::sync::Mutex::new(None);
 
-    static I2C1_DRIVER: std::sync::Mutex<Option<I2cDriver<'static>>> = std::sync::Mutex::new(None);
+    // (bus, device) — the driver_ng pair from `pn7160_nci::hal_i2c`
+    // (#149 P3). The bus stays in the static so it provably outlives
+    // the device (driver_ng requirement); the battery thread locks the
+    // same mutex, so access is serialized by construction.
+    static I2C1_DRIVER: std::sync::Mutex<
+        Option<(
+            pn7160_nci::hal_i2c::I2cMasterBus,
+            pn7160_nci::hal_i2c::I2cMasterDevice,
+        )>,
+    > = std::sync::Mutex::new(None);
 
-    fn axp_write(i2c: &mut I2cDriver<'_>, reg: u8, val: u8) -> Result<(), &'static str> {
-        i2c.write(super::AXP192_I2C_ADDR, &[reg, val], AXP192_TIMEOUT_MS)
-            .map_err(|e| {
-                warn!("AXP192 write reg 0x{reg:02X} failed: {e:?}");
-                "axp192 i2c write failed"
-            })
+    fn axp_write<I2C: embedded_hal::i2c::I2c>(
+        i2c: &mut I2C,
+        reg: u8,
+        val: u8,
+    ) -> Result<(), &'static str>
+    where
+        I2C::Error: core::fmt::Debug,
+    {
+        i2c.write(super::AXP192_I2C_ADDR, &[reg, val]).map_err(|e| {
+            warn!("AXP192 write reg 0x{reg:02X} failed: {e:?}");
+            "axp192 i2c write failed"
+        })
     }
 
-    fn axp_read(i2c: &mut I2cDriver<'_>, reg: u8) -> Result<u8, &'static str> {
+    fn axp_read<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C, reg: u8) -> Result<u8, &'static str>
+    where
+        I2C::Error: core::fmt::Debug,
+    {
         let mut buf = [0u8; 1];
-        i2c.write_read(super::AXP192_I2C_ADDR, &[reg], &mut buf, AXP192_TIMEOUT_MS)
+        i2c.write_read(super::AXP192_I2C_ADDR, &[reg], &mut buf)
             .map_err(|e| {
                 warn!("AXP192 read reg 0x{reg:02X} failed: {e:?}");
                 "axp192 i2c read failed"
@@ -303,7 +316,10 @@ mod imp {
     /// Executes [`AXP192_INIT_SEQUENCE`] over I2C, then verifies reg 0x12
     /// carries the enable bits (the bolty readback guard — a silently
     /// unpowered LCD is indistinguishable from a dead one).
-    fn apply_axp192_sequence(i2c: &mut I2cDriver) -> Result<(), &'static str> {
+    fn apply_axp192_sequence<I2C: embedded_hal::i2c::I2c>(i2c: &mut I2C) -> Result<(), &'static str>
+    where
+        I2C::Error: core::fmt::Debug,
+    {
         for op in super::AXP192_INIT_SEQUENCE {
             match op {
                 AxpOp::Set { reg, value, why } => {
@@ -331,15 +347,13 @@ mod imp {
 
     /// # Safety
     /// Call exactly once at startup: SPI_BUFFER is handed to the display
-    /// driver permanently. Claims I2C1 + SPI2 + the nine LCD pins —
-    /// none of which the CCID path touches (MFRC522 rides i2c0 on the
-    /// Grove port 32/33, UART0 is the GemPC wire).
+    /// driver permanently. Claims I2C1 (AXP192, SDA=GPIO21/SCL=GPIO22)
+    /// + SPI2 + the nine LCD pins — none of which the CCID path touches
+    /// (MFRC522 rides i2c0 on the Grove port 32/33, UART0 is the GemPC
+    /// wire).
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn init(
-        i2c1: I2C1<'static>,
         spi2: esp_idf_hal::spi::SPI2<'static>,
-        pin_sda: Gpio21<'static>,
-        pin_scl: Gpio22<'static>,
         pin_sclk: Gpio13<'static>,
         pin_mosi: Gpio15<'static>,
         pin_cs: Gpio5<'static>,
@@ -349,21 +363,25 @@ mod imp {
         fwid_rev: &str,
         variant: &'static str,
     ) -> Result<(), &'static str> {
-        let mut axp = I2cDriver::new(
-            i2c1,
-            pin_sda,
-            pin_scl,
-            &I2cConfig::new().baudrate(400_000.Hz()),
-        )
-        .map_err(|e| {
+        // #149 P3: driver_ng bus + shared embedded-hal adapter on I2C1
+        // (the legacy `I2cDriver` gate dies with this change). Op
+        // timeout parity: the adapter's per-op 100 ms equals the old
+        // AXP192_TIMEOUT_MS.
+        let mut axp_bus = pn7160_nci::hal_i2c::I2cMasterBus::new(1, 21, 22).map_err(|e| {
             warn!("AXP192 I2C1 init failed: {e:?}");
             "axp192 i2c failed"
         })?;
+        let mut axp = axp_bus
+            .add_hal_device(super::AXP192_I2C_ADDR, 400_000)
+            .map_err(|e| {
+                warn!("AXP192 I2C1 device add failed: {e:?}");
+                "axp192 i2c failed"
+            })?;
         apply_axp192_sequence(&mut axp)?;
         info!("AXP192 done, settling power rails 200ms");
         FreeRtos::delay_ms(200);
         if let Ok(mut guard) = I2C1_DRIVER.lock() {
-            *guard = Some(axp);
+            *guard = Some((axp_bus, axp));
         }
 
         // 20 MHz write (bolty-proven; M5GFX allows up to 40 MHz — kept
@@ -546,7 +564,7 @@ mod imp {
         let Ok(mut guard) = I2C1_DRIVER.lock() else {
             return false;
         };
-        let Some(i2c) = guard.as_mut() else {
+        let Some((_, i2c)) = guard.as_mut() else {
             return false;
         };
         let (r78, r79, r01) = (

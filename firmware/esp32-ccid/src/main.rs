@@ -126,7 +126,7 @@ use esp32_ccid::ccid_handler::CcidHandler;
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
 ))]
-use esp_idf_hal::{delay::FreeRtos, i2c, peripherals::Peripherals, units::Hertz};
+use esp_idf_hal::{delay::FreeRtos, peripherals::Peripherals, units::Hertz};
 
 // UART0 CCID wiring — absent in `spp` builds (RFCOMM replaces it).
 #[cfg(all(
@@ -635,45 +635,48 @@ fn main() {
     #[cfg(target_arch = "riscv32")]
     log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
-    // I2C pinout per board variant — see Cargo.toml [features].
+    // I2C pinout per board variant — see Cargo.toml [features]. Raw GPIO
+    // numbers only: driver_ng claims the controller by port, so neither
+    // the `Peripherals::i2c0` token nor typed pin drivers are consumed
+    // (the #149 P3 shared adapter owns the bus).
     #[cfg(feature = "board-m5atom")]
-    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
-        (peripherals.pins.gpio26, peripherals.pins.gpio32, 32, 26);
+    let (sda_gpio_no, scl_gpio_no) = (26, 32);
     #[cfg(feature = "board-m5stick")]
-    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
-        (peripherals.pins.gpio32, peripherals.pins.gpio33, 33, 32);
+    let (sda_gpio_no, scl_gpio_no) = (32, 33);
     // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
     // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase.)
     #[cfg(feature = "board-nucula")]
-    let (i2c_sda, i2c_scl, scl_gpio_no, sda_gpio_no) =
-        (peripherals.pins.gpio4, peripherals.pins.gpio5, 5, 4);
+    let (sda_gpio_no, scl_gpio_no) = (4, 5);
 
     #[cfg(target_arch = "xtensa")]
     recover_i2c_bus(scl_gpio_no, sda_gpio_no);
     // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
-    // after recovery, i2c0 via GPIO matrix, and a bus probe before the first
-    // MFRC522 register access. 400 kHz (was 100 kHz): this board was marginal
-    // at 400 kHz in early bring-up (worked intermittently, then hung the
-    // first transaction) — re-attempted per #59 with a measured RTT table
+    // after recovery, then a bus probe before the first MFRC522 register
+    // access. 400 kHz (was 100 kHz): this board was marginal at 400 kHz in
+    // early bring-up (worked intermittently, then hung the first
+    // transaction) — re-attempted per #59 with a measured RTT table
     // and a 100-transaction soak before landing.
     log::warn!("bring-up: skipping vTaskDelay on riscv32 (crash probe)");
     #[cfg(target_arch = "xtensa")]
     FreeRtos::delay_ms(50);
-    let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
-    log::warn!("bring-up: calling I2cDriver::new");
-    let mut i2c = i2c::I2cDriver::new(peripherals.i2c0, i2c_sda, i2c_scl, &i2c_config)
+    log::warn!("bring-up: driver_ng i2c_new_master_bus");
+    let mut i2c_bus = pn7160_nci::hal_i2c::I2cMasterBus::new(0, sda_gpio_no, scl_gpio_no)
         .expect("I2C0 init failed");
-    log::warn!("bring-up: I2C0 ok");
+    log::warn!("bring-up: I2C0 ok (driver_ng)");
 
-    let probe_timeout = esp_idf_hal::delay::TickType::new_millis(100);
-    let probe_found = i2c.write(0x28, &[], probe_timeout.into()).is_ok();
+    let probe_found = i2c_bus.probe(0x28, 100).is_ok();
     log::info!(
         "i2c probe @0x28: {}",
         if probe_found { "ack" } else { "no-ack" }
     );
 
-    let mfrc522_result =
-        mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28)).init();
+    let i2c_dev = i2c_bus
+        .add_hal_device(0x28, 400_000)
+        .expect("MFRC522 device add failed");
+    let mfrc522_result = mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(
+        i2c_dev, 0x28,
+    ))
+    .init();
     log::info!(
         "MFRC522 init: {:?}",
         mfrc522_result.as_ref().err().map(|e| format!("{e:?}"))
@@ -688,10 +691,7 @@ fn main() {
     {
         let result = unsafe {
             esp32_ccid::m5stick_lcd::init(
-                peripherals.i2c1,
                 peripherals.spi2,
-                peripherals.pins.gpio21,
-                peripherals.pins.gpio22,
                 peripherals.pins.gpio13,
                 peripherals.pins.gpio15,
                 peripherals.pins.gpio5,

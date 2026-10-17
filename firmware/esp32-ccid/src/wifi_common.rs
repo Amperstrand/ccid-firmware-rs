@@ -168,22 +168,14 @@ impl<D: crate::nfc::NfcDriver> crate::nfc::NfcDriver for OrNull<D> {
 
 /// MFRC522 ladder (m5atom/m5stick, Grove I2C @0x28): bus recovery,
 /// 400 kHz I2C, then `init_with_recovery` retries — the stock m5stick
-/// CDC main sequence, minus the UART/LED CCID plumbing.
+/// CDC main sequence, minus the UART/LED CCID plumbing. Bus + device
+/// ride the #149 P3 shared driver_ng adapter (`pn7160_nci::hal_i2c`),
+/// so raw GPIO numbers are the only board input.
 #[cfg(feature = "backend-mfrc522")]
-pub fn mfrc522_bring_up<SDA, SCL>(
-    i2c0: esp_idf_hal::i2c::I2C0<'static>,
-    sda: SDA,
-    scl: SCL,
+pub fn mfrc522_bring_up(
     scl_gpio_no: i32,
     sda_gpio_no: i32,
-) -> impl crate::nfc::NfcDriver + Send + 'static
-where
-    SDA: esp_idf_hal::gpio::InputPin + esp_idf_hal::gpio::OutputPin + 'static,
-    SCL: esp_idf_hal::gpio::InputPin + esp_idf_hal::gpio::OutputPin + 'static,
-{
-    use esp_idf_hal::i2c;
-    use esp_idf_hal::units::Hertz;
-
+) -> impl crate::nfc::NfcDriver + Send + 'static {
     // I2C bus recovery (xtensa only — the riscv32 crash-probe path skips
     // the settle delay, mirroring the CDC main).
     #[cfg(target_arch = "xtensa")]
@@ -199,25 +191,36 @@ where
 
     // 400 kHz (was 100 kHz): re-attempted per #59 with a measured RTT
     // table and a 100-transaction soak before landing.
-    let i2c_config = i2c::config::Config::new().baudrate(Hertz(400_000).into());
-    log::warn!("bring-up: calling I2cDriver::new");
-    let mut i2c = i2c::I2cDriver::new(i2c0, sda, scl, &i2c_config).expect("I2C0 init failed");
-    log::warn!("bring-up: I2C0 ok");
+    log::warn!("bring-up: driver_ng i2c_new_master_bus");
+    let mut i2c_bus = pn7160_nci::hal_i2c::I2cMasterBus::new(0, sda_gpio_no, scl_gpio_no)
+        .expect("I2C0 init failed");
+    log::warn!("bring-up: I2C0 ok (driver_ng)");
 
-    let probe_timeout = esp_idf_hal::delay::TickType::new_millis(100);
-    let probe_found = i2c.write(0x28, &[], probe_timeout.into()).is_ok();
+    let probe_found = i2c_bus.probe(0x28, 100).is_ok();
     log::info!(
         "i2c probe @0x28: {}",
         if probe_found { "ack" } else { "no-ack" }
     );
+
+    let i2c_dev = match i2c_bus.add_hal_device(0x28, 400_000) {
+        Ok(dev) => dev,
+        Err(e) => {
+            log::error!(
+                "MFRC522 device add failed ({e:?}) — serving as empty reader (OrNull::Null)"
+            );
+            return OrNull::Null;
+        }
+    };
 
     // Reader frontend absent or electrically stuck (bench 2026-10-13: SDA
     // held LOW past 32 recovery clocks on BOTH Grove pin maps). Degrade to
     // the null driver instead of halting: the vpcd link comes up as an
     // empty reader and the board stays OTA-flasheable + netlog-visible,
     // so the bench distinguishes "reader broken" from "board gone".
-    let hw = match mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(i2c, 0x28))
-        .init()
+    let hw = match mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(
+        i2c_dev, 0x28,
+    ))
+    .init()
     {
         Ok(hw) => hw,
         Err(e) => {
