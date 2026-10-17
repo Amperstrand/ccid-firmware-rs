@@ -1,0 +1,427 @@
+//! Concrete PN7160 transport for esp-idf targets: NCI over I²C (0x28)
+//! with VEN power control and IRQ-driven reads — the nci_transceive /
+//! nci_read split of the proven C driver. Uses the NEW `i2c_master`
+//! driver via raw esp-idf-sys bindings (issue #63/#80): the PN7160 is
+//! permanently mute under the legacy `driver/i2c` on this silicon, and
+//! ESP-IDF aborts when both driver generations are linked — hence the
+//! vendored hal patch that gates the legacy module out. The three
+//! bring-up constructors are the pad-diag verdict map (issue #62):
+//! A = pad-hold clear, B = config order (baseline), C = extended VEN
+//! timing.
+
+pub use crate::board::{BoardPins, NUCULA};
+use crate::{Frame, Transport, MT_NTF};
+
+/// IRQ number for the ISR quench (the ISR cannot capture; the transport
+/// stores its board's IRQ pin here at bring-up).
+static IRQ_PIN_NO: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(6);
+use esp_idf_hal::delay::FreeRtos;
+use esp_idf_sys::EspError;
+
+// The ccid-specific `EspPn7160NfcDriver` alias over this transport
+// stays in firmware/esp32-ccid (the NfcDriver trait adapter is ccid's;
+// a bolty-rs consumer needs neither — #149 P1 boundary).
+
+const XFER_TIMEOUT_MS: i32 = 500;
+const IRQ_WAIT_BUDGET_US: u32 = 200_000;
+/// One FreeRtos tick in µs — `CONFIG_FREERTOS_HZ=100` (sdkconfig.full), so
+/// `FreeRtos::delay_ms(1)` rounds UP to one full 10 ms tick. The wait budget
+/// must count what actually elapses, not what was requested (Codex #85,
+/// issue #112): counting 1000 µs/iteration silently stretched the 200 ms
+/// RSP budget to ~2 s of wall time.
+const RTOS_TICK_US: u32 = 10_000;
+const NTF_SLOTS: usize = 4;
+/// Fire-and-forget write bound for the non-blocking presence re-arm
+/// (2026-10-10 serve-loop stall fix): a 4-byte NCI command is ~0.5 ms on
+/// the live 100 kHz bus; 50 ms only caps the pathological stuck-bus case
+/// so a presence poll stays under the 100 ms serve-loop budget. The RSP
+/// is NOT waited for here — it is collected by `poll_frame` on later
+/// polls (NCI v2.3 §5.2.5 allows the NFCC to defer it behind RF work).
+const SEND_TIMEOUT_MS: i32 = 50;
+
+pub static ISR_SERVICE_RC: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-999);
+pub static ISR_ADD_RC: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-999);
+
+/// Consecutive failed I2C writes (mute detector, bench 2026-10-12): a
+/// PN7160 that NAKs writes stays wedged until a VEN power cycle — no
+/// runtime recovery existed before this. `send` maintains the streak;
+/// the serve loop samples it and replays the bring-up ladder on
+/// threshold.
+static I2C_SEND_FAILURES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Consecutive-failed-I2C-write streak for the serve loop's mute detector.
+pub fn i2c_send_failure_streak() -> u32 {
+    I2C_SEND_FAILURES.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+unsafe extern "C" fn dummy_irq_isr(_arg: *mut core::ffi::c_void) {
+    // nci.c replica: the ISR must quench the level interrupt itself (the
+    // PN7160 holds IRQ high until read); a no-op handler = interrupt storm
+    // that starves the console/USB the moment the chip comes alive.
+    unsafe {
+        esp_idf_sys::gpio_intr_disable(IRQ_PIN_NO.load(core::sync::atomic::Ordering::Relaxed))
+    };
+}
+
+pub struct EspPn7160Transport {
+    bus: esp_idf_sys::i2c_master_bus_handle_t,
+    dev: esp_idf_sys::i2c_master_dev_handle_t,
+    /// Board geometry this transport was brought up against (#149 P2).
+    pub board: BoardPins,
+
+    ntf: [Option<Frame>; NTF_SLOTS],
+    ntf_head: usize,
+    ntf_count: usize,
+}
+
+// SAFETY: the raw I2C handles are only accessed from the single thread
+// that owns this transport (the vpcd or CCID serve thread). The ESP32-C3
+// I2C driver is not internally thread-safe, but our architecture guarantees
+// exclusive access by construction (one driver, one thread).
+unsafe impl Send for EspPn7160Transport {}
+
+/// Decomposed board pins for the NFC block: the bring-up main splits
+/// `Peripherals` once (modem + nvs to WiFi, the rest here) because
+/// `Peripherals::take` is single-shot.
+pub struct BusPins {
+    pub i2c0: esp_idf_hal::i2c::I2C0<'static>,
+    pub sda: esp_idf_hal::gpio::Gpio4<'static>,
+    pub scl: esp_idf_hal::gpio::Gpio5<'static>,
+    pub irq: esp_idf_hal::gpio::Gpio6<'static>,
+    pub ven: esp_idf_hal::gpio::Gpio7<'static>,
+}
+
+impl EspPn7160Transport {
+    /// Verdict B (baseline): I2C bus first — the native firmware's
+    /// nucula.cpp:181 position — then the VEN power cycle.
+    #[cfg(not(feature = "ven-never"))]
+    pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(board, p)?;
+        t.ven_cycle();
+        // The PN7160 only ACKs within a window after VEN rise (bench-proven
+        // 2026-10-08): probe IMMEDIATELY, like the wallet's nci_init. The
+        // device add is bus-silent either way.
+        let probe_result = t.probe();
+        log::warn!(
+            "init: probe @0x28 right after VEN cycle: {:?} (window rule)",
+            probe_result
+        );
+        t.add_pn_device()?;
+        Ok(t)
+    }
+
+    /// ven-never experiment: assume the chip is ALIVE (wallet handover or
+    /// warm board) — VEN raised in µs at construction, NO power cycle.
+    #[cfg(feature = "ven-never")]
+    pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(board, p)?;
+        // Codex PR 85: the constructor configures VEN as OUTPUT but
+        // never sets the level — the chip stays in power-down and the
+        // ven-never experiment always fails. Drive VEN high before the
+        // device is added to the bus.
+        unsafe { esp_idf_sys::gpio_set_level(board.ven, 1) };
+        t.add_pn_device()?;
+        Ok(t)
+    }
+
+    /// nci.c adds the PN7160 device only after probing post-VEN; we mirror
+    /// that (device-add is bus-silent, but ordering is replicated exactly).
+    fn add_pn_device(&mut self) -> Result<(), EspError> {
+        if !self.dev.is_null() {
+            return Ok(());
+        }
+        let mut dev_cfg: esp_idf_sys::i2c_device_config_t = unsafe { core::mem::zeroed() };
+        dev_cfg.dev_addr_length = esp_idf_sys::i2c_addr_bit_len_t_I2C_ADDR_BIT_LEN_7;
+        dev_cfg.device_address = self.board.addr as u16;
+        dev_cfg.scl_speed_hz = 100_000;
+        unsafe {
+            EspError::convert(esp_idf_sys::i2c_master_bus_add_device(
+                self.bus,
+                &dev_cfg,
+                &mut self.dev,
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Verdict A (pads stuck): clear gpio hold + sleep isolation on the
+    /// four NFC pads before reconfiguration. A latched hold ignores
+    /// config changes until cleared (cf. Tasmota #20030).
+    pub fn bringup_pad_hold_clear(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        unsafe {
+            esp_idf_sys::gpio_deep_sleep_hold_dis();
+            for pin in [board.sda, board.scl, board.irq, board.ven] {
+                esp_idf_sys::gpio_hold_dis(pin);
+                esp_idf_sys::gpio_sleep_sel_dis(pin);
+            }
+        }
+        Self::bringup_config_order(board, p)
+    }
+
+    /// Verdict C: quiesce the core with extended VEN timing.
+    pub fn bringup_ven_timing(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        let mut t = Self::from_peripherals(board, p)?;
+        t.ven_cycle_extended();
+        t.add_pn_device()?;
+        Ok(t)
+    }
+
+    fn from_peripherals(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+        // Board rules (zeugmaster/nucula-board peripherals-design.md):
+        // 100 kHz max (PCF8574T limit), external 2.2k pulls to 3.0 V —
+        // ESP internal pull-ups must stay OFF.
+        let _ = p.i2c0; // new driver owns the controller via port number
+        let mut bus: esp_idf_sys::i2c_master_bus_handle_t = core::ptr::null_mut();
+        let mut dev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
+        unsafe {
+            let mut bus_cfg: esp_idf_sys::i2c_master_bus_config_t = core::mem::zeroed();
+            bus_cfg.i2c_port = 0;
+            bus_cfg.sda_io_num = board.sda as esp_idf_sys::gpio_num_t;
+            bus_cfg.scl_io_num = board.scl as esp_idf_sys::gpio_num_t;
+            bus_cfg.__bindgen_anon_1.clk_source =
+                esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
+            bus_cfg.glitch_ignore_cnt = 7;
+            // flags stay zeroed: internal pull-ups OFF (external 2.2k)
+            EspError::convert(esp_idf_sys::i2c_new_master_bus(&bus_cfg, &mut bus))?;
+            // v10raw-verified sequence (Rust ACK on bench 2026-10-08): raw
+            // gpio_config for IRQ + VEN, ISR machinery installed, single clean
+            // VEN cycle, probe IMMEDIATELY after. No PinDriver on these pins —
+            // the hal wrapper was present in every failing build.
+            unsafe {
+                let mut irq_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+                irq_cfg.pin_bit_mask = 1u64 << board.irq;
+                irq_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
+                irq_cfg.pull_down_en = esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_ENABLE;
+                irq_cfg.intr_type = esp_idf_sys::gpio_int_type_t_GPIO_INTR_HIGH_LEVEL;
+                esp_idf_sys::gpio_config(&irq_cfg);
+                ISR_SERVICE_RC.store(
+                    esp_idf_sys::gpio_install_isr_service(0),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                ISR_ADD_RC.store(
+                    esp_idf_sys::gpio_isr_handler_add(
+                        board.irq,
+                        Some(dummy_irq_isr),
+                        core::ptr::null_mut(),
+                    ),
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                esp_idf_sys::gpio_intr_disable(board.irq);
+                // The ISR quench cannot capture the board — publish the
+                // IRQ number for it (#149 P2).
+                IRQ_PIN_NO.store(board.irq, core::sync::atomic::Ordering::Relaxed);
+
+                let mut ven_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
+                ven_cfg.pin_bit_mask = 1u64 << board.ven;
+                ven_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_OUTPUT;
+                esp_idf_sys::gpio_config(&ven_cfg);
+            }
+            let _ = p.irq; // raw gpio_config owns IRQ now
+            let _ = p.ven; // raw gpio_config owns VEN now
+        }
+        log::warn!("step: i2c bus + device OK (driver_ng)");
+        Ok(Self {
+            bus,
+            dev,
+            board,
+            ntf: [None; NTF_SLOTS],
+            ntf_head: 0,
+            ntf_count: 0,
+        })
+    }
+
+    fn push_ntf(&mut self, f: Frame) {
+        if self.ntf_count == NTF_SLOTS {
+            self.ntf[self.ntf_head] = None;
+            self.ntf_head = (self.ntf_head + 1) % NTF_SLOTS;
+            self.ntf_count -= 1;
+        }
+        let tail = (self.ntf_head + self.ntf_count) % NTF_SLOTS;
+        self.ntf[tail] = Some(f);
+        self.ntf_count += 1;
+    }
+
+    fn pop_ntf(&mut self) -> Option<Frame> {
+        if self.ntf_count == 0 {
+            return None;
+        }
+        let f = self.ntf[self.ntf_head].take();
+        self.ntf_head = (self.ntf_head + 1) % NTF_SLOTS;
+        self.ntf_count -= 1;
+        f
+    }
+
+    /// VEN power cycle, byte-exact vs nci.c:77-86. Public: the bring-up
+    /// health loop re-applies it before every init-ladder retry.
+    pub fn ven_cycle(&mut self) {
+        log::warn!("step: ven_cycle begin");
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
+        FreeRtos::delay_ms(10);
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 0) };
+        FreeRtos::delay_ms(50);
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
+        FreeRtos::delay_ms(50);
+        log::warn!("step: ven_cycle done");
+    }
+
+    pub fn ven_cycle_extended(&mut self) {
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
+        FreeRtos::delay_ms(10);
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 0) };
+        FreeRtos::delay_ms(100);
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 1) };
+        FreeRtos::delay_ms(100);
+    }
+
+    /// Two-phase NCI read (nxp-nci style): 3-byte header, then payload.
+    fn read_frame(&mut self) -> Option<Frame> {
+        let mut hdr = [0u8; 3];
+        let rc = unsafe {
+            esp_idf_sys::i2c_master_receive(self.dev, hdr.as_mut_ptr(), 3, XFER_TIMEOUT_MS)
+        };
+        if rc != 0 {
+            log::error!("read_frame: header rc={} (chip mute mid-ladder?)", rc);
+            return None;
+        }
+        let plen = hdr[2] as usize;
+        let mut pkt = [0u8; 3 + 255];
+        pkt[..3].copy_from_slice(&hdr);
+        if plen > 0 {
+            let rc = unsafe {
+                esp_idf_sys::i2c_master_receive(
+                    self.dev,
+                    pkt[3..3 + plen].as_mut_ptr(),
+                    plen,
+                    XFER_TIMEOUT_MS,
+                )
+            };
+            if rc != 0 {
+                log::error!("read_frame: payload rc={} plen={}", rc, plen);
+                return None;
+            }
+        }
+        {
+            let show = (3 + plen).min(9);
+            log::warn!(
+                "read_frame: hdr={:#04x} {:#04x} plen={} bytes={:?}",
+                hdr[0],
+                hdr[1],
+                plen,
+                &pkt[..show]
+            );
+        }
+        Frame::decode(&pkt[..3 + plen])
+    }
+
+    /// Single-address health check (issue #63): zero-length probe via the
+    /// new driver's dedicated API. Ok(()) = chip ACKs (powered and off the
+    /// DWL boot), Err = NAK/timeout (chip mute).
+    pub fn probe(&mut self) -> Result<(), EspError> {
+        self.probe_addr(self.board.addr)
+    }
+
+    /// Probe an arbitrary address (address-strap margin diagnostic:
+    /// nucula-board R23/R24 = 100k vs internal pull-ups → the chip may
+    /// land on 0x29-0x2B instead of 0x28 at VEN rise).
+    pub fn probe_addr(&mut self, addr: u8) -> Result<(), EspError> {
+        EspError::convert(unsafe { esp_idf_sys::i2c_master_probe(self.bus, addr as u16, 50) })
+    }
+
+    /// Probe 0x01..=0x7F; log every ACK and the error kind at the PN7160
+    /// address when it stays mute.
+    pub fn i2c_scan(&mut self) {
+        let mut found = 0u32;
+        for addr in 1u16..=0x7F {
+            let rc = unsafe { esp_idf_sys::i2c_master_probe(self.bus, addr, 50) };
+            if rc == 0 {
+                log::warn!("i2c scan: ACK at 0x{:02X}", addr);
+                found += 1;
+            } else if addr as u8 == self.board.addr {
+                log::error!("i2c scan: 0x{:02X} err: {}", self.board.addr, rc);
+            }
+        }
+        log::warn!("i2c scan done: {} responders", found);
+    }
+}
+
+impl Transport for EspPn7160Transport {
+    /// Write-only, no RSP wait (non-blocking re-arm path): one I2C
+    /// transmit bounded by SEND_TIMEOUT_MS.
+    fn send(&mut self, cmd: &[u8]) -> bool {
+        let rc = unsafe {
+            esp_idf_sys::i2c_master_transmit(self.dev, cmd.as_ptr(), cmd.len(), SEND_TIMEOUT_MS)
+        };
+        if rc != 0 {
+            I2C_SEND_FAILURES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            log::error!("send: i2c write err: {}", rc);
+            return false;
+        }
+        I2C_SEND_FAILURES.store(0, core::sync::atomic::Ordering::Relaxed);
+        true
+    }
+
+    /// Read ONE already-pending frame (any message type) if IRQ is high;
+    /// never waits — returns None immediately on a quiet line.
+    fn poll_frame(&mut self) -> Option<Frame> {
+        if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
+            self.read_frame()
+        } else {
+            None
+        }
+    }
+
+    fn transact(&mut self, cmd: &[u8]) -> Option<Frame> {
+        let rc = unsafe {
+            esp_idf_sys::i2c_master_transmit(self.dev, cmd.as_ptr(), cmd.len(), XFER_TIMEOUT_MS)
+        };
+        if rc != 0 {
+            log::error!("transact: i2c write err: {}", rc);
+            return None;
+        }
+        let mut waited = 0u32;
+        loop {
+            if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
+                let f = self.read_frame()?;
+                // The reply to what we sent is the first NON-NTF frame:
+                // MT_RSP for commands, MT_DATA for DATA packets. Returning
+                // only MT_RSP stashed every APDU response as a notification
+                // and starved all card exchanges (mock/hardware divergence
+                // — the mock returns any queued reply; bench 2026-10-08).
+                if f.mt != MT_NTF {
+                    return Some(f);
+                }
+                log::warn!("transact: stashing NTF gid={:#x} oid={:#x}", f.gid, f.oid);
+                self.push_ntf(f);
+                continue;
+            }
+            if waited >= IRQ_WAIT_BUDGET_US {
+                log::error!("transact: RSP timeout");
+                return None;
+            }
+            // FreeRtos (not Ets) — the ROM busy-wait starves the USB
+            // console task for the whole ladder: console output dies
+            // while the app + chip keep working (AGENTS.md hazard).
+            FreeRtos::delay_ms(1);
+            waited += RTOS_TICK_US;
+        }
+    }
+
+    fn wait_ms(&mut self, ms: u64) {
+        // FreeRtos (not Ets): the ROM busy-wait starves the WiFi and
+        // console tasks for the whole power_on collect window — the
+        // truncated-console-line / TCP-stall hazard the transact
+        // comment documents (same class).
+        FreeRtos::delay_ms(ms as u32);
+    }
+
+    fn drain(&mut self) -> Option<Frame> {
+        if let Some(f) = self.pop_ntf() {
+            return Some(f);
+        }
+        if unsafe { esp_idf_sys::gpio_get_level(self.board.irq) } == 1 {
+            self.read_frame()
+        } else {
+            None
+        }
+    }
+}

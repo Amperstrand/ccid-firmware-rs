@@ -9,11 +9,10 @@
 use crate::{Frame, Transport};
 use heapless::Vec;
 
-pub const PN7160_I2C_ADDR: u8 = 0x28;
-pub const VEN_PIN: i32 = 7;
-pub const IRQ_PIN: i32 = 6;
-pub const SDA_PIN: i32 = 4;
-pub const SCL_PIN: i32 = 5;
+// #149 P2: the nucula pin/address constants moved OUT of the protocol
+// core — a board is now described by `esp_transport::BoardPins`
+// (NUCULA is the provided default). The protocol crate carries no board
+// geometry; second boards describe themselves without touching it.
 
 /// Stub transport: the firmware crate wires this to esp-idf-sys I2C.
 #[derive(Default)]
@@ -221,14 +220,5 @@ mod tests {
     fn ats_to_atr_garbage_interface_mask_rejected() {
         // T0 promises interface bytes the buffer cannot hold.
         assert!(ats_to_atr(&[0x78, 0x77]).is_none());
-    }
-
-    #[test]
-    fn pin_constants_match_board() {
-        assert_eq!(SDA_PIN, 4);
-        assert_eq!(SCL_PIN, 5);
-        assert_eq!(IRQ_PIN, 6);
-        assert_eq!(VEN_PIN, 7);
-        assert_eq!(PN7160_I2C_ADDR, 0x28);
     }
 }

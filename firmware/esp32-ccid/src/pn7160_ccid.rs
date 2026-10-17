@@ -126,7 +126,9 @@ pub fn run() -> ! {
     // ACK-window bring-up (AGENTS.md "PN7160 ACK Window"): the constructor
     // cycles VEN and probes immediately; on ladder failure re-cycle + retry
     // (the chip only ACKs when talked to right after VEN rise).
-    let transport = EspPn7160Transport::bringup_config_order(bus).expect("peripheral init");
+    let transport =
+        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
+            .expect("peripheral init");
     let mut transport = Some(transport);
     let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
     for attempt in 1..=INIT_ATTEMPTS {

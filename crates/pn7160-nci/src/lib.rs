@@ -19,6 +19,19 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+/// #149 P1: the bench-proven ESP32 transport (I2C driver_ng FFI, VEN/IRQ
+/// control, NTF ring, verdict bring-up constructors, diagnostics) —
+/// extracted from firmware/esp32-ccid/pn7160_i2c.rs verbatim so a second
+/// consumer (bolty-rs) inherits instead of forks. Opt-in `esp` feature +
+/// esp targets only: protocol-core consumers build none of it.
+pub mod board;
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod esp_transport;
+/// #149 P3: the embedded-hal i2c adapter over driver_ng FFI. The pure
+/// mapping/validation surface and its tests compile everywhere; the
+/// FFI-touching device wrapper is esp-target-only.
+pub mod hal_i2c;
+
 use heapless::Vec;
 
 /// NCI control packet header is exactly 3 octets — NCI 2.0 §3.3:

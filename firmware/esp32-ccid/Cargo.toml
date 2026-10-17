@@ -27,7 +27,7 @@ board-m5stick = []
 # NOTE: the PN7160 backend driver is a later phase; this feature only selects the
 # board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
 board-nucula = []
-backend-pn7160 = ["dep:pn7160-nci"]
+backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp"]
 pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
 # Bench network facilities — the surfaces an untrusted network must never
 # reach (#219, D-8): the TCP OTA flash server (:3232), the UDP netlog
@@ -40,7 +40,8 @@ bench-net = []
 pn7160-verdict-a = []
 pn7160-verdict-b = []
 # Experiment: never cycle VEN — assumes the chip is alive at handover
-pn7160-ven-never = []
+# forwards into the shared crate (package-scoped features, Codex #230)
+pn7160-ven-never = ["pn7160-nci/ven-never"]
 pn7160-verdict-c = []
 pn7160-ccid = ["backend-pn7160", "board-nucula"]
 # WiFi TCP transport — the board's application port (#117 workaround by
