@@ -240,7 +240,7 @@ mod imp {
                 // DERIVED from this chip's factory BT MAC (Codex P2 on
                 // #231): every unit gets a distinct on-air identity
                 // instead of one constant per architecture.
-                let mut rand_addr = static_random_address();
+                let mut rand_addr = Self::static_random_address();
                 println!(
                     "ble: static-random addr {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} (from factory MAC)",
                     rand_addr[0], rand_addr[1], rand_addr[2],
