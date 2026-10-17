@@ -68,12 +68,25 @@ const MAX_FRAME_SIZE: usize = 2 + MAX_CCID_RESPONSE_SIZE + 1;
 /// deterministic host tests, not cross-task safety.
 pub mod time_extension {
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard};
 
     use ccid_transport_serial::{calculate_lrc, CTRL_ACK, SYNC};
 
     use super::MAX_FRAME_SIZE;
     use crate::ccid_types::RDR_TO_PC_DATABLOCK;
+
+    /// Poison-recovering lock (2026-10-17 quality survey): every
+    /// guard in this module protects plain data (a writer fn pointer,
+    /// an echo stash) whose validity a panic elsewhere CANNOT damage —
+    /// std marks the mutex "poisoned" anyway, and `.lock().unwrap()`
+    /// would then PANIC THE SERVE PATH (the stall hook runs inside
+    /// the exchange collect loop). `into_inner()` takes the guard
+    /// back: worst case we emit one extension frame built from a
+    /// half-written echo, which the host treats as a timeout —
+    /// strictly better than losing the whole serve task.
+    fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+        m.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     /// bError multiplier: libccidtwin multiplies its remaining read
     /// timeout by this value per extension frame (commands.c:1598) —
@@ -88,6 +101,11 @@ pub mod time_extension {
     static SEQ: AtomicU8 = AtomicU8::new(0);
     static ICC: AtomicU8 = AtomicU8::new(0);
     static ECHO_FLUSHED: AtomicBool = AtomicBool::new(false);
+    /// Serializes host tests that touch this module's shared statics
+    /// — lives HERE (not the outer tests mod) so the in-module poison
+    /// tests can take it too (moved 2026-10-17, no behavior change).
+    #[cfg(test)]
+    pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
     /// Interim frames the hook has written since `arm()` — read (and
     /// reset) by the server at dispatch-return to extend its own
     /// response deadline (Codex PR159 P1: each frame multiplied the
@@ -107,11 +125,11 @@ pub mod time_extension {
 
     /// Mains call this once at boot with their transport's raw write.
     pub fn register_writer(w: fn(&[u8])) {
-        *WRITER.lock().unwrap() = Some(w);
+        *lock(&WRITER) = Some(w);
     }
 
     pub fn writer_registered() -> bool {
-        WRITER.lock().unwrap().is_some()
+        lock(&WRITER).is_some()
     }
 
     /// Server-side: stash the in-flight XfrBlock identity and echo.
@@ -120,7 +138,7 @@ pub mod time_extension {
         ICC.store(icc, Ordering::SeqCst);
         ECHO_FLUSHED.store(false, Ordering::SeqCst);
         EXTENSIONS_WRITTEN.store(0, Ordering::SeqCst);
-        let mut slot = ECHO.lock().unwrap();
+        let mut slot = lock(&ECHO);
         let n = echo.len().min(slot.1.len());
         slot.1[..n].copy_from_slice(&echo[..n]);
         slot.0 = n;
@@ -143,12 +161,12 @@ pub mod time_extension {
         if !ARMED.load(Ordering::SeqCst) {
             return;
         }
-        let writer = match *WRITER.lock().unwrap() {
+        let writer = match *lock(&WRITER) {
             Some(w) => w,
             None => return,
         };
         if !ECHO_FLUSHED.swap(true, Ordering::SeqCst) {
-            let slot = ECHO.lock().unwrap();
+            let slot = lock(&ECHO);
             writer(&slot.1[..slot.0]);
         }
         let mut frame = [0u8; FRAME_SIZE];
@@ -184,6 +202,74 @@ pub mod time_extension {
         out[12] = 0; // bClockStatus + RFU
         out[FRAME_SIZE - 1] = calculate_lrc(&out[..FRAME_SIZE - 1]);
         FRAME_SIZE
+    }
+
+    // 2026-10-17 quality survey: the serve path must survive a
+    // poisoned mutex. Guards here protect plain data a panic elsewhere
+    // cannot corrupt; `.lock().unwrap()` turned that poison into a
+    // serve-task panic (the stall hook runs inside the exchange
+    // collect loop).
+    #[cfg(test)]
+    mod poison_tests {
+        use super::*;
+
+        static CAP: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+        fn capture(b: &[u8]) {
+            CAP.lock().unwrap().extend_from_slice(b);
+        }
+
+        fn poison(m: &Mutex<impl Sized>) {
+            let prev = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let _ = std::panic::catch_unwind(|| {
+                let _g = m.lock().unwrap();
+                panic!("deliberate poison");
+            });
+            std::panic::set_hook(prev);
+        }
+
+        #[test]
+        fn poisoned_writer_lock_does_not_panic_the_serve_path() {
+            let _bridge = TEST_LOCK.lock().unwrap();
+            poison(&WRITER);
+            assert!(WRITER.is_poisoned(), "test precondition");
+
+            // every serve-path entry must survive the poisoned lock
+            register_writer(capture);
+            assert!(writer_registered());
+
+            CAP.lock().unwrap().clear();
+            ARMED.store(false, Ordering::SeqCst);
+            arm(0x33, 0x00, &[0x03, 0x00, 0x15, 0x16]);
+            stall_hook(0);
+            let emitted = disarm_and_take_emitted();
+            let cap = CAP.lock().unwrap();
+            assert_eq!(emitted, 1, "one interim frame written");
+            assert_eq!(
+                cap.len(),
+                4 + FRAME_SIZE,
+                "4-byte echo + interim frame on the wire"
+            );
+        }
+
+        #[test]
+        fn poisoned_echo_lock_does_not_panic_the_hook() {
+            let _bridge = TEST_LOCK.lock().unwrap();
+            poison(&ECHO);
+            assert!(ECHO.is_poisoned(), "test precondition");
+
+            register_writer(capture);
+            CAP.lock().unwrap().clear();
+            ARMED.store(false, Ordering::SeqCst);
+            arm(0x2A, 0x00, &[0x01, 0x02]);
+            stall_hook(0);
+            let emitted = disarm_and_take_emitted();
+            assert_eq!(emitted, 1);
+            assert!(
+                !CAP.lock().unwrap().is_empty(),
+                "hook completed and wrote despite poison"
+            );
+        }
     }
 }
 
@@ -1721,7 +1807,7 @@ mod tests {
         /// statics) is production-global — tests that clear CAPTURED,
         /// arm, fire the hook, and assert on shared state must not
         /// interleave under Cargo's parallel test threads.
-        static TEST_LOCK: Mutex<()> = Mutex::new(());
+        use super::time_extension::TEST_LOCK;
 
         fn capture(bytes: &[u8]) {
             CAPTURED.lock().unwrap().push(bytes.to_vec());

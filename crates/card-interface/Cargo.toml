@@ -1,5 +1,6 @@
 [package]
 name = "card-interface"
+rust-version = "1.98"
 version = "0.1.0"
 edition = "2021"
 description = "Shared card backend trait for CCID reader firmware"

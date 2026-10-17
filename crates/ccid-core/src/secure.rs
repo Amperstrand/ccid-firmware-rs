@@ -429,6 +429,15 @@ impl PinBuffer {
     /// Clear the buffer
     pub fn clear(&mut self) {
         for d in self.digits.iter_mut() {
+            // SAFETY: `d` is a live, uniquely-borrowed `&mut u8` into
+            // `self.digits` — `write_volatile(d, 0)` writes an in-bounds,
+            // initialized `u8` (no validity hazard). The VOLATILE is the
+            // point: a plain `*d = 0` on memory about to become dead is
+            // a store the optimizer is free to elide entirely
+            // (dead-store elimination), silently keeping the user's PIN
+            // in RAM after "clear". Volatile stores have no such
+            // elision license — the zeroization survives compilation.
+            // CCID Rev 1.1 §6.1.11 PINVERIFY/Modify PIN-buffer hygiene.
             unsafe {
                 core::ptr::write_volatile(d, 0);
             }
@@ -472,8 +481,14 @@ impl PinBuffer {
 
 impl Drop for PinBuffer {
     fn drop(&mut self) {
-        // Securely clear the buffer
+        // Securely clear the buffer (same write_volatile contract as
+        // [`PinBuffer::clear`] — see its SAFETY comment; the Drop arm
+        // is the one that must survive dead-store elimination, since
+        // the buffer is definitionally dead here).
         for d in self.digits.iter_mut() {
+            // SAFETY: in-bounds, initialized `u8` target behind a
+            // unique borrow; volatile keeps the zeroize from being
+            // optimized out as a dead store on drop.
             unsafe {
                 core::ptr::write_volatile(d, 0);
             }
