@@ -23,10 +23,14 @@ License: GPL-2.0-or-later
 
 ## Workspace Layout
 
-Root `Cargo.toml` is a pure workspace manifest (no `[package]`). The build target
-defaults to `thumbv7em-none-eabihf` via `.cargo/config.toml` — this is correct
-for STM32 but means ESP32 commands must be run from `firmware/esp32-ccid/` or
-with an explicit target override.
+Root `Cargo.toml` is a pure workspace manifest (no `[package]`). `.cargo/config.toml`
+sets NO default build target (only per-target runner/rustflags) — every STM32
+build/objcopy invocation must pass `--target thumbv7em-none-eabihf` explicitly.
+(2026-10-16 lesson, #210: this file used to claim the target was defaulted;
+because it is not, CI `cargo objcopy` compiled the bin for the HOST triple and
+every uploaded firmware artifact was a host-ELF dump until the flags landed.)
+ESP32 commands must be run from `firmware/esp32-ccid/` or with an explicit
+target override.
 
 ```
 ccid-firmware-rs/
@@ -846,6 +850,33 @@ disable when idle per the nucula row above.
   `espup install -c 14.2.0_20260121 -v 1.98.1.0` per the pin above.
 - hil-bench nightly was disabled for the session day and re-enabled
   (verified active) at close.
+
+### Bench state delta (2026-10-17 session — #193 display hardware verification)
+
+- **The F469 ST-LINK (066FFF515786534867184152) is REATTACHED** — the
+  2026-10-14 "DETACHED" delta below is stale. Both `stm32f469-stlink`
+  (SerialPort) and `stm32f469-ccid` (USBDevice 046a:003e/ST2XXX-001)
+  resources live on the exporter; place is `stm32-ccid` as before.
+- **The board RUNS the display image** (main @ 6526f93 + `display`
+  feature, sha256 2766424…, flashed 2026-10-17 ~00:5x via
+  `stm32_flash.flash_f469`) — bench-verified strictly additive: same
+  USB identity, byte-exact ATR vs baseline, CPLC 9000, Escape 0xD0
+  sane. Full RTT boot evidence (SDRAM/DSI/NT35510-default/FT6X06 lines)
+  in issue #193's hardware comment; evidence file at
+  `~/src/worktrees/ccid-firmware-rs/193-display-hil/.omo/evidence/`
+  on .208 (worktree retained until #193's owner-eyes LCD check closes).
+  Known anomaly candidates there: NT35510 DSI read probe fails →
+  driver defaults (owner eyes decide if the panel renders), and
+  Escape 0xD0 `apdu_tx=0` despite card exchanges.
+- **The 03:29 nightly run failed on `ref-acr1252: absent`** — the
+  ACR1252 was physically off the bench at 03:29, replugged by morning
+  (exporter `avail: True` again). Everything STM32 passed; the board
+  was NOT reflashed by the nightly. Per #183 doctrine an absent
+  reference reader should be an amber skip, not suite red — candidate
+  follow-up in the drift layer (#234/#237).
+- Overnight 2026-10-16→17 waves (PRs ~#211–#237) fixed the pn532 CI
+  break (68b9361, issue #211 closed) and landed the STATUS drift layer;
+  main was green through ci-ok at 4fc1982 by afternoon.
 
 ### Recovery events (2026-10-09, all resolved)
 
