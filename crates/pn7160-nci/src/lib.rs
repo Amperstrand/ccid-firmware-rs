@@ -1937,10 +1937,12 @@ mod tests {
             stall_ms < budget_ms,
             "first stall report ({stall_ms} ms) must precede budget exhaustion"
         );
-        assert!(
+        // Compile-time arm (const block — clippy::assertions_on_constants:
+        // both operands are consts; a plain assert! would just test a
+        // literal at runtime).
+        const _: () = assert!(
             reader::STALL_REPORT_MS < 3000,
-            "first stall report ({} ms) must precede the host 3 s window",
-            reader::STALL_REPORT_MS
+            "first stall report must precede the host 3 s window"
         );
         // (4) The budget composes with extension frames: one interim
         // frame at the stall cadence, host multiplies its read window

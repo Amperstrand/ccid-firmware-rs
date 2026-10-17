@@ -1,0 +1,42 @@
+# Supply-chain gate (research 2026-10-17): cargo-deny over the root
+# workspace — RUSTSEC advisories, license allow-list (exact surface of
+# the current tree), duplicate-version trend, and source pinning
+# (crates.io + the five deliberate git pins). Config: deny.toml.
+
+name: Deny
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/deny.yml"
+  pull_request:
+    paths:
+      - "Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/deny.yml"
+  schedule:
+    # weekly: the advisory DB moves even when manifests don't
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      # submodules REQUIRED (AGENTS Gotcha): the [patch.crates-io]
+      # synopsys-usb-otg entry breaks cargo metadata on an empty
+      # vendor/ checkout — first CI run failed exactly there.
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: cargo-deny (advisories, licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2

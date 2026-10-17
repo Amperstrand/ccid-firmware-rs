@@ -3,6 +3,10 @@ name = "ccid-host-tools"
 version = "0.1.0"
 edition = "2021"
 description = "Host-side PC/SC smoke tests for CCID firmware"
+# Every workspace member declares this except this one (found by the
+# 2026-10-17 cargo-deny gate: ccid-host-tools was "unlicensed" to the
+# supply-chain check while all seven siblings carried the field).
+license = "GPL-2.0-or-later"
 
 [dependencies]
 pcsc = "2.9"
