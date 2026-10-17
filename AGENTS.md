@@ -448,7 +448,8 @@ carries its reason.
 3. **1.94.1** — upstream-fips alignment, on-demand only.
 
 Nightly exception: instrumented fuzzing legs (micronuts
-`fuzz-nightly.yml`) — structural, documented in place. Bench .208 now
+`fuzz-nightly.yml`, ccid `fuzz-nightly.yml` — 2026-10-17, mirrors the
+fleet pattern) — structural, documented in place. Bench .208 now
 carries exactly: `stable`, `1.99.0`, `esp` (11.5 GB of dead toolchains
 removed: 1.92, 1.92.0, 1.94.1, 1.97.1, 1.98.1-stable,
 nightly-2026-09-29; 1.94.1/1.97.1 auto-restore from their checkouts'
@@ -516,6 +517,7 @@ ESP build.
 | `esp32-host-test` | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
 | `iso14443-host-test` | Vendored iso14443 crate tests | `cargo test --features std --target x86_64-unknown-linux-gnu` (from `vendor/iso14443-rs/`) |
 | `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) + ruff correctness lint (F+E9, `ruff.toml`) + stdlib unit tests for scripts | `ruff check scripts tests/hardware host-tools`; `python3 scripts/test_gen_status.py`; `python3 -m pytest tests/hardware/ --collect-only -q` |
+| `crates-lint` | Quality blind-spot closer (2026-10-17): the three members NO other job clippy'd (pn7160-nci, ccid-pcsc-host, ccid-host-tools) + pn7160-nci's never-compiled no_std cfg | `cargo check -p pn7160-nci --no-default-features`; `cargo clippy -p pn7160-nci -p ccid-pcsc-host -p ccid-host-tools -- -D warnings` |
 
 **Why `python-collect` exists** (found live 2026-10-11): a duplicate
 `--hil` `addoption` in `labgrid/conftest.py` made every combined-suite

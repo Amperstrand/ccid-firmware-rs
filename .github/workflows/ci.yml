@@ -750,6 +750,7 @@ jobs:
         run: |
           python3 scripts/test_gen_status.py
           python3 scripts/test_status_rollup.py
+          python3 scripts/test_status_drift.py
       - name: Collect tests/hardware (exit-code discipline)
         run: |
           set +e
@@ -833,6 +834,46 @@ jobs:
       - name: Run ESP32 host-side tests (backend-pn7160)
         run: cargo test --target x86_64-unknown-linux-gnu --no-default-features --features backend-pn7160
 
+  crates-lint:
+    # Quality blind-spot closer (research 2026-10-17): three root-workspace
+    # members were NEVER clippy'd by any job — stm32-lint operates on
+    # default-members (ccid-firmware + its dep closure only) and
+    # esp32-host-test's clippy step runs default features, skipping the
+    # feature-gated pn7160-nci dep. host-tools/ccid-pcsc-host sit in no
+    # clippy'd graph at all. This job pins all three at zero warnings, and
+    # compiles pn7160-nci's no_std configuration — the crate advertises
+    # no_std (bolty-rs consumes it embedded) but every other build rides
+    # std, so the cfg_attr(no_std) path was compiled nowhere.
+    needs: changes
+    if: needs.changes.outputs.stm32 == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          targets: x86_64-unknown-linux-gnu
+          components: clippy
+
+      # ccid-pcsc-host links the system pcsc lib at build time
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: pn7160-nci no_std check (embedded-consumer contract)
+        run: cargo check -p pn7160-nci --no-default-features --target x86_64-unknown-linux-gnu
+
+      - name: Clippy (never-linted trio, zero warnings)
+        run: cargo clippy -p pn7160-nci -p ccid-pcsc-host -p ccid-host-tools --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
   ci-ok:
     # Required-check aggregator for branch protection: tier-gated legs skip
     # as SUCCESS (job-level if), so this one stable job name — not the
@@ -855,6 +896,7 @@ jobs:
       - python-collect
       - esp32-build
       - esp32-host-test
+      - crates-lint
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:

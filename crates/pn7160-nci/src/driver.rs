@@ -1254,7 +1254,6 @@ mod tests {
                 if probe_rsp_ok { STATUS_OK } else { 0x05 },
             ]);
 
-            let probe_writes;
             for _ in 0..(PRESENCE_REARM_POLLS as usize
                 + REARM_RSP_POLLS as usize
                 + REARM_NTF_POLLS as usize
@@ -1263,7 +1262,7 @@ mod tests {
                 drv.is_card_present();
             }
             let t = drv.transport_mut();
-            probe_writes = t
+            let probe_writes = t
                 .sent
                 .iter()
                 .filter(|f| f.len() >= 2 && f[0] == MT_CMD | GID_RF && f[1] == OID_RF_DISCOVER)

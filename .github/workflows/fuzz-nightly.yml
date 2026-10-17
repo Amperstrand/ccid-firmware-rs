@@ -1,0 +1,70 @@
+# Nightly bounded fuzz runs for the three committed cargo-fuzz targets
+# (fuzz_atr_parse, fuzz_serial_frame_parser, fuzz_nci_frame_decode —
+# mirrors the micronuts fuzz-nightly.yml fleet pattern). Bounded by
+# -max_total_time so a nightly costs minutes, not hours; crash
+# artifacts are uploaded on failure. Manual legs any time via
+# workflow_dispatch.
+#
+# Toolchain note: nightly is the fleet's ONE documented exception class
+# (AGENTS.md "instrumented fuzzing legs" — cargo-fuzz needs
+# -Zsanitizer). Do NOT spread nightly to any other job.
+
+name: Fuzz Nightly
+
+on:
+  schedule:
+    - cron: "41 3 * * *" # 03:41 UTC — staggered off hil-bench (03:17)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_atr_parse
+          - fuzz_serial_frame_parser
+          - fuzz_nci_frame_decode
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Fuzz (bounded 120s)
+        working-directory: fuzz
+        run: |
+          set +e
+          # --target gnu: cargo-fuzz's musl default is ASan-incompatible
+          # (statically linked libc) and not preinstalled on the runner.
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=120 -timeout=10
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::group::fuzz artifacts"
+            ls -la artifacts/ crash-* timeout-* leak-* oom-* 2>/dev/null || true
+            echo "::endgroup::"
+          fi
+          exit $rc
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts
+            fuzz/crash-*
+            fuzz/timeout-*
+            fuzz/leak-*
+            fuzz/oom-*
+          if-no-files-found: ignore
