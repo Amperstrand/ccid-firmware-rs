@@ -1838,10 +1838,15 @@ mod tests {
         );
         // (4) The budget composes with extension frames: one interim
         // frame at the stall cadence, host multiplies its read window
-        // by bError ≥ 2 (commands.c:1598 readTimeout *= bError; our
-        // BWT_UNIT_MULTIPLIER=2 ⇒ 3 s × 2 = 6 s) — budget + one stall
-        // cadence must fit inside ONE extended window.
-        let extended_window_ms: u64 = 3000 * 2;
+        // by the emitted bError (commands.c:1598 readTimeout *= bError;
+        // our wire multiplier lives in ccid_serial_server
+        // time_extension::BWT_UNIT_MULTIPLIER = 2, byte-locked by
+        // interim_frame_bytes_reference_locked) — budget + one stall
+        // cadence must fit inside ONE extended window. This mirror must
+        // track that constant: if the wire multiplier changes, change
+        // this arm in the same commit (Codex P2 on #229).
+        const EXTENSION_MULTIPLIER_MIRROR: u64 = 2;
+        let extended_window_ms: u64 = 3000 * EXTENSION_MULTIPLIER_MIRROR;
         assert!(
             budget_ms + reader::STALL_REPORT_MS as u64 <= extended_window_ms,
             "budget + one stall cadence must fit one extended host window"

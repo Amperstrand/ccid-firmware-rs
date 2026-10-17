@@ -239,6 +239,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     server: &mut esp32_ccid::ccid_serial_server::CcidSerialServer<D>,
     byte: u8,
     arrival_floor: u32,
+    on_response_extra: &mut impl FnMut(),
 ) {
     use esp32_ccid::ccid_serial_server::ServeAction;
 
@@ -288,6 +289,12 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
                 panic!("escape 0xD1: diagnostic snapshot requested");
             }
             server.poll_if_due_after_response(unsafe { esp_idf_sys::xTaskGetTickCount() });
+            // #163 (Codex P2 on #231): under continuous traffic (< the
+            // 500 ms read timeout between commands) the read-idle arm
+            // never fires, so ble builds would never drain. Post-response
+            // the wire is quiet from our side — same safe point the
+            // presence poll uses.
+            on_response_extra();
         }
         ServeAction::Nak => {
             write_all_logged(uart, server.nak_frame());
@@ -384,13 +391,25 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
                 // advancing per drain-read overstated arrivals that
                 // queued mid-burst).
                 let pre_dispatch = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                serve_byte(uart, &mut server, byte_buf[0], read_start);
+                serve_byte(
+                    uart,
+                    &mut server,
+                    byte_buf[0],
+                    read_start,
+                    &mut on_read_idle_extra,
+                );
                 loop {
                     match uart.read(&mut drain_buf, drain_ticks) {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             for &b in &drain_buf[..n] {
-                                serve_byte(uart, &mut server, b, pre_dispatch);
+                                serve_byte(
+                                    uart,
+                                    &mut server,
+                                    b,
+                                    pre_dispatch,
+                                    &mut on_read_idle_extra,
+                                );
                             }
                         }
                     }
