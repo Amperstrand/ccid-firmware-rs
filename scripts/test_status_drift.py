@@ -20,7 +20,6 @@ _spec.loader.exec_module(drift)
 class StampParsingTests(unittest.TestCase):
     def test_extracts_the_verified_commit(self):
         # The nightly's exact stamp shape (gen_status.py render):
-        st = Path("/dev/null")
         self.assertEqual(
             drift.STAMP_RE.search(
                 "Verified: 2026-10-17T03:31:18Z @ `0f45f31743e9` — `bench_inventory.py`"
