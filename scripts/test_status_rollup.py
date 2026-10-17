@@ -8,8 +8,11 @@ and the anti-spam digest posts ONLY on outcome changes (stamps excluded).
 """
 
 import importlib.util
+import json
+import re
 import sys
 import unittest
+import urllib.request
 from pathlib import Path
 
 _SRC = Path(__file__).resolve().parent / "status_rollup.py"
@@ -101,6 +104,84 @@ class MainDryRunTests(unittest.TestCase):
             )
             self.assertEqual(r.returncode, 0)
             self.assertIn("DRY RUN #167", r.stdout)
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return json.dumps(self._payload).encode()
+
+
+class FetchLastRollupPaginationTests(unittest.TestCase):
+    """Codex P2 on #226/#227: comments are per_page-capped at 100 and
+    ordered ascending by id — the digest comparison must run against the
+    NEWEST comment, i.e. the last one on the LAST page, not
+    comments[-1] of page 1 (which is permanently the 100th comment
+    once an issue crosses 100)."""
+
+    def _install_fake(self, pages):
+        calls = []
+
+        def fake_urlopen(req, timeout=30):
+            url = req.full_url
+            calls.append(url)
+            # not split("page="): per_page= would match first
+            page_no = int(re.search(r"[?&]page=(\d+)", url).group(1))
+            return _FakeResponse(pages[page_no - 1])
+
+        real_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        self.addCleanup(setattr, urllib.request, "urlopen", real_urlopen)
+        return calls
+
+    def test_multi_page_issue_reads_the_last_comment_of_the_last_page(self):
+        page1 = [{"id": i, "body": f"old {i}"} for i in range(100)]
+        newest = "the actual newest rollup body"
+        page2 = [
+            {"id": 100, "body": "older tail"},
+            {"id": 101, "body": newest},
+        ]
+        calls = self._install_fake([page1, page2])
+
+        body = rollup.fetch_last_rollup("x/y", "183", "tok")
+
+        self.assertEqual(body, newest)
+        self.assertEqual(len(calls), 2, "walked to the second (short) page")
+        self.assertIn("page=1", calls[0])
+        self.assertIn("page=2", calls[1])
+
+    def test_single_page_issue_makes_one_request(self):
+        one_page = [{"id": 1, "body": "only comment"}]
+        calls = self._install_fake([one_page])
+
+        body = rollup.fetch_last_rollup("x/y", "183", "tok")
+
+        self.assertEqual(body, "only comment")
+        self.assertEqual(len(calls), 1, "short page terminates the walk")
+
+    def test_empty_issue_returns_none_after_first_page(self):
+        calls = self._install_fake([[]])
+
+        self.assertIsNone(rollup.fetch_last_rollup("x/y", "183", "tok"))
+        self.assertEqual(len(calls), 1)
+
+    def test_fetch_error_degrades_to_none_still_posts(self):
+        def broken_urlopen(req, timeout=30):
+            raise OSError("network down")
+
+        real_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = broken_urlopen
+        self.addCleanup(setattr, urllib.request, "urlopen", real_urlopen)
+
+        self.assertIsNone(rollup.fetch_last_rollup("x/y", "183", "tok"))
 
 
 if __name__ == "__main__":
