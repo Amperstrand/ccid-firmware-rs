@@ -770,7 +770,7 @@ pub mod reader {
     /// Collect rounds per exchange: 12 × 200 ms ≈ 2.4 s, under the
     /// serial host's 3 s read timeout (libccidtwin
     /// DEFAULT_COM_READ_TIMEOUT, reference/CCID/src/defs.h:76).
-    const DATA_COLLECT_ROUNDS: usize = 12;
+    pub(crate) const DATA_COLLECT_ROUNDS: usize = 12;
 
     /// Nominal wait per collect round (host mocks make `wait_ms` a
     /// no-op, so elapsed is tracked as rounds × this value).
@@ -781,7 +781,7 @@ pub mod reader {
     /// comfortably inside libccidtwin's 3 s DEFAULT_COM_READ_TIMEOUT,
     /// so an interim CCID time-extension frame always reaches the host
     /// before its select() expires.
-    const STALL_REPORT_MS: u32 = 1500;
+    pub(crate) const STALL_REPORT_MS: u32 = 1500;
 
     /// Strict-RSP collect budget for [`transact_strict`]: 20 polls ×
     /// 10 ms = 200 ms — parity with the firmware I2C transport's
@@ -1782,6 +1782,57 @@ mod tests {
         assert_eq!(outcome, reader::ExchangeOutcome::Timeout);
         assert_eq!(CALLS.load(Ordering::SeqCst), 1, "single emission in 2.4 s");
         assert_eq!(LAST.load(Ordering::SeqCst), 1600, "round 8 × 200 ms");
+    }
+
+    // GREAT EXPECTATION (#156 timing contract): the DH-side WTX bound's
+    // arithmetic, locked so a budget bump cannot silently cross the
+    // host windows it exists to respect. Breaking any arm of this test
+    // requires re-verifying against the cited references BEFORE
+    // changing the constants — do not "fix" the test to match new
+    // numbers.
+    #[test]
+    fn data_collect_budget_respects_host_windows() {
+        let budget_ms = reader::DATA_COLLECT_ROUNDS as u64 * reader::DATA_COLLECT_WAIT_MS;
+        // (1) Worst-case exchange fits the serial host's flat 3 s read
+        // window (libccidtwin DEFAULT_COM_READ_TIMEOUT,
+        // reference/CCID/src/defs.h:76) with margin — the #151 killer
+        // was a 13 s stall against exactly this 3 s.
+        assert!(
+            budget_ms < 3000,
+            "budget {budget_ms} ms must stay under the 3 s host window"
+        );
+        // (2) The #156 acceptance bound: worst-case XfrBlock answer
+        // ≤ 2.5 s (issue #156 "Acceptance"; also the pre-#204
+        // answer-or-silence tight window).
+        assert!(
+            budget_ms <= 2500,
+            "budget {budget_ms} ms exceeds the 2.5 s acceptance bound"
+        );
+        // (3) At least one stall hook firing fits inside ANY timed-out
+        // exchange, so an interim CCID time-extension frame (CCID Rev
+        // 1.1 §6.1.4) always reaches the host before its select()
+        // expires — the first report must land strictly before both the
+        // budget AND the flat 3 s window.
+        let stall_ms = reader::STALL_REPORT_MS as u64;
+        assert!(
+            stall_ms < budget_ms,
+            "first stall report ({stall_ms} ms) must precede budget exhaustion"
+        );
+        assert!(
+            reader::STALL_REPORT_MS < 3000,
+            "first stall report ({} ms) must precede the host 3 s window",
+            reader::STALL_REPORT_MS
+        );
+        // (4) The budget composes with extension frames: one interim
+        // frame at the stall cadence, host multiplies its read window
+        // by bError ≥ 2 (commands.c:1598 readTimeout *= bError; our
+        // BWT_UNIT_MULTIPLIER=2 ⇒ 3 s × 2 = 6 s) — budget + one stall
+        // cadence must fit inside ONE extended window.
+        let extended_window_ms: u64 = 3000 * 2;
+        assert!(
+            budget_ms + reader::STALL_REPORT_MS as u64 <= extended_window_ms,
+            "budget + one stall cadence must fit one extended host window"
+        );
     }
 
     // given a late APDU DATA packet and advisories are pending ahead of
