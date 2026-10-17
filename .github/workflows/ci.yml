@@ -750,6 +750,7 @@ jobs:
         run: |
           python3 scripts/test_gen_status.py
           python3 scripts/test_status_rollup.py
+          python3 scripts/test_status_drift.py
       - name: Collect tests/hardware (exit-code discipline)
         run: |
           set +e
