@@ -310,6 +310,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
 fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
     uart: &UartDriver,
     handler: esp32_ccid::ccid_handler::CcidHandler<D>,
+    mut on_read_idle_extra: impl FnMut(),
 ) -> ! {
     use esp32_ccid::ccid_serial_server::CcidSerialServer;
 
@@ -396,9 +397,14 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
                 }
             }
             _ => {
-                // Read idle: abandon any partial frame, background poll.
+                // Read idle: abandon any partial frame, background poll,
+                // plus the caller's idle extra (ble builds pump the NUS
+                // log queue here — the safe drain point; #163: the UART
+                // main never drained, so a connected central got neither
+                // the attach banner nor history).
                 let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
                 server.on_read_idle(now);
+                on_read_idle_extra();
             }
         }
     }
@@ -489,7 +495,7 @@ fn main() {
         esp32_ccid::frontend::RetryFrontend::degraded(pn532_driver)
     };
 
-    serve_uart(&uart, CcidHandler::new(frontend));
+    serve_uart(&uart, CcidHandler::new(frontend), || {});
 }
 
 #[cfg(all(
@@ -748,7 +754,22 @@ fn main() {
     #[cfg(feature = "spp")]
     esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
     #[cfg(not(feature = "spp"))]
-    serve_uart(&uart, CcidHandler::new(frontend));
+    {
+        // #163: ble builds pump the NUS log queue at every read-idle —
+        // the safe drain point (no pending CCID response can be delayed).
+        #[cfg(feature = "ble")]
+        let mut console_for_drain = ble_console.as_ref();
+        #[cfg(feature = "ble")]
+        let idle = move || {
+            if let Some(console) = console_for_drain.take() {
+                console.drain();
+                console_for_drain = Some(console);
+            }
+        };
+        #[cfg(not(feature = "ble"))]
+        let idle = || {};
+        serve_uart(&uart, CcidHandler::new(frontend), idle);
+    }
 }
 
 #[cfg(any(

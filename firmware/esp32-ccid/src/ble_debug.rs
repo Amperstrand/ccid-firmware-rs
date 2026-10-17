@@ -210,8 +210,49 @@ mod imp {
             if let BleGapEvent::ScanResponseConfigured(status) = event {
                 self.check_bt_status(status)?;
                 println!("ble: adv + scan rsp configured — starting advertising");
-                if let Err(e) = self.gap.start_advertising() {
-                    println!("ble: start_advertising FAILED: {e}");
+                // Static-random address set HERE, not at bring-up: the
+                // bench-verified bring-up-time call returns rc=0 but the
+                // controller reports "No random address yet" at adv start
+                // (AdvertisingStarted status=InvalidParam) — the stack is
+                // not ready to accept it before the GATT chain runs. HCI
+                // commands serialize, so the random-address write completes
+                // before the adv-start is processed (the ESP-IDF ibeacon
+                // example uses the same set-then-start sequence).
+                // ESP-IDF bd_addr arrays are MSB-FIRST (displayed order,
+                // bench-verified: the reversed order drew
+                // "BT_BTC: Invalid random address type" — the controller
+                // checks the FIRST array byte for the static-random top
+                // bits). Static random: MSB top bits 11; per-board tails
+                // from each board's public address.
+                #[cfg(target_arch = "xtensa")]
+                const BLE_RANDOM_ADDR: [u8; 6] = [0xC4, 0x75, 0x25, 0xCB, 0x92, 0x9E];
+                // displayed C4:75:25:CB:92:9E (m5stick tail)
+                #[cfg(target_arch = "riscv32")]
+                const BLE_RANDOM_ADDR: [u8; 6] = [0xD4, 0xDA, 0x72, 0x9A, 0x50, 0x18];
+                // displayed D4:DA:72:9A:50:18 (nucula tail)
+                let mut rand_addr = BLE_RANDOM_ADDR;
+                let rc = unsafe { esp_idf_sys::esp_ble_gap_set_rand_addr(rand_addr.as_mut_ptr()) };
+                if rc != 0 {
+                    println!("ble: set_rand_addr FAILED: esp_err={rc}");
+                }
+                // esp-idf-svc's start_advertising hardcodes
+                // own_addr_type = PUBLIC (esp-idf-svc 0.53 gap.rs:1082, a
+                // literal TODO) — our static-random address would never be
+                // used. Same params as the svc call, but own_addr_type =
+                // RANDOM (BLE_ADDR_TYPE_RANDOM = 0x01, esp_bt_defs.h).
+                let mut adv_param = esp_idf_sys::esp_ble_adv_params_t {
+                    adv_int_min: 0x20,
+                    adv_int_max: 0x40,
+                    adv_type: 0x00,      // ADV_TYPE_IND
+                    own_addr_type: 0x01, // BLE_ADDR_TYPE_RANDOM
+                    peer_addr: [0; 6],
+                    peer_addr_type: 0x00,    // BLE_ADDR_TYPE_PUBLIC
+                    channel_map: 0x07,       // ADV_CHNL_ALL
+                    adv_filter_policy: 0x00, // ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
+                };
+                let rc2 = unsafe { esp_idf_sys::esp_ble_gap_start_advertising(&mut adv_param) };
+                if rc2 != 0 {
+                    println!("ble: start_advertising FAILED: esp_err={rc2}");
                 }
             }
 

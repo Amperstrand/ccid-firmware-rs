@@ -70,6 +70,11 @@ impl BleConsole {
             "EspBleGap",
             EspBleGap::new(driver.clone()),
         )?);
+        // The static-random BLE address (the #163 dual-address-trap fix)
+        // is set in ble_debug's ScanResponseConfigured arm, immediately
+        // before the raw adv-start with own_addr_type=RANDOM — a
+        // bring-up-time call returns rc=0 but does not stick (the stack
+        // is not ready; bench-verified 2026-10-16).
         let gatts = Arc::new(unwrap_or_report("EspGatts", EspGatts::new(driver.clone()))?);
         let server = BleDebugServer::new(gap, gatts);
         unwrap_or_report("subscribe", server.subscribe())?;
