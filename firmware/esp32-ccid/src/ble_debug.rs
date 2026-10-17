@@ -161,6 +161,20 @@ mod imp {
             delivered
         }
 
+        /// On-target identity source: this chip's factory BT MAC with
+        /// the static-random top bits forced (see
+        /// [`crate::ble_addr::static_random_from_mac`])..
+        fn static_random_address() -> [u8; 6] {
+            let mut mac = [0u8; 6];
+            let rc = unsafe {
+                esp_idf_sys::esp_read_mac(mac.as_mut_ptr(), esp_idf_sys::esp_mac_type_t_ESP_MAC_BT)
+            };
+            if rc != 0 {
+                println!("ble: esp_read_mac(BT) FAILED: esp_err={rc} — advertising with zero MAC");
+            }
+            crate::ble_addr::static_random_from_mac(mac)
+        }
+
         fn on_gap_event(&self, event: BleGapEvent) -> Result<(), EspError> {
             // #165 diagnostic: print the REAL BtStatus (Debug) per
             // advertising event — `check_bt_status` collapses every
@@ -222,15 +236,16 @@ mod imp {
                 // bench-verified: the reversed order drew
                 // "BT_BTC: Invalid random address type" — the controller
                 // checks the FIRST array byte for the static-random top
-                // bits). Static random: MSB top bits 11; per-board tails
-                // from each board's public address.
-                #[cfg(target_arch = "xtensa")]
-                const BLE_RANDOM_ADDR: [u8; 6] = [0xC4, 0x75, 0x25, 0xCB, 0x92, 0x9E];
-                // displayed C4:75:25:CB:92:9E (m5stick tail)
-                #[cfg(target_arch = "riscv32")]
-                const BLE_RANDOM_ADDR: [u8; 6] = [0xD4, 0xDA, 0x72, 0x9A, 0x50, 0x18];
-                // displayed D4:DA:72:9A:50:18 (nucula tail)
-                let mut rand_addr = BLE_RANDOM_ADDR;
+                // bits). Static random: MSB top bits 11. The address is
+                // DERIVED from this chip's factory BT MAC (Codex P2 on
+                // #231): every unit gets a distinct on-air identity
+                // instead of one constant per architecture.
+                let mut rand_addr = Self::static_random_address();
+                println!(
+                    "ble: static-random addr {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X} (from factory MAC)",
+                    rand_addr[0], rand_addr[1], rand_addr[2],
+                    rand_addr[3], rand_addr[4], rand_addr[5],
+                );
                 let rc = unsafe { esp_idf_sys::esp_ble_gap_set_rand_addr(rand_addr.as_mut_ptr()) };
                 if rc != 0 {
                     println!("ble: set_rand_addr FAILED: esp_err={rc}");

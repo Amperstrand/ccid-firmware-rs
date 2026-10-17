@@ -140,6 +140,8 @@ pub mod ble_log_queue;
 /// the `spp` feature inside the module.
 pub mod spp_server;
 
+pub mod ble_addr;
+
 #[cfg(feature = "ble")]
 pub mod ble_debug;
 
