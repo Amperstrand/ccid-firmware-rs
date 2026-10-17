@@ -27,7 +27,7 @@ board-m5stick = []
 # NOTE: the PN7160 backend driver is a later phase; this feature only selects the
 # board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
 board-nucula = []
-backend-pn7160 = ["dep:pn7160-nci"]
+backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp"]
 pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
 # Bench network facilities — the surfaces an untrusted network must never
 # reach (#219, D-8): the TCP OTA flash server (:3232), the UDP netlog

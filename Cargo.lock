@@ -1521,7 +1521,11 @@ dependencies = [
 name = "pn7160-nci"
 version = "0.1.0"
 dependencies = [
+ "embedded-hal 1.0.0",
+ "esp-idf-hal",
+ "esp-idf-sys",
  "heapless 0.8.0",
+ "log",
 ]
 
 [[package]]

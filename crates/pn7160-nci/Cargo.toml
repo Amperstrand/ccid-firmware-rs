@@ -9,7 +9,19 @@ description = "no_std NCI protocol core for the PN7160 NFC controller (reader mo
 
 [dependencies]
 heapless = "0.8"
+# embedded-hal 1.0 traits are no_std + host-safe: unconditional so the
+# driver_ng adapter's pure mapping logic stays host-testable (#149 P3).
+embedded-hal = "1.0"
+
+# #149 P1: the bench-proven ESP32 transport (esp-idf FFI) behind an
+# opt-in feature — host/protocol consumers build none of it. Versions
+# match firmware/esp32-ccid exactly (one generation across the tree).
+[target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
+esp-idf-sys = { version = "0.38", optional = true, features = ["binstart"] }
+esp-idf-hal = { version = "0.47", optional = true }
+log = { version = "0.4", optional = true }
 
 [features]
 default = ["std"]
 std = []
+esp = ["dep:esp-idf-sys", "dep:esp-idf-hal", "dep:log"]
