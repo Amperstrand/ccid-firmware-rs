@@ -25,6 +25,10 @@ pins 1.94.1 per their README + release notes.
 - jmcorgan/fips bumps their `rust-toolchain.toml` → their new version becomes
   the aligned pin; nothing else moves.
 - A repo floats (`@stable`/`@v1` in CI) → that's a regression, not a decision.
+- **Toml-pinned repos MUST declare `components = ["rustfmt", "clippy"]`** in
+  the toml (D-1 amendment, 2026-10-16): dtolnay's action reads components
+  from the toml — not its input — on the toml-driven path; the omission
+  red-lined bolty's CI (all six fleet tomls fixed the same session).
 
 ## D-2: esp-idf-svc 0.53 / hal 0.47 generation (legacy-I2C lane closed)
 
