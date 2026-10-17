@@ -121,9 +121,37 @@ def main():
         return 2
     print(f"ATR: {atr.hex(' ')}")
 
+    def exchange_or_reconnect(sock_ref, apdu, label):
+        """Codex P2 on #232: a 0-length APDU answer is the vpcd.h
+        ICC-absent signal — the stock host driver EJECTS the reader and
+        reconnects (fresh ATR) rather than probing on. Model exactly
+        that: on b"" close the socket, accept the board's reconnect,
+        request ATR, and only then report. A board that answers empty
+        but then serves a FRESH ATR and clean exchanges is HEALED, not
+        wedged — the harness must not conflate the two."""
+        rsp = exchange(sock_ref[0], apdu, label)
+        if rsp == b"":
+            print(f"{label}: ICC-absent (0-length) — modeling the host "
+                  f"eject + reconnect")
+            sock_ref[0].close()
+            srv.settimeout(CONNECT_TIMEOUT_S)
+            try:
+                sock_ref[0], _ = srv.accept()
+            except socket.timeout:
+                print("no reconnect after ICC-absent — board did not "
+                      "re-attach (report this: worse than the wedge)")
+                return None
+            sock_ref[0].settimeout(IO_TIMEOUT_S)
+            send_msg(sock_ref[0], bytes([VPCD_CTRL_ATR]))
+            fresh = recv_msg(sock_ref[0])
+            print(f"reconnect ATR: {fresh.hex(' ') if fresh else fresh!r}")
+            return fresh
+        return rsp
+
+    sock_ref = [sock]
     clean = True
     for i in range(args.soak):
-        rsp = exchange(sock, CASE2_APDU, f"case2[{i}]")
+        rsp = exchange_or_reconnect(sock_ref, CASE2_APDU, f"case2[{i}]")
         if rsp is None or not rsp.endswith(b"\x90\x00"):
             print("baseline soak failed before the zero-data probe")
             clean = False
@@ -135,16 +163,16 @@ def main():
             print(f"NOTE: expected the card's 6700, got {rsp.hex(' ')}")
 
         for i in range(args.probes):
-            rsp = exchange(sock, CASE2_APDU, f"post[{i}]")
+            rsp = exchange_or_reconnect(sock_ref, CASE2_APDU, f"post[{i}]")
             if looks_like_wedge(rsp, atr):
                 print(f"WEDGE: post[{i}] served ATR bytes with garbage SW "
                       f"{rsp[-2:].hex(' ')}")
                 clean = False
 
-    send_msg(sock, bytes([VPCD_CTRL_ATR]))
-    atr2 = recv_msg(sock)
+    send_msg(sock_ref[0], bytes([VPCD_CTRL_ATR]))
+    atr2 = recv_msg(sock_ref[0])
     print(f"post-probe ATR: {atr2.hex(' ') if atr2 else atr2!r}")
-    sock.close()
+    sock_ref[0].close()
     srv.close()
     print("RESULT:", "CLEAN" if clean else "WEDGE SIGNATURE")
     return 0 if clean else 1

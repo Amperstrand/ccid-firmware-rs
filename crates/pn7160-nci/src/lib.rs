@@ -1012,25 +1012,35 @@ pub mod reader {
     /// queue several — any survivor lands in the next command's poll
     /// window (#101-class desync). The cap returns control on a chatty
     /// or wedged chip instead of looping forever.
-    pub fn drain_link<T: Transport>(t: &mut T) {
+    pub fn drain_link<T: Transport>(t: &mut T) -> usize {
+        let mut drained = 0usize;
         for _ in 0..DRAIN_LINK_CAP {
             if t.drain().is_none() {
-                return;
+                return drained;
             }
+            drained += 1;
         }
+        drained
     }
 
-    /// #170: teardown drain with a settle beat. The NFCC keeps honoring
+    /// #170: teardown drain with settle beats. The NFCC keeps honoring
     /// the card's WTX past the DH's exchange budget (bench 2026-10-13:
     /// a 13 s stall) — the late DATA response can land AFTER the drain
-    /// burst, queue-empty at that instant. Drain, wait one collect
-    /// round, drain again: a frame arriving during the settle is
-    /// consumed here instead of answering the NEXT command's poll
-    /// window.
+    /// burst, queue-empty at that instant. Repeat drain → wait one
+    /// collect round → drain until a full beat consumes NOTHING new
+    /// (Codex P1 on #232: one fixed beat cannot bound a long tail),
+    /// capped so a live-but-quiet link cannot pin the serve loop:
+    /// worst case `SETTLE_MAX_BEATS` × 200 ms.
+    pub const SETTLE_MAX_BEATS: usize = 3;
+
     pub fn settle_drain<T: Transport>(t: &mut T) {
-        drain_link(t);
-        t.wait_ms(DATA_COLLECT_WAIT_MS);
-        drain_link(t);
+        for _ in 0..SETTLE_MAX_BEATS {
+            drain_link(t);
+            t.wait_ms(DATA_COLLECT_WAIT_MS);
+            if drain_link(t) == 0 {
+                break;
+            }
+        }
     }
 
     /// Deactivate to idle, then consume the DEACTIVATE notification —
@@ -1877,6 +1887,27 @@ mod tests {
             chatty.drained,
             reader::DRAIN_LINK_CAP,
             "cap bounds a chatty chip"
+        );
+    }
+
+    #[test]
+    fn settle_drain_runs_multiple_beats_until_a_quiet_one() {
+        // Codex P1 on #232: a single fixed beat cannot bound a long
+        // tail. Two late frames (one per wait) must both be consumed,
+        // and the loop must then EXIT on the first fully-quiet beat —
+        // never running the full cap on an already-quiet link.
+        let mut t = mock::MockTransport::new();
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x67, 0x00]);
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x90, 0x00]);
+        reader::settle_drain(&mut t);
+        assert_eq!(t.drained, 2, "both late frames consumed");
+        assert!(
+            t.waited_ms >= 2 * reader::DATA_COLLECT_WAIT_MS,
+            "at least two settle beats ran"
+        );
+        assert!(
+            t.waited_ms < (reader::SETTLE_MAX_BEATS as u64 + 1) * reader::DATA_COLLECT_WAIT_MS,
+            "bounded: exits on the first quiet beat, not the cap"
         );
     }
 
