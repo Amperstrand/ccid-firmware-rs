@@ -837,12 +837,17 @@ fn test_card_removal_mid_pin_entry_resets_secure_state() {
 // 9. Escape 0xD0 diagnostics — #268 defect 2 (HIL Leg 4, main@6547916)
 // ---------------------------------------------------------------------------
 
-// CCID_SPEC: /* Section 6.2 / Table 6.2-1: Bulk IN */ RDR_to_PC_Escape = 0x83,
-// RDR_to_PC_DataRateAndClockFrequency = 0x84 —
-// verbatim in reference/CCID/src/ccid.h L232-236 and
-// reference/osmo-ccid-firmware/ccid_common/ccid_proto.h L79-80. (The #268
-// Leg-4 checkpoint comment inverted the two — 0x84 is DataRateAndClock,
-// NOT Escape; the observed 0x83 reply type byte was already spec-correct.)
+// CCID_SPEC: /* Section 6.2 / Table 6.2-1: Bulk IN */ RDR_to_PC_DataBlock = 0x80,
+// CCID_SPEC: RDR_to_PC_SlotStatus = 0x81, RDR_to_PC_Parameters = 0x82,
+// CCID_SPEC: RDR_to_PC_Escape = 0x83, RDR_to_PC_DataRateAndClockFrequency = 0x84,
+// CCID_DEFS: #define RDR_to_PC_Escape 0x83
+// CCID_DEFS: #define RDR_to_PC_DataRateAndClockFrequency 0x84
+
+// The two blocks above are the authority for the Escape reply type byte:
+// the #268 Leg-4 checkpoint comment inverted the two values (0x84 is
+// DataRateAndClockFrequency, NOT Escape) — the observed 0x83 reply was
+// already spec-correct, and the pin test below locks 0x83 so the bench
+// re-verification leg expects the right shape.
 
 fn diag_field(payload: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
