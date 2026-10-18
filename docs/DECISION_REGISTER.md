@@ -144,6 +144,25 @@ branch encoded as enums.
 up #219; the per-transport malformed-frame policy ever diverges again →
 revisit whether it belongs in a policy enum.
 
+## D-9: Single I2C driver generation — driver_ng everywhere; esp-idf-hal fork retired
+
+**Authority**: PR #242 + this entry (root `Cargo.toml` `[patch]` comment +
+AGENTS.md vendoring-policy class 2).
+**Decision**: every I2C consumer rides the IDF driver_ng FFI through the
+shared embedded-hal adapter (`pn7160-nci::hal_i2c`); the Amperstrand
+esp-idf-hal fork (`ai-experiments-0.47`, whose only delta was the
+`legacy-i2c` opt-in) is RETIRED — no `[patch]` entry exists for
+esp-idf-hal; it resolves from crates.io.
+**Evidence**: all 3 legacy `I2cDriver` sites migrated (MFRC522 CDC main,
+`wifi_common::mfrc522_bring_up`, m5stick LCD AXP192); the full-matrix CI
+run on the patch-removal commit green on every esp leg (9 build legs +
+`esp32-host-test`, run 39053336944 @ `3382e4e`, 2026-10-17); Cargo.lock
+swapped git `c1d4ec35` → registry v0.47.0.
+**Change triggers**: a future crate needing the legacy `i2c` driver API →
+reintroduce via a git fork pin (vendoring-policy class 2 still applies),
+never a silent re-vendor; IDF 6 removing the legacy driver entirely →
+this decision becomes moot.
+
 ---
 
 *Register discipline: new load-bearing decisions get an entry HERE with an

@@ -45,20 +45,36 @@ ccid-firmware-rs/
 │   └── esp32-ccid/             # ESP32 serial CCID firmware (MFRC522/PN532)
 ├── host-tools/                 # host-side tooling
 ├── vendor/                     # tracked patched dependencies (see below)
-│   └── synopsys-usb-otg/       # patched USB OTG driver (STM32)
+│   ├── synopsys-usb-otg/       # patched USB OTG driver (STM32)
+│   └── stm32f469i-disc/        # patched F469I-DISCO BSP (sdio-support, #193)
 ├── reference/                  # osmo-ccid-firmware submodule + CCID reader specs
 └── tests/hardware/             # hardware integration test procedures
 ```
 
 ### `[patch]` tables (root Cargo.toml)
 
-The workspace overrides one upstream crate with a locally tracked patched
-copy. This patch is **required** — the upstream version does not build:
+The workspace overrides two upstream crates with locally tracked patched
+copies (both patch-required — the upstream sources do not build for us):
 
 ```toml
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
+
+# Patched BSP — local copy of Amperstrand/stm32f469i-disc sdio-support
+# (fa6dc86) with its HAL dep realigned to this repo's pin 05d999d (the BSP
+# pins ancestor 789e5e8; two HAL instances made display-init Pin/Rcc types
+# from different crates — issue #193).
+[patch."https://github.com/Amperstrand/stm32f469i-disc.git"]
+stm32f469i-disc = { path = "vendor/stm32f469i-disc" }
 ```
+
+**esp-idf-hal is NOT patched anymore** (retired 2026-10-17, PR #242 /
+#149 P3): the Amperstrand fork (`ai-experiments-0.47`, whose only delta
+over upstream was the `legacy-i2c` opt-in) went away when its last
+consumers (backend-mfrc522, the m5stick LCD's AXP192) moved to the
+shared driver_ng embedded-hal adapter (`pn7160-nci::hal_i2c`).
+esp-idf-hal resolves from crates.io (v0.47.0, the exact base the fork
+was rebased onto) — see D-9 in `docs/DECISION_REGISTER.md`.
 
 The MFRC522 driver is NOT vendored: `esp32-ccid` consumes the canonical
 `Amperstrand/mfrc522-rs` fork at `ai-experiments` rev `e9ced1e` (git dep),
@@ -318,13 +334,17 @@ Three distinct things get called "vendoring" — only two are allowed:
    approach). The index of all tracked sources: `reference/README.md`.
 2. **Build-path vendored code** (`vendor/…`, compiled): ONLY when we
    patch it and the patch cannot live in a fork/git dep
-   (`vendor/synopsys-usb-otg` is the one legal case; the former
-   `vendor/esp-idf-hal` exception was migrated to the canonical
-   `Amperstrand/esp-idf-hal` fork, `ai-experiments` branch, 2026-10-15
-   — issue #195). Un-patched
-   vendored copies were deliberately removed (issues #19, #6) — do not
-   reintroduce that class; linkable code goes through canonical git
-   deps/forks.
+   (`vendor/synopsys-usb-otg` and the patched `vendor/stm32f469i-disc`
+   BSP copy, #193, are the two legal cases). The esp-idf-hal story is
+   HISTORY in three states, each retirement deliberate: the vendored
+   copy was migrated to the canonical `Amperstrand/esp-idf-hal` fork,
+   `ai-experiments` branch (2026-10-15, issue #195), and the fork
+   itself was then RETIRED (2026-10-17, PR #242 / #149 P3): its only
+   delta (`legacy-i2c` opt-in) lost its last consumers to the driver_ng
+   migration, and esp-idf-hal rides crates.io v0.47.0 again (D-9).
+   Un-patched vendored copies were deliberately removed (issues #19,
+   #6) — do not reintroduce that class; linkable code goes through
+   canonical git deps/forks.
 3. **C headers as build dependencies**: NOT vendored — our HAL comes
    from the Amperstrand Rust fork. C headers (ST HAL smartcard,
    ST USB middleware) are vendored ONLY as class-1 quote sources.
@@ -514,7 +534,6 @@ ESP build.
 | `stm32-lint` | fmt + clippy for both MCU targets | `cargo fmt --check`, `cargo clippy ... -- -D warnings` |
 | `stm32-test` | Host-side workspace tests | `cargo test --workspace --target x86_64-unknown-linux-gnu` |
 | `esp32-host-test` | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
-| `iso14443-host-test` | Vendored iso14443 crate tests | `cargo test --features std --target x86_64-unknown-linux-gnu` (from `vendor/iso14443-rs/`) |
 | `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) + ruff correctness lint (F+E9, `ruff.toml`) + stdlib unit tests for scripts | `ruff check scripts tests/hardware host-tools`; `python3 scripts/test_gen_status.py`; `python3 -m pytest tests/hardware/ --collect-only -q` |
 
 **Why `python-collect` exists** (found live 2026-10-11): a duplicate
@@ -740,7 +759,7 @@ a release the same day.
 
 | Board | Identity probe (run this) | State 2026-10-11 ~22:3x |
 |---|---|---|
-| **IDF 5.5.5 unification (2026-10-12, branch `sisyphus/idf-555-unify` @91653fc)** — all three ESP-IDF repos (ccid/bolty/micronuts) bumped v5.5.1/v5.2.4→v5.5.5, crosstool `esp-14.2.0_20260121` on bench+CI, embuild 0.33.5, vendored-hal sd.rs backport (upstream 0.47.0 fix, field added in 5.5.5). Bench-verified: m5stick conformance battery (fuzz 87/0 wedges, pcscd restart 10/10, soak 1000/1000) + card-level differential FULL PASS (ATR/AID/APDU + ACR1252 agreement); nucula D1 coredump round-trip + fuzz 87/0 + soak 998/1000 + broker serving; stm32 HIL 7/7. **Hardware scorecard @67bcfbc (one-Rust-version toolchain, 2026-10-12 close):** nucula C3 — fork v1.98.1.0 image flashed, wire-silence PASS, D1 coredump PASS, broker serving through /opt/bench copy (service ExecStart moved out of the checkout after a sibling tree-loss crash-looped it 1500+ times); STM32 — HIL 7/7 (stable 1.99.0, no IDF); m5stick — fork image flashed, Escape 0x02 identity PASS, conformance battery in flight (log: /tmp/opencode/idf555/battery-final.log). **One open 5.5.5 item**: `log_shim` post-claim ring drain delivers nothing on the wire (bench-reproduced: serve loop + framing + D1 all fine, log lines never drain — suspect the 5.5.2 USJ-console tx changes) — **RESOLVED-BY-RETIREMENT the same day (#131)**: the shim was deleted, the ceiling moved before the driver claim, and `test_wire_silence_after_banner` now locks the clean wire. esp-idf-svc stays 0.52.1 (0.53.0 = hal 0.47/sys 0.38 generation, conflicts with the fork's legacy-I2C hal — follow-up lane). | | |
+| **IDF 5.5.5 unification (2026-10-12, branch `sisyphus/idf-555-unify` @91653fc)** — all three ESP-IDF repos (ccid/bolty/micronuts) bumped v5.5.1/v5.2.4→v5.5.5, crosstool `esp-14.2.0_20260121` on bench+CI, embuild 0.33.5, vendored-hal sd.rs backport (upstream 0.47.0 fix, field added in 5.5.5). Bench-verified: m5stick conformance battery (fuzz 87/0 wedges, pcscd restart 10/10, soak 1000/1000) + card-level differential FULL PASS (ATR/AID/APDU + ACR1252 agreement); nucula D1 coredump round-trip + fuzz 87/0 + soak 998/1000 + broker serving; stm32 HIL 7/7. **Hardware scorecard @67bcfbc (one-Rust-version toolchain, 2026-10-12 close):** nucula C3 — fork v1.98.1.0 image flashed, wire-silence PASS, D1 coredump PASS, broker serving through /opt/bench copy (service ExecStart moved out of the checkout after a sibling tree-loss crash-looped it 1500+ times); STM32 — HIL 7/7 (stable 1.99.0, no IDF); m5stick — fork image flashed, Escape 0x02 identity PASS, conformance battery in flight (log: /tmp/opencode/idf555/battery-final.log). **One open 5.5.5 item**: `log_shim` post-claim ring drain delivers nothing on the wire (bench-reproduced: serve loop + framing + D1 all fine, log lines never drain — suspect the 5.5.2 USJ-console tx changes) — **RESOLVED-BY-RETIREMENT the same day (#131)**: the shim was deleted, the ceiling moved before the driver claim, and `test_wire_silence_after_banner` now locks the clean wire. esp-idf-svc stays 0.52.1 (0.53.0 = hal 0.47/sys 0.38 generation, conflicts with the fork's legacy-I2C hal — follow-up lane) [superseded twice since this 2026-10-12 row: svc moved to the 0.53/hal-0.47 generation 2026-10-15/16 (D-2), and the esp-idf-hal fork itself was retired 2026-10-17 (PR #242 — hal rides registry v0.47.0, D-9; the "vendored-hal sd.rs backport" above lived in that fork and is history too)]. | | |
 | nucula | pcscd: `Nucula CCID 00 00/01 00` via the PTY broker (`systemctl status nucula-ccid-broker`, journal = wire tap); identity probe: connect → ATR `3B 85 80 01 80 73 C8 21 10 0E` → SELECT ISD `9000` | OURS @3c74d74-era flashed 2026-10-11 ~23:0x (PT@0x8000 + app@0x40000): **pcscd WORKS through `host-tools/nucula-ccid-broker.py`** (PTY relay defeats the rst:0x15 wall — direct CDC opens still chip-reset, safe opener only). Broker = systemd service, symlink `/dev/nucula-ccid` gated on serving. Bench-verified 2026-10-11: 8/8 connect+ATR+SELECT sessions, >5.5 min stable enumeration, PTY GSS RTT 0.72 ms p50 (direct floor 0.20 ms). **Known gaps**: (1) after a host IccPowerOff the re-arm probe is rejected NCI `DISCOVERY_ALREADY_STARTED` (0xA0) and the HALTed card never re-activates (#125 hardware gap) — the broker's `POWER_OFF_SHIM=1` answers power-offs locally until fixed; (2) GP CAP installs fail at the first T=1 INSTALL (card answers `9100`, gp retries into comm error — m5stick-class T=1/CAP limitation). reader.conf `nucula-broker` DISABLED when idle (`mv` to re-enable + `flock /run/lock/bench-pcscd.lock systemctl restart pcscd`). Recovery: full reflash ladder (bootloader@0x0 + PT@0x8000 + app@0x40000), safe-opener probes only |
 | m5stick | CCID Escape 0x02 over the by-id port → payload `GemPC Twin ESP32 1.0`; Escape 0xD0 → sane counters; Escape 0xD2 → turnaround split + exchange decomposition (issue #120, 32-byte LE: last/max turnaround µs, last/max card-exchange µs, blocks/wtx/recoveries/max_transceive_us; probe: `tests/hardware/nfc/turnaround_probe.py`); Escape 0xD3 [D3,N] → I2C poll-cadence probe (total µs for N ComIrqReg reads + configured FWT); T=1 retry-idempotence proof (issue #101: duplicate final I-block → cached replay with apdu_tx flat, chained 33B APDU, 5× retry storm; probe: `tests/hardware/nfc/t1_retry_probe.py`, needs pcscd stopped) | OURS @fix/101-era flashed 2026-10-12 ~12:43 (bl@0x1000+PT@0x8000+app@0x40000): **#101 FIX HARDWARE-PROVEN 2026-10-12** — serve-loop RX hardening (UART ring 548→4096: the old ring was 548-128=420 usable B < one 60 ms burst at 115200 8N2 ≈ 628 B; post-flush drain feeds queued retries before blocking) + retry-idempotent T=1 endpoint (duplicate final I-block replays the cached answer — never re-executes the APDU (double-INSTALL guard), never R-blocks into the libccid resend spiral). Bench evidence: pcscd 12/12 SELECTs @36.8 ms + 100 b2b exchanges @42.4 ms ZERO errors + 5 connect/disconnect cycles clean; raw T=1 probe (t1_retry_probe.py) — 3+5 duplicate replays byte-identical with apdu_tx flat, chained 33 B APDU (the 2026-10-11 killer class) delivered, fresh ns still executes, zero nak/err deltas. **CAP install still PENDING a CARD MOVE**: the keyed card 50942720 (working AUTH triple) sits on the ACR1252 coil; the m5stick coil holds CPLC 50906420 (unknown pre-personalized keys, not in the #127 ledger, default-ISD SELECT=6A82) — do NOT run gp against it (speculative auth). Move 50942720 onto the m5stick coil, then `gp --install /tmp/opencode/gp/SmartPGP-jc304-rsa4096.cap` with the soak_02 key triple (#59 payoff). Prior state: #120 closed card-bound (18–25 ms card floor, ~3 ms reader floor); #101 root cause = RX-loss-during-blocking-exchange (tap evidence 2026-10-11), NOT latency — at ~30 ms/APDU a 470-block upload ≈ 15–20 s card time |
 | STM32 F469 | pcscd: `Cherry ... (ST2XXX-001)` + ComSign ATR `3B D5 18 FF ... 0A` | OURS, card working (eID ATR + SELECT re-verified 2026-10-11 22:2x), **42.75ms p50 n=60 post-DRY-phase-2 — non-regression proven on hardware**; labgrid HIL 7/7. **2026-10-12: T=1 relay hardening landed** (#132 fix — BWT-derived first-byte wait, honest-error contract, pre-read drain, ORE hygiene; root cause `docs/t1_relay_132_rootcause.md`; suite 14+1 green + fidelity hammer 0 anomalies vs 54 pre-fix; definitive card-50942720 gp proof pending its move into our slot). **Bench lesson**: INIT_UPDATE hammering locked the SmartPGP card's ISD management state (69FF on SC-class commands, survives power cycle; applet unaffected — #127) — NEVER hammer SC-class commands (INIT_UPDATE/EXT_AUTH/GET DATA 00E0); fidelity hammers use SELECT+CPLC only. |
@@ -2322,10 +2341,6 @@ cargo test --workspace --target x86_64-unknown-linux-gnu
 # ESP32 host tests (matches CI esp32-host-test job)
 cd firmware/esp32-ccid
 cargo test --target x86_64-unknown-linux-gnu
-
-# Vendored iso14443 host tests (matches CI iso14443-host-test job)
-cd vendor/iso14443-rs
-cargo test --features std --target x86_64-unknown-linux-gnu
 ```
 
 ### STM32 build
