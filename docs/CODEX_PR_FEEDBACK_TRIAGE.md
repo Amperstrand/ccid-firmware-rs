@@ -237,3 +237,29 @@ no badged Codex findings. 31 findings total.
 | 190 | P2 | 'Nucula CCID' substring matches wifi IFD | **UNADDRESSED → #197** | substring match live |
 | 191 | P2 | install docs point at the unit | ADDRESSED | tools/hil README system-unit pass (2026-10-15) |
 | 191 | P2 | lint filter misses scripts/ruff inputs | **UNADDRESSED → #198** | filter lacks scripts/**, ruff.toml |
+
+---
+
+## Sweep 4 FINAL (2026-10-18) — PRs 108–270: closed
+
+Full-window verification at HEAD `62f9f9d` (111 findings, 44 PRs, three
+parallel verification passes; every disposition HEAD-quoted — full
+tables in Amperstrand/pr-review-audit `ccid-sweep-4-report.md` and the
+[#252 checkpoint](https://github.com/Amperstrand/ccid-firmware-rs/issues/252)).
+
+**Totals: 111 findings — 82 ADDRESSED/ALREADY-FIXED/OBSOLETE at HEAD,
+28 STILL-ACTIONABLE → every one now has a destination:**
+
+| Destination | Findings |
+|---|---|
+| Fixed in #277 (`db59b2d`) | #269 dwLength wrap P1, #222 PN532 wire log P1, #259 ×3 (probe default/compare/stopbits), #230 IRQ-order, #237 cat guard |
+| Fixed in #279 (`68de0f6`) | #111 example, #150 residual doc, #162, #187, #191, #206 ×3, #258 ×3 (ten doc-truth rows) |
+| Tracked #275 (bench lane) | #192 ×5 (m5stick_lcd), #230 BusPins |
+| Tracked #276 | #269 PIN-counter bypass |
+| Pre-tracked #180 / #183 | #159 FWITOX, #234 unverified stamp |
+| ALREADY-FIXED / OBSOLETE (dispositions replied) | #269 CYCCNT, #270 --names |
+
+All 28 still-actionable threads replied with disposition + evidence;
+PRs #250/#253/#254 carried zero findings. The residual-sweep window is
+CLOSED — future sweeps re-run from the latest merged PR per the
+standard procedure.
