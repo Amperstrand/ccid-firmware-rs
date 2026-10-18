@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #276: PIN-pad Secure exchanges now advance the Escape 0xD0 APDU counters
+
+- The STM32 PIN-pad Verify/Modify path called
+  `driver_mut().transmit_apdu` directly, bypassing the ONLY
+  apdu_tx/apdu_rx counter sites — every PIN exchange was invisible to
+  the 0xD0 diagnostics (the #241 "apdu_tx reads 0 despite real card
+  exchanges" class, alive on the Secure surface).
+- `ccid_core::handler::CcidHandlerCore` gains `transmit_counted` — the
+  counting seam both XfrBlock arms now share (`count_transmit`, one
+  definition of when the counters advance: at actual card transfer, tx
+  on every attempt, rx only on a card answer) and the ONLY legal
+  card-transmit path for wrapper-driven exchanges. The PIN/Secure
+  surface is the #121 DRY-phase-2 port target — the seam landed before
+  that port, so the bug cannot be ported forward.
+- The wrapper's PIN-result methods (`set_pin_result`,
+  `process_pin_result`, `set_pin_modify_result`,
+  `process_pin_modify_result`) are no longer `display`-gated: the
+  PIN-result → VERIFY/CHANGE card exchange is pure handler logic (the
+  `display` feature gates the entry UI, not the transmit), and the
+  #276 regression tests must run in the default CI host suite —
+  mocked Secure verify/modify exchanges now assert apdu_tx/apdu_rx
+  advance (and a failed transmit counts tx but not rx).
 ### Fixed — #275: m5stick_lcd correctness five-some (host-side; bench re-verification tracked on the m5stick place)
 
 - **ADC low nibble no longer discarded** — `battery_mv_from_regs` now

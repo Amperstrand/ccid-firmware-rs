@@ -107,9 +107,7 @@ pub struct CcidMessageHandler<D: SmartcardDriver> {
     vendor_id: u16,
     response_buffer: [u8; 261],
     uptime: crate::dwt_watchdog::DwtUptime,
-    #[cfg(feature = "display")]
     pin_result_pending: Option<(u8, PinResult, PinBuffer, PinVerifyParams)>,
-    #[cfg(feature = "display")]
     pin_modify_result_pending: Option<(
         u8,
         PinResult,
@@ -140,9 +138,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             vendor_id,
             response_buffer: [0u8; 261],
             uptime: crate::dwt_watchdog::DwtUptime::new(UPTIME_CLOCK_HZ),
-            #[cfg(feature = "display")]
             pin_result_pending: None,
-            #[cfg(feature = "display")]
             pin_modify_result_pending: None,
         };
         // Construction-time presence sync (the pre-port handler sampled
@@ -158,6 +154,13 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
     pub fn driver_mut(&mut self) -> &mut D {
         &mut self.core.driver_mut().driver
+    }
+
+    /// Escape 0xD0 counters snapshot (the esp32 wrapper's accessor
+    /// pattern) — also the #276 regression-test surface: PIN-pad
+    /// exchanges must advance apdu_tx/apdu_rx like XfrBlock traffic.
+    pub fn diagnostics(&self) -> &ccid_core::Diagnostics {
+        self.core.diagnostics()
     }
 
     /// Advance the 0xD0 diagnostics time base and resync the core's
@@ -318,11 +321,8 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             ccid_info!("Card removed, powering off driver");
             self.rx_len = 0;
             self.cmd_busy = false;
-            #[cfg(feature = "display")]
-            {
-                self.pin_result_pending = None;
-                self.pin_modify_result_pending = None;
-            }
+            self.pin_result_pending = None;
+            self.pin_modify_result_pending = None;
         }
         changed
     }
@@ -595,7 +595,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.core.slot_state() == SlotState::PresentActive
     }
 
-    #[cfg(feature = "display")]
     pub fn set_pin_result(
         &mut self,
         seq: u8,
@@ -612,7 +611,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.pin_result_pending = Some((seq, result, buffer, params));
     }
 
-    #[cfg(feature = "display")]
     pub fn process_pin_result(&mut self) {
         let Some((seq, result, buffer, params)) = self.pin_result_pending.take() else {
             return;
@@ -651,9 +649,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                         ccid_debug!("CCID: Transmitting APDU, len={}", apdu_len);
                         match self
                             .core
-                            .driver_mut()
-                            .driver
-                            .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
+                            .transmit_counted(&apdu[..apdu_len], &mut self.response_buffer)
                         {
                             Ok(resp_len) => {
                                 ccid_info!("CCID: Card responded, len={}", resp_len);
@@ -685,7 +681,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         }
     }
 
-    #[cfg(feature = "display")]
     pub fn set_pin_modify_result(
         &mut self,
         seq: u8,
@@ -704,7 +699,6 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         self.pin_modify_result_pending = Some((seq, result, old_buffer, new_buffer, params));
     }
 
-    #[cfg(feature = "display")]
     pub fn process_pin_modify_result(&mut self) {
         let Some((seq, result, old_buffer, new_buffer, params)) =
             self.pin_modify_result_pending.take()
@@ -750,9 +744,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                         ccid_debug!("CCID: Transmitting CHANGE APDU, len={}", apdu_len);
                         match self
                             .core
-                            .driver_mut()
-                            .driver
-                            .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
+                            .transmit_counted(&apdu[..apdu_len], &mut self.response_buffer)
                         {
                             Ok(resp_len) => {
                                 ccid_info!("CCID: Card responded to CHANGE, len={}", resp_len);
@@ -882,5 +874,195 @@ mod wrap_tests {
         assert!(declared_fits(261, 271)); // exactly buffer - header
         assert!(!declared_fits(262, 271)); // one past capacity
         assert!(declared_fits(0, 271));
+    }
+}
+
+#[cfg(test)]
+mod secure_counter_tests {
+    //! #276 regression locks: PIN-pad Secure exchanges must advance the
+    //! Escape 0xD0 apdu_tx/apdu_rx counters. Before the fix the wrapper
+    //! called `driver_mut().transmit_apdu` directly — every PIN exchange
+    //! was invisible to the 0xD0 diagnostics (the #241 class, alive on
+    //! the Secure surface). These tests are deliberately NOT
+    //! display-gated: the PIN-result exchange is pure handler logic (the
+    //! display feature gates the ENTRY UI, not the card transmit).
+
+    use super::*;
+
+    const CHERRY: u16 = 0x046A;
+    const ATR: [u8; 2] = [0x3B, 0x00];
+
+    /// §6.1.11 probe in the pcscd wire shape (same bytes as the core's
+    /// `pin_verify_probe`): wPINMaxExtraDigit wire bytes `[max, min]`,
+    /// bTeoPrologue[3], APDU head at offset 14.
+    fn pin_verify_payload() -> std::vec::Vec<u8> {
+        let mut p = std::vec::Vec::new();
+        p.push(0x00); // bPINOperation: verification
+        p.extend_from_slice(&[
+            30, 0x00, 0x00, 0x00, 8, 4, 0x02, 1, 0x09, 0x04, 0, 0, 0, 0, 0x00, 0x20, 0x00, 0x81,
+        ]);
+        p
+    }
+
+    /// §6.1.12 probe (same bytes as the core's `pin_modify_probe`).
+    fn pin_modify_payload() -> std::vec::Vec<u8> {
+        let mut d = [0u8; 23];
+        d[0] = 30;
+        d[4] = 5;
+        d[5] = 13;
+        d[6] = 8;
+        d[7] = 4;
+        d[8] = 3;
+        d[9] = 0x02;
+        d[10] = 3;
+        d[13] = 0;
+        d[14] = 1;
+        d[15] = 2;
+        d[19..23].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
+        let mut p = std::vec::Vec::new();
+        p.push(0x01); // bPINOperation: modification
+        p.extend_from_slice(&d);
+        p
+    }
+
+    fn frame(msg_type: u8, seq: u8, payload: &[u8]) -> std::vec::Vec<u8> {
+        let mut f = std::vec::Vec::with_capacity(10 + payload.len());
+        f.push(msg_type);
+        f.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        f.push(0); // slot
+        f.push(seq);
+        f.extend_from_slice(&[0, 0, 0]); // bSpecific(3)
+        f.extend_from_slice(payload);
+        f
+    }
+
+    fn pin_buffer(digits: &[u8]) -> PinBuffer {
+        let mut b = PinBuffer::new(8);
+        for &d in digits {
+            assert!(b.push(d));
+        }
+        b
+    }
+
+    fn armed_verify_handler() -> CcidMessageHandler<crate::mock_driver::MockSmartcardDriver> {
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new()
+                .card_present(true)
+                .with_atr(&ATR)
+                .with_apdu_response(&[0x90, 0x00]),
+            CHERRY,
+        );
+        h.set_rx_data(&frame(PC_TO_RDR_ICC_POWER_ON, 1, &[]));
+        h.handle_message();
+        let _ = h.take_response();
+        assert_eq!(h.slot_state(), SlotState::PresentActive);
+
+        h.set_rx_data(&frame(PC_TO_RDR_SECURE, 0x55, &pin_verify_payload()));
+        h.handle_message();
+        let (len, _) = h.take_response();
+        assert_eq!(len, 0, "Secure verify defers its response");
+        h
+    }
+
+    #[test]
+    fn pin_verify_exchange_advances_apdu_counters() {
+        let mut h = armed_verify_handler();
+        let (seq, params) = h.take_secure_params().expect("armed");
+        assert_eq!(seq, 0x55);
+
+        assert_eq!(h.diagnostics().apdu_tx_count, 0);
+        assert_eq!(h.diagnostics().apdu_rx_count, 0);
+
+        h.set_pin_result(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            params,
+        );
+        h.process_pin_result();
+
+        let len = h.get_tx_len();
+        assert_eq!(len, 10 + 2, "DataBlock carries the card SW");
+        assert_eq!(h.get_tx_buffer()[0], RDR_TO_PC_DATABLOCK);
+        assert_eq!(&h.get_tx_buffer()[len - 2..len], &[0x90, 0x00]);
+        assert_eq!(
+            h.diagnostics().apdu_tx_count,
+            1,
+            "the PIN VERIFY APDU must be counted"
+        );
+        assert_eq!(
+            h.diagnostics().apdu_rx_count,
+            1,
+            "the card answer must be counted"
+        );
+    }
+
+    #[test]
+    fn pin_verify_failed_transmit_counts_tx_not_rx() {
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new()
+                .card_present(true)
+                .with_atr(&ATR)
+                .with_apdu_response(&[0x90, 0x00])
+                .with_transmit_apdu_error(),
+            CHERRY,
+        );
+        h.set_rx_data(&frame(PC_TO_RDR_ICC_POWER_ON, 1, &[]));
+        h.handle_message();
+        let _ = h.take_response();
+
+        h.set_rx_data(&frame(PC_TO_RDR_SECURE, 0x55, &pin_verify_payload()));
+        h.handle_message();
+        let _ = h.take_response();
+        let (seq, params) = h.take_secure_params().expect("armed");
+
+        h.set_pin_result(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            params,
+        );
+        h.process_pin_result();
+
+        // Cancelled answer, but the attempt still reached the card seam.
+        assert!(h.get_tx_len() > 0);
+        assert_eq!(h.diagnostics().apdu_tx_count, 1);
+        assert_eq!(h.diagnostics().apdu_rx_count, 0);
+    }
+
+    #[test]
+    fn pin_modify_exchange_advances_apdu_counters() {
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new()
+                .card_present(true)
+                .with_atr(&ATR)
+                .with_apdu_response(&[0x90, 0x00]),
+            CHERRY,
+        );
+        h.set_rx_data(&frame(PC_TO_RDR_ICC_POWER_ON, 1, &[]));
+        h.handle_message();
+        let _ = h.take_response();
+
+        h.set_rx_data(&frame(PC_TO_RDR_SECURE, 0x66, &pin_modify_payload()));
+        h.handle_message();
+        let _ = h.take_response();
+        assert!(h.is_pin_modify_active());
+        let (seq, params) = h.take_secure_modify_params().expect("armed");
+        assert_eq!(seq, 0x66);
+
+        h.set_pin_modify_result(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[9, 9, 9, 9, 9, 9]),
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            params,
+        );
+        h.process_pin_modify_result();
+
+        let len = h.get_tx_len();
+        assert_eq!(len, 10 + 2);
+        assert_eq!(h.get_tx_buffer()[0], RDR_TO_PC_DATABLOCK);
+        assert_eq!(h.diagnostics().apdu_tx_count, 1);
+        assert_eq!(h.diagnostics().apdu_rx_count, 1);
     }
 }
