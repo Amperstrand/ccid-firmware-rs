@@ -48,20 +48,26 @@ pub fn run() -> ! {
     // ESP-IDF's i2c.master bypass the Rust `log` crate and pollute
     // the CCID wire before the serve loop's own Off ceiling takes
     // effect. pcscd's serial handshake reads them as garbage and the
-    // reader never enumerates. The FWID below still prints (it's
-    // the first line, before the PN7160 bring-up runs).
+    // reader never enumerates. The FWID below does NOT print either:
+    // this NONE silencing precedes EspLogger init, so the reader image
+    // is console-silent from app_main() (bench-verified 2026-10-17,
+    // #149 bench230) — identity is proven by the baked FWID build-tag
+    // string + serving behavior, never the console banner.
     #[cfg(not(feature = "ble"))]
     {
         use esp_idf_sys::{esp_log_level_set, esp_log_level_t_ESP_LOG_NONE};
         unsafe { esp_log_level_set(b"*\0".as_ptr().cast(), esp_log_level_t_ESP_LOG_NONE) };
     }
 
-    // Clean-wire (the #91 shim is RETIRED, issue #131): EspLogger
-    // prints the pre-claim boot banner below; the OFF ceiling lands
-    // right after the banner, BEFORE the USB-CDC driver claim, so
-    // nothing unsolicited is ever written to the CCID wire. Never call
-    // EspLogger::initialize_default() under `ble` (BleConsole installs
-    // the global sink there — first installer wins).
+    // Clean-wire (the #91 shim is RETIRED, issue #131): EspLogger is
+    // initialized for the banner SLOT below, but the C-level NONE
+    // silencing above runs first — on this main the banner line is
+    // itself console-silent (bench 2026-10-17, #149); the OFF ceiling
+    // still lands right after the slot, BEFORE the USB-CDC driver
+    // claim, so nothing unsolicited is ever written to the CCID wire.
+    // Never call EspLogger::initialize_default() under `ble`
+    // (BleConsole installs the global sink there — first installer
+    // wins).
     #[cfg(not(feature = "ble"))]
     {
         use esp_idf_svc::log::EspLogger;
