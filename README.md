@@ -45,7 +45,8 @@ The practical architecture is a shared CCID core with interchangeable axes:
 - `firmware/ccid-firmware/` — STM32 contact-reader firmware
 - `firmware/esp32-ccid/` — ESP32 NFC-reader firmware
 - `host-tools/` — host-side PC/SC utilities
-- `vendor/synopsys-usb-otg/` — STM32 USB dependency
+- `vendor/stm32f469i-disc/` — patched F469I-DISCO BSP (stranded snapshot, see `docs/vendor-patches.md`)
+- synopsys-usb-otg — consumed from the canonical `Amperstrand/synopsys-usb-otg` fork (rev `764bc042`, #264), not vendored; upstream has no F469 support
 - MFRC522 driver — consumed from the canonical `Amperstrand/mfrc522-rs` fork (`ai-experiments` rev `e9ced1e`, shared with bolty-rs), not vendored
 - ISO 14443 crate — consumed from the canonical `Amperstrand/iso14443-rs` fork (`ai-experiments` branch, shared with bolty-rs), not vendored
 

@@ -45,7 +45,6 @@ ccid-firmware-rs/
 │   └── esp32-ccid/             # ESP32 serial CCID firmware (MFRC522/PN532)
 ├── host-tools/                 # host-side tooling
 ├── vendor/                     # tracked patched dependencies (see below)
-│   ├── synopsys-usb-otg/       # patched USB OTG driver (STM32)
 │   └── stm32f469i-disc/        # patched F469I-DISCO BSP (sdio-support, #193)
 ├── reference/                  # osmo-ccid-firmware submodule + CCID reader specs
 └── tests/hardware/             # hardware integration test procedures
@@ -53,12 +52,18 @@ ccid-firmware-rs/
 
 ### `[patch]` tables (root Cargo.toml)
 
-The workspace overrides two upstream crates with locally tracked patched
-copies (both patch-required — the upstream sources do not build for us):
+One crate is overridden by a git-fork patch (rev-pinned, byte-identical
+to the former vendor copy), one by a locally tracked vendor path (the
+BSP — see below). Both are patch-required; upstream sources do not
+build for us:
 
 ```toml
 [patch.crates-io]
-synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
+# synopsys-usb-otg: retired from vendor/ to the canonical fork (#264,
+# 2026-10-18) — upstream has no F469 feature and crates.io is stuck at
+# 0.5.0; the fork carries F469 endpoint re-enablement + generated-RAL
+# warning suppression. rev = the exact former submodule pin.
+synopsys-usb-otg = { git = "https://github.com/Amperstrand/synopsys-usb-otg", rev = "764bc042f63cf00d0efd2417141438c1584cd187" }
 
 # Patched BSP — local copy of Amperstrand/stm32f469i-disc sdio-support
 # (fa6dc86) with its HAL dep realigned to this repo's pin 05d999d (the BSP
@@ -343,9 +348,12 @@ Three distinct things get called "vendoring" — only two are allowed:
    `docs/quote-sources/` with section/page cites (the specquotes.toml
    approach). The index of all tracked sources: `reference/README.md`.
 2. **Build-path vendored code** (`vendor/…`, compiled): ONLY when we
-   patch it and the patch cannot live in a fork/git dep
-   (`vendor/synopsys-usb-otg` and the patched `vendor/stm32f469i-disc`
-   BSP copy, #193, are the two legal cases). The esp-idf-hal story is
+   patch it and the patch cannot live in a fork/git dep (the patched
+   `vendor/stm32f469i-disc` BSP copy, #193, is the one remaining legal
+   case). The synopsys-usb-otg vendor copy was RETIRED 2026-10-18
+   (#264): its patch always could ride a fork/git dep, so it now does
+   (Amperstrand fork, rev-pinned — vendoring-policy applied, not a new
+   precedent). The esp-idf-hal story is
    HISTORY in three states, each retirement deliberate: the vendored
    copy was migrated to the canonical `Amperstrand/esp-idf-hal` fork,
    `ai-experiments` branch (2026-10-15, issue #195), and the fork

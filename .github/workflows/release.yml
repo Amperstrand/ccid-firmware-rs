@@ -228,7 +228,7 @@ jobs:
           git clone https://github.com/Amperstrand/ccid-firmware-rs.git
           cd ccid-firmware-rs
           git checkout $TAG
-          git submodule update --init vendor/synopsys-usb-otg
+          git submodule update --init
 
           # Build a specific variant (default = Cherry ST-2xxx on F469)
           docker build --build-arg PROFILE=default -t ccid-builder .
