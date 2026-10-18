@@ -1,4 +1,7 @@
 # labgrid exporter for the ccid-firmware OTA seats (nucula, m5stick).
+# STALE (Codex #191): documents the old --user-unit install; the bench
+# deploys a SYSTEM unit (/etc/systemd/system/labgrid-exporter-ccid.service).
+# The /tmp/opencode/ccid-idf555 path below is an obsolete checkout.
 #
 # Installed as a systemd --USER unit (the bench's other exporters run as
 # system units from /etc/systemd/system — do not duplicate them; this one

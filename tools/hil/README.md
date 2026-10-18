@@ -43,7 +43,9 @@ The unit lives at `/etc/systemd/system/labgrid-exporter-ccid.service`
 with the config at `/etc/labgrid/exporter-ccid.yaml` (source of truth:
 `tools/hil/labgrid-exporter.yaml` — copy + restart after edits, per the
 conwrt-bench config-sync rule; install instructions in
-`tools/hil/labgrid-exporter.service`).
+`tools/hil/labgrid-exporter.service` (NOTE: that file still documents
+the older --user-unit flow; the deployed unit is the SYSTEM unit above —
+reconcile before relying on it, tracked in the review-debt lane)).
 
 Never run `labgrid-exporter` interactively — it holds connections and
 blocks the shell (bolty-rs lesson).

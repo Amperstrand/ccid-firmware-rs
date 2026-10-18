@@ -1,30 +1,26 @@
 //! #149 P3 — `embedded_hal::i2c::I2c` (1.0) adapter over the raw
 //! `i2c_master` driver_ng FFI.
 //!
-//! The pinned esp-idf-hal generation does not wrap driver_ng (issues
-//! #63/#80). HISTORY (pre-#242): `backend-mfrc522` used to ride the
-//! legacy driver behind the vendored-hal `legacy-i2c` gate, and this
-//! adapter was the convergence piece built to retire that — one I2C
-//! driver generation for both projects (ccid + bolty-rs) and IDF-6
-//! pre-alignment (legacy driver removed there). The migration is DONE
-//! (PR #242 / #149 P3, 2026-10-17): MFRC522 + the m5stick LCD's AXP192
-//! ride this adapter; the hal fork and its gate are retired (hal =
-//! registry v0.47.0, D-9). The IDF-6 pre-alignment rationale stands.
+//! The pinned esp-idf-hal generation did not wrap driver_ng (issues
+//! #63/#80); since the #242/#230 wave every I2C consumer (MFRC522
+//! included) rides THIS adapter over the raw driver_ng FFI, and the
+//! vendored-hal `legacy-i2c` gate is retired. This adapter is
+//! the convergence piece: one I2C driver generation for both projects
+//! (ccid + bolty-rs), the retirement path for the vendor patch, and
+//! IDF-6 pre-alignment (legacy driver removed there).
 //!
-//! Skeleton-first history (#149): the trait impl + the host-testable
-//! pure mapping (esp-idf error codes → `embedded_hal::i2c::ErrorKind`,
-//! address-vs-handle validation) landed before any consumer — adapter
-//! first, proven, then the migration (now complete, above).
+//! Skeleton scope (#149): the trait impl + the host-testable pure
+//! mapping (esp-idf error codes → `embedded_hal::i2c::ErrorKind`,
+//! address-vs-handle validation). The `backend-mfrc522` migration and
+//! the vendor-patch retirement are bench-gated follow-ups per the
+//! issue — the adapter lands first, proven, then consumers move.
 //!
-//! Consumer scope (#149 P3): `I2cMasterBus` (bus creation + probe +
-//! device-add, the `esp_transport::from_peripherals` pattern lifted to
-//! a shared constructor) and the fused Write→Read
+//! Consumer scope (#149 P3, this change): `I2cMasterBus` (bus creation
+//! + probe + device-add, the `esp_transport::from_peripherals` pattern
+//! lifted to a shared constructor) and the fused Write→Read
 //! `i2c_master_transmit_receive` path — the wire-shape parity the
 //! legacy esp-idf-hal `I2cDriver` produced, which the bench 0xD3
 //! cadence compare and the MFRC522/AXP192 register reads depend on.
-//! The PN7160 path does NOT use this adapter — `esp_transport` owns
-//! its raw `i2c_master` FFI directly; this module serves the former
-//! legacy-`I2cDriver` consumers.
 
 use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource, Operation};
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
