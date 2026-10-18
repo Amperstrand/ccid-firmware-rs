@@ -34,7 +34,14 @@ selftest: $(SELFTEST) mock_board.py
 # passthrough, board-death (reader stays listed, card absent) and
 # recovery. Isolated in a private mount namespace — the system pcscd
 # is never touched. Requires root (unshare -m + tmpfs over /run/pcscd).
-smoke: $(DRIVER) smoke_test.py run-smoke.sh mock_board.py
+#
+# Card emulation: NUCULA_MOCK_CARD=<profile> puts a scripted picc
+# behind the mock board (card_profiles.py; legacy|satocash-g05|iso-case2).
+# satocash-g05 keeps this smoke's G-05 ATR + SELECT 9000 expectations.
+# Bench host only (root + unshare -m). On namespace-blocked hosts the
+# wire-level twin runs without pcscd:
+#   python3 -m pytest tests/hardware/test_emulated_card_harness.py -v
+smoke: $(DRIVER) smoke_test.py run-smoke.sh mock_board.py card_profiles.py
 	@unshare -m bash ./run-smoke.sh
 
 install: $(DRIVER)
