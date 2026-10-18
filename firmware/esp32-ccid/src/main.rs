@@ -78,16 +78,7 @@ use core::convert::Infallible;
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
-use esp32_ccid::{
-    ccid_handler::CcidHandler,
-    ccid_types::PC_TO_RDR_GET_SLOT_STATUS,
-    nfc::NfcDriver,
-    pn532_driver::Pn532NfcDriver,
-    serial_framing::{
-        build_nak_frame, build_response_frame, build_slot_change_notification, FrameEvent,
-        FrameParser,
-    },
-};
+use esp32_ccid::{ccid_handler::CcidHandler, nfc::NfcDriver, pn532_driver::Pn532NfcDriver};
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-pn532",
@@ -158,10 +149,6 @@ const CARD_POLL_INTERVAL_MS: u64 = 3000;
 // (libccid retransmits at BWT ≥ 1.4 s or the 3 s serial timeout).
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 const UART_BUF_SIZE: usize = 4096;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const MAX_FRAME_SIZE: usize = 274;
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
-const MAX_CCID_RESPONSE_SIZE: usize = 271;
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -245,7 +232,8 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
 
     let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
     // Issue #120 turnaround stamp: measured from this byte's feed (the
-    // frame-completing byte is the one that matters) through flush_write.
+    // frame-completing byte is the one that matters) through the TX
+    // drain (wait_tx_done).
     let byte_us = esp32_ccid::t1::now_us();
     match server.feed_byte(byte, now) {
         ServeAction::Respond => {
@@ -269,7 +257,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
                 write_all_logged(uart, notify);
             }
             write_all_logged(uart, server.response());
-            let _ = uart.flush_write();
+            let _ = uart.wait_tx_done(esp_idf_hal::delay::BLOCK);
             let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
             server
                 .handler_mut()
