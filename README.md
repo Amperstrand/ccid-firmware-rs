@@ -213,7 +213,7 @@ These hardware tests are intentionally not executed in CI.
 GitHub Actions workflow at `.github/workflows/ci.yml` runs host-safe validation for both products:
 
 - STM32 build/lint/test jobs at repository root
-- ESP32 build-matrix + host-side test jobs (primary tier; secondary-tier legs run on main pushes/nightly/dispatch)
+- ESP32 build-matrix + host-side test jobs (primary tier; secondary-tier legs run on main pushes, nightly, `full-matrix` workflow dispatches, or `ci-full-matrix`-labeled PRs)
 - Python collection + ruff gates for helper scripts
 
 ## Device Profiles
