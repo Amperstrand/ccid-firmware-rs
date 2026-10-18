@@ -33,6 +33,16 @@ pub use ccid_protocol::types::*;
 /// 046A = Cherry GmbH (reference/CCID/readers/CherrySmartTerminalST2XXX.txt).
 const PIN_PAD_VENDOR_ID: u16 = 0x046A;
 
+/// Core clock driving DWT CYCCNT on this build — the time base for the
+/// 0xD0 `uptime_ticks` diagnostic (#268 defect 2). F469: 168 MHz sysclk,
+/// F746: 216 MHz (main.rs RCC configs).
+#[cfg(feature = "stm32f469")]
+pub const UPTIME_CLOCK_HZ: u32 = 168_000_000;
+#[cfg(all(feature = "stm32f746", not(feature = "stm32f469")))]
+pub const UPTIME_CLOCK_HZ: u32 = 216_000_000;
+#[cfg(not(any(feature = "stm32f469", feature = "stm32f746")))]
+pub const UPTIME_CLOCK_HZ: u32 = 1_000;
+
 /// CardBackend/SlotDriver adapter over the firmware's SmartcardDriver:
 /// the core's slot contract (presence = card-detect GPIO, no session
 /// short-circuit) with an optional test-only presence override.
@@ -69,6 +79,10 @@ impl<D: SmartcardDriver> CardBackend for SmartcardCoreAdapter<D> {
     ) -> core::result::Result<usize, Self::Error> {
         self.driver.transmit_apdu(command, response)
     }
+
+    fn reinit_count(&self) -> u32 {
+        self.driver.reinit_count()
+    }
 }
 
 impl<D: SmartcardDriver> SlotDriver for SmartcardCoreAdapter<D> {
@@ -92,6 +106,7 @@ pub struct CcidMessageHandler<D: SmartcardDriver> {
     cmd_busy: bool,
     vendor_id: u16,
     response_buffer: [u8; 261],
+    uptime: crate::dwt_watchdog::DwtUptime,
     #[cfg(feature = "display")]
     pin_result_pending: Option<(u8, PinResult, PinBuffer, PinVerifyParams)>,
     #[cfg(feature = "display")]
@@ -124,6 +139,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             cmd_busy: false,
             vendor_id,
             response_buffer: [0u8; 261],
+            uptime: crate::dwt_watchdog::DwtUptime::new(UPTIME_CLOCK_HZ),
             #[cfg(feature = "display")]
             pin_result_pending: None,
             #[cfg(feature = "display")]
@@ -144,11 +160,40 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         &mut self.core.driver_mut().driver
     }
 
+    /// Advance the 0xD0 diagnostics time base and resync the core's
+    /// snapshot (uptime + driver reinit count). The USB transport calls
+    /// this once per poll with the current DWT CYCCNT reading; host
+    /// tests inject deterministic cycle counts (#268 defect 2 — the
+    /// HIL observed uptime=0 forever because nothing ever pumped it).
+    pub fn poll_diagnostics(&mut self, now_cycles: u32) {
+        let ticks = self.uptime.poll(now_cycles);
+        self.core.refresh_diagnostics(ticks);
+    }
+
     pub fn feed(&mut self, data: &[u8]) {
         let remaining = self.rx_buffer.len() - self.rx_len;
         let copy_len = data.len().min(remaining);
         self.rx_buffer[self.rx_len..self.rx_len + copy_len].copy_from_slice(&data[..copy_len]);
         self.rx_len += copy_len;
+        self.drop_unassemblable();
+    }
+
+    /// #268 defect 3 (HIL Leg 3 wedge): once a received header declares
+    /// more payload than the reassembly buffer can ever hold,
+    /// `message_ready()` can never become true again — every later
+    /// command (GetSlotStatus included) went unanswered across host
+    /// reconnects and USB port resets; only an MCU reset cleared it on
+    /// the bench. Drop the partial buffer so the stream resynchronizes
+    /// on the next packet — the serial transport's corrupt-frame
+    /// recovery doctrine (ccid_serial_server garbage tolerance).
+    /// Messages that CAN complete (total ≤ buffer size) are untouched.
+    fn drop_unassemblable(&mut self) {
+        if self.rx_len >= CCID_HEADER_SIZE
+            && CCID_HEADER_SIZE + self.declared_length() > self.rx_buffer.len()
+        {
+            ccid_warn!("CCID: rx resync (declared dwLength un-assemblable)");
+            self.rx_len = 0;
+        }
     }
 
     pub fn message_ready(&self) -> bool {
@@ -411,7 +456,12 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
         if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0xD0 {
             ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
-            let diag = self.driver().diagnostics();
+            // Live counters from the shared core handler (apdu_tx/rx are
+            // counted there around every card exchange) — #268 defect 2:
+            // this used to read the SmartcardDriver trait stub, which on
+            // the F469 only filled reinit_count + card_present, so the
+            // HIL saw apdu_tx=0/apdu_rx=0/uptime=0 after real exchanges.
+            let diag = *self.core.diagnostics();
             let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
             diag.to_bytes(&mut diag_buf);
             self.tx_len = write_message(

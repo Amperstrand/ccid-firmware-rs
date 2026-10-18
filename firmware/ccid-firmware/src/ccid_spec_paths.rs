@@ -31,10 +31,10 @@ use ccid_protocol::types::{
     SlotState, CCID_ERR_CMD_NOT_SUPPORTED, CCID_ERR_CMD_SLOT_BUSY, CCID_HEADER_SIZE,
     COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, COMMAND_STATUS_TIME_EXTENSION,
     ICC_STATUS_NO_ICC, ICC_STATUS_PRESENT_ACTIVE, ICC_STATUS_PRESENT_INACTIVE, PC_TO_RDR_ABORT,
-    PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON,
+    PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON,
     PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SECURE, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_T0_APDU,
-    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_NOTIFY_SLOT_CHANGE, RDR_TO_PC_PARAMETERS,
-    RDR_TO_PC_SLOTSTATUS,
+    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_NOTIFY_SLOT_CHANGE,
+    RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
 };
 
 // Cherry SmartTerminal ST-2xxx vendor id — the only profile with a PIN pad.
@@ -831,4 +831,250 @@ fn test_card_removal_mid_pin_entry_resets_secure_state() {
     assert_eq!(rseq(out), 0x77);
     assert_eq!(cmd_status(out), COMMAND_STATUS_NO_ERROR);
     assert_eq!(icc_status(out), ICC_STATUS_NO_ICC);
+}
+
+// ---------------------------------------------------------------------------
+// 9. Escape 0xD0 diagnostics — #268 defect 2 (HIL Leg 4, main@6547916)
+// ---------------------------------------------------------------------------
+
+// CCID_SPEC: /* Section 6.2 / Table 6.2-1: Bulk IN */ RDR_to_PC_DataBlock = 0x80,
+// CCID_SPEC: RDR_to_PC_SlotStatus = 0x81, RDR_to_PC_Parameters = 0x82,
+// CCID_SPEC: RDR_to_PC_Escape = 0x83, RDR_to_PC_DataRateAndClockFrequency = 0x84,
+// CCID_DEFS: #define RDR_to_PC_Escape 0x83
+// CCID_DEFS: #define RDR_to_PC_DataRateAndClockFrequency 0x84
+
+// The two blocks above are the authority for the Escape reply type byte:
+// the #268 Leg-4 checkpoint comment inverted the two values (0x84 is
+// DataRateAndClockFrequency, NOT Escape) — the observed 0x83 reply was
+// already spec-correct, and the pin test below locks 0x83 so the bench
+// re-verification leg expects the right shape.
+
+fn diag_field(payload: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+}
+
+#[test]
+fn test_escape_d0_reply_type_and_live_counters() {
+    // Given: the exact HIL Leg-4 sequence — power-on + one APDU exchange
+    // on a present card, plus uptime pumped by the serve loop (the STM32
+    // CcidClass polls diagnostics once per USB poll; here the cycle
+    // count is injected deterministically).
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&T0_ATR)
+        .with_apdu_response(&[0x62, 0x03]);
+    let mut h = CcidMessageHandler::new(driver, CHERRY_VID);
+    h.check_card_presence();
+
+    let on = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+    assert_eq!(on[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(cmd_status(&on), COMMAND_STATUS_NO_ERROR);
+
+    let xfr = exchange(
+        &mut h,
+        &ccid_request(
+            PC_TO_RDR_XFR_BLOCK,
+            0,
+            2,
+            [0x00, 0, 0],
+            &[0x00, 0xA4, 0x00, 0x00, 0x00],
+        ),
+    );
+    assert_eq!(xfr[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(cmd_status(&xfr), COMMAND_STATUS_NO_ERROR);
+
+    h.poll_diagnostics(crate::ccid_core::UPTIME_CLOCK_HZ * 2);
+
+    // When: the host sends the vendor diagnostics Escape
+    let esc = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ESCAPE, 0, 3, [0; 3], &[0xD0]),
+    );
+
+    // Then: reply type is RDR_to_PC_Escape (0x83 — see CCID_SPEC quote
+    // above), success, and the frozen 28-byte diagnostics payload
+    // (crates/ccid-core/src/diagnostics.rs layout) carries LIVE values:
+    // the counters the HIL observed frozen at zero.
+    assert_eq!(esc[0], RDR_TO_PC_ESCAPE);
+    assert_eq!(rseq(&esc), 3);
+    assert_eq!(cmd_status(&esc), COMMAND_STATUS_NO_ERROR);
+    let d = &esc[CCID_HEADER_SIZE..];
+    assert_eq!(d.len(), 28);
+    assert_eq!(diag_field(d, 0), 1, "apdu_tx_count after one XfrBlock");
+    assert_eq!(diag_field(d, 4), 1, "apdu_rx_count after one answer");
+    assert_eq!(diag_field(d, 20), 1, "card_present");
+    assert_eq!(diag_field(d, 24), 2_000, "uptime_ticks (ms) after 2 s pump");
+}
+
+#[test]
+fn test_escape_d0_virgin_reader_counts_zero_but_uptime_live() {
+    // Given: a freshly booted reader that has only been serving its USB
+    // poll loop (uptime advancing, no card traffic)
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+    h.poll_diagnostics(crate::ccid_core::UPTIME_CLOCK_HZ / 2);
+
+    // When: the host sends the diagnostics Escape
+    let esc = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ESCAPE, 0, 1, [0; 3], &[0xD0]),
+    );
+
+    // Then: counters zero, card absent, uptime reflects the pump — the
+    // payload is never all-zero stale data once the loop has run.
+    assert_eq!(esc[0], RDR_TO_PC_ESCAPE);
+    let d = &esc[CCID_HEADER_SIZE..];
+    assert_eq!(d.len(), 28);
+    assert_eq!(diag_field(d, 0), 0);
+    assert_eq!(diag_field(d, 4), 0);
+    assert_eq!(diag_field(d, 20), 0);
+    assert_eq!(diag_field(d, 24), 500, "uptime_ticks (ms)");
+}
+
+// ---------------------------------------------------------------------------
+// 10. Serve-loop wedge — #268 defect 3 (HIL Leg 3, main@6547916)
+// ---------------------------------------------------------------------------
+
+/// Feed bytes exactly as the USB transport does (ccid.rs poll(): one
+/// ep_out packet per feed call) and return the response, if any.
+fn feed_exchange<D: SmartcardDriver>(
+    h: &mut CcidMessageHandler<D>,
+    packets: &[&[u8]],
+) -> Option<Vec<u8>> {
+    for p in packets {
+        h.feed(p);
+    }
+    if !h.message_ready() {
+        return None;
+    }
+    h.handle_message();
+    let (len, resp) = h.take_response();
+    Some(resp[..len].to_vec())
+}
+
+#[test]
+fn test_unassemblable_declared_length_no_longer_wedges_serve_loop() {
+    // Given: the #268 Leg-3 wedge signature — a bulk-OUT packet whose
+    // header declares dwLength=0xFFFF. The reassembly buffer is 271
+    // bytes, so the declared message can NEVER complete: message_ready()
+    // stays false forever and every later command (GetSlotStatus
+    // included) goes unanswered across host reconnects and USB port
+    // resets — only an MCU reset cleared it on the bench.
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+
+    let hostile = ccid_request(PC_TO_RDR_GET_SLOT_STATUS, 0, 0x42, [0; 3], &[]);
+    let mut hostile_declared_64k = hostile.clone();
+    hostile_declared_64k[1] = 0xFF;
+    hostile_declared_64k[2] = 0xFF;
+
+    // When: the hostile packet arrives, then a well-formed GetSlotStatus
+    let wedge = feed_exchange(&mut h, &[&hostile_declared_64k]);
+    assert!(wedge.is_none(), "hostile header alone must not answer");
+    let resp = feed_exchange(
+        &mut h,
+        &[&ccid_request(
+            PC_TO_RDR_GET_SLOT_STATUS,
+            0,
+            0x43,
+            [0; 3],
+            &[],
+        )],
+    );
+
+    // Then: the serve loop resynchronized — the later command is served.
+    // (Pre-fix: None forever — the wedged shape the HIL observed.)
+    let resp = resp.expect("serve loop must recover after un-assemblable header");
+    assert_eq!(resp[0], RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(rseq(&resp), 0x43);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}
+
+#[test]
+fn test_garbage_stream_that_fills_buffer_recovers() {
+    // Given: a mid-stream desync — garbage that does not form a sane
+    // header keeps arriving until the reassembly buffer is full.
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+
+    let garbage = [0xA5u8; 64];
+    for _ in 0..5 {
+        h.feed(&garbage);
+    }
+    assert!(!h.message_ready());
+
+    // When: the host sends a well-formed GetSlotStatus afterwards
+    let resp = feed_exchange(
+        &mut h,
+        &[&ccid_request(
+            PC_TO_RDR_GET_SLOT_STATUS,
+            0,
+            0x07,
+            [0; 3],
+            &[],
+        )],
+    );
+
+    // Then: answered — the garbage "header" (dwLength 0xA5A5A5A5) is
+    // un-assemblable, so every flood packet is flushed on arrival and
+    // the stream resynchronizes instead of wedging.
+    let resp = resp.expect("serve loop must recover after garbage flood");
+    assert_eq!(resp[0], RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(rseq(&resp), 0x07);
+}
+
+#[test]
+fn test_max_capacity_xfrblock_still_assembles() {
+    // Regression guard for the resync: a command that exactly fills the
+    // 271-byte reassembly buffer (10-byte header + 261-byte payload,
+    // dwMaxCCIDMessageLength-class) must still assemble and be served —
+    // the flush may only drop messages that can NEVER complete.
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&T0_ATR)
+        .with_apdu_response(&[0x90, 0x00]);
+    let mut h = CcidMessageHandler::new(driver, CHERRY_VID);
+    h.check_card_presence();
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+
+    let payload = [0x00u8; 261];
+    let msg = ccid_request(PC_TO_RDR_XFR_BLOCK, 0, 2, [0x00, 0, 0], &payload);
+    assert_eq!(msg.len(), 271);
+
+    let resp = feed_exchange(&mut h, &[&msg]).expect("full-buffer command served");
+    assert_eq!(resp[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(rseq(&resp), 2);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}
+
+#[test]
+fn test_multi_packet_command_reassembly_unchanged() {
+    // The normal path: one CCID message delivered across several USB
+    // packets must assemble exactly as before the resync logic.
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&T0_ATR)
+        .with_apdu_response(&[0x62, 0x03]);
+    let mut h = CcidMessageHandler::new(driver, CHERRY_VID);
+    h.check_card_presence();
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+
+    let msg = ccid_request(
+        PC_TO_RDR_XFR_BLOCK,
+        0,
+        5,
+        [0x00, 0, 0],
+        &[0x00, 0xA4, 0x00, 0x00, 0x00],
+    );
+    let resp = feed_exchange(&mut h, &[&msg[..7], &msg[7..]]).expect("split command served");
+
+    assert_eq!(resp[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(rseq(&resp), 5);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
 }
