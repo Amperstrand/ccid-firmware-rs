@@ -34,8 +34,6 @@ use defmt_rtt as _;
 use panic_probe as _;
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
-mod app_enum;
-#[cfg(all(target_arch = "arm", target_os = "none"))]
 mod board_config;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod ccid;
@@ -104,14 +102,15 @@ use embedded_graphics::{
 #[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
 use stm32f469i_disc as board;
 
-#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
-use app_enum::AppEnumerationState;
 #[cfg(all(
     any(feature = "stm32f469", feature = "stm32f746"),
     target_arch = "arm",
     target_os = "none"
 ))]
 use ccid::{CcidClass, SmartcardDriver as CcidSmartcardDriver};
+#[cfg(all(feature = "display", target_arch = "arm", target_os = "none"))]
+#[cfg(feature = "display")]
+use ccid_firmware_rs::app_enum::AppEnumerationState;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 use ccid_firmware_rs::dwt_watchdog;
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
@@ -911,7 +910,7 @@ fn main() -> ! {
                             last_card_present = card_present;
                         } else if card_active && !app_enum_state.is_enumerated() {
                             app_enum_state
-                                .enumerate_if_needed(ccid_class.driver_mut(), card_active);
+                                .enumerate_if_needed(ccid_class.handler_mut(), card_active);
                             let mut detected: [&str; 5] = ["", "", "", "", ""];
                             let mut count = 0;
                             for name in app_enum_state.detected_names() {
