@@ -359,9 +359,9 @@ impl DeviceProfile {
 /// - Voltage support: 5V | 3V | 1.8V
 /// - Protocols: T=0 | T=1
 /// - Timing: 4-20 MHz clock, up to 344086 bps data rate
-/// - Features: Auto config, Short APDU level
+/// - Features: Auto config (ATR/voltage/clock/baud/PPS), TPDU level
 /// - Message size: 271 bytes max
-/// - Exchange level: Short APDU
+/// - Exchange level: TPDU
 ///
 /// Individual profiles only override USB identity and display/PIN settings.
 const BASE_PROFILE: DeviceProfile = DeviceProfile {
@@ -399,14 +399,15 @@ const BASE_PROFILE: DeviceProfile = DeviceProfile {
     // - Auto ICC clock change (bit 4)
     // - Auto baud rate change (bit 5)
     // - Auto PPS (bit 7)
-    // - Clock stop (bit 8)
     // - TPDU level (bit 16) - matches Cherry ST-2xxx
+    // No clock-stop: the real ST-2xxx does not advertise it
+    // (reference/CCID/readers/CherrySmartTerminalST2XXX.txt L41,
+    // dwFeatures 0x000100BA — #268 HIL Leg 2 drift finding).
     features: FEAT_AUTO_PARAM_ATR
         | FEAT_AUTO_VOLTAGE
         | FEAT_AUTO_CLOCK
         | FEAT_AUTO_BAUD
         | FEAT_AUTO_PPS
-        | FEAT_CLOCK_STOP
         | FEAT_LEVEL_TPDU,
 
     // Message Size
@@ -647,6 +648,40 @@ mod tests {
         let max_msg = u32::from_le_bytes([desc[42], desc[43], desc[44], desc[45]]);
         // reference file: dwMaxCCIDMessageLength 270 bytes
         assert_eq!(max_msg, 270);
+    }
+
+    /// #268 defect 1 (HIL Leg 2, main@6547916): the Cherry build ORed
+    /// FEAT_CLOCK_STOP (0x100) on top of the reference feature set,
+    /// enumerating dwFeatures = 0x000101BA while the real ST-2xxx
+    /// advertises 0x000100BA — the "claiming a capability the reference
+    /// device lacks" bug class (K30 PINpad incident).
+    ///
+    /// Reference (GREAT EXPECTATION, reference-first doctrine):
+    /// reference/CCID/readers/CherrySmartTerminalST2XXX.txt L41:
+    /// `dwFeatures: 0x000100BA`
+    /// = AUTO_PARAM_ATR | AUTO_VOLTAGE | AUTO_CLOCK | AUTO_BAUD |
+    ///   AUTO_PPS | LEVEL_TPDU (no clock-stop, bit 8 clear).
+    /// Raw HIL descriptor bytes at offset 42..46 of the 0x21 functional
+    /// descriptor were `ba 01 01 00` (0x000101BA); must be `ba 00 01 00`.
+    /// dwFeatures lives at CCID-descriptor offset 38-41, little-endian.
+    #[test]
+    fn test_cherry_st2100_dwfeatures_reference_exact_0x000100ba() {
+        assert_eq!(
+            PROFILE_CHERRY_SMARTTERMINAL_ST2XXX.features, 0x0001_00BA,
+            "Cherry dwFeatures must match the reference reader exactly"
+        );
+        assert_eq!(
+            PROFILE_CHERRY_SMARTTERMINAL_ST2XXX.features & FEAT_CLOCK_STOP,
+            0,
+            "the real ST-2xxx does not advertise clock-stop (bit 8)"
+        );
+
+        let desc = CURRENT_PROFILE.ccid_descriptor();
+        assert_eq!(&desc[38..42], &[0xBA, 0x00, 0x01, 0x00]);
+        assert_eq!(
+            u32::from_le_bytes([desc[38], desc[39], desc[40], desc[41]]),
+            0x0001_00BA
+        );
     }
 
     #[test]

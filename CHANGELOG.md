@@ -76,6 +76,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **#268 (defect 1, HIL Leg 2)**: Cherry ST-2xxx `dwFeatures` reference
+  drift — `BASE_PROFILE` ORed `FEAT_CLOCK_STOP` (bit 8) on top of the
+  reference feature set, so the F469 enumerated `0x000101BA` while the
+  real ST-2xxx advertises `0x000100BA`
+  (reference/CCID/readers/CherrySmartTerminalST2XXX.txt L41) — the
+  same "capability the reference device lacks" class as the K30 PINpad
+  incident. The bit is removed from the base feature set; the descriptor
+  byte pair at offset 39 flips `0x01 → 0x00`. Pinned by
+  `test_cherry_st2100_dwfeatures_reference_exact_0x000100ba`.
+
 - **#170**: nucula wifi-vpcd dead-session wedge after a failed exchange
   (the 6-byte zero-data APDU repro). Root cause, relay side: the vpcd
   APDU error arm answered SW `64 00` unconditionally — correct for a
