@@ -8,24 +8,31 @@ mock answers from state, no hardware.
 
 Models the firmware's actual semantics (mock/hardware-divergence doctrine):
 - silent drop on bad LRC (wifi ServeConfig: no NAK)
-- 0x62 -> DataBlock with the G-05 ATR (3B 85 81 31 FE 45 80 73 C8 21 10 84)
-- 0x6F -> DataBlock with a canned R-APDU (90 00 by default)
+- 0x62 -> DataBlock with the card profile's ATR (G-05 by default)
+- 0x6F -> DataBlock with the card profile's R-APDU (picc emulation)
 - bSeq echoed in every response (CCID 6.2-1)
 - SetParameters accepted (5/7-byte shape checked like the firmware)
 
-Usage: mock_board.py [port] [--absent] [--rapdu <hex>]
+CARD EMULATION (--card <profile>): scripted picc profiles behind the
+GemPC relay, the vsmartcard vpicc split (reader relay / pluggable card
+OS — see card_profiles.py for the design + citations). Profiles:
+legacy (fixed 90 00, the historical behavior), satocash-g05 (the #170
+zero-data/case-2 forms), iso-case2 (SELECT FCI + READ BINARY).
+
+Usage: mock_board.py [port] [--absent] [--card <profile>] [--rapdu <hex>]
 """
 import socket
 import sys
 import threading
+
+import card_profiles
+from card_profiles import CardOS, LEGACY
 
 SYNC, ACK, NAK = 0x03, 0x06, 0x15
 PC_POWER_ON, PC_POWER_OFF, PC_SLOT_STATUS = 0x62, 0x63, 0x65
 PC_XFR_BLOCK, PC_GET_PARAMS, PC_SET_PARAMS, PC_ESCAPE = 0x6F, 0x6C, 0x61, 0x6B
 RDR_DATA_BLOCK, RDR_SLOT_STATUS, RDR_PARAMS, RDR_ESCAPE = 0x80, 0x81, 0x82, 0x83
 
-# G-05 ATR as synthesized by the firmware (pn7160-nci transport.rs test vector)
-ATR = bytes.fromhex("3B858131FE458073C8211084")
 IDENT = b"Nucula Mock 1.0\x00"
 
 
@@ -87,10 +94,10 @@ def read_frame(conn):
 
 
 class MockBoard:
-    def __init__(self, absent=False, rapdu=bytes([0x90, 0x00])):
+    def __init__(self, absent: bool = False, card: CardOS = LEGACY):
         self.absent = absent
         self.powered = False
-        self.rapdu = rapdu
+        self.card = card
         self.lock = threading.Lock()
 
     def status_icc(self):
@@ -105,15 +112,19 @@ class MockBoard:
             return frame(hdr(RDR_SLOT_STATUS, seq, (1 << 6) | 0x02, 0xFE, 0, 0))
         if mtype == PC_POWER_ON:
             self.powered = True
-            return frame(hdr(RDR_DATA_BLOCK, seq, 0x00, 0, 0, len(ATR)) + ATR)
+            self.card.power_up()
+            atr = self.card.atr()
+            return frame(hdr(RDR_DATA_BLOCK, seq, 0x00, 0, 0, len(atr)) + atr)
         if mtype == PC_POWER_OFF:
             self.powered = False
+            self.card.power_down()
             return frame(hdr(RDR_SLOT_STATUS, seq, 0x01, 0, 0, 0))
         if mtype == PC_SLOT_STATUS:
             return frame(hdr(RDR_SLOT_STATUS, seq, self.status_icc(), 0, 0, 0))
         if mtype == PC_XFR_BLOCK:
-            return frame(hdr(RDR_DATA_BLOCK, seq, 0x00, 0, 0, len(self.rapdu))
-                         + self.rapdu)
+            rapdu = self.card.execute(payload)
+            return frame(hdr(RDR_DATA_BLOCK, seq, 0x00, 0, 0, len(rapdu))
+                         + rapdu)
         if mtype == PC_GET_PARAMS:
             p = bytes([0x11, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00])
             return frame(hdr(RDR_PARAMS, seq, 0x00, 0, 1, len(p)) + p)
@@ -139,7 +150,8 @@ def serve(port, board):
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", port))
     srv.listen(1)
-    print(f"mock board on 127.0.0.1:{port} (absent={board.absent})", flush=True)
+    print(f"mock board on 127.0.0.1:{port} "
+          f"(absent={board.absent}, card={board.card.name})", flush=True)
     while True:
         conn, peer = srv.accept()
         print(f"client {peer}", flush=True)
@@ -160,16 +172,19 @@ def serve(port, board):
 
 
 def main():
-    port, absent, rapdu = 29444, False, bytes([0x90, 0x00])
+    port, absent, card = 29444, False, LEGACY
     args = sys.argv[1:]
     if args and args[0].isdigit():
         port = int(args.pop(0))
     if "--absent" in args:
         absent = True
+    if "--card" in args:
+        i = args.index("--card")
+        card = card_profiles.get_card(args[i + 1])
     if "--rapdu" in args:
         i = args.index("--rapdu")
-        rapdu = bytes.fromhex(args[i + 1])
-    serve(port, MockBoard(absent, rapdu))
+        card = card_profiles.StaticCard(rapdu=bytes.fromhex(args[i + 1]))
+    serve(port, MockBoard(absent, card))
 
 
 if __name__ == "__main__":

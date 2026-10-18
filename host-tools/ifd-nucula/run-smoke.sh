@@ -41,7 +41,7 @@ teardown() {
 trap teardown EXIT
 
 start_mock() {
-    setsid python3 "$MOCK" "$PORT" >>"$MOCK_LOG" 2>&1 </dev/null &
+    setsid python3 "$MOCK" "$PORT" --card "${NUCULA_MOCK_CARD:-legacy}" >>"$MOCK_LOG" 2>&1 </dev/null &
     MOCK_PID=$!
 }
 
