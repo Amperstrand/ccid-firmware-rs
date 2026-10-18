@@ -22,12 +22,15 @@ re-confirmed: without the settle the first commands get no response).
 
 Usage:
     m5stick_cadence_probe.py --sweep                 # default N set, 3 reps
-    m5stick_cadence_probe.py --reads 1,100,1000 -r 5
+    m5stick_cadence_probe.py --reads 1,100,255 -r 5
     m5stick_cadence_probe.py --sweep --out base.json
     m5stick_cadence_probe.py --compare base.json drvng.json [--ratio 1.25]
 
-`--compare` needs no hardware: it diffs two sweep JSONs and gates on
-the median µs-per-read ratio (candidate/baseline).
+N is a one-byte count in the escape payload (max 255). `--compare`
+needs no hardware: it diffs two sweep JSONs and gates on the median
+µs-per-read ratio (candidate/baseline); unmatched or missing sweep
+points FAIL the gate — a verdict is only rendered on comparable
+captures.
 """
 
 from __future__ import annotations
@@ -45,11 +48,15 @@ from board_identity import escape_frame, parse_frames  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serial_ports import resolve  # noqa: E402
 
-DEFAULT_SWEEP = (1, 10, 100, 1000)
+DEFAULT_SWEEP = (1, 10, 100, 255)
 DEFAULT_REPS = 3
+# The escape request is exactly [0xD3, N] (ccid_handler: `length == 2`)
+# — N is a ONE-byte count. A sweep point above 255 cannot be expressed;
+# refuse it loudly instead of corrupting the payload.
+MAX_READS = 255
 SETTLE_SECS = 4.0
 PROBE_FAILED = 0xFFFFFFFF
-EXCHANGE_BUDGET = 8.0  # N=1000 at ~0.1 ms/read + framing headroom
+EXCHANGE_BUDGET = 8.0  # N=255 at ~0.1 ms/read + framing headroom
 TIMEOUT_PER_READ = 0.2
 
 
@@ -77,6 +84,9 @@ class CadenceWire:
         s = pyserial.Serial()
         s.port = port
         s.baudrate = 115200
+        s.bytesize = pyserial.EIGHTBITS
+        s.parity = pyserial.PARITY_NONE
+        s.stopbits = pyserial.STOPBITS_TWO  # the GemPC wire is 115200 8N2
         s.timeout = 0.15
         s.dtr = False  # BEFORE open — the DTR-latch rule
         s.rts = False
@@ -147,20 +157,26 @@ def run_sweep(port: str, sweep: list[int], reps: int, settle: float) -> dict:
 def compare(baseline: dict, candidate: dict, ratio_gate: float) -> int:
     base = {r["reads"]: r["us_per_read_median"] for r in baseline["sweep"]}
     cand = {r["reads"]: r["us_per_read_median"] for r in candidate["sweep"]}
+    common = sorted(set(base) & set(cand))
+    unmatched = sorted(set(base) ^ set(cand))
     worst = 0.0
     failures = []
     print(f"{'N':>7} {'baseline us/r':>14} {'driver_ng us/r':>14} {'ratio':>7}")
-    for n in sorted(set(base) & set(cand)):
+    for n in common:
         ratio = cand[n] / base[n] if base[n] else float("inf")
         worst = max(worst, ratio)
         flag = "" if ratio <= ratio_gate else "  <-- OVER GATE"
         print(f"{n:>7} {base[n]:>14.1f} {cand[n]:>14.1f} {ratio:>7.2f}{flag}")
         if ratio > ratio_gate:
             failures.append(n)
-    for n in sorted(set(base) ^ set(cand)):
-        print(f"N={n}: only in {'candidate' if n in cand else 'baseline'} — not compared")
+    if unmatched:
+        for n in unmatched:
+            print(f"N={n}: only in {'candidate' if n in cand else 'baseline'} — not comparable")
+        failures.append("unmatched sweep points")
+    if not common:
+        failures.append("no common sweep points")
     if failures:
-        print(f"FAIL: us/read ratio over {ratio_gate} at N={failures}")
+        print(f"FAIL: {failures} (gate {ratio_gate})")
         return 1
     print(f"PASS: worst ratio {worst:.2f} <= {ratio_gate}")
     return 0
@@ -188,6 +204,12 @@ def main(argv: list[str] | None = None) -> int:
         return compare(base, cand, args.ratio)
 
     sweep = [int(x) for x in args.reads.split(",")] if args.reads else list(DEFAULT_SWEEP)
+    bad = [n for n in sweep if not 1 <= n <= MAX_READS]
+    if bad:
+        p.error(
+            f"sweep points {bad} exceed the one-byte escape count (max {MAX_READS}, "
+            "ccid_handler Escape 0xD3 `length == 2`)"
+        )
     result = run_sweep(args.port or resolve("m5stick"), sweep, args.reps, args.settle)
     result["source"] = {
         "tool": "m5stick_cadence_probe.py",
