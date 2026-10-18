@@ -259,7 +259,7 @@ st-flash write ccid-firmware.bin 0x8000000
 For reproducible builds in a containerized environment:
 
 ```bash
-docker build --build-arg PROFILE=profile-gemalto-idbridge-ct30 .
+docker build --build-arg PROFILE=stm32f469,profile-gemalto-idbridge-ct30 .
 ```
 
 The Dockerfile produces the binary at `/app/output/ccid-firmware.bin` with a checksum.
@@ -269,7 +269,7 @@ The Dockerfile produces the binary at `/app/output/ccid-firmware.bin` with a che
 Test that builds are deterministic:
 
 ```bash
-scripts/verify-reproducibility.sh profile-cherry-smartterminal-st2xxx
+scripts/verify-reproducibility.sh stm32f469,profile-cherry-smartterminal-st2xxx
 ```
 
 Exit codes:
@@ -388,7 +388,10 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs host-safe validation f
 - STM32 profile builds at the repository root
 - STM32 host-side tests and linting
 - ESP32 host-side tests in `firmware/esp32-ccid/`
-- Vendored `iso14443-rs` host-side tests used by the ESP32 MFRC522 path
+- iso14443 dependency tests: NOT covered by this repo's CI (the crate
+  is a non-vendored git dependency; `cargo test` does not run a
+  dependency's own suite) — run them from a checkout of the
+  Amperstrand/iso14443-rs fork when touching that dependency
 
 The current workflow intentionally avoids requiring a full ESP-IDF/Xtensa toolchain in every CI job. Xtensa release builds are still expected locally before shipping ESP32 firmware.
 

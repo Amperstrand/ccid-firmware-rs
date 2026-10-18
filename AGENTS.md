@@ -1303,11 +1303,10 @@ custom tooling (nRF Connect, "Serial Bluetooth Terminal", bleak).
 > **Status (2026-10-09): parked by owner decision** — dump-and-retrieve
 > (previous section) is the preferred debugging style; live BLE logging
 > stays available where it already works (M5Stick bench builds). The C3
-> path is blocked (see "C3/Bluedroid sdkconfig traps") and the
-> `c3-ccid-ble` board exists (`sisyphus/c3-ble-board`) but advertising
-> stayed blocked on the C3 0x0c rejection — see D-3 in
-> docs/DECISION_REGISTER.md for the 2026-10-17 closure of that wall.
-> The code is feature-gated, host-tested,
+> 0x0c wall is CLOSED (D-3, docs/DECISION_REGISTER.md) — both boards
+> advertise; what remains for `c3-ccid-ble` is the connect/NUS-delivery
+> verification (tracked with issue #66). The code is feature-gated,
+> host-tested,
 > and costs nothing in non-`ble` builds.
 
 ```bash
@@ -1491,7 +1490,7 @@ ota_0 slot @0x40000 (build.sh), NOT the legacy factory @0x30000.
 | M5Stick/M5Atom (standard) | UART0 | console NONE by default; netlog (UDP :4567) with WiFi creds |
 | M5Stick/M5Atom (`ble` build, experimental) | UART0 | BLE NUS notifications (`m5stick-ble`) |
 | nucula standard | USB-CDC | clean-wire (#131): boot banner only, then framed CCID only — diagnostics via Escape 0xD0/0xD1, coredumps, or actdiag/ble/netlog builds |
-| nucula (`ble` build) | USB-CDC | `c3-ccid-ble` board exists (`sisyphus/c3-ble-board`); advertising still blocked on the C3 0x0c controller rejection (see issue #66) — 0x0c wall since CLOSED per D-3 (docs/DECISION_REGISTER.md) |
+| nucula (`ble` build) | USB-CDC | `c3-ccid-ble` board exists (`sisyphus/c3-ble-board`); advertising WORKS — the C3 0x0c wall is closed per D-3 (docs/DECISION_REGISTER.md); remaining: connect/NUS-delivery verification (issue #66) |
 
 ## Device CI: the hil-bench nightly + generated STATUS.md (2026-10-14, #183)
 

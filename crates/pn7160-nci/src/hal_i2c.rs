@@ -2,18 +2,23 @@
 //! `i2c_master` driver_ng FFI.
 //!
 //! The pinned esp-idf-hal generation did not wrap driver_ng (issues
-//! #63/#80); since the #242/#230 wave every I2C consumer (MFRC522
-//! included) rides THIS adapter over the raw driver_ng FFI, and the
-//! vendored-hal `legacy-i2c` gate is retired. This adapter is
-//! the convergence piece: one I2C driver generation for both projects
-//! (ccid + bolty-rs), the retirement path for the vendor patch, and
-//! IDF-6 pre-alignment (legacy driver removed there).
+//! #63/#80); since the #242/#230 wave every EMBEDDED-HAL I2C consumer
+//! (MFRC522 included) rides THIS adapter over the raw driver_ng FFI —
+//! the PN7160 transport and the diagnostic PN7160 modules access
+//! `i2c_master_*` through raw FFI directly (D-9 scope,
+//! docs/DECISION_REGISTER.md). The vendored-hal `legacy-i2c` gate is
+//! retired. This adapter is the convergence piece: one I2C driver
+//! generation for both projects (ccid + bolty-rs), the retirement
+//! path for the vendor patch, and IDF-6 pre-alignment (legacy driver
+//! removed there).
 //!
-//! Skeleton scope (#149): the trait impl + the host-testable pure
-//! mapping (esp-idf error codes → `embedded_hal::i2c::ErrorKind`,
-//! address-vs-handle validation). The `backend-mfrc522` migration and
-//! the vendor-patch retirement are bench-gated follow-ups per the
-//! issue — the adapter lands first, proven, then consumers move.
+//! Scope today (#149 P3, post-#242): the trait impl + the
+//! host-testable pure mapping (esp-idf error codes →
+//! `embedded_hal::i2c::ErrorKind`, address-vs-handle validation) are
+//! IN SERVICE — the `backend-mfrc522` migration and the vendor-patch
+//! retirement this adapter was staged for have both landed (#242 /
+//! #230); the skeleton-era "bench-gated follow-up" framing is
+//! obsolete.
 //!
 //! Consumer scope (#149 P3, this change): `I2cMasterBus` (bus creation
 //! + probe + device-add, the `esp_transport::from_peripherals` pattern
