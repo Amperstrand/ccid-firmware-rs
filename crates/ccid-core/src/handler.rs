@@ -313,6 +313,40 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         self.diagnostics.error_count = self.diagnostics.error_count.saturating_add(1);
     }
 
+    /// Transmit an APDU through the core's counting seam (issue #276):
+    /// apdu_tx is counted on every call, apdu_rx on every card answer.
+    /// The ONLY legal card-transmit path for wrapper-driven exchanges
+    /// (the STM32 PIN-pad Verify/Modify APDUs) — the Escape 0xD0
+    /// diagnostics were blind to PIN exchanges while the wrapper called
+    /// `driver_mut().transmit_apdu` directly. The XfrBlock paths count
+    /// through the same helper below.
+    pub fn transmit_counted(
+        &mut self,
+        command: &[u8],
+        response: &mut [u8],
+    ) -> core::result::Result<usize, D::Error> {
+        Self::count_transmit(&mut self.diagnostics, &mut self.nfc, command, response)
+    }
+
+    /// Count-then-transmit — the ONE definition of when apdu_tx/apdu_rx
+    /// advance: at the moment of actual card transfer (the #46/#43/#38
+    /// convention — rejected/inactive requests and locally answered
+    /// frames are not APDUs sent to the card). A failed transmit counts
+    /// tx but not rx.
+    fn count_transmit<D2: SlotDriver>(
+        diagnostics: &mut Diagnostics,
+        nfc: &mut D2,
+        command: &[u8],
+        response: &mut [u8],
+    ) -> core::result::Result<usize, D2::Error> {
+        diagnostics.apdu_tx_count = diagnostics.apdu_tx_count.saturating_add(1);
+        let result = nfc.transmit_apdu(command, response);
+        if result.is_ok() {
+            diagnostics.apdu_rx_count = diagnostics.apdu_rx_count.saturating_add(1);
+        }
+        result
+    }
+
     pub fn slot_state(&self) -> SlotState {
         self.slot_state
     }
@@ -702,21 +736,17 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
-        self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
-        match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
-            Ok(resp_len) => {
-                self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
-                write_message(
-                    RDR_TO_PC_DATABLOCK,
-                    header.slot,
-                    header.seq,
-                    build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE),
-                    0,
-                    0,
-                    &self.tx_buf[..resp_len],
-                    response,
-                )
-            }
+        match Self::count_transmit(&mut self.diagnostics, &mut self.nfc, apdu, &mut self.tx_buf) {
+            Ok(resp_len) => write_message(
+                RDR_TO_PC_DATABLOCK,
+                header.slot,
+                header.seq,
+                build_bstatus(COMMAND_STATUS_NO_ERROR, ICC_STATUS_PRESENT_ACTIVE),
+                0,
+                0,
+                &self.tx_buf[..resp_len],
+                response,
+            ),
             Err(_) => {
                 // Card timeout or protocol error. libccid maps a FAILED
                 // DataBlock by bError (commands.c L1605-L1638): 0xF0 →
@@ -972,24 +1002,20 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         // Counted at the moment of actual card transfer (Codex reviews on
         // #46/#43/#38): rejected/inactive requests and locally echoed PPS
         // frames are not APDUs sent to the card.
-        self.diagnostics.apdu_tx_count = self.diagnostics.apdu_tx_count.saturating_add(1);
-        match self.nfc.transmit_apdu(apdu, &mut self.tx_buf) {
-            Ok(resp_len) => {
-                self.diagnostics.apdu_rx_count = self.diagnostics.apdu_rx_count.saturating_add(1);
-                write_message(
-                    RDR_TO_PC_DATABLOCK,
-                    header.slot,
-                    header.seq,
-                    build_bstatus(
-                        COMMAND_STATUS_NO_ERROR,
-                        SlotState::PresentActive.icc_status(),
-                    ),
-                    0,
-                    0,
-                    &self.tx_buf[..resp_len],
-                    response,
-                )
-            }
+        match Self::count_transmit(&mut self.diagnostics, &mut self.nfc, apdu, &mut self.tx_buf) {
+            Ok(resp_len) => write_message(
+                RDR_TO_PC_DATABLOCK,
+                header.slot,
+                header.seq,
+                build_bstatus(
+                    COMMAND_STATUS_NO_ERROR,
+                    SlotState::PresentActive.icc_status(),
+                ),
+                0,
+                0,
+                &self.tx_buf[..resp_len],
+                response,
+            ),
             Err(_) => {
                 // Card timeout or death mid-exchange — same convention as
                 // the contact arm above (#152): FAILED DataBlock +
@@ -2595,6 +2621,37 @@ mod contact_profile_tests {
         let n = core.complete_pin_entry(9, PinResult::InvalidLength, None, &mut resp);
         let (_, _, _, err, _) = parse(&resp[..n]);
         assert_eq!(err, CCID_ERR_CMD_ABORTED);
+    }
+
+    /// #276: `transmit_counted` is the seam wrapper-driven card exchanges
+    /// (the STM32 PIN-pad flow) must use — tx on every attempt, rx only
+    /// on a card answer, identical to the XfrBlock counting.
+    #[test]
+    fn transmit_counted_advances_apdu_counters() {
+        let mut core = new_core(true, &T0_ATR, false);
+        power_on(&mut core, 1);
+        let mut resp = [0u8; 271];
+
+        assert_eq!(core.diagnostics().apdu_tx_count, 0);
+        assert_eq!(core.diagnostics().apdu_rx_count, 0);
+
+        let n = core
+            .transmit_counted(&[0x00, 0x20, 0x00, 0x82, 0x06], &mut resp)
+            .expect("card answers");
+        assert_eq!(&resp[..n], &[0x90, 0x00]);
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 1);
+
+        core.driver_mut().fail_transmit = true;
+        assert!(core
+            .transmit_counted(&[0x00, 0x20, 0x00, 0x82, 0x06], &mut resp)
+            .is_err());
+        assert_eq!(core.diagnostics().apdu_tx_count, 2);
+        assert_eq!(
+            core.diagnostics().apdu_rx_count,
+            1,
+            "a failed transmit counts tx but never rx"
+        );
     }
 
     #[test]
