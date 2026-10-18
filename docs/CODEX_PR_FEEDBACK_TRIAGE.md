@@ -247,13 +247,17 @@ parallel verification passes; every disposition HEAD-quoted — full
 tables in Amperstrand/pr-review-audit `ccid-sweep-4-report.md` and the
 [#252 checkpoint](https://github.com/Amperstrand/ccid-firmware-rs/issues/252)).
 
-**Totals: 111 findings — 82 ADDRESSED/ALREADY-FIXED/OBSOLETE at HEAD,
-28 STILL-ACTIONABLE → every one now has a destination:**
+**Totals (reconciled 2026-10-18, post-merge Codex P2 on #279): 111
+classified comment-rows = 110 UNIQUE findings — the #222 PN532-log P1
+was verified in two chunks and counted once. 83 resolved at HEAD
+(ADDRESSED/ALREADY-FIXED/OBSOLETE, including the #258 doc trio via
+main's `5fa216d`) + 27 unique STILL-ACTIONABLE = 110. Every
+still-actionable row has exactly one destination:**
 
 | Destination | Findings |
 |---|---|
-| Fixed in #277 (`db59b2d`) | #269 dwLength wrap P1, #222 PN532 wire log P1, #259 ×3 (probe default/compare/stopbits), #230 IRQ-order, #237 cat guard |
-| Fixed in #279 (`68de0f6`) | #111 example, #150 residual doc, #162, #187, #191, #206 ×3, #258 ×3 (ten doc-truth rows) |
+| Fixed in #277 (`db59b2d`) | #269 dwLength wrap P1, #222 PN532 wire log P1, #259 ×3 (probe default/compare/stopbits), #230 IRQ-order, #237 cat guard — 7 rows |
+| Fixed in #279 (`1a45f5f`, rebased `48e3bd7`) | #111 example, #150 residual doc, #162, #187, #191, #206 ×3 — 8 rows (the #258 ×3 trio was superseded at rebase by main's `5fa216d`, which fixed the same passages) |
 | Tracked #275 (bench lane) | #192 ×5 (m5stick_lcd), #230 BusPins |
 | Tracked #276 | #269 PIN-counter bypass |
 | Pre-tracked #180 / #183 | #159 FWITOX, #234 unverified stamp |
