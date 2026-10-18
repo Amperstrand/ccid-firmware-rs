@@ -77,8 +77,16 @@ impl<D: NfcDriver> CcidHandler<D> {
         self.core.record_nak()
     }
 
+    /// Presence poll — the one seam every serve path uses (serial
+    /// server, SPP pump, classic mains). Also pushes current presence
+    /// to the M5StickC-Plus status screen (#275: `set_card_present`
+    /// had zero production callers, so the screen rendered
+    /// `card: ---` for the whole session). Inert on non-lcd builds;
+    /// the display can never feed back into serving.
     pub fn check_card_change(&mut self) -> Option<bool> {
-        self.core.check_card_change()
+        let changed = self.core.check_card_change();
+        crate::m5stick_lcd::set_card_present(self.core.diagnostics().card_present);
+        changed
     }
 
     pub fn slot_state(&self) -> SlotState {
@@ -771,7 +779,6 @@ mod tests {
     #[test]
     fn test_check_card_change_detects_insertion_and_removal() {
         let mut handler = new_handler(false);
-
         assert_eq!(handler.check_card_change(), None);
 
         handler.driver_mut().set_card_present(true);
@@ -786,6 +793,27 @@ mod tests {
         handler.driver_mut().set_card_present(false);
         assert_eq!(handler.check_card_change(), Some(false));
         assert_eq!(handler.slot_state(), SlotState::Absent);
+    }
+
+    /// #275 defect 3 regression: the presence poll must DRIVE the status
+    /// screen — `m5stick_lcd::set_card_present` had zero production
+    /// callers (screen showed `card: ---` all session). Host/stub builds
+    /// observe the pushed value via the stub's recorder; lcd/target
+    /// builds exercise the real screen on the bench.
+    #[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
+    #[test]
+    fn test_check_card_change_wires_display_presence() {
+        let mut handler = new_handler(false);
+        handler.check_card_change();
+        assert!(!crate::m5stick_lcd::last_card_present());
+
+        handler.driver_mut().set_card_present(true);
+        handler.check_card_change();
+        assert!(crate::m5stick_lcd::last_card_present());
+
+        handler.driver_mut().set_card_present(false);
+        handler.check_card_change();
+        assert!(!crate::m5stick_lcd::last_card_present());
     }
 
     #[test]

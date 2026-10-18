@@ -78,6 +78,15 @@ format = "markdown"
 file = "docs/quote-sources/um11495-quotes.md"
 comment_marker = "UM11495"
 
+# M5Stack/sipeed AXP192 reference implementations (m5stick_lcd battery
+# decode + power-path registers, issue #275): same quote-source policy —
+# the AXP192 datasheet is PDF-only, the official Arduino ports are the
+# tracked text.
+[sources.M5AXP]
+format = "markdown"
+file = "docs/quote-sources/m5stack-axp192-quotes.md"
+comment_marker = "M5AXP"
+
 [sources.CCID_DEFS]
 format = "markdown"
 file = "reference/CCID/src/ccid.h"

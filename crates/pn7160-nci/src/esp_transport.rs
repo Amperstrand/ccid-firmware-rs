@@ -98,12 +98,28 @@ unsafe impl Send for EspPn7160Transport {}
 /// Decomposed board pins for the NFC block: the bring-up main splits
 /// `Peripherals` once (modem + nvs to WiFi, the rest here) because
 /// `Peripherals::take` is single-shot.
-pub struct BusPins {
-    pub i2c0: esp_idf_hal::i2c::I2C0<'static>,
-    pub sda: esp_idf_hal::gpio::Gpio4<'static>,
-    pub scl: esp_idf_hal::gpio::Gpio5<'static>,
-    pub irq: esp_idf_hal::gpio::Gpio6<'static>,
-    pub ven: esp_idf_hal::gpio::Gpio7<'static>,
+///
+/// Generic over the peripheral/pin tokens (#230, kept with the #275
+/// lane): the defaults are the nucula tokens (I2C0 + GPIO4/5/6/7), so
+/// every existing call site and signature is unchanged — but a second
+/// board now instantiates `BusPins<I2C, SDA, SCL, IRQ, VEN>` with its
+/// own pins instead of editing this shared crate (the exact coupling
+/// #149 P2 set out to remove). The tokens prove ownership only: the
+/// transport drives raw gpio numbers from [`BoardPins`] (driver_ng
+/// claims the I2C controller by port number, `from_peripherals`
+/// discards the tokens).
+pub struct BusPins<
+    I2C = esp_idf_hal::i2c::I2C0<'static>,
+    SDA = esp_idf_hal::gpio::Gpio4<'static>,
+    SCL = esp_idf_hal::gpio::Gpio5<'static>,
+    IRQ = esp_idf_hal::gpio::Gpio6<'static>,
+    VEN = esp_idf_hal::gpio::Gpio7<'static>,
+> {
+    pub i2c0: I2C,
+    pub sda: SDA,
+    pub scl: SCL,
+    pub irq: IRQ,
+    pub ven: VEN,
 }
 
 impl EspPn7160Transport {

@@ -63,10 +63,12 @@ pn7160-bitbang = ["backend-pn7160", "board-nucula"]
 pn7160-m1 = ["backend-pn7160", "board-nucula"]
 pn7160-v10raw = ["backend-pn7160", "board-nucula"]
 pn7160-actdiag = ["backend-pn7160", "board-nucula"]
-# M5StickC(-Plus) LCD status screen (bolty-rs display.rs port):
-# mipidsi/embedded-graphics pinned to bolty's exact proven pair. The
-# AXP192 PMU rides the same #149 P3 driver_ng adapter as the MFRC522
-# backend (m5stick_lcd.rs `imp` module).
+# M5StickC-**Plus** LCD status screen (bolty-rs display.rs port) —
+# Plus-only (#275: the pinned ST7789 135x240 geometry mis-drives an
+# original M5StickC's ST7735S panel; per-model selection is tracked
+# follow-up). mipidsi/embedded-graphics pinned to bolty's exact proven
+# pair. The AXP192 PMU rides the same #149 P3 driver_ng adapter as the
+# MFRC522 backend (m5stick_lcd.rs `imp` module).
 lcd = ["dep:mipidsi", "dep:embedded-graphics", "dep:pn7160-nci", "pn7160-nci/esp"]
 ble = []
 # DIAGNOSTIC-ONLY BLE variant (issue #165): keeps C-level ESP_LOGx/BT

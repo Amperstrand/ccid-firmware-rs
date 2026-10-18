@@ -293,7 +293,9 @@ jobs:
             sdkconfig_full: false
           # ST7789 status screen variant (bolty display.rs port) — CI
           # build-verifies the lcd feature pair on the xtensa target.
-          - name: m5stick-lcd
+          # M5StickC-Plus only (#275): the pinned geometry mis-drives an
+          # original StickC's ST7735S panel.
+          - name: m5stick-plus-lcd
             features: "backend-mfrc522,board-m5stick,lcd"
             no-default-features: true
             gate: false

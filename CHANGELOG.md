@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #275: m5stick_lcd correctness five-some (host-side; bench re-verification tracked on the m5stick place)
+
+- **ADC low nibble no longer discarded** — `battery_mv_from_regs` now
+  uses the official M5Stack 12-bit form `(reg78 << 4) + reg79`
+  (`AXP192::Read12Bit`/`GetBatVoltage`, verbatim-quoted in
+  `docs/quote-sources/m5stack-axp192-quotes.md`, enforced by the new
+  `M5AXP` specquotes source). The old `| (reg79 >> 4)` extracted the
+  reserved high nibble — real-silicon readings like EC/07 decoded as
+  EC0. The EC/70 test fixture was wrong under the same model and is
+  fixed with the decoder (worked example EC/07 → 3783 raw → 4161 mV).
+- **VBUS presence read from the right register** — was reg 0x01 bit5
+  (BATTERY presence; a battery-equipped board showed USB-powered
+  forever after unplug), now reg **0x00** bit5 (input power status:
+  `isVBUSPlug` masks `AXP202_STATUS = 0x00` bit5; `GetBatState` reads
+  reg 0x01 bit 0x20 — both quoted). `usb_powered_from_reg01` renamed
+  `usb_powered_from_reg00`.
+- **Card presence now wired into the serve path** —
+  `CcidHandler::check_card_change` (the one poll every serve path
+  uses) pushes presence to the screen; `m5stick_lcd::set_card_present`
+  previously had zero production callers (the screen rendered
+  `card: ---` all session). Host/stub builds observe the wiring via a
+  recorder in the no-op stub (`test_check_card_change_wires_display_presence`).
+- **Display ticker spawn degrades instead of panicking** — both
+  `.expect()`s in `spawn_ticker` (12 KB ticker + 8 KB battery threads)
+  became warn-and-continue: an allocation failure reboots the reader
+  pre-serve; a missing status screen must not take the CCID service
+  down.
+- **Plus-only driver labeled honestly** — module/build.sh/CI/Cargo
+  docs now say M5StickC-**Plus** (ST7789 135x240); build.sh board
+  `m5stick-lcd` renamed `m5stick-plus-lcd`. The original StickC's
+  ST7735S 80x160 panel is mis-driven by this geometry — per-model
+  selection is the tracked follow-up.
+- **#230 rider: `BusPins` genericized** —
+  `pn7160_nci::esp_transport::BusPins` is now
+  `BusPins<I2C, SDA, SCL, IRQ, VEN>` with the nucula tokens as
+  defaults (zero call-site churn): a second board instantiates its own
+  pins instead of editing the shared crate — the coupling #149 P2 set
+  out to remove.
+
 ### Changed — #149 P3: MFRC522 + AXP192 ride the driver_ng embedded-hal adapter; the esp-idf-hal patch is retired
 
 - `backend-mfrc522` no longer gates `esp-idf-hal/legacy-i2c`. Every
