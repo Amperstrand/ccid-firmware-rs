@@ -126,7 +126,10 @@ impl EspPn7160Transport {
     /// Verdict B (baseline): I2C bus first — the native firmware's
     /// nucula.cpp:181 position — then the VEN power cycle.
     #[cfg(not(feature = "ven-never"))]
-    pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+    pub fn bringup_config_order<I2C, SDA, SCL, IRQ, VEN>(
+        board: BoardPins,
+        p: BusPins<I2C, SDA, SCL, IRQ, VEN>,
+    ) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(board, p)?;
         t.ven_cycle();
         // The PN7160 only ACKs within a window after VEN rise (bench-proven
@@ -144,7 +147,10 @@ impl EspPn7160Transport {
     /// ven-never experiment: assume the chip is ALIVE (wallet handover or
     /// warm board) — VEN raised in µs at construction, NO power cycle.
     #[cfg(feature = "ven-never")]
-    pub fn bringup_config_order(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+    pub fn bringup_config_order<I2C, SDA, SCL, IRQ, VEN>(
+        board: BoardPins,
+        p: BusPins<I2C, SDA, SCL, IRQ, VEN>,
+    ) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(board, p)?;
         // Codex PR 85: the constructor configures VEN as OUTPUT but
         // never sets the level — the chip stays in power-down and the
@@ -178,7 +184,10 @@ impl EspPn7160Transport {
     /// Verdict A (pads stuck): clear gpio hold + sleep isolation on the
     /// four NFC pads before reconfiguration. A latched hold ignores
     /// config changes until cleared (cf. Tasmota #20030).
-    pub fn bringup_pad_hold_clear(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+    pub fn bringup_pad_hold_clear<I2C, SDA, SCL, IRQ, VEN>(
+        board: BoardPins,
+        p: BusPins<I2C, SDA, SCL, IRQ, VEN>,
+    ) -> Result<Self, EspError> {
         unsafe {
             esp_idf_sys::gpio_deep_sleep_hold_dis();
             for pin in [board.sda, board.scl, board.irq, board.ven] {
@@ -190,14 +199,20 @@ impl EspPn7160Transport {
     }
 
     /// Verdict C: quiesce the core with extended VEN timing.
-    pub fn bringup_ven_timing(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+    pub fn bringup_ven_timing<I2C, SDA, SCL, IRQ, VEN>(
+        board: BoardPins,
+        p: BusPins<I2C, SDA, SCL, IRQ, VEN>,
+    ) -> Result<Self, EspError> {
         let mut t = Self::from_peripherals(board, p)?;
         t.ven_cycle_extended();
         t.add_pn_device()?;
         Ok(t)
     }
 
-    fn from_peripherals(board: BoardPins, p: BusPins) -> Result<Self, EspError> {
+    fn from_peripherals<I2C, SDA, SCL, IRQ, VEN>(
+        board: BoardPins,
+        p: BusPins<I2C, SDA, SCL, IRQ, VEN>,
+    ) -> Result<Self, EspError> {
         // Board rules (zeugmaster/nucula-board peripherals-design.md):
         // 100 kHz max (PCF8574T limit), external 2.2k pulls to 3.0 V —
         // ESP internal pull-ups must stay OFF.

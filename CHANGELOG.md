@@ -49,7 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CcidHandler::check_card_change` (the one poll every serve path
   uses) pushes presence to the screen; `m5stick_lcd::set_card_present`
   previously had zero production callers (the screen rendered
-  `card: ---` all session). Host/stub builds observe the wiring via a
+  `card: ---` all session). The setter is state-only — NO synchronous
+  redraw from the serve loop (Codex P1 on #281): the 1 Hz ticker
+  flushes, so the card line lags presence by at most a second.
+  Host/stub builds observe the wiring via a race-tolerant call-count
   recorder in the no-op stub (`test_check_card_change_wires_display_presence`).
 - **Display ticker spawn degrades instead of panicking** — both
   `.expect()`s in `spawn_ticker` (12 KB ticker + 8 KB battery threads)
@@ -64,9 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **#230 rider: `BusPins` genericized** —
   `pn7160_nci::esp_transport::BusPins` is now
   `BusPins<I2C, SDA, SCL, IRQ, VEN>` with the nucula tokens as
-  defaults (zero call-site churn): a second board instantiates its own
-  pins instead of editing the shared crate — the coupling #149 P2 set
-  out to remove.
+  defaults, and every transport constructor plus
+  `wifi_common::pn7160_bring_up` takes the generic form (zero
+  call-site churn): a second board instantiates its own pins instead
+  of editing the shared crate — the coupling #149 P2 set out to
+  remove.
 
 ### Changed — #149 P3: MFRC522 + AXP192 ride the driver_ng embedded-hal adapter; the esp-idf-hal patch is retired
 
