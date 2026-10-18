@@ -156,6 +156,17 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         &mut self.core.driver_mut().driver
     }
 
+    /// #290: forward the wrapper-driven card-transmit seam — the
+    /// app-enumeration display lane drives real SELECT APDUs and
+    /// belongs in the 0xD0 counters with the PIN-pad arms.
+    pub fn transmit_counted(
+        &mut self,
+        command: &[u8],
+        response: &mut [u8],
+    ) -> Result<usize, D::Error> {
+        self.core.transmit_counted(command, response)
+    }
+
     /// Escape 0xD0 counters snapshot (the esp32 wrapper's accessor
     /// pattern) — also the #276 regression-test surface: PIN-pad
     /// exchanges must advance apdu_tx/apdu_rx like XfrBlock traffic.

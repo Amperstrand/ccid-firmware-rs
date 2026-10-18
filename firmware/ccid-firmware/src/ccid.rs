@@ -86,6 +86,13 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
         self.core.driver_mut()
     }
 
+    /// #290: the display lane's app-enumeration drives card transfers
+    /// through the counting seam — hand it the wrapper, not the raw
+    /// driver.
+    pub fn handler_mut(&mut self) -> &mut CcidMessageHandler<D> {
+        &mut self.core
+    }
+
     pub fn is_pin_entry_active(&self) -> bool {
         self.core.is_pin_entry_active()
     }

@@ -24,6 +24,12 @@
 #[macro_use]
 mod logging;
 
+// #290: app enumeration moved from the arm-gated bin module into the
+// lib (display-gated) — the AID table + SELECT state machine are pure
+// logic; living here lets the counter regression test run on the host
+// (the bin tree compiles only for target_arch = "arm").
+#[cfg(feature = "display")]
+pub mod app_enum;
 pub mod ccid_core;
 pub mod device_profile;
 pub mod driver;

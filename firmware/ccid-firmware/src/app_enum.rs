@@ -3,11 +3,9 @@
 //! Provides functionality to enumerate installed applications on a smartcard
 //! by probing known AIDs via SELECT APDU commands.
 //!
-//! Only available when the `display` feature is enabled.
 
-#![cfg(feature = "display")]
-
-use ccid_firmware_rs::driver::SmartcardDriver;
+use crate::ccid_core::CcidMessageHandler;
+use crate::driver::SmartcardDriver;
 
 /// Number of known applications
 pub const APP_COUNT: usize = 5;
@@ -85,10 +83,14 @@ impl AppEnumerationState {
 
     /// Run enumeration if needed and card is present
     /// Returns true if enumeration was performed
+    ///
+    /// #290: takes the HANDLER (not the raw driver) so the SELECT
+    /// probes ride the `transmit_counted` seam — enumeration transfers
+    /// are card APDUs and advance the 0xD0 apdu_tx/rx counters.
     #[allow(clippy::needless_range_loop)]
     pub fn enumerate_if_needed<D: SmartcardDriver>(
         &mut self,
-        driver: &mut D,
+        handler: &mut CcidMessageHandler<D>,
         card_present: bool,
     ) -> bool {
         if !card_present {
@@ -121,7 +123,7 @@ impl AppEnumerationState {
             let apdu_total_len = 5 + len + 1;
 
             let mut response = [0u8; 32];
-            match driver.transmit_apdu(&apdu[..apdu_total_len], &mut response) {
+            match handler.transmit_counted(&apdu[..apdu_total_len], &mut response) {
                 Ok(resp_len) => {
                     let sw1 = if resp_len > 1 {
                         response[resp_len - 2]
@@ -158,5 +160,35 @@ impl AppEnumerationState {
     /// Check if enumeration has been done
     pub fn is_enumerated(&self) -> bool {
         self.enumerated
+    }
+}
+
+#[cfg(all(test, feature = "display"))]
+mod tests {
+    //! #290: enumeration probes are card APDUs — they must ride the
+    //! transmit_counted seam and advance the 0xD0 counters. The mock's
+    //! default transmit answers Ok, so all APP_COUNT probes count.
+
+    use super::*;
+    use crate::mock_driver::MockSmartcardDriver;
+
+    #[test]
+    fn enumeration_probe_transfers_advance_apdu_counters() {
+        let mut handler =
+            CcidMessageHandler::new(MockSmartcardDriver::new().card_present(true), 0x046a);
+        let mut state = AppEnumerationState::new();
+
+        assert!(state.enumerate_if_needed(&mut handler, true));
+        assert_eq!(handler.diagnostics().apdu_tx_count as usize, APP_COUNT);
+        assert_eq!(handler.diagnostics().apdu_rx_count as usize, APP_COUNT);
+
+        // Already enumerated: no further transfers, no further counts.
+        assert!(!state.enumerate_if_needed(&mut handler, true));
+        assert_eq!(handler.diagnostics().apdu_tx_count as usize, APP_COUNT);
+
+        // Card gone: resets without touching the bus.
+        assert!(!state.enumerate_if_needed(&mut handler, false));
+        assert_eq!(handler.diagnostics().apdu_tx_count as usize, APP_COUNT);
+        assert!(!state.is_enumerated());
     }
 }
