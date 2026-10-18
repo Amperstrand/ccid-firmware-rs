@@ -597,6 +597,11 @@ impl<D: NfcDriver> CcidSerialServer<D> {
                 None
             };
             if let Some(present) = fresh.or(stale) {
+                // #275: mirror every observed presence onto the status
+                // screen — the LCD setter is an inert no-op without the
+                // lcd feature (stub contract), so this compiles
+                // unconditionally on every board.
+                crate::m5stick_lcd::set_card_present(present);
                 if self.config.notify_slot_change {
                     self.notify_len = build_slot_change_notification(present, &mut self.notify_buf);
                 }

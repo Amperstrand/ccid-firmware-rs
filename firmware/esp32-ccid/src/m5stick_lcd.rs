@@ -1,4 +1,8 @@
-//! M5StickC(-Plus) LCD status screen — ported from bolty-rs
+//! M5StickC **Plus** LCD status screen (ST7789 135×240 — #275: the
+//! panel init and geometry are Plus-ONLY; the original M5StickC's
+//! ST7735S 80×160 is NOT driven correctly by this module and flashing
+//! it there is unsupported until a per-model init lands, tracked with
+//! #275). Ported from bolty-rs
 //! `apps/bolty-esp32/src/display.rs` (same esp-idf-hal =0.46.2 /
 //! esp-idf-svc =0.52.1 stack, bench-proven on this lab's M5Stick
 //! hardware), which itself carries wiring derived from M5GFX /
@@ -30,7 +34,6 @@ pub const AXP192_I2C_ADDR: u8 = 0x34;
 /// precedent: jl1nie/mfsk-core embedded-poc, "register addresses we
 /// touch, names track the AXP192 datasheet"). Every literal below was
 /// previously an unexplained magic number in the op-table.
-pub const REG_POWER_STATUS: u8 = 0x01; // §8.2 — VBUS bit5 = USB powered
 pub const REG_CHIP_ID: u8 = 0x03; // §8.3 — reads 0x03 on AXP192 (liveness probe)
 pub const REG_DCDC1_VOLTAGE: u8 = 0x10; // §8.19 — bit2 = Grove 5V boost EXTEN
 pub const REG_POWER_OUT_CTL: u8 = 0x12; // §8.5 — DCDC1|DCDC3|LDO2|LDO3|EXTEN enables
@@ -135,9 +138,12 @@ pub const AXP192_INIT_SEQUENCE: &[AxpOp] = &[
 // ---------------------------------------------------------------------------
 
 /// Battery register decode (AXP192 datasheet §8.26 reg 78h/79h):
-/// raw = reg78[7:0] << 4 | reg79[7:4], 1.1 mV/LSB → (raw * 11) / 10 mV.
+/// raw = reg78[7:0] << 4 | reg79[3:0] (12-bit — the LOW nibble of 79h
+/// carries the data; #275: the old `>> 4` discarded it, quantizing
+/// EC07 to EC0. Masked, not M5Stack's `+ reg79`, so upper-nibble
+/// garbage is ignored — identical on real silicon where it reads 0).
 pub fn battery_mv_from_regs(reg_batt_h: u8, reg_batt_l: u8) -> u32 {
-    let raw = ((reg_batt_h as u32) << 4) | ((reg_batt_l as u32) >> 4);
+    let raw = ((reg_batt_h as u32) << 4) | ((reg_batt_l as u32) & 0x0F);
     (raw * 11) / 10
 }
 
@@ -153,10 +159,14 @@ pub fn battery_pct_from_mv(mv: u32) -> u8 {
     }
 }
 
-/// USB-powered: reg 0x01 bit 5 (ACIN/VBUS present — AXP192 datasheet
-/// §8.2 power path status; bit5 = VBUS-VALID).
-pub fn usb_powered_from_reg01(reg01: u8) -> bool {
-    reg01 & (1 << 5) != 0
+/// USB-powered: reg 0x00 (Power Supply Status) bit 5 = VBUS-VALID
+/// (AXP192 datasheet §8.2). #275: this read reg 0x01 bit 5 — that is
+/// BATTERY-present in the Power Mode register, so a battery-equipped
+/// board kept the USB+ marker after unplug (M5Stack official impls
+/// read 0x00 bit5 for VBUS).
+pub const REG_POWER_SUPPLY_STATUS: u8 = 0x00; // §8.2 — bit5 = VBUS-VALID
+pub fn usb_powered_from_reg00(reg00: u8) -> bool {
+    reg00 & (1 << 5) != 0
 }
 
 /// What the status screen shows. FWID/rev come from the build env
@@ -567,16 +577,16 @@ mod imp {
         let Some((_, i2c)) = guard.as_mut() else {
             return false;
         };
-        let (r78, r79, r01) = (
+        let (r78, r79, r00) = (
             axp_read(i2c, REG_BATT_VOLTAGE_H).ok(),
             axp_read(i2c, REG_BATT_VOLTAGE_L).ok(),
-            axp_read(i2c, REG_POWER_STATUS).ok(),
+            axp_read(i2c, REG_POWER_SUPPLY_STATUS).ok(),
         );
-        let (Some(r78), Some(r79), Some(r01)) = (r78, r79, r01) else {
+        let (Some(r78), Some(r79), Some(r00)) = (r78, r79, r00) else {
             return false;
         };
         let pct = super::battery_pct_from_mv(super::battery_mv_from_regs(r78, r79));
-        let usb = super::usb_powered_from_reg01(r01);
+        let usb = super::usb_powered_from_reg00(r00);
         with_screen(|s| {
             s.data.battery_pct = pct;
             s.data.usb_power = usb;
@@ -591,7 +601,11 @@ mod imp {
     /// path is fmt + embedded-graphics + I2C (bench lesson 2026-10-15:
     /// 4 KB overflowed and reboot-looped the board ~2 s after boot).
     pub fn spawn_ticker() {
-        std::thread::Builder::new()
+        // #275: spawn failures degrade to headless serving — the reader
+        // stays up without the screen instead of panicking pre-serve
+        // (an allocation failure under memory pressure used to reboot
+        // the board here).
+        if std::thread::Builder::new()
             .stack_size(12288)
             .spawn(|| {
                 let mut uptime = 0u32;
@@ -601,11 +615,15 @@ mod imp {
                     tick(uptime);
                 }
             })
-            .expect("display ticker spawn");
+            .is_err()
+        {
+            log::error!("m5stick_lcd: ticker spawn failed — serving headless");
+            return;
+        }
         // Battery: init read + 10-min cadence; three consecutive failures
         // park the thread (battery "?"-equivalent: shows the last good
         // value) instead of poking a possibly-wedged bus forever.
-        std::thread::Builder::new()
+        if std::thread::Builder::new()
             .stack_size(8192)
             .spawn(|| {
                 let mut failures = 0u8;
@@ -624,7 +642,10 @@ mod imp {
                     }
                 }
             })
-            .expect("battery refresh spawn");
+            .is_err()
+        {
+            log::error!("m5stick_lcd: battery-refresh spawn failed — battery stale");
+        }
     }
 }
 
@@ -700,17 +721,24 @@ mod tests {
         assert_eq!((DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y), (52, 40));
     }
 
-    /// AXP192 battery decode — datasheet §8.26: raw = r78<<4 | r79>>4,
-    /// mv = raw*11/10 (bolty read_battery_mv). Worked example:
-    /// r78=0xEC r79=0x70 → raw 3783 → 4161 mV → 96 %.
+    /// AXP192 battery decode — datasheet §8.26: raw = r78<<4 | r79&0xF
+    /// (12-bit, LOW nibble of 79h — #275), mv = raw*11/10. Worked
+    /// example: r78=0xEC r79=0x07 → raw 3783 → 4161 mV → 96 %. The old
+    /// fixture (r79=0x70) was constructed to fit the wrong `>>4`
+    /// decode; the upper-nibble-ignored arm pins the mask.
     #[test]
     fn battery_decode_matches_bolty() {
-        assert_eq!(battery_mv_from_regs(0xEC, 0x70), 4161);
+        assert_eq!(battery_mv_from_regs(0xEC, 0x07), 4161);
+        assert_eq!(
+            battery_mv_from_regs(0xEC, 0x77),
+            4161,
+            "upper nibble ignored"
+        );
         assert_eq!(battery_pct_from_mv(4161), 96);
         assert_eq!(battery_pct_from_mv(3000), 0);
         assert_eq!(battery_pct_from_mv(4200), 100);
-        assert!(usb_powered_from_reg01(1 << 5));
-        assert!(!usb_powered_from_reg01(0));
+        assert!(usb_powered_from_reg00(1 << 5));
+        assert!(!usb_powered_from_reg00(0));
     }
 
     #[test]
