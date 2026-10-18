@@ -669,6 +669,50 @@ fn test_secure_pin_verify_rejected_on_non_pinpad_vendor() {
     assert!(!h.is_pin_verify_active());
 }
 
+// #276: the PIN-pad display flow (set_pin_result → process_pin_result
+// builds the VERIFY APDU and transmits it) used to bypass the ONLY
+// apdu_tx/rx counter sites — every PIN exchange was invisible to the
+// 0xD0 diagnostics. Feature-gated: the PIN-pad hardware flow exists
+// only under `display` (run: cargo test --features display); the
+// counting code itself is the same arms the XfrBlock tests already
+// cover via the shared core.
+#[cfg(feature = "display")]
+#[test]
+fn test_pin_verify_exchange_counts_apdu_counters() {
+    let mut h = CcidMessageHandler::new(
+        MockSmartcardDriver::new()
+            .card_present(true)
+            .with_atr(&T0_ATR),
+        CHERRY_VID,
+    );
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+    assert_eq!(h.core_diagnostics().apdu_tx_count, 0, "precondition");
+
+    let mut buffer = crate::pinpad::PinBuffer::new(8);
+    for d in 1u8..=4 {
+        assert!(buffer.push(d), "digit {d}");
+    }
+    let params = crate::pinpad::PinVerifyParams {
+        min_len: 4,
+        max_len: 8,
+        apdu_template: [0x00, 0x20, 0x00, 0x00, 0x04],
+        template_len: 5,
+        ..Default::default()
+    };
+    h.set_pin_result(0x55, PinResult::Success, buffer, params);
+    h.process_pin_result();
+
+    // tx counted at the card transfer, rx on the card response — the
+    // pre-#276 shape left both at 0 through this whole flow.
+    assert_eq!(h.core_diagnostics().apdu_tx_count, 1);
+    assert_eq!(h.core_diagnostics().apdu_rx_count, 1);
+    let (len, _out) = h.take_response();
+    assert!(len > 0, "the PIN response was emitted");
+}
+
 // ---------------------------------------------------------------------------
 // 5. Interrupt-IN NotifySlotChange semantics (STM32 USB path)
 // ---------------------------------------------------------------------------
