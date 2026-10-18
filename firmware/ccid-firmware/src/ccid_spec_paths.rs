@@ -992,6 +992,44 @@ fn test_unassemblable_declared_length_no_longer_wedges_serve_loop() {
 }
 
 #[test]
+fn test_wrap_inducing_declared_length_resyncs_and_never_fires() {
+    // Codex P1 on #269: a dwLength within CCID_HEADER_SIZE of u32::MAX
+    // (here 0xFFFFFFF9) wraps `CCID_HEADER_SIZE + msg_len` on the
+    // 32-bit MCU target — the wrapped sum defeated BOTH un-assemblable
+    // guards (drop kept the wedge, message_ready fired on a partial
+    // buffer → garbage slice on target). The host cannot wrap (64-bit
+    // usize), so this pins the BEHAVIOR contract (resync + no answer +
+    // recovery); the arithmetic form itself is pinned by
+    // ccid_core::wrap_tests::usize_max_neighborhood_never_fits.
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+
+    let hostile = ccid_request(PC_TO_RDR_GET_SLOT_STATUS, 0, 0x51, [0; 3], &[]);
+    let mut wrap_declared = hostile.clone();
+    wrap_declared[1] = 0xF9; // dwLength LE = 0xFFFFFFF9 = u32::MAX - 6
+    wrap_declared[2] = 0xFF;
+    wrap_declared[3] = 0xFF;
+    wrap_declared[4] = 0xFF;
+
+    let wedge = feed_exchange(&mut h, &[&wrap_declared]);
+    assert!(wedge.is_none(), "wrap-inducing header must not answer");
+    let resp = feed_exchange(
+        &mut h,
+        &[&ccid_request(
+            PC_TO_RDR_GET_SLOT_STATUS,
+            0,
+            0x52,
+            [0; 3],
+            &[],
+        )],
+    );
+
+    let resp = resp.expect("serve loop must recover after wrap-inducing header");
+    assert_eq!(resp[0], RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(rseq(&resp), 0x52);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}
+
+#[test]
 fn test_garbage_stream_that_fills_buffer_recovers() {
     // Given: a mid-stream desync — garbage that does not form a sane
     // header keeps arriving until the reassembly buffer is full.
