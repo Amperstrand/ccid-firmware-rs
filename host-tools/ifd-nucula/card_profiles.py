@@ -126,10 +126,14 @@ def _read_binary(capdu: bytes) -> bytes:
     """READ BINARY (00 B0 off1 off2 Le): Le bytes of (offset+i)&0xFF.
 
     Le = 0 means 256 (ISO 7816-4 case-2 short form). Deterministic,
-    stateless — the tests assert exact bytes.
+    stateless — the tests assert exact bytes. A truncated header
+    (< 5 bytes) answers 67 00 — the card's own length check, the same
+    SW class as the #170 zero-data answer (pinned by test).
     """
+    if len(capdu) < 5:
+        return SW_LEN_ERR
     offset = ((capdu[2] & 0x7F) << 8) | capdu[3]
-    le = capdu[4] if len(capdu) >= 5 and capdu[4] else 256
+    le = capdu[4] if capdu[4] else 256
     data = bytes((offset + i) & 0xFF for i in range(le))
     return data + SW_OK
 

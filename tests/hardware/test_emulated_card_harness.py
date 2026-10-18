@@ -22,7 +22,9 @@ Run: python3 -m pytest tests/hardware/test_emulated_card_harness.py -v
 from __future__ import annotations
 
 import ctypes
+import os
 import selectors
+import shutil
 import socket
 import subprocess
 import sys
@@ -123,14 +125,21 @@ def _cc(source: str, out: Path, extra=()):
         capture_output=True, text=True)
 
 
+def _build_driver():
+    # Always invoke make — never existence-check the .so. make is
+    # mtime-driven, so a source-newer-than-binary tree rebuilds while a
+    # fresh one is a near no-op; the harness cannot load a stale driver
+    # (Codex P2 on #260). Locked by test_driver_rebuilds_when_source_newer.
+    return subprocess.run(["make", "-C", str(IFD_DIR), "libifd-nucula.so"],
+                          capture_output=True, text=True)
+
+
 @pytest.fixture(scope="module")
 def driver(tmp_path_factory):
     build_dir = tmp_path_factory.mktemp("ifd-emu")
-    if not SO_PATH.exists():
-        build = subprocess.run(["make", "-C", str(IFD_DIR), "libifd-nucula.so"],
-                               capture_output=True, text=True)
-        if build.returncode != 0:
-            pytest.skip(f"driver build failed (gcc/PCSC headers?): {build.stderr[-400:]}")
+    build = _build_driver()
+    if build.returncode != 0:
+        pytest.skip(f"driver build failed (gcc/PCSC headers?): {build.stderr[-400:]}")
     stub_src = build_dir / "logstub.c"
     stub_src.write_text(LOG_STUB_C)
     stub_so = build_dir / "liblogstub.so"
@@ -310,9 +319,29 @@ def test_iso_case2_read_binary_determinism():
         b"\x6f\x00\x90\x00"
 
 
+def test_iso_case2_truncated_read_binary_answers_6700():
+    """Codex P2 on #260: short 00 B0 prefixes must never IndexError out
+    of the serve loop — they answer the card's length check 67 00."""
+    card = card_profiles.ISO_CASE2
+    for trunc in (b"\x00\xb0", b"\x00\xb0\x00", b"\x00\xb0\x00\x00"):
+        assert card.execute(trunc) == b"\x67\x00"
+
+
 def test_get_card_unknown_name_fails_loud():
     with pytest.raises(SystemExit):
         card_profiles.get_card("no-such-card")
+
+
+def test_driver_rebuilds_when_source_newer():
+    """Codex P2 on #260: a source-newer-than-binary tree must rebuild —
+    the harness must never load a stale driver against current C."""
+    if not shutil.which("cc"):
+        pytest.skip("cc unavailable")
+    src = IFD_DIR / "ifd-nucula.c"
+    os.utime(src)
+    build = _build_driver()
+    assert build.returncode == 0, build.stderr[-400:]
+    assert SO_PATH.stat().st_mtime >= src.stat().st_mtime
 
 
 def test_mock_board_default_is_legacy():
