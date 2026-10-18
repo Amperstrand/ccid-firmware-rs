@@ -169,6 +169,20 @@ reintroduce via a git fork pin (vendoring-policy class 2 still applies),
 never a silent re-vendor; IDF 6 removing the legacy driver entirely →
 this decision becomes moot.
 
+**Trigger FIRED and RESOLVED (2026-10-18, #278)**: registry hal links
+IDF's legacy i2c object, whose boot-time ELF constructor `abort()`s when
+driver_ng is also in the binary — every c3-ccid image from `3382e4e`
+boot-looped before `app_main()` while the full compile CI matrix stayed
+green (caught only by #273's hardware bisection: compile parity is NOT
+boot parity). Resolution: `CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y` in
+every authoritative `.full` sdkconfig + defaults — IDF's own documented
+bypass (`components/driver/Kconfig`; the symbol #242 called non-existent
+after a repo-scoped grep — it lives in IDF's Kconfig, not ours). The
+fork's real runtime role was keeping the legacy object OUT of the link;
+that role is now the knob's. Bench-proven on nucula-c3: clean `app_main`
++ pcscd absent-card round-trip through the broker. Layering lesson:
+`sdkconfig.defaults` does NOT merge into an existing `.full` config.
+
 ---
 
 *Register discipline: new load-bearing decisions get an entry HERE with an

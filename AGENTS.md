@@ -75,6 +75,16 @@ consumers (backend-mfrc522, the m5stick LCD's AXP192) moved to the
 shared driver_ng embedded-hal adapter (`pn7160-nci::hal_i2c`).
 esp-idf-hal resolves from crates.io (v0.47.0, the exact base the fork
 was rebased onto) — see D-9 in `docs/DECISION_REGISTER.md`.
+**Runtime caveat (#278, 2026-10-18)**: "exact base" holds at COMPILE
+time only — registry hal links IDF's legacy i2c object, whose boot
+constructor aborts alongside driver_ng. Every `.full` sdkconfig + the
+defaults now carry `CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y` (IDF's
+documented bypass; the fork's real runtime role was excluding that
+object from the link). Compile-green ≠ boot-green: this class of change
+needs a bench boot proof (the knob must be IN the authoritative `.full`
+files — `sdkconfig.defaults` does not layer into an existing full
+config; and a changed sdkconfig needs the documented CMakeCache purge
+to take effect).
 
 The MFRC522 driver is NOT vendored: `esp32-ccid` consumes the canonical
 `Amperstrand/mfrc522-rs` fork at `ai-experiments` rev `e9ced1e` (git dep),
