@@ -530,6 +530,17 @@ mod imp {
         }
     }
 
+    /// State mutation WITHOUT the redraw flush — for callers that must
+    /// never perform display I/O (the CCID serve loop). The 1 Hz ticker
+    /// (`tick` → `with_screen`) flushes the dirty flag.
+    fn with_screen_state<F: FnOnce(&mut Screen)>(f: F) {
+        if let Ok(mut guard) = SCREEN.lock() {
+            if let Some(screen) = guard.as_mut() {
+                f(screen);
+            }
+        }
+    }
+
     fn clear_line(display: &mut LcdDisplay, y: i32) {
         let _ = Rectangle::new(Point::new(0, y), Size::new(super::LCD_H_RES as u32, 12))
             .into_styled(
@@ -592,8 +603,13 @@ mod imp {
         }
     }
 
+    /// Presence update — STATE ONLY, no synchronous redraw (Codex P1 on
+    /// #281): called from the serve loop's presence poll, it must never
+    /// run display I/O; a redraw is several ms of SPI. The 1 Hz ticker
+    /// flushes the dirty flag, so the card line lags presence by at
+    /// most one second.
     pub fn set_card_present(present: bool) {
-        with_screen(|s| {
+        with_screen_state(|s| {
             if s.data.card_present != present {
                 s.data.card_present = present;
                 s.dirty = true;
@@ -695,29 +711,31 @@ pub use imp::{init, set_card_present, spawn_ticker};
 // (the led.rs host-stub pattern — the display is absent, not an error).
 #[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
 mod stub {
-    //! One observable beyond the no-ops: the LAST presence value pushed
-    //! through `set_card_present`. The card-present serve-path wiring
-    //! (#275 defect 3 — the setter had zero production callers) has no
-    //! screen on host builds, but the WIRING must still regress-test:
-    //! the host suite asserts the serve path pushes presence here.
+    //! One observable beyond the no-ops: how many times the serve path
+    //! pushed presence through `set_card_present`. The card-present
+    //! wiring (#275 defect 3 — the setter had zero production callers)
+    //! has no screen on host builds, but the WIRING must still
+    //! regress-test. Recorded as a call COUNT, not a last-value latch:
+    //! the host suite runs tests in parallel and dozens of them poll
+    //! `check_card_change` (a recorder write), so a value assertion
+    //! raced their writes (Codex P2 on #281) — a monotonic count makes
+    //! the test's `>= N` lower bound race-tolerant by construction.
 
-    static LAST_CARD_PRESENT: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    static PRESENCE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    pub fn set_card_present(present: bool) {
-        LAST_CARD_PRESENT.store(present, std::sync::atomic::Ordering::Relaxed);
+    pub fn set_card_present(_present: bool) {
+        PRESENCE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn spawn_ticker() {}
 
-    /// Host/stub-only observable: last presence pushed by the serve path.
-    pub fn last_card_present() -> bool {
-        LAST_CARD_PRESENT.load(std::sync::atomic::Ordering::Relaxed)
+    /// Host/stub-only observable: total `set_card_present` calls.
+    pub fn set_card_present_calls() -> usize {
+        PRESENCE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
-#[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
-pub use stub::{last_card_present, set_card_present, spawn_ticker};
+pub use stub::{set_card_present, set_card_present_calls, spawn_ticker};
 
 // ---------------------------------------------------------------------------
 // Host tests — the GREAT EXPECTATION locks.

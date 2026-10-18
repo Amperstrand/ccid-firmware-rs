@@ -86,7 +86,9 @@ pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
 /// PN7160 ladder (nucula): the ACK-window bring-up with VEN-cycle
 /// retries, verbatim from the CDC main.
 #[cfg(feature = "backend-pn7160")]
-pub fn pn7160_bring_up(bus: BusPins) -> Pn7160NfcDriver<EspPn7160Transport> {
+pub fn pn7160_bring_up<I2C, SDA, SCL, IRQ, VEN>(
+    bus: BusPins<I2C, SDA, SCL, IRQ, VEN>,
+) -> Pn7160NfcDriver<EspPn7160Transport> {
     let transport =
         EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
             .expect("peripheral init");

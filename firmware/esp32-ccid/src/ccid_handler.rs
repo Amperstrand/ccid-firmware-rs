@@ -797,23 +797,29 @@ mod tests {
 
     /// #275 defect 3 regression: the presence poll must DRIVE the status
     /// screen — `m5stick_lcd::set_card_present` had zero production
-    /// callers (screen showed `card: ---` all session). Host/stub builds
-    /// observe the pushed value via the stub's recorder; lcd/target
-    /// builds exercise the real screen on the bench.
+    /// callers (screen showed `card: ---` all session). Asserted via the
+    /// stub's call COUNT (race-tolerant lower bound: parallel tests'
+    /// own `check_card_change` polls only add calls — a value latch
+    /// raced them, Codex P2 on #281); lcd/target builds exercise the
+    /// real screen on the bench.
     #[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
     #[test]
     fn test_check_card_change_wires_display_presence() {
         let mut handler = new_handler(false);
-        handler.check_card_change();
-        assert!(!crate::m5stick_lcd::last_card_present());
-
         handler.driver_mut().set_card_present(true);
-        handler.check_card_change();
-        assert!(crate::m5stick_lcd::last_card_present());
 
-        handler.driver_mut().set_card_present(false);
+        let before = crate::m5stick_lcd::set_card_present_calls();
+        assert!(handler.check_card_change().is_some());
         handler.check_card_change();
-        assert!(!crate::m5stick_lcd::last_card_present());
+        handler.driver_mut().set_card_present(false);
+        assert!(handler.check_card_change().is_some());
+
+        let calls = crate::m5stick_lcd::set_card_present_calls();
+        assert!(
+            calls >= before + 3,
+            "every presence poll must push to the display: {calls} vs >= {}",
+            before + 3
+        );
     }
 
     #[test]
