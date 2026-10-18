@@ -529,14 +529,25 @@ ESP build.
 
 ### Jobs
 
-| Job | Purpose | Commands |
-|---|---|---|
-| `stm32-build` | Build STM32 firmware for 4 matrix entries | `cargo build --release --target thumbv7em-none-eabihf` (+ objcopy artifacts) |
-| `stm32-lint` | fmt + clippy for both MCU targets | `cargo fmt --check`, `cargo clippy ... -- -D warnings` |
-| `stm32-test` | Host-side workspace tests | `cargo test --workspace --target x86_64-unknown-linux-gnu` |
-| `esp32-host-test` | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
-| `python-collect` | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) + ruff correctness lint (F+E9, `ruff.toml`) + stdlib unit tests for scripts | `ruff check scripts tests/hardware host-tools`; `python3 scripts/test_gen_status.py`; `python3 -m pytest tests/hardware/ --collect-only -q` |
-| `crates-lint` | Quality blind-spot closer (2026-10-17): the three members NO other job clippy'd (pn7160-nci, ccid-pcsc-host, ccid-host-tools) + pn7160-nci's never-compiled no_std cfg | `cargo check -p pn7160-nci --no-default-features`; `cargo clippy -p pn7160-nci -p ccid-pcsc-host -p ccid-host-tools -- -D warnings` |
+The full ci.yml job set (tier policy: the SECONDARY tier runs on push to
+main, schedule, dispatch `full-matrix`, or a PR labeled `ci-full-matrix` —
+never blocking ordinary PRs; `ci-ok` aggregates the primary tier only,
+owner directive 2026-10-17 "a secondary rot must never block all merges"):
+
+| Job | Tier | Purpose | Commands |
+|---|---|---|---|
+| `changes` | — | paths-filter (PR) / all-true (schedule + dispatch) — decides which families run | dorny/paths-filter |
+| `sdkconfig-clean-wire-gate` | primary | sdkconfig console-family pairing check | `python3 tools/check_sdkconfigs.py` |
+| `stm32-build` | primary | STM32 build, Cherry default profile (+ bin/ihex artifacts) | `cargo build --release --target thumbv7em-none-eabihf` + `cargo objcopy` |
+| `stm32-build-secondary` | secondary | STM32 builds: CT30 / K30 / F746-bitbang / F469-display (steps mirror `stm32-build`, kept in sync) | same as `stm32-build` per matrix entry |
+| `stm32-lint` | primary | fmt + clippy for both MCU targets | `cargo fmt --check`, `cargo clippy ... -- -D warnings` |
+| `stm32-test` | primary | Host-side workspace tests | `cargo test --workspace --target x86_64-unknown-linux-gnu` |
+| `esp32-build` | primary | ESP32 compile matrix: m5stick / m5stick-lcd / c3-nucula-bringup / c3-nucula-ccid | `cargo +<matrix.toolchain> build <matrix.profile> --target <matrix.target>` per leg |
+| `esp32-build-secondary` | secondary | ESP32 legs: m5atom-default / pn532 / m5stick-spp / wifi-ccid / m5stick-vpcd-bench | same per-leg build |
+| `esp32-host-test` | primary | ESP32 host-side tests (no Xtensa toolchain in CI) | `cargo test --target x86_64-unknown-linux-gnu` (from `firmware/esp32-ccid/`) |
+| `crates-lint` | primary | Quality blind-spot closer (2026-10-17): the three members NO other job clippy'd (pn7160-nci, ccid-pcsc-host, ccid-host-tools) + pn7160-nci's never-compiled no_std cfg | `cargo check -p pn7160-nci --no-default-features`; `cargo clippy -p pn7160-nci -p ccid-pcsc-host -p ccid-host-tools -- -D warnings` |
+| `python-collect` | primary | Collection gate in a MINIMAL env (pytest only — no pyscard/pyserial/labgrid) + ruff correctness lint (F+E9, `ruff.toml`) + stdlib unit tests for scripts | `ruff check scripts tests/hardware host-tools`; `python3 scripts/test_gen_status.py`; `python3 -m pytest tests/hardware/ --collect-only -q` |
+| `ci-ok` | — | required-check aggregator over the PRIMARY tier only | — |
 
 **Why `python-collect` exists** (found live 2026-10-11): a duplicate
 `--hil` `addoption` in `labgrid/conftest.py` made every combined-suite
@@ -563,23 +574,35 @@ by traversal luck. Shared helpers live in uniquely-named modules:
 `labgrid/bench.py`, `labgrid/hil_helpers.py`, `nfc/cardlib.py` —
 conftests re-import from there, tests import the module directly.
 
-### stm32-build matrix (4 entries)
+### stm32-build matrix — primary (1 entry) + secondary tier (4 entries)
+
+The 4-profile matrix is SPLIT across two jobs by tier (the old single
+"4 entries" table predates the split):
 
 ```yaml
+# stm32-build (primary — every PR):
 matrix:
   include:
     - profile: profile-cherry-smartterminal-st2xxx   # default features
       features: ""
+
+# stm32-build-secondary (secondary tier — push/schedule/dispatch
+# full-matrix/PR-label ci-full-matrix only):
+matrix:
+  include:
     - profile: profile-gemalto-idbridge-ct30
-      features: "profile-gemalto-idbridge-ct30"
+      features: "stm32f469,profile-gemalto-idbridge-ct30"
     - profile: profile-gemalto-idbridge-k30
-      features: "profile-gemalto-idbridge-k30"
+      features: "stm32f469,profile-gemalto-idbridge-k30"
     - profile: stm32f746-bitbang
       features: "stm32f746,profile-cherry-smartterminal-st2xxx"
+    - profile: stm32f469-display
+      features: "stm32f469,profile-cherry-smartterminal-st2xxx,display"
 ```
 
-The first matrix entry builds with **default features** (no `--no-default-features`
-override). All other entries use `--no-default-features --features <list>`.
+The primary entry builds with **default features** (no
+`--no-default-features` override). All secondary entries use
+`--no-default-features --features <list>`.
 
 ### stm32-lint clippy runs (two passes, both must be clean)
 
