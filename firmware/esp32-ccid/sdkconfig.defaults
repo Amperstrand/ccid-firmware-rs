@@ -3,3 +3,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESP_TASK_WDT_EN=n
 
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
+
+# (#278) Registry esp-idf-hal v0.47.0 (fork retired, PR #242) links IDF's
+# legacy i2c driver object, whose ELF constructor abort()s at boot when
+# driver_ng is also in the binary — we ride driver_ng exclusively
+# (pn7160-nci::hal_i2c + esp_transport), so the linked-but-unused legacy
+# driver must not fire its coexistence check. This is IDF's official
+# bypass knob (components/driver/Kconfig, default n). The retired fork's
+# real runtime role was keeping legacy i2c out of the link entirely.
+CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #278: c3-ccid boot-loop after the esp-idf-hal fork retirement (legacy-i2c coexistence abort)
+
+- Every esp32 image from `3382e4e` (PR #242's `[patch]` retirement)
+  boot-looped on hardware within IDF component init — `i2c: CONFLICT!
+  driver_ng is not allowed to be used with this old driver` → abort →
+  ~250 ms reset loop, never reaching `app_main()`. Compile CI stayed
+  green throughout (found by #273's hardware bisection): registry
+  esp-idf-hal v0.47.0 links IDF's legacy i2c object, whose ELF
+  boot-time constructor aborts whenever driver_ng is also in the
+  binary. The retired fork's `legacy-i2c` gate was what kept that
+  object out of the link.
+- Fix: `CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y` — IDF's own documented
+  bypass (`components/driver/Kconfig`) — set in `sdkconfig.defaults`
+  and every authoritative `.full` config (c3/xtensa/vpcd/spp/ble/wallet;
+  defaults alone do NOT layer into an existing `.full`). The symbol
+  #242's notes called non-existent was a repo-scoped grep miss — it
+  lives in IDF's Kconfig.
+- Bench-proven on the nucula (ESP32-C3): clean `Calling app_main()`,
+  no conflict abort, no reset loop, and a full pcscd round-trip through
+  the broker (`SCardConnect → 0x8010000C` absent-card semantics — the
+  serve loop answers). m5stick-lcd (xtensa) carries the same linked
+  legacy object and the same knob; hardware confirmation pending a free
+  m5stick place (#278 comment).
+
 ### Fixed — #276: PIN-pad Secure exchanges now advance the Escape 0xD0 APDU counters
 
 - The STM32 PIN-pad Verify/Modify path called
