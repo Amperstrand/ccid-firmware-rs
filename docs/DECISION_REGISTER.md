@@ -148,11 +148,14 @@ revisit whether it belongs in a policy enum.
 
 **Authority**: PR #242 + this entry (root `Cargo.toml` `[patch]` comment +
 AGENTS.md vendoring-policy class 2).
-**Decision**: every I2C consumer rides the IDF driver_ng FFI through the
-shared embedded-hal adapter (`pn7160-nci::hal_i2c`); the Amperstrand
-esp-idf-hal fork (`ai-experiments-0.47`, whose only delta was the
-`legacy-i2c` opt-in) is RETIRED — no `[patch]` entry exists for
-esp-idf-hal; it resolves from crates.io.
+**Decision**: one I2C driver generation — driver_ng — for every consumer:
+the former legacy `I2cDriver` consumers (MFRC522 paths, the m5stick
+LCD's AXP192) ride the shared embedded-hal adapter
+(`pn7160-nci::hal_i2c`), while the PN7160 transport keeps its own raw
+`i2c_master` FFI (`esp_transport`); the Amperstrand esp-idf-hal fork
+(`ai-experiments-0.47`, whose only delta was the `legacy-i2c` opt-in)
+is RETIRED — no `[patch]` entry exists for esp-idf-hal; it resolves
+from crates.io.
 **Evidence**: all 3 legacy `I2cDriver` sites migrated (MFRC522 CDC main,
 `wifi_common::mfrc522_bring_up`, m5stick LCD AXP192); the full-matrix CI
 run on the patch-removal commit green on every esp leg (9 build legs +

@@ -90,12 +90,10 @@ Run from `firmware/esp32-ccid/`:
 cargo test --target x86_64-unknown-linux-gnu
 ```
 
-The vendored ISO 14443 crate used by the MFRC522 path also has host-safe tests:
-
-```bash
-cd ../../vendor/iso14443-rs
-cargo test --features std --target x86_64-unknown-linux-gnu
-```
+The ISO 14443 crate used by the MFRC522 path is consumed from the canonical
+`Amperstrand/iso14443-rs` fork (git dep — the former vendored copy was
+removed, issue #6); its own test suite lives in that upstream repo, not in
+this workspace.
 
 ## STM32 contact firmware
 
@@ -391,7 +389,6 @@ GitHub Actions workflow (`.github/workflows/ci.yml`) runs host-safe validation f
 - STM32 profile builds at the repository root
 - STM32 host-side tests and linting
 - ESP32 host-side tests in `firmware/esp32-ccid/`
-- Vendored `iso14443-rs` host-side tests used by the ESP32 MFRC522 path
 
 The current workflow intentionally avoids requiring a full ESP-IDF/Xtensa toolchain in every CI job. Xtensa release builds are still expected locally before shipping ESP32 firmware.
 
