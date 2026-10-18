@@ -320,13 +320,17 @@ Three distinct things get called "vendoring" — only two are allowed:
    patch it and the patch cannot live in a fork/git dep
    (`vendor/synopsys-usb-otg` is the one legal case; the former
    `vendor/esp-idf-hal` exception was migrated to the canonical
-   `Amperstrand/esp-idf-hal` fork, `ai-experiments` branch, 2026-10-15
-   — issue #195). Un-patched
+   `Amperstrand/esp-idf-hal` fork 2026-10-15 — issue #195 — and the
+   fork patch itself was RETIRED 2026-10-17 when #242 moved every
+   legacy-i2c consumer onto the shared driver_ng embedded-hal adapter
+   (`pn7160-nci/src/hal_i2c.rs`, #149 P3): esp-idf-hal resolves from
+   crates.io again, no `[patch.crates-io]` hal entry exists). Un-patched
    vendored copies were deliberately removed (issues #19, #6) — do not
    reintroduce that class; linkable code goes through canonical git
    deps/forks.
 3. **C headers as build dependencies**: NOT vendored — our HAL comes
-   from the Amperstrand Rust fork. C headers (ST HAL smartcard,
+   from crates.io (`esp-idf-hal`) plus the Amperstrand Rust forks for
+   the crates we actually patch. C headers (ST HAL smartcard,
    ST USB middleware) are vendored ONLY as class-1 quote sources.
 
 ### The reference library (verified useful)
