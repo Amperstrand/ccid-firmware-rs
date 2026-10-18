@@ -735,6 +735,7 @@ mod stub {
     }
 }
 
+#[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
 pub use stub::{set_card_present, set_card_present_calls, spawn_ticker};
 
 // ---------------------------------------------------------------------------
