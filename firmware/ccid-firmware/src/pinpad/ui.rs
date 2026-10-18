@@ -460,10 +460,22 @@ mod tests {
     fn test_button_hit_cancel() {
         let keypad = Keypad::new();
 
-        // Cancel button is in bottom left
-        let cancel_x = KEYPAD_START_X + 50;
-        let cancel_y = KEYPAD_START_Y + 3 * (BUTTON_SIZE as i32 + BUTTON_SPACING as i32) + 50;
+        // #285: the documented layout puts Backspace at bottom-LEFT and
+        // Cancel (X) centered one row BELOW the keypad — this test used
+        // to hit the Backspace coordinate (asserting Cancel) and has
+        // been wrong since the workspace reorg, invisible because no CI
+        // leg ran display tests. Both truths pinned now.
+        let step = BUTTON_SIZE as i32 + BUTTON_SPACING as i32;
+        let bottom_left_x = KEYPAD_START_X + 50;
+        let bottom_row_y = KEYPAD_START_Y + 3 * step + 50;
+        assert_eq!(
+            keypad.hit_test(Point::new(bottom_left_x, bottom_row_y)),
+            ButtonId::Backspace,
+            "bottom-left of the keypad grid is the '<' backspace key"
+        );
 
+        let cancel_x = KEYPAD_START_X + step + 50;
+        let cancel_y = KEYPAD_START_Y + 4 * step + 50;
         let result = keypad.hit_test(Point::new(cancel_x, cancel_y));
         assert_eq!(result, ButtonId::Cancel);
     }

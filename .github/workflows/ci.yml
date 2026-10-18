@@ -792,6 +792,14 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace --target x86_64-unknown-linux-gnu
 
+      # #285: the whole #[cfg(feature = "display")] test surface (pinpad
+      # UI + the PIN-pad hardware flows) ran in NO leg — the display
+      # build leg is compile-only, which let a wrong-since-the-reorg
+      # keypad test rot unnoticed. Gate it here, alongside the default
+      # feature set it rides on.
+      - name: Display-feature host tests (pinpad UI + PIN flows)
+        run: cargo test -p ccid-firmware-rs --features display --target x86_64-unknown-linux-gnu
+
   esp32-host-test:
     needs: changes
     if: needs.changes.outputs.esp32 == 'true'
