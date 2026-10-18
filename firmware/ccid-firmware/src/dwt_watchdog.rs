@@ -30,6 +30,49 @@ pub struct DwtWatchdog {
     timeout: u32,
 }
 
+/// Wrap-safe CYCCNT → millisecond uptime accumulator (#268 defect 2).
+///
+/// `poll` is fed a monotonic cycle reading (ARM: DWT CYCCNT, host tests:
+/// injected values); the sub-millisecond remainder is carried between
+/// polls so fast poll cadences do not lose fractional ticks.
+pub struct DwtUptime {
+    last_cycles: u32,
+    accum_cycles: u32,
+    ticks_ms: u32,
+    cycles_per_ms: u32,
+}
+
+impl DwtUptime {
+    pub const fn new(clock_hz: u32) -> Self {
+        // Guard: sub-kHz clocks cannot resolve a millisecond.
+        let cycles_per_ms = {
+            let raw = clock_hz / 1_000;
+            if raw == 0 {
+                1
+            } else {
+                raw
+            }
+        };
+        Self {
+            last_cycles: 0,
+            accum_cycles: 0,
+            ticks_ms: 0,
+            cycles_per_ms,
+        }
+    }
+
+    pub fn poll(&mut self, now_cycles: u32) -> u32 {
+        let delta = now_cycles.wrapping_sub(self.last_cycles);
+        self.last_cycles = now_cycles;
+        self.accum_cycles = self.accum_cycles.wrapping_add(delta);
+        while self.accum_cycles >= self.cycles_per_ms {
+            self.accum_cycles -= self.cycles_per_ms;
+            self.ticks_ms = self.ticks_ms.wrapping_add(1);
+        }
+        self.ticks_ms
+    }
+}
+
 impl Default for DwtWatchdog {
     fn default() -> Self {
         Self::new(0)
@@ -365,5 +408,42 @@ mod tests {
     fn init_is_callable_on_host_and_is_noop() {
         init();
         init();
+    }
+
+    #[test]
+    fn uptime_accumulates_whole_milliseconds() {
+        let mut u = DwtUptime::new(168_000_000);
+        assert_eq!(u.poll(0), 0);
+        assert_eq!(u.poll(168_000_000), 1_000);
+        assert_eq!(u.poll(168_000_000 * 2), 2_000);
+    }
+
+    #[test]
+    fn uptime_carries_sub_ms_remainder_across_polls() {
+        // Poll cadence faster than 1 ms must not drop fractional ticks.
+        let mut u = DwtUptime::new(168_000_000);
+        let mut ticks = 0;
+        for i in 1..=4u32 {
+            ticks = u.poll(i * 84_000); // 0.5 ms per poll
+        }
+        assert_eq!(ticks, 2);
+    }
+
+    #[test]
+    fn uptime_survives_cyccnt_wraparound() {
+        let mut u = DwtUptime::new(1_000_000_000); // 1M cycles per ms
+        let start = u32::MAX - 500_000; // 0.5 ms before wrap
+        let base = u.poll(start); // baseline; uptime also carries pre-start cycles
+                                  // 1.5 ms elapses across the wrap point.
+        assert_eq!(u.poll(start.wrapping_add(1_500_000)) - base, 1);
+        // Another 1.0 ms — the 0.5 ms remainders sum to whole ticks.
+        assert_eq!(u.poll(start.wrapping_add(2_500_000)) - base, 2);
+    }
+
+    #[test]
+    fn uptime_sub_khz_clock_saturates_to_one_cycle_per_ms() {
+        // cycles_per_ms floors to 1 instead of dividing by zero.
+        let mut u = DwtUptime::new(500);
+        assert_eq!(u.poll(3), 3);
     }
 }

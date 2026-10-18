@@ -76,6 +76,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **#268 (defect 2, HIL Leg 4)**: Escape `0xD0` diagnostics counters
+  frozen at zero on the STM32 builds — `apdu_tx=0, apdu_rx=0,
+  uptime=0` after real power-on + APDU exchanges (`card_present` was the
+  only live field; the same anomaly #193 saw on the display build, now
+  confirmed on plain main@6547916). Root cause: the STM32 firmware's
+  Escape handler read `SmartcardDriver::diagnostics()` — a trait stub
+  the F469 wrapper filled with only reinit_count + card_present — while
+  the shared `ccid-core` handler had been counting `apdu_tx/rx` around
+  every card exchange all along. Fix: the 0xD0 reply now snapshots the
+  core's live `Diagnostics`; a new `DwtUptime` accumulator (wrap-safe
+  CYCCNT → ms with remainder carry) is pumped once per USB poll via
+  `CcidMessageHandler::poll_diagnostics` (F469 168 MHz / F746 216 MHz),
+  and the driver's real reinit count reaches the snapshot through
+  `SmartcardDriver::reinit_count` → `CardBackend::reinit_count`. The
+  lying trait stub `SmartcardDriver::diagnostics()` is removed. Pinned
+  host-side by `test_escape_d0_reply_type_and_live_counters` (the exact
+  HIL Leg-4 sequence: PowerOn → XfrBlock → Escape 0xD0 → 28-byte payload
+  with apdu_tx=1/apdu_rx=1/uptime>0) and
+  `test_escape_d0_virgin_reader_counts_zero_but_uptime_live`. Note: the
+  #268 checkpoint also flagged the reply type byte `0x83` as
+  spec-wrong — it is spec-correct (`RDR_to_PC_Escape = 0x83`,
+  `RDR_to_PC_DataRateAndClockFrequency = 0x84` per CCID 1.1 Table 6.2-1,
+  verbatim in reference/CCID/src/ccid.h L232-236 and
+  reference/osmo-ccid-firmware ccid_proto.h L79-80); the checkpoint
+  comment inverted the two. No byte changed there — the test pins 0x83
+  with the citations so the re-verification leg expects the right shape.
+
 - **#268 (defect 1, HIL Leg 2)**: Cherry ST-2xxx `dwFeatures` reference
   drift — `BASE_PROFILE` ORed `FEAT_CLOCK_STOP` (bit 8) on top of the
   reference feature set, so the F469 enumerated `0x000101BA` while the

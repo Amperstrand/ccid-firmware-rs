@@ -265,11 +265,8 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         self.uart.set_clock_and_rate(clock_hz, rate_bps)
     }
 
-    fn diagnostics(&self) -> ccid_core::Diagnostics {
-        let mut d = ccid_core::Diagnostics::new();
-        d.reinit_count = self.reinit_count;
-        d.card_present = self.uart.is_card_present();
-        d
+    fn reinit_count(&self) -> u32 {
+        self.reinit_count
     }
 }
 
@@ -335,15 +332,6 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.bitbang.set_clock_and_rate(clock_hz, rate_bps)
-    }
-
-    // Codex review #45/#44: without this override the F746 reported the
-    // trait default — all-zero counters AND card_present=false even with
-    // a card active — fabricated data on the 0xD0 diagnostic query.
-    fn diagnostics(&self) -> ccid_core::Diagnostics {
-        let mut d = ccid_core::Diagnostics::new();
-        d.card_present = self.bitbang.is_card_present();
-        d
     }
 }
 

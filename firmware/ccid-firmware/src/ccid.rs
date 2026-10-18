@@ -231,6 +231,11 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> UsbClass<Bus> for CcidClass<'bus, Bu
     }
 
     fn poll(&mut self) {
+        // Diagnostics time base (#268 defect 2): one pump per USB poll
+        // keeps the 0xD0 uptime/counters snapshot fresh.
+        self.core
+            .poll_diagnostics(unsafe { ccid_firmware_rs::dwt_watchdog::cyccnt() });
+
         if let Some(true) = self.core.check_card_presence() {
             self.send_notify_slot_change(self.core.is_card_present(), true);
         }

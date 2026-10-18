@@ -31,10 +31,10 @@ use ccid_protocol::types::{
     SlotState, CCID_ERR_CMD_NOT_SUPPORTED, CCID_ERR_CMD_SLOT_BUSY, CCID_HEADER_SIZE,
     COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, COMMAND_STATUS_TIME_EXTENSION,
     ICC_STATUS_NO_ICC, ICC_STATUS_PRESENT_ACTIVE, ICC_STATUS_PRESENT_INACTIVE, PC_TO_RDR_ABORT,
-    PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON,
+    PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON,
     PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SECURE, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_T0_APDU,
-    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_NOTIFY_SLOT_CHANGE, RDR_TO_PC_PARAMETERS,
-    RDR_TO_PC_SLOTSTATUS,
+    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_NOTIFY_SLOT_CHANGE,
+    RDR_TO_PC_PARAMETERS, RDR_TO_PC_SLOTSTATUS,
 };
 
 // Cherry SmartTerminal ST-2xxx vendor id — the only profile with a PIN pad.
@@ -831,4 +831,99 @@ fn test_card_removal_mid_pin_entry_resets_secure_state() {
     assert_eq!(rseq(out), 0x77);
     assert_eq!(cmd_status(out), COMMAND_STATUS_NO_ERROR);
     assert_eq!(icc_status(out), ICC_STATUS_NO_ICC);
+}
+
+// ---------------------------------------------------------------------------
+// 9. Escape 0xD0 diagnostics — #268 defect 2 (HIL Leg 4, main@6547916)
+// ---------------------------------------------------------------------------
+
+// CCID_SPEC: /* Section 6.2 / Table 6.2-1: Bulk IN */ RDR_to_PC_Escape = 0x83,
+// RDR_to_PC_DataRateAndClockFrequency = 0x84 —
+// verbatim in reference/CCID/src/ccid.h L232-236 and
+// reference/osmo-ccid-firmware/ccid_common/ccid_proto.h L79-80. (The #268
+// Leg-4 checkpoint comment inverted the two — 0x84 is DataRateAndClock,
+// NOT Escape; the observed 0x83 reply type byte was already spec-correct.)
+
+fn diag_field(payload: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+}
+
+#[test]
+fn test_escape_d0_reply_type_and_live_counters() {
+    // Given: the exact HIL Leg-4 sequence — power-on + one APDU exchange
+    // on a present card, plus uptime pumped by the serve loop (the STM32
+    // CcidClass polls diagnostics once per USB poll; here the cycle
+    // count is injected deterministically).
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&T0_ATR)
+        .with_apdu_response(&[0x62, 0x03]);
+    let mut h = CcidMessageHandler::new(driver, CHERRY_VID);
+    h.check_card_presence();
+
+    let on = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+    assert_eq!(on[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(cmd_status(&on), COMMAND_STATUS_NO_ERROR);
+
+    let xfr = exchange(
+        &mut h,
+        &ccid_request(
+            PC_TO_RDR_XFR_BLOCK,
+            0,
+            2,
+            [0x00, 0, 0],
+            &[0x00, 0xA4, 0x00, 0x00, 0x00],
+        ),
+    );
+    assert_eq!(xfr[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(cmd_status(&xfr), COMMAND_STATUS_NO_ERROR);
+
+    h.poll_diagnostics(crate::ccid_core::UPTIME_CLOCK_HZ * 2);
+
+    // When: the host sends the vendor diagnostics Escape
+    let esc = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ESCAPE, 0, 3, [0; 3], &[0xD0]),
+    );
+
+    // Then: reply type is RDR_to_PC_Escape (0x83 — see CCID_SPEC quote
+    // above), success, and the frozen 28-byte diagnostics payload
+    // (crates/ccid-core/src/diagnostics.rs layout) carries LIVE values:
+    // the counters the HIL observed frozen at zero.
+    assert_eq!(esc[0], RDR_TO_PC_ESCAPE);
+    assert_eq!(rseq(&esc), 3);
+    assert_eq!(cmd_status(&esc), COMMAND_STATUS_NO_ERROR);
+    let d = &esc[CCID_HEADER_SIZE..];
+    assert_eq!(d.len(), 28);
+    assert_eq!(diag_field(d, 0), 1, "apdu_tx_count after one XfrBlock");
+    assert_eq!(diag_field(d, 4), 1, "apdu_rx_count after one answer");
+    assert_eq!(diag_field(d, 20), 1, "card_present");
+    assert_eq!(diag_field(d, 24), 2_000, "uptime_ticks (ms) after 2 s pump");
+}
+
+#[test]
+fn test_escape_d0_virgin_reader_counts_zero_but_uptime_live() {
+    // Given: a freshly booted reader that has only been serving its USB
+    // poll loop (uptime advancing, no card traffic)
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+    h.poll_diagnostics(crate::ccid_core::UPTIME_CLOCK_HZ / 2);
+
+    // When: the host sends the diagnostics Escape
+    let esc = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ESCAPE, 0, 1, [0; 3], &[0xD0]),
+    );
+
+    // Then: counters zero, card absent, uptime reflects the pump — the
+    // payload is never all-zero stale data once the loop has run.
+    assert_eq!(esc[0], RDR_TO_PC_ESCAPE);
+    let d = &esc[CCID_HEADER_SIZE..];
+    assert_eq!(d.len(), 28);
+    assert_eq!(diag_field(d, 0), 0);
+    assert_eq!(diag_field(d, 4), 0);
+    assert_eq!(diag_field(d, 20), 0);
+    assert_eq!(diag_field(d, 24), 500, "uptime_ticks (ms)");
 }

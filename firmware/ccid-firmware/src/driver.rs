@@ -24,7 +24,11 @@ pub trait SmartcardDriver {
         _clock_hz: u32,
         _rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error>;
-    fn diagnostics(&self) -> ccid_core::Diagnostics {
-        ccid_core::Diagnostics::new()
+    /// Driver-level self-healing re-init count, surfaced through the
+    /// core's 0xD0 diagnostics snapshot (card-interface
+    /// `CardBackend::reinit_count` semantics). Drivers without
+    /// self-healing keep the 0.
+    fn reinit_count(&self) -> u32 {
+        0
     }
 }
