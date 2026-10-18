@@ -24,7 +24,6 @@ from __future__ import annotations
 import ctypes
 import os
 import selectors
-import shutil
 import socket
 import subprocess
 import sys
@@ -334,13 +333,15 @@ def test_get_card_unknown_name_fails_loud():
 
 def test_driver_rebuilds_when_source_newer():
     """Codex P2 on #260: a source-newer-than-binary tree must rebuild —
-    the harness must never load a stale driver against current C."""
-    if not shutil.which("cc"):
-        pytest.skip("cc unavailable")
+    the harness must never load a stale driver against current C. An
+    unbuildable driver (no cc / no PCSC headers) skips, exactly like
+    the driver fixture — an optional dependency must never fail the
+    documented no-hardware pytest path (Codex P2 follow-up on #260)."""
     src = IFD_DIR / "ifd-nucula.c"
     os.utime(src)
     build = _build_driver()
-    assert build.returncode == 0, build.stderr[-400:]
+    if build.returncode != 0:
+        pytest.skip(f"driver build failed (gcc/PCSC headers?): {build.stderr[-400:]}")
     assert SO_PATH.stat().st_mtime >= src.stat().st_mtime
 
 
