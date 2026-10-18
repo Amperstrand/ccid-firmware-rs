@@ -41,7 +41,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
@@ -54,6 +54,10 @@ Boards:
                tests/hardware/ble/ble_log_capture.py
   m5stick      ESP32 M5StickC, MFRC522 CCID (esp toolchain, release,
                sdkconfig-xtensa.full, ota_0 slot @ 0x40000, baud 115200)
+  m5stick-plus-lcd  as m5stick + the ST7789 status screen — M5StickC-**Plus**
+               ONLY (#275: the original StickC's ST7735S 80x160 panel is
+               mis-driven by the Plus geometry; per-model selection is the
+               tracked follow-up)
   m5stick-ble  as m5stick + BLE debug console (issue #66): logs ride NUS GATT
                notifications (sdkconfig-xtensa-ble.full, +ble feature),
                UART0 carries CCID only. Capture:
@@ -217,10 +221,13 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
         ;;
-    m5stick-lcd)
+    m5stick-plus-lcd)
         # m5stick + MFRC522 CCID + the ST7789 status screen (bolty-rs
         # display.rs port): AXP192 backlight, FWID/variant/battery/uptime.
         # GPIO27 (backlight) means no Atom LED matrix on this variant.
+        # PLUS-ONLY (issue #275): the pinned 135x240/ST7789 geometry
+        # mis-drives an original M5StickC's ST7735S panel — do not flash
+        # this variant onto non-Plus hardware.
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig-xtensa.full"
         TRIPLE="xtensa-esp32-espidf"
@@ -265,7 +272,7 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, m5stick, m5stick-lcd, m5stick-ble, m5stick-spp, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, or m5atom)" >&2
         exit 1
         ;;
 esac

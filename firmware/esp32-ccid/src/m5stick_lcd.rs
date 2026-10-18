@@ -1,8 +1,16 @@
-//! M5StickC(-Plus) LCD status screen — ported from bolty-rs
+//! M5StickC-**Plus** LCD status screen — ported from bolty-rs
 //! `apps/bolty-esp32/src/display.rs` (same esp-idf-hal =0.46.2 /
 //! esp-idf-svc =0.52.1 stack, bench-proven on this lab's M5Stick
 //! hardware), which itself carries wiring derived from M5GFX /
 //! M5Unified 0.2.7 (m5-cashu-mint `m5stick-lcd`).
+//!
+//! **Plus-only (issue #275):** the geometry is hard-pinned to the
+//! StickC-**Plus** panel — ST7789, 135x240 at offset (52,40), colors
+//! inverted (M5GFX `Panel_M5StickCPlus`). The ORIGINAL M5StickC carries
+//! an ST7735S 80x160 panel with different offsets; flashing this driver
+//! onto one mis-drives the panel. Selecting per model would need an
+//! ST7735S arm (tracked follow-up); until then this module must only be
+//! built for Plus hardware (build.sh `m5stick-plus-lcd`).
 //!
 //! Architecture (unchanged from bolty): one `init()` at boot claims
 //! I2C1 (AXP192 PMU), SPI2 + panel pins; a static `Mutex<Option<Screen>>`
@@ -26,11 +34,40 @@ use core::fmt::Write as _;
 /// M5GFX.cpp:288-291), AXP192 datasheet §7.1 (7-bit 0110100).
 pub const AXP192_I2C_ADDR: u8 = 0x34;
 
-/// AXP192 register map — names track the datasheet (the pmic.rs
-/// precedent: jl1nie/mfsk-core embedded-poc, "register addresses we
-/// touch, names track the AXP192 datasheet"). Every literal below was
-/// previously an unexplained magic number in the op-table.
-pub const REG_POWER_STATUS: u8 = 0x01; // §8.2 — VBUS bit5 = USB powered
+// AXP192 register map — names track the datasheet (the pmic.rs
+// precedent: jl1nie/mfsk-core embedded-poc, "register addresses we
+// touch, names track the AXP192 datasheet"). Every literal below was
+// previously an unexplained magic number in the op-table.
+//
+// Reg 0x00 is the power/input status register: bit5 = VBUS present
+// (issue #275 defect 2 — this was previously misread from reg 0x01,
+// whose bit5 is BATTERY presence; a battery-equipped board showed
+// "USB+" forever after unplug).
+
+// M5AXP: uint8_t AXP192::GetInputPowerStatus() {
+// M5AXP:     return Read8bit(0x00);
+// M5AXP: }
+
+// M5AXP: AXP202_STATUS = 0x00
+// M5AXP: AXP202_MODE_CHGSTATUS = 0x01
+
+// M5AXP: def isVBUSPlug(self):
+// M5AXP:     data = self.read_byte(AXP202_STATUS)
+// M5AXP:     return data & self.__BIT_MASK(5)
+
+// M5AXP: bool AXP192::GetBatState() {
+// M5AXP:     if (Read8bit(0x01) | 0x20)
+// M5AXP:         return true;
+// M5AXP:     else
+// M5AXP:         return false;
+// M5AXP: }
+
+/// Input-power status register (§8.2): bit5 = VBUS present — the
+/// VBUS source (see the M5AXP quotes above; reg 0x01 bit5 is battery
+/// presence, NOT USB power).
+pub const REG_POWER_STATUS: u8 = 0x00;
+/// Charge-state register (§8.3): bit5 = battery present.
+pub const REG_CHARGE_STATUS: u8 = 0x01;
 pub const REG_CHIP_ID: u8 = 0x03; // §8.3 — reads 0x03 on AXP192 (liveness probe)
 pub const REG_DCDC1_VOLTAGE: u8 = 0x10; // §8.19 — bit2 = Grove 5V boost EXTEN
 pub const REG_POWER_OUT_CTL: u8 = 0x12; // §8.5 — DCDC1|DCDC3|LDO2|LDO3|EXTEN enables
@@ -134,10 +171,30 @@ pub const AXP192_INIT_SEQUENCE: &[AxpOp] = &[
 // Screen state — pure data + pure formatting, host-testable.
 // ---------------------------------------------------------------------------
 
-/// Battery register decode (AXP192 datasheet §8.26 reg 78h/79h):
-/// raw = reg78[7:0] << 4 | reg79[7:4], 1.1 mV/LSB → (raw * 11) / 10 mV.
+// Battery register decode (AXP192 datasheet §8.26, regs 78h/79h —
+// reference-locked to the official M5Stack form, issue #275 defect 1):
+// the 12-bit raw value is `(reg78 << 4) + reg79` — reg79's low bits ARE
+// the low bits of the result (the old `reg79 >> 4` form discarded them:
+// a reading of EC/07 decoded as EC0). 1.1 mV/LSB → (raw * 11) / 10 mV.
+
+// M5AXP: uint16_t AXP192::Read12Bit(uint8_t Addr) {
+// M5AXP:     uint16_t Data = 0;
+// M5AXP:     uint8_t buf[2];
+// M5AXP:     ReadBuff(Addr, 2, buf);
+// M5AXP:     Data = ((buf[0] << 4) + buf[1]);
+// M5AXP:     return Data;
+// M5AXP: }
+
+// M5AXP: float AXP192::GetBatVoltage() {
+// M5AXP:     float ADCLSB    = 1.1 / 1000.0;
+// M5AXP:     uint16_t ReData = Read12Bit(0x78);
+// M5AXP:     return ReData * ADCLSB;
+// M5AXP: }
+
+/// Battery millivolts from regs 78h/79h — official M5Stack 12-bit
+/// form (M5AXP quotes above): raw = (reg78 << 4) + reg79, 1.1 mV/LSB.
 pub fn battery_mv_from_regs(reg_batt_h: u8, reg_batt_l: u8) -> u32 {
-    let raw = ((reg_batt_h as u32) << 4) | ((reg_batt_l as u32) >> 4);
+    let raw = ((reg_batt_h as u32) << 4) + (reg_batt_l as u32);
     (raw * 11) / 10
 }
 
@@ -153,10 +210,11 @@ pub fn battery_pct_from_mv(mv: u32) -> u8 {
     }
 }
 
-/// USB-powered: reg 0x01 bit 5 (ACIN/VBUS present — AXP192 datasheet
-/// §8.2 power path status; bit5 = VBUS-VALID).
-pub fn usb_powered_from_reg01(reg01: u8) -> bool {
-    reg01 & (1 << 5) != 0
+/// USB-powered: reg **0x00** (input power status) bit 5 = VBUS present
+/// (issue #275 defect 2 — was read from reg 0x01, whose bit5 is battery
+/// presence; a battery-equipped board showed USB-powered forever).
+pub fn usb_powered_from_reg00(reg00: u8) -> bool {
+    reg00 & (1 << 5) != 0
 }
 
 /// What the status screen shows. FWID/rev come from the build env
@@ -567,16 +625,16 @@ mod imp {
         let Some((_, i2c)) = guard.as_mut() else {
             return false;
         };
-        let (r78, r79, r01) = (
+        let (r78, r79, r00) = (
             axp_read(i2c, REG_BATT_VOLTAGE_H).ok(),
             axp_read(i2c, REG_BATT_VOLTAGE_L).ok(),
             axp_read(i2c, REG_POWER_STATUS).ok(),
         );
-        let (Some(r78), Some(r79), Some(r01)) = (r78, r79, r01) else {
+        let (Some(r78), Some(r79), Some(r00)) = (r78, r79, r00) else {
             return false;
         };
         let pct = super::battery_pct_from_mv(super::battery_mv_from_regs(r78, r79));
-        let usb = super::usb_powered_from_reg01(r01);
+        let usb = super::usb_powered_from_reg00(r00);
         with_screen(|s| {
             s.data.battery_pct = pct;
             s.data.usb_power = usb;
@@ -590,41 +648,43 @@ mod imp {
     /// serve loop (independent FreeRTOS task). Stack: 12 KB — the tick
     /// path is fmt + embedded-graphics + I2C (bench lesson 2026-10-15:
     /// 4 KB overflowed and reboot-looped the board ~2 s after boot).
+    ///
+    /// Spawn failure DEGRADES instead of panicking (issue #275): an
+    /// allocation failure here reboots the reader pre-serve; a missing
+    /// status screen must never take the CCID service down.
     pub fn spawn_ticker() {
-        std::thread::Builder::new()
-            .stack_size(12288)
-            .spawn(|| {
-                let mut uptime = 0u32;
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    uptime = uptime.wrapping_add(1);
-                    tick(uptime);
-                }
-            })
-            .expect("display ticker spawn");
+        if let Err(e) = std::thread::Builder::new().stack_size(12288).spawn(|| {
+            let mut uptime = 0u32;
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                uptime = uptime.wrapping_add(1);
+                tick(uptime);
+            }
+        }) {
+            warn!("display ticker spawn failed: {e:?} — serving headless");
+        }
         // Battery: init read + 10-min cadence; three consecutive failures
         // park the thread (battery "?"-equivalent: shows the last good
         // value) instead of poking a possibly-wedged bus forever.
-        std::thread::Builder::new()
-            .stack_size(8192)
-            .spawn(|| {
-                let mut failures = 0u8;
-                if !refresh_battery() {
-                    failures = 1;
+        if let Err(e) = std::thread::Builder::new().stack_size(8192).spawn(|| {
+            let mut failures = 0u8;
+            if !refresh_battery() {
+                failures = 1;
+            }
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(600));
+                if failures >= 3 {
+                    continue;
                 }
-                loop {
-                    std::thread::sleep(std::time::Duration::from_secs(600));
-                    if failures >= 3 {
-                        continue;
-                    }
-                    if refresh_battery() {
-                        failures = 0;
-                    } else {
-                        failures += 1;
-                    }
+                if refresh_battery() {
+                    failures = 0;
+                } else {
+                    failures += 1;
                 }
-            })
-            .expect("battery refresh spawn");
+            }
+        }) {
+            warn!("battery refresh spawn failed: {e:?} — battery field stays '?'");
+        }
     }
 }
 
@@ -635,13 +695,29 @@ pub use imp::{init, set_card_present, spawn_ticker};
 // (the led.rs host-stub pattern — the display is absent, not an error).
 #[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
 mod stub {
-    pub fn set_card_present(_present: bool) {}
+    //! One observable beyond the no-ops: the LAST presence value pushed
+    //! through `set_card_present`. The card-present serve-path wiring
+    //! (#275 defect 3 — the setter had zero production callers) has no
+    //! screen on host builds, but the WIRING must still regress-test:
+    //! the host suite asserts the serve path pushes presence here.
+
+    static LAST_CARD_PRESENT: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    pub fn set_card_present(present: bool) {
+        LAST_CARD_PRESENT.store(present, std::sync::atomic::Ordering::Relaxed);
+    }
 
     pub fn spawn_ticker() {}
+
+    /// Host/stub-only observable: last presence pushed by the serve path.
+    pub fn last_card_present() -> bool {
+        LAST_CARD_PRESENT.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 #[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
-pub use stub::{set_card_present, spawn_ticker};
+pub use stub::{last_card_present, set_card_present, spawn_ticker};
 
 // ---------------------------------------------------------------------------
 // Host tests — the GREAT EXPECTATION locks.
@@ -700,17 +776,48 @@ mod tests {
         assert_eq!((DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y), (52, 40));
     }
 
-    /// AXP192 battery decode — datasheet §8.26: raw = r78<<4 | r79>>4,
-    /// mv = raw*11/10 (bolty read_battery_mv). Worked example:
-    /// r78=0xEC r79=0x70 → raw 3783 → 4161 mV → 96 %.
+    /// AXP192 battery decode — official M5Stack form (Read12Bit/GetBatVoltage,
+    /// docs/quote-sources/m5stack-axp192-quotes.md): raw12 = (r78 << 4) + r79,
+    /// mv = raw * 1.1 = raw*11/10. Worked example: r78=0xEC r79=0x07 →
+    /// raw 0xEC7 = 3783 → 4161 mV → 96 % (the #275 fixture: the old form
+    /// read these registers as 0xEC0 — the reg-0x79 low bits were discarded).
     #[test]
-    fn battery_decode_matches_bolty() {
-        assert_eq!(battery_mv_from_regs(0xEC, 0x70), 4161);
+    fn battery_decode_matches_m5stack() {
+        assert_eq!(battery_mv_from_regs(0xEC, 0x07), 4161);
         assert_eq!(battery_pct_from_mv(4161), 96);
         assert_eq!(battery_pct_from_mv(3000), 0);
         assert_eq!(battery_pct_from_mv(4200), 100);
-        assert!(usb_powered_from_reg01(1 << 5));
-        assert!(!usb_powered_from_reg01(0));
+        // The issue's worked example: EC/07 must NOT decode as EC0
+        // (raw 3776 → 4153 mV — the pre-fix value).
+        assert_ne!(battery_mv_from_regs(0xEC, 0x07), 4153);
+    }
+
+    /// §8.26 register shape: reg 0x79's LOW bits are the low bits of the
+    /// 12-bit raw value (added whole, per Read12Bit) — not a high-nibble
+    /// source. Locked so the `>> 4` regression cannot return silently.
+    #[test]
+    fn battery_decode_low_bits_survive() {
+        // Only the low nibble set: raw must gain exactly those bits.
+        assert_eq!(battery_mv_from_regs(0x00, 0x01), 1); // 1 raw step = 1.1 mV → 1
+        assert_eq!(battery_mv_from_regs(0x00, 0x0F), 16); // 15*11/10 = 16
+        assert_eq!(battery_mv_from_regs(0x10, 0x00), 281); // 0x100 = 256 raw
+        assert_eq!(battery_mv_from_regs(0xFF, 0x0F), 4504); // 0xFFF = 4095 raw
+    }
+
+    /// VBUS presence comes from reg **0x00** bit5 (input power status —
+    /// isVBUSPlug masks AXP202_STATUS=0x00 bit5); reg 0x01 bit5 is
+    /// BATTERY presence (GetBatState) and must NOT read as USB power.
+    #[test]
+    fn usb_powered_reads_reg00_not_reg01() {
+        assert_eq!(REG_POWER_STATUS, 0x00);
+        assert_eq!(REG_CHARGE_STATUS, 0x01);
+        assert!(usb_powered_from_reg00(1 << 5));
+        assert!(!usb_powered_from_reg00(0));
+        assert!(!usb_powered_from_reg00(!(1 << 5) & 0xFF));
+        // The defect shape: a battery-present bit (reg 0x01 bit5) fed to
+        // the VBUS decoder read as USB power — reg 0x00 bit5 is the only
+        // VBUS source.
+        assert!(!usb_powered_from_reg00(REG_CHARGE_STATUS));
     }
 
     #[test]
