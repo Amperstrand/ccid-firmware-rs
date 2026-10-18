@@ -186,7 +186,7 @@ impl EspPn7160Transport {
         // ESP internal pull-ups must stay OFF.
         let _ = p.i2c0; // new driver owns the controller via port number
         let mut bus: esp_idf_sys::i2c_master_bus_handle_t = core::ptr::null_mut();
-        let mut dev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
+        let dev: esp_idf_sys::i2c_master_dev_handle_t = core::ptr::null_mut();
         unsafe {
             let mut bus_cfg: esp_idf_sys::i2c_master_bus_config_t = core::mem::zeroed();
             bus_cfg.i2c_port = 0;
@@ -200,8 +200,9 @@ impl EspPn7160Transport {
             // v10raw-verified sequence (Rust ACK on bench 2026-10-08): raw
             // gpio_config for IRQ + VEN, ISR machinery installed, single clean
             // VEN cycle, probe IMMEDIATELY after. No PinDriver on these pins —
-            // the hal wrapper was present in every failing build.
-            unsafe {
+            // the hal wrapper was present in every failing build. (Plain
+            // block: already inside the enclosing unsafe.)
+            {
                 let mut irq_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
                 irq_cfg.pin_bit_mask = 1u64 << board.irq;
                 irq_cfg.mode = esp_idf_sys::gpio_mode_t_GPIO_MODE_INPUT;
