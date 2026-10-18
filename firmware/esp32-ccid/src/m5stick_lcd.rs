@@ -530,17 +530,6 @@ mod imp {
         }
     }
 
-    /// State mutation WITHOUT the redraw flush — for callers that must
-    /// never perform display I/O (the CCID serve loop). The 1 Hz ticker
-    /// (`tick` → `with_screen`) flushes the dirty flag.
-    fn with_screen_state<F: FnOnce(&mut Screen)>(f: F) {
-        if let Ok(mut guard) = SCREEN.lock() {
-            if let Some(screen) = guard.as_mut() {
-                f(screen);
-            }
-        }
-    }
-
     fn clear_line(display: &mut LcdDisplay, y: i32) {
         let _ = Rectangle::new(Point::new(0, y), Size::new(super::LCD_H_RES as u32, 12))
             .into_styled(
@@ -603,18 +592,25 @@ mod imp {
         }
     }
 
-    /// Presence update — STATE ONLY, no synchronous redraw (Codex P1 on
-    /// #281): called from the serve loop's presence poll, it must never
-    /// run display I/O; a redraw is several ms of SPI. The 1 Hz ticker
-    /// flushes the dirty flag, so the card line lags presence by at
-    /// most one second.
+    /// Presence update — serve-loop-safe by construction (Codex P1s on
+    /// #281/#287): no redraw from this path, and `try_lock` ONLY — the
+    /// ticker holds the screen mutex across redraw and its SPI writes,
+    /// and a blocking lock in the presence poll is reader-visible stall
+    /// (the #107 lesson: blocking work inside the presence poll had to
+    /// go non-blocking). A contended update is skipped — safe because
+    /// every presence poll re-pushes the current value, so the screen
+    /// converges on the next poll; the 1 Hz ticker flushes the dirty
+    /// flag (the card line lags presence by at most one poll + one
+    /// tick).
     pub fn set_card_present(present: bool) {
-        with_screen_state(|s| {
-            if s.data.card_present != present {
-                s.data.card_present = present;
-                s.dirty = true;
+        if let Ok(mut guard) = SCREEN.try_lock() {
+            if let Some(screen) = guard.as_mut() {
+                if screen.data.card_present != present {
+                    screen.data.card_present = present;
+                    screen.dirty = true;
+                }
             }
-        });
+        }
     }
 
     /// Pure uptime update (1 Hz, called by the display ticker).
