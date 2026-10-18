@@ -3,11 +3,9 @@
 //! nci_read split of the proven C driver. Uses the NEW `i2c_master`
 //! driver via raw esp-idf-sys bindings (issue #63/#80): the PN7160 is
 //! permanently mute under the legacy `driver/i2c` on this silicon, and
-//! ESP-IDF aborts when both driver generations are linked. HISTORY: a
-//! vendored-hal patch used to gate the legacy module out; since the
-//! #242 retirement (2026-10-17) there is NO legacy driver in the tree
-//! (every consumer rides driver_ng; hal = registry v0.47.0, D-9), so
-//! the two-generation abort is gone by construction. The three
+//! ESP-IDF aborts when both driver generations are linked —
+//! (the vendored hal patch that gated the legacy module out was retired
+//! with the #242 wave — legacy i2c is gone). The three
 //! bring-up constructors are the pad-diag verdict map (issue #62):
 //! A = pad-hold clear, B = config order (baseline), C = extended VEN
 //! timing.

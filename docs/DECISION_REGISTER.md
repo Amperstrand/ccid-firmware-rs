@@ -24,7 +24,10 @@ pins 1.94.1 per their README + release notes.
   the esp fork (the single largest structural exception).
 - jmcorgan/fips bumps their `rust-toolchain.toml` → their new version becomes
   the aligned pin; nothing else moves.
-- A repo floats (`@stable`/`@v1` in CI) → that's a regression, not a decision.
+- A repo floats its RUST COMPILER input (dtolnay `@master`/`@stable`/unpinned
+  toolchain, or an unpinned espup) → that's a regression, not a decision
+  (approved *action* pins like `setup-rust-toolchain@v1` are fine — the
+  trigger is the compiler, not the action tag).
 - **Toml-pinned repos MUST declare `components = ["rustfmt", "clippy"]`** in
   the toml (D-1 amendment, 2026-10-16): dtolnay's action reads components
   from the toml — not its input — on the toml-driven path; the omission
@@ -59,7 +62,9 @@ verification pending (replug/reboot, then `ble_log_capture.py`; no reflash).
 
 **Authority**: `ccid_serial_server.rs` window constants (PR #204, issue #181).
 **Decision**: tight 2.5 s (status/escape/mechanical), 7.5 s XfrBlock,
-60 s IccPowerOn — each cited to `docs/PCSC_HOST_CONTRACT_AUDIT.md` §3.1.
+59.5 s IccPowerOn (ICC_POWER_ON_RESPONSE_WINDOW_MS = 59_500 — the 500 ms
+host-contract margin is load-bearing) — each cited to
+`docs/PCSC_HOST_CONTRACT_AUDIT.md` §3.1.
 **Evidence**: the flat 2.5 s starved legitimate FWI≈5 s exchanges while
 libccid was still reading; host tests + m5stick battery PASS lock the table.
 **Change triggers**: the host-contract audit doc gains new rows/values →
@@ -148,14 +153,12 @@ revisit whether it belongs in a policy enum.
 
 **Authority**: PR #242 + this entry (root `Cargo.toml` `[patch]` comment +
 AGENTS.md vendoring-policy class 2).
-**Decision**: one I2C driver generation — driver_ng — for every consumer:
-the former legacy `I2cDriver` consumers (MFRC522 paths, the m5stick
-LCD's AXP192) ride the shared embedded-hal adapter
-(`pn7160-nci::hal_i2c`), while the PN7160 transport keeps its own raw
-`i2c_master` FFI (`esp_transport`); the Amperstrand esp-idf-hal fork
-(`ai-experiments-0.47`, whose only delta was the `legacy-i2c` opt-in)
-is RETIRED — no `[patch]` entry exists for esp-idf-hal; it resolves
-from crates.io.
+**Decision**: every embedded-hal I2C consumer rides the shared adapter
+(`pn7160-nci::hal_i2c`); the PN7160 transport itself rides the raw
+driver_ng FFI directly by design (esp_transport.rs); the Amperstrand
+esp-idf-hal fork (`ai-experiments-0.47`, whose only delta was the
+`legacy-i2c` opt-in) is RETIRED — no `[patch]` entry exists for
+esp-idf-hal; it resolves from crates.io.
 **Evidence**: all 3 legacy `I2cDriver` sites migrated (MFRC522 CDC main,
 `wifi_common::mfrc522_bring_up`, m5stick LCD AXP192); the full-matrix CI
 run on the patch-removal commit green on every esp leg (9 build legs +

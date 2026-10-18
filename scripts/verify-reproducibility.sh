@@ -6,7 +6,7 @@
 #   ./scripts/verify-reproducibility.sh <profile>
 #
 # Example:
-#   ./scripts/verify-reproducibility.sh profile-cherry-smartterminal-st2xxx
+#   ./scripts/verify-reproducibility.sh stm32f469,profile-cherry-smartterminal-st2xxx
 #
 # Exit codes:
 #   0 - Hashes match (reproducible)
