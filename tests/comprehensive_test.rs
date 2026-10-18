@@ -682,8 +682,11 @@ fn test_full_flow_touch_entry() {
         ctx.add_digit(expected_digit);
     }
 
-    // Press OK
-    let ok_point = Point::new(50 + 290, 440 + 50);
+    // Press OK — bottom-right of the 4-row grid: row y = KEYPAD_START_Y
+    // + 3×(BUTTON_SIZE+SPACING) = 200+360 = 560 (#285: this test used
+    // 440 — one row short, hitting Digit(9); stale geometry that no CI
+    // leg ever ran).
+    let ok_point = Point::new(50 + 290, 560 + 50);
     let _ = handler.process(&keypad, Some(ok_point));
     let result = handler.process(&keypad, None);
     assert_eq!(result, Some(ButtonId::Ok));
