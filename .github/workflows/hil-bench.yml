@@ -122,8 +122,12 @@ jobs:
               --bench-commit "$PREV_STATUS_SHA" --head HEAD \
               --out docs/DRIFT.md || true
             printf '\n' >> docs/STATUS.md
-            cat docs/DRIFT.md >> docs/STATUS.md
-            cat docs/DRIFT.md >> "$GITHUB_STEP_SUMMARY"
+            # Codex P2 on #237: the python call above is || true-guarded
+            # but the cats were not — a missing DRIFT.md (script died
+            # before writing) would fail the publish step. The script
+            # always writes the file, but the guard costs nothing.
+            cat docs/DRIFT.md >> docs/STATUS.md 2>/dev/null || true
+            cat docs/DRIFT.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           fi
           cat docs/STATUS.md >> "$GITHUB_STEP_SUMMARY"
       - name: publish to bench/status branch

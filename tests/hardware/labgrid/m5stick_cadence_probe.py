@@ -45,11 +45,15 @@ from board_identity import escape_frame, parse_frames  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serial_ports import resolve  # noqa: E402
 
-DEFAULT_SWEEP = (1, 10, 100, 1000)
+# Escape 0xD3 carries N as ONE wire byte — every sweep point must fit
+# (Codex P1 on #259: the old default (1, 10, 100, 1000) made bytes()
+# raise a bare ValueError at N=1000, and no clean refusal existed).
+MAX_READS = 255
+DEFAULT_SWEEP = (1, 10, 100, MAX_READS)
 DEFAULT_REPS = 3
 SETTLE_SECS = 4.0
 PROBE_FAILED = 0xFFFFFFFF
-EXCHANGE_BUDGET = 8.0  # N=1000 at ~0.1 ms/read + framing headroom
+EXCHANGE_BUDGET = 8.0  # N=255 at ~0.1 ms/read + framing headroom
 TIMEOUT_PER_READ = 0.2
 
 
@@ -77,6 +81,9 @@ class CadenceWire:
         s = pyserial.Serial()
         s.port = port
         s.baudrate = 115200
+        # Codex P2 on #259: the firmware serves 8N2 (StopBits::STOP2,
+        # main.rs) — pyserial's default is 8N1; match the wire.
+        s.stopbits = pyserial.STOPBITS_TWO
         s.timeout = 0.15
         s.dtr = False  # BEFORE open — the DTR-latch rule
         s.rts = False
@@ -157,8 +164,19 @@ def compare(baseline: dict, candidate: dict, ratio_gate: float) -> int:
         print(f"{n:>7} {base[n]:>14.1f} {cand[n]:>14.1f} {ratio:>7.2f}{flag}")
         if ratio > ratio_gate:
             failures.append(n)
-    for n in sorted(set(base) ^ set(cand)):
-        print(f"N={n}: only in {'candidate' if n in cand else 'baseline'} — not compared")
+    # Codex P2 on #259: unmatched points and an empty intersection are
+    # FAILURES, not noise — an empty intersection used to print
+    # "PASS: worst ratio 0.00" (worst never updated), and unmatched
+    # points were silently skipped: both defeat the gate.
+    unmatched = sorted(set(base) ^ set(cand))
+    for n in unmatched:
+        print(f"N={n}: only in {'candidate' if n in cand else 'baseline'} — NOT COMPARED")
+    if not (set(base) & set(cand)):
+        print("FAIL: no common sweep points between baseline and candidate")
+        return 1
+    if unmatched:
+        print(f"FAIL: unmatched sweep points {unmatched} — sweeps must cover the same N set")
+        return 1
     if failures:
         print(f"FAIL: us/read ratio over {ratio_gate} at N={failures}")
         return 1
@@ -169,7 +187,7 @@ def compare(baseline: dict, candidate: dict, ratio_gate: float) -> int:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--port", help="override serial_ports.resolve('m5stick')")
-    p.add_argument("--reads", help="comma-separated N set (default 1,10,100,1000)")
+    p.add_argument("--reads", help="comma-separated N set (default 1,10,100,255; max 255)")
     p.add_argument("-r", "--reps", type=int, default=DEFAULT_REPS)
     p.add_argument("--settle", type=float, default=SETTLE_SECS)
     p.add_argument("--out", help="write the sweep JSON here")
@@ -188,6 +206,11 @@ def main(argv: list[str] | None = None) -> int:
         return compare(base, cand, args.ratio)
 
     sweep = [int(x) for x in args.reads.split(",")] if args.reads else list(DEFAULT_SWEEP)
+    # Codex P1 on #259: refuse a clean error instead of crashing later
+    # inside bytes([0xD3, reads]) with an opaque ValueError.
+    bad = [n for n in sweep if not 1 <= n <= MAX_READS]
+    if bad:
+        p.error(f"--reads values must be 1..{MAX_READS} (one wire byte): got {bad}")
     result = run_sweep(args.port or resolve("m5stick"), sweep, args.reps, args.settle)
     result["source"] = {
         "tool": "m5stick_cadence_probe.py",

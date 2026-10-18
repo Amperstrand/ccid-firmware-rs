@@ -189,7 +189,7 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     /// Messages that CAN complete (total ≤ buffer size) are untouched.
     fn drop_unassemblable(&mut self) {
         if self.rx_len >= CCID_HEADER_SIZE
-            && CCID_HEADER_SIZE + self.declared_length() > self.rx_buffer.len()
+            && !declared_fits(self.declared_length(), self.rx_buffer.len())
         {
             ccid_warn!("CCID: rx resync (declared dwLength un-assemblable)");
             self.rx_len = 0;
@@ -206,6 +206,14 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             self.rx_buffer[3],
             self.rx_buffer[4],
         ]) as usize;
+        // Wrap guard (Codex P1 on #269): without it, `CCID_HEADER_SIZE +
+        // msg_len` wraps on the 32-bit MCU target whenever dwLength sits
+        // within CCID_HEADER_SIZE of u32::MAX — the wrapped sum then
+        // passes as a small total, message_ready() fires on a partial
+        // buffer, and handle_message slices garbage (panic on target).
+        if !declared_fits(msg_len, self.rx_buffer.len()) {
+            return false;
+        }
         let total_len = CCID_HEADER_SIZE + msg_len;
         self.rx_len >= total_len
     }
@@ -829,5 +837,50 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
     pub fn cmd_busy(&self) -> bool {
         self.cmd_busy
+    }
+}
+
+/// Wrap-safe payload-capacity check (Codex P1 on #269): the naive
+/// `CCID_HEADER_SIZE + declared > buffer_len` ADDS first — on the
+/// 32-bit MCU target (usize == u32) any dwLength within
+/// CCID_HEADER_SIZE of u32::MAX wraps the sum down to a small number,
+/// defeating BOTH un-assemblable guards at once (drop_unassemblable
+/// keeps the wedge, message_ready fires on a partial buffer). Subtract
+/// instead: the buffer is always at least a header, so the subtraction
+/// cannot underflow, and `declared` compares against the true payload
+/// capacity. Total (width-independent): small `declared` fits, header
+/// sized and above does not.
+const fn declared_fits(declared: usize, buffer_len: usize) -> bool {
+    buffer_len >= CCID_HEADER_SIZE && declared <= buffer_len - CCID_HEADER_SIZE
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+
+    // Width-independent: these declared values wrap `10 + declared` on
+    // ANY usize width that can hold them — the host (64-bit) proves the
+    // arithmetic form, the target (32-bit) hits the same path with real
+    // dwLength bytes 0xFFFF_FFF7..=0xFFFF_FFFF.
+    #[test]
+    fn usize_max_neighborhood_never_fits() {
+        assert!(!declared_fits(usize::MAX, 271));
+        assert!(!declared_fits(usize::MAX - CCID_HEADER_SIZE + 1, 271));
+        assert!(!declared_fits(usize::MAX - CCID_HEADER_SIZE, 271));
+    }
+
+    #[test]
+    fn buffer_smaller_than_header_never_fits() {
+        // Totality guard: a hypothetical buffer shorter than a header
+        // must not underflow the subtraction into a false "fits".
+        assert!(!declared_fits(0, CCID_HEADER_SIZE - 1));
+        assert!(!declared_fits(usize::MAX, CCID_HEADER_SIZE - 1));
+    }
+
+    #[test]
+    fn true_capacity_boundary_is_exact() {
+        assert!(declared_fits(261, 271)); // exactly buffer - header
+        assert!(!declared_fits(262, 271)); // one past capacity
+        assert!(declared_fits(0, 271));
     }
 }

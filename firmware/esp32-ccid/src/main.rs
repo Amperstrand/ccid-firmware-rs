@@ -452,6 +452,13 @@ fn main() {
         &uart_config,
     )
     .expect("UART0 init failed (TX=GPIO1, RX=GPIO3)");
+    // Codex P1 on #222: from the claim on, UART0 is the CCID protocol
+    // wire — in console-enabled builds any later log (the PN532
+    // degraded error below included) injects ASCII into the GemPC Twin
+    // stream right before serve_uart, and libccidtwin cannot resync.
+    // Boot logs (FWID) already emitted pre-claim; mirror the MFRC522
+    // main's post-claim Off.
+    log::set_max_level(log::LevelFilter::Off);
     // Same RX-TOUT fix as the MFRC522 main: default flush adds ~40 ms per
     // CCID frame (bench perf_ab 2026-10-10).
     unsafe { esp_idf_sys::uart_set_rx_timeout(esp_idf_sys::uart_port_t_UART_NUM_0, 1) };

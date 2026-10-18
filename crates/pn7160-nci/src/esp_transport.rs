@@ -212,6 +212,12 @@ impl EspPn7160Transport {
                 irq_cfg.pull_down_en = esp_idf_sys::gpio_pulldown_t_GPIO_PULLDOWN_ENABLE;
                 irq_cfg.intr_type = esp_idf_sys::gpio_int_type_t_GPIO_INTR_HIGH_LEVEL;
                 esp_idf_sys::gpio_config(&irq_cfg);
+                // Codex P2 on #230: publish the IRQ number BEFORE the
+                // handler is registered — between handler_add and the
+                // store, the quench ISR would read the default (6) and
+                // disable the WRONG pin's interrupt on any non-nucula
+                // board whose IRQ differs.
+                IRQ_PIN_NO.store(board.irq, core::sync::atomic::Ordering::Relaxed);
                 ISR_SERVICE_RC.store(
                     esp_idf_sys::gpio_install_isr_service(0),
                     core::sync::atomic::Ordering::Relaxed,
@@ -225,9 +231,6 @@ impl EspPn7160Transport {
                     core::sync::atomic::Ordering::Relaxed,
                 );
                 esp_idf_sys::gpio_intr_disable(board.irq);
-                // The ISR quench cannot capture the board — publish the
-                // IRQ number for it (#149 P2).
-                IRQ_PIN_NO.store(board.irq, core::sync::atomic::Ordering::Relaxed);
 
                 let mut ven_cfg: esp_idf_sys::gpio_config_t = core::mem::zeroed();
                 ven_cfg.pin_bit_mask = 1u64 << board.ven;
