@@ -927,3 +927,149 @@ fn test_escape_d0_virgin_reader_counts_zero_but_uptime_live() {
     assert_eq!(diag_field(d, 20), 0);
     assert_eq!(diag_field(d, 24), 500, "uptime_ticks (ms)");
 }
+
+// ---------------------------------------------------------------------------
+// 10. Serve-loop wedge — #268 defect 3 (HIL Leg 3, main@6547916)
+// ---------------------------------------------------------------------------
+
+/// Feed bytes exactly as the USB transport does (ccid.rs poll(): one
+/// ep_out packet per feed call) and return the response, if any.
+fn feed_exchange<D: SmartcardDriver>(
+    h: &mut CcidMessageHandler<D>,
+    packets: &[&[u8]],
+) -> Option<Vec<u8>> {
+    for p in packets {
+        h.feed(p);
+    }
+    if !h.message_ready() {
+        return None;
+    }
+    h.handle_message();
+    let (len, resp) = h.take_response();
+    Some(resp[..len].to_vec())
+}
+
+#[test]
+fn test_unassemblable_declared_length_no_longer_wedges_serve_loop() {
+    // Given: the #268 Leg-3 wedge signature — a bulk-OUT packet whose
+    // header declares dwLength=0xFFFF. The reassembly buffer is 271
+    // bytes, so the declared message can NEVER complete: message_ready()
+    // stays false forever and every later command (GetSlotStatus
+    // included) goes unanswered across host reconnects and USB port
+    // resets — only an MCU reset cleared it on the bench.
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+
+    let hostile = ccid_request(PC_TO_RDR_GET_SLOT_STATUS, 0, 0x42, [0; 3], &[]);
+    let mut hostile_declared_64k = hostile.clone();
+    hostile_declared_64k[1] = 0xFF;
+    hostile_declared_64k[2] = 0xFF;
+
+    // When: the hostile packet arrives, then a well-formed GetSlotStatus
+    let wedge = feed_exchange(&mut h, &[&hostile_declared_64k]);
+    assert!(wedge.is_none(), "hostile header alone must not answer");
+    let resp = feed_exchange(
+        &mut h,
+        &[&ccid_request(
+            PC_TO_RDR_GET_SLOT_STATUS,
+            0,
+            0x43,
+            [0; 3],
+            &[],
+        )],
+    );
+
+    // Then: the serve loop resynchronized — the later command is served.
+    // (Pre-fix: None forever — the wedged shape the HIL observed.)
+    let resp = resp.expect("serve loop must recover after un-assemblable header");
+    assert_eq!(resp[0], RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(rseq(&resp), 0x43);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}
+
+#[test]
+fn test_garbage_stream_that_fills_buffer_recovers() {
+    // Given: a mid-stream desync — garbage that does not form a sane
+    // header keeps arriving until the reassembly buffer is full.
+    let mut h = CcidMessageHandler::new(MockSmartcardDriver::new(), CHERRY_VID);
+
+    let garbage = [0xA5u8; 64];
+    for _ in 0..5 {
+        h.feed(&garbage);
+    }
+    assert!(!h.message_ready());
+
+    // When: the host sends a well-formed GetSlotStatus afterwards
+    let resp = feed_exchange(
+        &mut h,
+        &[&ccid_request(
+            PC_TO_RDR_GET_SLOT_STATUS,
+            0,
+            0x07,
+            [0; 3],
+            &[],
+        )],
+    );
+
+    // Then: answered — the garbage "header" (dwLength 0xA5A5A5A5) is
+    // un-assemblable, so every flood packet is flushed on arrival and
+    // the stream resynchronizes instead of wedging.
+    let resp = resp.expect("serve loop must recover after garbage flood");
+    assert_eq!(resp[0], RDR_TO_PC_SLOTSTATUS);
+    assert_eq!(rseq(&resp), 0x07);
+}
+
+#[test]
+fn test_max_capacity_xfrblock_still_assembles() {
+    // Regression guard for the resync: a command that exactly fills the
+    // 271-byte reassembly buffer (10-byte header + 261-byte payload,
+    // dwMaxCCIDMessageLength-class) must still assemble and be served —
+    // the flush may only drop messages that can NEVER complete.
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&T0_ATR)
+        .with_apdu_response(&[0x90, 0x00]);
+    let mut h = CcidMessageHandler::new(driver, CHERRY_VID);
+    h.check_card_presence();
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+
+    let payload = [0x00u8; 261];
+    let msg = ccid_request(PC_TO_RDR_XFR_BLOCK, 0, 2, [0x00, 0, 0], &payload);
+    assert_eq!(msg.len(), 271);
+
+    let resp = feed_exchange(&mut h, &[&msg]).expect("full-buffer command served");
+    assert_eq!(resp[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(rseq(&resp), 2);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}
+
+#[test]
+fn test_multi_packet_command_reassembly_unchanged() {
+    // The normal path: one CCID message delivered across several USB
+    // packets must assemble exactly as before the resync logic.
+    let driver = MockSmartcardDriver::new()
+        .card_present(true)
+        .with_atr(&T0_ATR)
+        .with_apdu_response(&[0x62, 0x03]);
+    let mut h = CcidMessageHandler::new(driver, CHERRY_VID);
+    h.check_card_presence();
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+
+    let msg = ccid_request(
+        PC_TO_RDR_XFR_BLOCK,
+        0,
+        5,
+        [0x00, 0, 0],
+        &[0x00, 0xA4, 0x00, 0x00, 0x00],
+    );
+    let resp = feed_exchange(&mut h, &[&msg[..7], &msg[7..]]).expect("split command served");
+
+    assert_eq!(resp[0], RDR_TO_PC_DATABLOCK);
+    assert_eq!(rseq(&resp), 5);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+}

@@ -175,6 +175,25 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
         let copy_len = data.len().min(remaining);
         self.rx_buffer[self.rx_len..self.rx_len + copy_len].copy_from_slice(&data[..copy_len]);
         self.rx_len += copy_len;
+        self.drop_unassemblable();
+    }
+
+    /// #268 defect 3 (HIL Leg 3 wedge): once a received header declares
+    /// more payload than the reassembly buffer can ever hold,
+    /// `message_ready()` can never become true again — every later
+    /// command (GetSlotStatus included) went unanswered across host
+    /// reconnects and USB port resets; only an MCU reset cleared it on
+    /// the bench. Drop the partial buffer so the stream resynchronizes
+    /// on the next packet — the serial transport's corrupt-frame
+    /// recovery doctrine (ccid_serial_server garbage tolerance).
+    /// Messages that CAN complete (total ≤ buffer size) are untouched.
+    fn drop_unassemblable(&mut self) {
+        if self.rx_len >= CCID_HEADER_SIZE
+            && CCID_HEADER_SIZE + self.declared_length() > self.rx_buffer.len()
+        {
+            ccid_warn!("CCID: rx resync (declared dwLength un-assemblable)");
+            self.rx_len = 0;
+        }
     }
 
     pub fn message_ready(&self) -> bool {

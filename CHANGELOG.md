@@ -76,6 +76,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **#268 (defect 3, HIL Leg 3)**: one-shot serve-loop wedge — during the
+  first raw multi-process claim/release session after flashing, an
+  IccPowerOn wedged the firmware: bulk reads timed out for it and every
+  later command including GetSlotStatus, across new host processes; a
+  USB port reset (USBDEVFS_RESET) did not clear it, only an MCU reset
+  did (not reproduced ×3 on retry — the isolation gap #268 flagged).
+  Code-level root cause matching that signature: the bulk-OUT
+  reassembly had no bound on the declared `dwLength` — a header
+  declaring more than the 271-byte buffer can hold (hostile, corrupt,
+  or desynced first packet) left `message_ready()` false forever, so
+  the reader stopped answering anything; the stuck state lives in
+  firmware RAM, which is exactly why port resets and reconnects could
+  not clear it. Fix: `CcidMessageHandler::feed` now drops the partial
+  buffer the moment the received header declares an un-assemblable
+  length (total > buffer size), resynchronizing on the next packet —
+  the serial transport's corrupt-frame recovery doctrine. Completable
+  messages (total ≤ buffer size) are byte-for-byte untouched. Pinned
+  host-side: `test_unassemblable_declared_length_no_longer_wedges_serve_loop`
+  (reproduces the wedge pre-fix, asserts recovery post-fix),
+  `test_garbage_stream_that_fills_buffer_recovers`, plus regression
+  guards `test_max_capacity_xfrblock_still_assembles` (271-byte command
+  still served) and `test_multi_packet_command_reassembly_unchanged`.
+  Bench re-verification of the original one-shot trigger remains
+  hardware-gated per #268 (F469 slot: card seated, runs main@6547916).
+
 - **#268 (defect 2, HIL Leg 4)**: Escape `0xD0` diagnostics counters
   frozen at zero on the STM32 builds — `apdu_tx=0, apdu_rx=0,
   uptime=0` after real power-on + APDU exchanges (`card_present` was the
