@@ -91,7 +91,7 @@ ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
 ccid-transport-serial = { path = "../../crates/ccid-transport-serial" }
 embedded-hal = "1.0"
-heapless = "0.8"
+heapless = "0.9"
 log = "0.4"
 nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }

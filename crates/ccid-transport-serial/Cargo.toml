@@ -7,5 +7,5 @@ description = "Shared serial framing transport for CCID firmware"
 license = "GPL-2.0-or-later"
 
 [dependencies]
-heapless = "0.8"
+heapless = "0.9"
 ccid-protocol = { path = "../ccid-protocol" }
