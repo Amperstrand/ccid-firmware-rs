@@ -649,6 +649,15 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                     Ok(apdu) => {
                         let apdu_len = 5 + pin_len;
                         ccid_debug!("CCID: Transmitting APDU, len={}", apdu_len);
+                        // #276: the PIN paths used to bypass the ONLY
+                        // apdu_tx/rx counter sites (the shared-core XfrBlock
+                        // arms) — every PIN-pad exchange was invisible to
+                        // the 0xD0 diagnostics. Same doctrine as the
+                        // XfrBlock arms (Codex #46/#43/#38): count at the
+                        // moment of actual card transfer; rx only on a
+                        // card response.
+                        self.core.diagnostics_mut().apdu_tx_count =
+                            self.core.diagnostics().apdu_tx_count.saturating_add(1);
                         match self
                             .core
                             .driver_mut()
@@ -656,6 +665,8 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                             .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
                         {
                             Ok(resp_len) => {
+                                self.core.diagnostics_mut().apdu_rx_count =
+                                    self.core.diagnostics().apdu_rx_count.saturating_add(1);
                                 ccid_info!("CCID: Card responded, len={}", resp_len);
                                 let mut resp_copy: [u8; 261] = [0u8; 261];
                                 resp_copy[..resp_len]
@@ -748,6 +759,11 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                     Ok(apdu) => {
                         let apdu_len = 5 + old_len + new_len;
                         ccid_debug!("CCID: Transmitting CHANGE APDU, len={}", apdu_len);
+                        // #276: same counter doctrine as the Verify arm
+                        // above — the CHANGE path bypassed the counters
+                        // identically.
+                        self.core.diagnostics_mut().apdu_tx_count =
+                            self.core.diagnostics().apdu_tx_count.saturating_add(1);
                         match self
                             .core
                             .driver_mut()
@@ -755,6 +771,8 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                             .transmit_apdu(&apdu[..apdu_len], &mut self.response_buffer)
                         {
                             Ok(resp_len) => {
+                                self.core.diagnostics_mut().apdu_rx_count =
+                                    self.core.diagnostics().apdu_rx_count.saturating_add(1);
                                 ccid_info!("CCID: Card responded to CHANGE, len={}", resp_len);
                                 let mut resp_copy: [u8; 261] = [0u8; 261];
                                 resp_copy[..resp_len]
@@ -837,6 +855,12 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
     pub fn cmd_busy(&self) -> bool {
         self.cmd_busy
+    }
+
+    /// Read-only access to the shared-core 0xD0 diagnostics (#276:
+    /// host tests assert the PIN paths advance the APDU counters).
+    pub fn core_diagnostics(&self) -> &::ccid_core::Diagnostics {
+        self.core.diagnostics()
     }
 }
 
