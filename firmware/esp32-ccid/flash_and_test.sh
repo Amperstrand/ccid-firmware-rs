@@ -96,11 +96,14 @@ flash() {
         "${WORKSPACE_ROOT}/${FIRMWARE}" || {
             error "elf2image failed"; exit 1; }
     local part_table
-    part_table="$(ls -t "${WORKSPACE_ROOT}/target/xtensa-esp32-espidf"/release/build/esp-idf-sys*/out/build/partition_table/partition-table.bin 2>/dev/null | head -1)"
+    part_table="$(ls -t "${WORKSPACE_ROOT}/target/xtensa-esp32-espidf"/release/build/esp-idf-sys*/out/build/partition_table/partition-table.bin 2>/dev/null | head -1 || true)"
     [ -z "${part_table}" ] && \
         part_table="${WORKSPACE_ROOT}/target/xtensa-esp32-espidf/release/build/partition-table.bin"
 
-    python3 "${WORKSPACE_ROOT}/tests/hardware/labgrid/esp32_flash.py" \
+    # sudo: the tool's pcscd stop/start need service rights (same
+    # elevation this script uses for its own pcscd operations); an
+    # unsudoed stop fails and the tool correctly refuses to flash
+    sudo python3 "${WORKSPACE_ROOT}/tests/hardware/labgrid/esp32_flash.py" \
         --port "$PORT" --chip esp32 --baud 115200 \
         --image 0x8000="${part_table}" --image 0x40000="${app_bin}" \
         --erase 0x30000=0x2000 \

@@ -219,12 +219,31 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
     return fd
 
 
-def pcscd_lock_release(fd: int, run=None) -> None:
+def pcscd_lock_release(fd: int, run=None,
+                       warn=lambda msg: print(f"# {msg}")
+                       ) -> tuple[bool, None]:
+    """Restart pcscd, then release the lock. Returns (pcscd_ok, None).
+
+    A failed START does not fail the flash (the images are proven on
+    flash) but is reported — the caller must know pcscd is down. The
+    fd is unlocked/closed in a finally so a runner exception cannot
+    leak the flock in a long-lived caller.
+    """
     import fcntl
     import os
-    (run or _run_local)("systemctl start pcscd.socket pcscd", timeout=60)
-    fcntl.flock(fd, fcntl.LOCK_UN)
-    os.close(fd)
+    pcscd_ok = True
+    try:
+        r = (run or _run_local)("systemctl start pcscd.socket pcscd",
+                                timeout=60)
+        if r.returncode != 0:
+            pcscd_ok = False
+            warn(f"pcscd RESTART FAILED (rc={r.returncode}) — other "
+                 f"bench readers are DOWN until restarted manually. "
+                 f"stderr: {(r.stderr or '')[-200:]}")
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    return pcscd_ok, None
 
 
 def pcscd_stop(run=None) -> None:
@@ -305,7 +324,12 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
         def restore():
             set_ftdi_latency(port)
             if lock_state["fd"] is not None:
-                pcscd_lock_release(lock_state["fd"], run=run)
+                ok_pcscd, _ = pcscd_lock_release(lock_state["fd"],
+                                                 run=run,
+                                                 warn=log.append)
+                if not ok_pcscd:
+                    log.append("# WARNING carried in the verdict: pcscd "
+                               "is DOWN after this flash")
 
     # -- baud discipline: never exceed the exporter-configured speed --
     cap = baud_from_exporter(port, exporter_cfg) if exporter_cfg else None
