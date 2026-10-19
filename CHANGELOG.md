@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Both call sites now pass `--flash-mode dio` explicitly and verify the
   produced image's header byte 2 == `0x2`, failing loud — the guard
   catches any future toolchain default change instead of the bench.
+- Codex round on #310 (both findings fixed): the nucula HIL converter
+  (`tests/hardware/nucula/board.py` `build_firmware`) gets the same pin
+  + guard (P1 — the fourth elf2image site), and the build.sh header
+  check is skipped under `--dry-run` so a fresh target dir no longer
+  exits 1 on the missing image (P2).
 
 ### Changed — #264: retire `vendor/synopsys-usb-otg` path-patch → git dep on `Amperstrand/synopsys-usb-otg`
 
