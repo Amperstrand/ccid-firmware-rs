@@ -9,7 +9,7 @@ description = "no_std NCI protocol core for the PN7160 NFC controller (reader mo
 # firmware/esp32-ccid and consumes this crate.
 
 [dependencies]
-heapless = "0.8"
+heapless = "0.9"
 # embedded-hal 1.0 traits are no_std + host-safe: unconditional so the
 # driver_ng adapter's pure mapping logic stays host-testable (#149 P3).
 embedded-hal = "1.0"
