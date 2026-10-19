@@ -8,6 +8,9 @@ mirror), and the STALE/current rendering.
 """
 
 import importlib.util
+import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -87,6 +90,33 @@ class RenderTests(unittest.TestCase):
         body = drift.render("abc", "def", {}, 0)
         self.assertIn("| (none) | 0 | — | ✅ current |", body)
         self.assertNotIn("STALE", body)
+
+
+class PrintBenchCommitModeTests(unittest.TestCase):
+    def test_prints_only_the_sha_from_real_shaped_stamp(self):
+        # The nightly's extraction hook: real bench/status stamps wrap
+        # the SHA in backticks — the shell grep that missed them was
+        # the 2026-10-17 dormant-drift bug this mode replaces.
+        with tempfile.TemporaryDirectory() as d:
+            st = Path(d) / "STATUS.md"
+            st.write_text("...\nVerified: 2026-10-17T03:31:18Z @ `0f45f31743e9` — `bench_inventory.py`\n")
+            r = subprocess.run(
+                [sys.executable, str(_SRC), "--print-bench-commit", "--from-status", str(st)],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stdout.strip(), "0f45f31743e9")
+
+    def test_no_stamp_prints_nothing_exit_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = Path(d) / "STATUS.md"
+            st.write_text("no stamps here\n")
+            r = subprocess.run(
+                [sys.executable, str(_SRC), "--print-bench-commit", "--from-status", str(st)],
+                capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(r.stdout.strip(), "")
 
 
 if __name__ == "__main__":
