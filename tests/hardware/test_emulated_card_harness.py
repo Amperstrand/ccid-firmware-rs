@@ -134,10 +134,12 @@ def _build_driver():
 
 
 def _pcsc_prereq_ok(workdir: Path) -> bool:
-    """True when cc + PCSC headers exist — the Makefile's prerequisite
-    set (pkg-config cflags with the same /usr/include/PCSC fallback).
-    Separates 'optional toolchain missing' (skip) from 'code-caused
-    build regression' (fail loudly, Codex P2 on #297)."""
+    """True when cc + the driver's required PCSC headers exist
+    (ifdhandler.h AND reader.h — both unconditional includes in
+    ifd-nucula.c; debuglog.h is __has_include-optional). cflags use the
+    Makefile's own pkg-config / /usr/include/PCSC fallback. Separates
+    'optional toolchain missing' (skip) from 'code-caused build
+    regression' (fail loudly, Codex P2s on #297)."""
     try:
         cflags = subprocess.run(["pkg-config", "--cflags", "libpcsclite"],
                                 capture_output=True, text=True)
@@ -146,7 +148,8 @@ def _pcsc_prereq_ok(workdir: Path) -> bool:
     except OSError:
         flags = ["-I/usr/include/PCSC"]
     probe = workdir / "prereq.c"
-    probe.write_text("#include <ifdhandler.h>\nint main(void) { return 0; }\n")
+    probe.write_text("#include <ifdhandler.h>\n#include <reader.h>\n"
+                     "int main(void) { return 0; }\n")
     try:
         probe_rc = subprocess.run(["cc", "-fsyntax-only", *flags, str(probe)],
                                   capture_output=True).returncode
