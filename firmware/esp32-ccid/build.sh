@@ -449,10 +449,21 @@ if [ -n "${FLASH_PORT}" ]; then
     # 0x30000 is otadata) is flashed in the same invocation — under the
     # legacy single-app table that offset IS the factory app.
     OTADATA_OFFSET="0x30000"
-    run esptool --chip "${CHIP}" -p "${FLASH_PORT}" --baud "${FLASH_BAUD}" \
-        write-flash 0x8000 "${PART_TABLE}" "${FLASH_OFFSET}" "${IMAGE}"
-    run esptool --chip "${CHIP}" -p "${FLASH_PORT}" --baud "${FLASH_BAUD}" \
-        erase-region "${OTADATA_OFFSET}" 0x2000
+    # Wedge discipline (2026-10-19 m5stick session, #278/#299): every
+    # flash goes through esp32_flash.py — pcscd socket+service quiesce
+    # under a HELD bench flock, baud capped to the exporter-configured
+    # speed, writes-before-erases ordering (descending offsets: the
+    # partition table lands LAST), the USBDEVFS_RESET/ftdi-rebind
+    # ladder, FTDI latency_timer restore, and the boot signature check.
+    # Never a hand-rolled esptool sequence on a bench reader port.
+    ESP_FLASH_TOOL="${SCRIPT_DIR}/../../tests/hardware/labgrid/esp32_flash.py"
+    ESP_FLASH_ARGS=(--port "${FLASH_PORT}" --chip "${CHIP}" --baud "${FLASH_BAUD}"
+        --image 0x8000="${PART_TABLE}" --image "${FLASH_OFFSET}=${IMAGE}"
+        --erase "${OTADATA_OFFSET}=0x2000")
+    if [ -f "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" ]; then
+        ESP_FLASH_ARGS+=(--exporter-cfg "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml")
+    fi
+    run python3 "${ESP_FLASH_TOOL}" "${ESP_FLASH_ARGS[@]}"
     if [ "${CHIP}" = "esp32" ]; then
         warn "FTDI DTR/RTS wedge: physically replug the M5Stack board before expecting"
         warn "serial communication to work again (see flash_and_test.sh header)."

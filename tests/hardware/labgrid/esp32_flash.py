@@ -48,7 +48,6 @@ PCSCD_LOCK = "/run/lock/bench-pcscd.lock"
 USBDEVFS_RESET_IOCTL = 0x5514
 SETTLE_S = 2
 
-
 @dataclass
 class CmdResult:
     returncode: int
@@ -189,8 +188,43 @@ def baud_from_exporter(port: str, exporter_cfg: Path) -> int | None:
     return None
 
 
+def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
+    """Hold the bench pcscd flock for the WHOLE flash window.
+
+    Codex P1 on #299: stopping pcscd under a per-command flock releases
+    the lock after each systemctl — another compliant bench process can
+    lawfully restart pcscd mid-flash onto the reader port. The lock is
+    held as an fd from quiesce until restore has restarted pcscd.
+    (`lock_path=None` resolves the module constant at CALL time so
+    tests can redirect it.)
+    """
+    import fcntl
+    import os
+    lp = lock_path or PCSCD_LOCK
+    fd = os.open(lp, os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    (run or _run_local)(
+        f"flock {lp} systemctl stop pcscd.socket pcscd", timeout=60)
+    return fd
+
+
+def pcscd_lock_release(fd: int, run=None, lock_path: str | None = None
+                       ) -> None:
+    import fcntl
+    import os
+    lp = lock_path or PCSCD_LOCK
+    (run or _run_local)(
+        f"flock {lp} systemctl start pcscd.socket pcscd", timeout=60)
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
 def pcscd_stop(run=None) -> None:
-    """Stop BOTH pcscd units under the bench flock (socket-activation!)."""
+    """Stop BOTH pcscd units under the bench flock (socket-activation!).
+
+    Legacy helper — DOES NOT hold the lock across a flash window; the
+    flash path uses pcscd_lock_acquire/release (Codex P1 on #299).
+    """
     run = run or _run_local
     run(f"flock {PCSCD_LOCK} systemctl stop pcscd.socket pcscd", timeout=60)
 
@@ -230,29 +264,40 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                 baud: int | None = None,
                 erase_regions: tuple[tuple[int, int], ...] = (),
                 exporter_cfg: Path | None = None,
-                boot_check=None, run=None, usb_reset=None, rebind=None,
-                usb_path=None, quiesce=None, restore=None) -> tuple[bool, str]:
+                boot_check=None, capture=None, run=None, usb_reset=None,
+                rebind=None, usb_path=None, quiesce=None, restore=None
+                ) -> tuple[bool, str]:
     """Flash an ESP32 with the full wedge discipline. Returns (ok, log).
 
     `images` maps flash offset -> image path (written in ONE esptool
-    invocation, offsets sorted). `erase_regions` are (start, len)
-    regions erased AFTER all writes succeeded (otadata goes here —
-    never erase before writing). `boot_check(text) -> bool` receives
-    the post-reset console capture; None skips it. All side-effectful
-    collaborators are injectable for the unit tests.
+    invocation, offsets sorted DESCENDING — the app lands before the
+    partition table, so a mid-write failure leaves the OLD table
+    standing; the most-structural element lands last).
+    `erase_regions` are (start, len) regions erased AFTER all writes
+    succeeded (otadata goes here — never erase before writing).
+    `boot_check(text) -> bool` receives the post-reset console capture;
+    the DEFAULT is `boot_check_no_conflict` — proof of boot is part of
+    success, not an option (Codex P1 on #299; the dropped-reset class
+    documented in AGENTS). Pass `boot_check=False` to explicitly opt
+    out (logged loudly). All side-effectful collaborators are
+    injectable for the unit tests.
     """
     run = run or _run_local
     usb_reset = usb_reset or usbdevfs_reset
     rebind = rebind or ftdi_rebind
+    capture = capture or _boot_capture
+    log: list[str] = []
+    lock_state = {"fd": None}
+
     if quiesce is None:
         def quiesce():
-            pcscd_stop(run=run)
+            lock_state["fd"] = pcscd_lock_acquire(run=run)
             kill_port_holders(port, run=run)
     if restore is None:
         def restore():
             set_ftdi_latency(port)
-            pcscd_start(run=run)
-    log: list[str] = []
+            if lock_state["fd"] is not None:
+                pcscd_lock_release(lock_state["fd"], run=run)
 
     # -- baud discipline: never exceed the exporter-configured speed --
     cap = baud_from_exporter(port, exporter_cfg) if exporter_cfg else None
@@ -269,9 +314,13 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     quiesce()
     state = {"written": False, "erased": False}
     try:
+        # DESCENDING offset order: the app lands before the partition
+        # table — a mid-write failure leaves the OLD table describing
+        # flash (the most-structural element lands last).
         pairs = " ".join(
             f"0x{int(off, 0):x} {shlex.quote(str(img))}"
-            for off, img in sorted(images.items(), key=lambda kv: int(kv[0], 0)))
+            for off, img in sorted(images.items(),
+                                   key=lambda kv: -int(kv[0], 0)))
         write_op = f"--after no-reset write-flash {pairs}"
 
         def attempt_with_ladder(op: str) -> CmdResult:
@@ -298,11 +347,15 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
 
         r = attempt_with_ladder(write_op)
         if r.returncode != 0:
-            log.append("# ALL WRITES FAILED — flash content untouched "
-                       "(nothing was erased; the previous image still "
-                       "boots). If the port stays dead this is the "
-                       "physical-replug class (Gotcha #3): replug USB, "
-                       "then re-run this flash.")
+            log.append(
+                "# ALL WRITES FAILED — flash contents may be PARTIALLY "
+                "written (descending-offset order lands the app before "
+                "the partition table: a failure during the table write "
+                "leaves the OLD table, but the app region may hold a "
+                "partial image). Do NOT assume the previous image "
+                "boots; re-run this flash. If the port stays dead this "
+                "is the physical-replug class (Gotcha #3): replug USB, "
+                "then re-run.")
             return False, "\n".join(log)
         state["written"] = True
 
@@ -327,13 +380,22 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                        "on flash.")
             return False, "\n".join(log)
 
-        if boot_check is not None:
-            text = _boot_capture(port)
-            if not boot_check(text):
-                log.append("# BOOT CHECK FAILED — console signature not "
-                           f"found. Console tail:\n{text[-600:]}")
+        if boot_check is not False:
+            check = boot_check if boot_check is not None \
+                else boot_check_no_conflict
+            text = capture(port)
+            if not check(text):
+                log.append("# BOOT CHECK FAILED — the console did not "
+                           "prove a good boot (flash verified ≠ boot "
+                           "verified; the dropped-reset class is "
+                           "documented in AGENTS). Console tail:\n"
+                           f"{text[-600:]}")
                 return False, "\n".join(log)
             log.append("# boot check passed")
+        else:
+            log.append("# BOOT CHECK SKIPPED (caller explicitly opted "
+                       "out) — flash success is esptool-only, NOT "
+                       "boot-proven")
         return True, "\n".join(log)
     finally:
         restore()
@@ -368,10 +430,54 @@ def _boot_capture(port: str, seconds: float = 6.0) -> str:
 
 
 def boot_check_no_conflict(text: str) -> bool:
-    """The #278 class gate: no legacy-i2c conflict abort, app_main reached
-    (C3 images; xtensa ROM banners differ but the CONFLICT line is
-    universal)."""
+    """The default boot proof: no legacy-i2c conflict abort (the #278
+    class) AND positive evidence of a boot (ROM/bootloader banner or
+    app_main). An EMPTY capture is a FAILURE — no evidence is not
+    proof (Codex P1 on #299: a dropped reset or a wedged bridge must
+    not pass silently)."""
     if "CONFLICT! driver_ng is not allowed" in text:
         return False
-    return "Calling app_main" in text or "rst:0x1 " in text \
-        or "power on reset" in text.lower() or len(text) == 0
+    return any(marker in text for marker in (
+        "Calling app_main", "rst:0x", "boot:", "ets ", "ESP-ROM"))
+
+
+def _cli() -> int:
+    """`python3 esp32_flash.py --port P --chip C --image OFF=PATH ...
+
+    The build.sh --flash path routes through this CLI (Codex P1 on
+    #299: the documented flashing flow must receive the same wedge
+    discipline as the HIL harness). Repeatable flags: --image
+    OFFSET=PATH, --erase START=LEN. Optional: --baud N (capped to the
+    exporter-configured speed), --exporter-cfg PATH, --no-boot-check
+    (explicit opt-out, logged).
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--port", required=True)
+    ap.add_argument("--chip", required=True)
+    ap.add_argument("--image", action="append", required=True,
+                    metavar="OFFSET=PATH")
+    ap.add_argument("--erase", action="append", default=[],
+                    metavar="START=LEN")
+    ap.add_argument("--baud", type=int, default=None)
+    ap.add_argument("--exporter-cfg", default=None)
+    ap.add_argument("--no-boot-check", action="store_true")
+    args = ap.parse_args()
+    images = {}
+    for spec in args.image:
+        off, _, path = spec.partition("=")
+        images[off] = path
+    erases = tuple(
+        (int(spec.split("=", 1)[0], 0), int(spec.split("=", 1)[1], 0))
+        for spec in args.erase)
+    ok, log = flash_esp32(
+        args.port, args.chip, images, baud=args.baud,
+        erase_regions=erases,
+        exporter_cfg=Path(args.exporter_cfg) if args.exporter_cfg else None,
+        boot_check=False if args.no_boot_check else None)
+    print(log)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())
