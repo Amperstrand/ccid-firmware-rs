@@ -242,7 +242,7 @@ cd firmware/esp32-ccid
 NUCULA_WIFI_SSID=<ssid> NUCULA_WIFI_PASS=<pass> NUCULA_VPCD_HOST=<host-ip> \
   ./build.sh wifi-vpcd --flash /dev/serial/by-id/<espressif-jtag-port>
 # manual equivalent (what build.sh runs):
-#   esptool --chip esp32c3 elf2image -o /tmp/c3.bin <target ELF>
+#   esptool --chip esp32c3 elf2image --flash-mode dio -o /tmp/c3.bin <target ELF>
 #   esptool --chip esp32c3 -p <port> --baud 460800 \
 #     write-flash 0x8000 <partition-table.bin> 0x40000 /tmp/c3.bin
 #   esptool --chip esp32c3 -p <port> --baud 460800 erase-region 0x30000 0x2000
