@@ -115,6 +115,14 @@ cleanup() {
 trap cleanup EXIT
 
 git -C "$ROOT" fetch --quiet origin "$HEAD_REF" 2>/dev/null || true
+# Fork-PR fallback (#306): a fork's head branch does not exist on OUR origin,
+# so the branch-name fetch above cannot bring the head commit local (found
+# live on 5 felixfelix-bot PRs in tollgate batch 2). GitHub serves every
+# PR head as refs/pull/<N>/head on the BASE repo — fetch that when the
+# branch fetch came up empty.
+if ! git -C "$ROOT" rev-parse --verify --quiet "${HEAD_OID}^{commit}" >/dev/null; then
+    [ -n "$PR_NUMBER" ] && git -C "$ROOT" fetch --quiet origin "refs/pull/${PR_NUMBER}/head" 2>/dev/null || true
+fi
 git -C "$ROOT" rev-parse --verify --quiet "${HEAD_OID}^{commit}" >/dev/null \
     || die "head commit $HEAD_OID is not local after fetch — rerun"
 git -C "$ROOT" worktree add --quiet --detach "$WT" "$HEAD_OID" || die "worktree add failed for $HEAD_OID"
