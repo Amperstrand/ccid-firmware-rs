@@ -24,7 +24,6 @@ from __future__ import annotations
 import ctypes
 import os
 import selectors
-import shutil
 import socket
 import subprocess
 import sys
@@ -134,12 +133,40 @@ def _build_driver():
                           capture_output=True, text=True)
 
 
+def _pcsc_prereq_ok(workdir: Path) -> bool:
+    """True when cc + the driver's required PCSC headers exist
+    (ifdhandler.h AND reader.h — both unconditional includes in
+    ifd-nucula.c; debuglog.h is __has_include-optional). cflags use the
+    Makefile's own pkg-config / /usr/include/PCSC fallback. Separates
+    'optional toolchain missing' (skip) from 'code-caused build
+    regression' (fail loudly, Codex P2s on #297)."""
+    try:
+        cflags = subprocess.run(["pkg-config", "--cflags", "libpcsclite"],
+                                capture_output=True, text=True)
+        flags = cflags.stdout.split() if cflags.returncode == 0 \
+            else ["-I/usr/include/PCSC"]
+    except OSError:
+        flags = ["-I/usr/include/PCSC"]
+    probe = workdir / "prereq.c"
+    probe.write_text("#include <ifdhandler.h>\n#include <reader.h>\n"
+                     "int main(void) { return 0; }\n")
+    try:
+        probe_rc = subprocess.run(["cc", "-fsyntax-only", *flags, str(probe)],
+                                  capture_output=True).returncode
+    except OSError:
+        return False
+    return probe_rc == 0
+
+
 @pytest.fixture(scope="module")
 def driver(tmp_path_factory):
     build_dir = tmp_path_factory.mktemp("ifd-emu")
+    if not _pcsc_prereq_ok(build_dir):
+        pytest.skip("cc/PCSC headers unavailable (optional toolchain)")
     build = _build_driver()
     if build.returncode != 0:
-        pytest.skip(f"driver build failed (gcc/PCSC headers?): {build.stderr[-400:]}")
+        pytest.fail(f"driver build failed with toolchain present: "
+                    f"{build.stderr[-400:]}")
     stub_src = build_dir / "logstub.c"
     stub_src.write_text(LOG_STUB_C)
     stub_so = build_dir / "liblogstub.so"
@@ -332,11 +359,14 @@ def test_get_card_unknown_name_fails_loud():
         card_profiles.get_card("no-such-card")
 
 
-def test_driver_rebuilds_when_source_newer():
+def test_driver_rebuilds_when_source_newer(tmp_path):
     """Codex P2 on #260: a source-newer-than-binary tree must rebuild —
-    the harness must never load a stale driver against current C."""
-    if not shutil.which("cc"):
-        pytest.skip("cc unavailable")
+    the harness must never load a stale driver against current C. A
+    missing toolchain skips (optional dependency); with the toolchain
+    present, any make failure is a code regression and must FAIL
+    (Codex P2 on #297)."""
+    if not _pcsc_prereq_ok(tmp_path):
+        pytest.skip("cc/PCSC headers unavailable (optional toolchain)")
     src = IFD_DIR / "ifd-nucula.c"
     os.utime(src)
     build = _build_driver()
