@@ -79,12 +79,15 @@ flash_firmware() {
         exit 1
     fi
 
-    info "Flashing ${FIRMWARE} to ESP32..."
-    if command -v espflash &>/dev/null; then
-        espflash flash --monitor "${WORKSPACE_ROOT}/${FIRMWARE}"
-    else
-        cargo espflash flash --monitor "${WORKSPACE_ROOT}/${FIRMWARE}"
+    # Wedge discipline (#299): delegate to the flash+test helper, which
+    # routes through esp32_flash.py (held pcscd flock, capped baud,
+    # ordered writes, recovery ladder, boot proof). Never a bare
+    # espflash — its DTR/RTS toggling is the documented FT232 wedge.
+    if [ -x "${SCRIPT_DIR}/flash_and_test.sh" ]; then
+        exec "${SCRIPT_DIR}/flash_and_test.sh" --flash
     fi
+    error "flash_and_test.sh not found — use: ./build.sh <board> --flash"
+    exit 1
 }
 
 install_config() {

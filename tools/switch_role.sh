@@ -29,22 +29,12 @@ usb_rescan() {
   echo -n 1-1 | sudo tee /sys/bus/usb/drivers/usb/unbind >/dev/null; sleep 4
   echo -n 1-1 | sudo tee /sys/bus/usb/drivers/usb/bind   >/dev/null; sleep 6
 }
-rts_pulse_reset() {
-  # DTR MUST be cleared before the RTS pulse: pyserial asserts DTR on open,
-  # DTR=IO0 low + RTS pulse = chip held in download mode -> dead-silent UART.
-  # This single line was the entire "frozen firmware" afternoon.
-  python3 - "$PORT" <<'PY'
-import serial, sys, time
-s = serial.Serial(sys.argv[1], 115200, bytesize=8, parity="N", stopbits=2, timeout=0.2)
-s.dtr = False; s.rts = False; time.sleep(0.3)
-s.rts = True; time.sleep(0.15); s.rts = False
-s.close()
-PY
-}
 flash_merged() {  # $1 = merged bin
-  sudo esptool.py --chip esp32 --port "$PORT" --baud 115200 --after no-reset \
-    write-flash 0x0 "$1" >/dev/null
-  rts_pulse_reset
+  # Wedge discipline (#299): route through esp32_flash.py — held pcscd
+  # flock, recovery ladder, boot proof. A merged image carries the
+  # bootloader at 0x0, so no separate PT/otadata steps apply here.
+  sudo python3 "$(dirname "$0")/../tests/hardware/labgrid/esp32_flash.py" \
+    --port "$PORT" --chip esp32 --baud 115200 --image 0x0="$1"
 }
 
 case "$ROLE" in

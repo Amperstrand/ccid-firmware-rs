@@ -203,18 +203,17 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
     lp = lock_path or PCSCD_LOCK
     fd = os.open(lp, os.O_CREAT | os.O_RDWR)
     fcntl.flock(fd, fcntl.LOCK_EX)
-    (run or _run_local)(
-        f"flock {lp} systemctl stop pcscd.socket pcscd", timeout=60)
+    # bare systemctl on purpose: the fd above IS the lock — wrapping
+    # this in a shell `flock <path>` opens a second file description
+    # and self-deadlocks against it (flock(1) blocks on LOCK_EX)
+    (run or _run_local)("systemctl stop pcscd.socket pcscd", timeout=60)
     return fd
 
 
-def pcscd_lock_release(fd: int, run=None, lock_path: str | None = None
-                       ) -> None:
+def pcscd_lock_release(fd: int, run=None) -> None:
     import fcntl
     import os
-    lp = lock_path or PCSCD_LOCK
-    (run or _run_local)(
-        f"flock {lp} systemctl start pcscd.socket pcscd", timeout=60)
+    (run or _run_local)("systemctl start pcscd.socket pcscd", timeout=60)
     fcntl.flock(fd, fcntl.LOCK_UN)
     os.close(fd)
 
@@ -311,9 +310,14 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     if baud is None:
         baud = 460800
 
-    quiesce()
-    state = {"written": False, "erased": False}
     try:
+        try:
+            quiesce()
+        except Exception as e:  # noqa: BLE001 — reported in the verdict
+            log.append(f"# QUIESCE FAILED ({e}) — flash NOT attempted; "
+                       "pcscd state unknown, verify before bench use")
+            return False, "\n".join(log)
+        state = {"written": False, "erased": False}
         # DESCENDING offset order: the app lands before the partition
         # table — a mid-write failure leaves the OLD table describing
         # flash (the most-structural element lands last).
@@ -430,15 +434,17 @@ def _boot_capture(port: str, seconds: float = 6.0) -> str:
 
 
 def boot_check_no_conflict(text: str) -> bool:
-    """The default boot proof: no legacy-i2c conflict abort (the #278
-    class) AND positive evidence of a boot (ROM/bootloader banner or
-    app_main). An EMPTY capture is a FAILURE — no evidence is not
-    proof (Codex P1 on #299: a dropped reset or a wedged bridge must
-    not pass silently)."""
+    """The default boot proof: firmware-level evidence required.
+
+    `Calling app_main()` is the IDF main_task line printed on every
+    chip BEFORE the app body runs (our silencing happens inside
+    app_main, so this line is the last console evidence of a good boot
+    — bench-verified on c3). ROM/bootloader banners alone are NOT
+    accepted: a boot-looping or aborting image replays them (Codex P1
+    on #299); an empty capture fails — no evidence is not proof."""
     if "CONFLICT! driver_ng is not allowed" in text:
         return False
-    return any(marker in text for marker in (
-        "Calling app_main", "rst:0x", "boot:", "ets ", "ESP-ROM"))
+    return "Calling app_main" in text
 
 
 def _cli() -> int:

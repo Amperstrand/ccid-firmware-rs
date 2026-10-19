@@ -79,31 +79,37 @@ build() {
 
 flash() {
     echo ""
-    echo "=== Stopping pcscd ==="
-    sudo systemctl stop pcscd.socket pcscd.service 2>/dev/null || true
-    sleep 1
-
-    echo ""
-    echo "=== Flashing firmware ==="
+    echo "=== Flashing firmware (wedge-discipline tool) ==="
     if [ ! -f "${WORKSPACE_ROOT}/${FIRMWARE}" ]; then
         error "Firmware not found. Build first."
         exit 1
     fi
 
-    if ! espflash flash --port "$PORT" --after no-reset-no-stub "${WORKSPACE_ROOT}/${FIRMWARE}"; then
-        error "Flash failed. Is the ESP32 connected at ${PORT}?"
-        exit 1
-    fi
+    # Wedge discipline (#299): pcscd quiesce under a held bench flock,
+    # exporter-capped baud, writes-before-erases, USB/FTDI recovery
+    # ladder, latency_timer restore, and the boot signature check —
+    # all owned by esp32_flash.py. espflash is GONE from this path on
+    # purpose: its DTR/RTS toggling is the documented FT232 wedge
+    # (Gotcha #3) that used to force a physical replug after EVERY
+    # flash here.
+    local app_bin="/tmp/esp32-ccid-flash.$$.bin"
+    esptool --chip esp32 elf2image -o "${app_bin}" \
+        "${WORKSPACE_ROOT}/${FIRMWARE}" || {
+            error "elf2image failed"; exit 1; }
+    local part_table
+    part_table="$(ls -t "${WORKSPACE_ROOT}/target/xtensa-esp32-espidf"/release/build/esp-idf-sys*/out/build/partition_table/partition-table.bin 2>/dev/null | head -1)"
+    [ -z "${part_table}" ] && \
+        part_table="${WORKSPACE_ROOT}/target/xtensa-esp32-espidf/release/build/partition-table.bin"
 
-    info "Flash successful."
-    echo ""
-    warn ">>> PHYSICAL USB RECONNECT REQUIRED <<<"
-    warn "The FTDI FT232 chip is corrupted by espflash's DTR/RTS toggles."
-    warn "1. Unplug the M5Stack USB cable"
-    warn "2. Wait 5 seconds"
-    warn "3. Reconnect — ESP32 will boot the new firmware"
-    warn "4. Re-run: $0 --no-flash"
-    exit 0
+    python3 "${WORKSPACE_ROOT}/tests/hardware/labgrid/esp32_flash.py" \
+        --port "$PORT" --chip esp32 --baud 115200 \
+        --image 0x8000="${part_table}" --image 0x40000="${app_bin}" \
+        --erase 0x30000=0x2000 \
+        --exporter-cfg "${WORKSPACE_ROOT}/tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" \
+        || { error "Flash failed — see the tool verdict above."; exit 1; }
+    rm -f "${app_bin}"
+
+    info "Flash successful (boot-proven)."
 }
 
 start_pcscd() {

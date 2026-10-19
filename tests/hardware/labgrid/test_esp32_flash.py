@@ -258,11 +258,45 @@ class BootCheckTests(unittest.TestCase):
         self.assertTrue(esp32_flash.boot_check_no_conflict(
             "I (252) main_task: Calling app_main()\n(silence)"))
 
-    def test_rom_banner_only_passes(self):
-        # xtensa classic: ROM/bootloader banners are the visible boot
-        # evidence even when the app console is silent post-claim
+    def test_rom_banner_only_FAILS(self):
+        # Codex P1 on #299 round 2: ROM/bootloader banners replay on a
+        # boot-looping image — firmware-level evidence (app_main) is
+        # required
+        self.assertFalse(esp32_flash.boot_check_no_conflict(
+            "ESP-ROM:esp32-api1-20210207\nrst:0x1 (POWERON_RESET)\n"
+            "load:0x3fcd5820\nE (250) i2c: ..."))
+
+    def test_app_main_banner_on_rom_background_passes(self):
         self.assertTrue(esp32_flash.boot_check_no_conflict(
-            "ESP-ROM:esp32-api1-20210207\nrst:0x1 (POWERON_RESET)"))
+            "ESP-ROM:esp32-api1-20210207\nrst:0x1 (POWERON_RESET)\n"
+            "I (252) main_task: Calling app_main()"))
+
+    def test_pcscd_commands_are_NOT_shell_flock_wrapped(self):
+        # the held fd IS the lock; a `flock <path>` wrapper opens a
+        # second file description and self-deadlocks (empirically
+        # confirmed: flock(1) blocks on a python-held LOCK_EX)
+        calls = []
+
+        def run(cmd, timeout=300):
+            calls.append(cmd)
+            return FakeResult(0)
+
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig_lock = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                esp32_flash.flash_esp32(
+                    self.PORT, "esp32", {"0x40000": "/tmp/app.bin"},
+                    run=run, usb_reset=lambda d: True,
+                    rebind=lambda p: True,
+                    boot_check=lambda t: True,
+                    capture=lambda p: "Calling app_main()")
+            finally:
+                esp32_flash.PCSCD_LOCK = orig_lock
+        pcscd_cmds = [c for c in calls if "pcscd" in c]
+        self.assertTrue(pcscd_cmds)
+        for c in pcscd_cmds:
+            self.assertFalse(c.strip().startswith("flock"), c)
 
     def test_empty_capture_FAILS(self):
         # Codex P1 on #299: no evidence is not proof — a dropped reset
