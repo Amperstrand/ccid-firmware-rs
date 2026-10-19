@@ -157,11 +157,17 @@ def main() -> int:
     ap.add_argument("--from-status", type=Path, help="parse --bench-commit from a STATUS.md stamp")
     ap.add_argument("--head", default="HEAD")
     ap.add_argument("--out", type=Path, help="write the drift section here (default: stdout)")
+    ap.add_argument("--print-bench-commit", action="store_true",
+                    help="print ONLY the stamp commit parsed from --from-status (or nothing); exit 0 — the nightly's extraction hook, single-sources the backticked stamp regex")
     args = ap.parse_args()
 
     bench = args.bench_commit
     if not bench and args.from_status and args.from_status.is_file():
         bench = bench_commit_from_status(args.from_status)
+    if args.print_bench_commit:
+        if bench:
+            print(bench)
+        return 0
     if not bench:
         print("status_drift: no bench commit (give --bench-commit or --from-status) — no-op", file=sys.stderr)
         return 0

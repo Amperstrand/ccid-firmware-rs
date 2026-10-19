@@ -115,8 +115,14 @@ jobs:
           git fetch --unshallow -q origin || git fetch -q origin \
             '+refs/heads/*:refs/remotes/origin/*' || true
           git fetch -q origin refs/heads/bench/status || true
-          PREV_STATUS_SHA=$(git show FETCH_HEAD:docs/STATUS.md 2>/dev/null \
-            | grep -m1 -oP 'Verified: .* @ \K[0-9a-f]{7,40}' || true)
+          # Extract via the TESTED stamp parser (single-source for the
+          # backticked "Verified: ... @ `sha`" shape): a shell grep
+          # without the backtick silently yields empty and the drift
+          # layer never runs — caught against real bench/status data
+          # (2026-10-17 end-of-session verification).
+          git show FETCH_HEAD:docs/STATUS.md > /tmp/prev-status.md 2>/dev/null || true
+          PREV_STATUS_SHA=$(python3 scripts/status_drift.py \
+            --print-bench-commit --from-status /tmp/prev-status.md || true)
           if [ -n "$PREV_STATUS_SHA" ]; then
             python3 scripts/status_drift.py --repo . \
               --bench-commit "$PREV_STATUS_SHA" --head HEAD \
