@@ -647,12 +647,21 @@ class NuculaBoard:
             return None
 
         bin_path = Path("/tmp/opencode/test_flash.bin")
+        # --flash-mode dio (#309): esptool >=5 defaults the image header
+        # to QIO — silent boot-loop on this DIO board. Header byte 2 must
+        # be 0x2 (guard catches any future default change).
         conv = subprocess.run(
-            ["esptool", "--chip", "esp32c3", "elf2image",
+            ["esptool", "--chip", "esp32c3", "elf2image", "--flash-mode", "dio",
              "--output", str(bin_path), str(elf)],
             capture_output=True, text=True,
         )
-        return bin_path if conv.returncode == 0 else None
+        if conv.returncode != 0:
+            return None
+        with open(bin_path, "rb") as f:
+            if f.read(3)[2] != 0x02:
+                print(f"=== image flash-mode byte != 0x2/dio — refusing (issue #309): {bin_path}")
+                return None
+        return bin_path
 
 
 # Singleton instance

@@ -433,10 +433,12 @@ fi
 # this repo ships (all sdkconfigs mandate dio). The header guard below
 # fails loud if any future toolchain default changes.
 run esptool --chip "${CHIP}" elf2image --flash-mode dio -o "${IMAGE}" "${ELF}"
-img_mode="$(od -An -tx1 -j2 -N1 "${IMAGE}" | tr -d ' \n')"
-if [ "${img_mode}" != "02" ]; then
-    echo "error: ${IMAGE} flash-mode byte is 0x${img_mode} (expected 02/dio) — refusing (issue #309)" >&2
-    exit 1
+if [ "${DRY_RUN}" -eq 0 ]; then
+    img_mode="$(od -An -tx1 -j2 -N1 "${IMAGE}" | tr -d ' \n')"
+    if [ "${img_mode}" != "02" ]; then
+        echo "error: ${IMAGE} flash-mode byte is 0x${img_mode} (expected 02/dio) — refusing (issue #309)" >&2
+        exit 1
+    fi
 fi
 
 if [ -n "${FLASH_PORT}" ]; then
