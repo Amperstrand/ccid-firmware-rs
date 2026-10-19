@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — #264: retire `vendor/synopsys-usb-otg` path-patch → git dep on `Amperstrand/synopsys-usb-otg`
+
+- The synopsys-usb-otg patch now rides the canonical Amperstrand fork
+  (`rev = 764bc042f63cf00d0efd2417141438c1584cd187` — the exact former
+  submodule pin, byte-identical source) instead of a tracked vendor
+  submodule. Upstream has no F469 feature and crates.io is stuck at
+  0.5.0 (re-verified 2026-10-18); the fork carries F469 USB endpoint
+  re-enablement + generated-RAL warning suppression.
+- `vendor/synopsys-usb-otg` submodule + `.gitmodules` entry deleted;
+  `deny.toml` `allow-git` gains the fork URL with justification;
+  `docs/vendor-patches.md` restructured (git-fork patch vs the one
+  remaining vendor-path patch, the stranded stm32f469i-disc BSP).
+- Vendoring-policy class 2 applied (same lifecycle as the esp-idf-hal
+  retirement, D-9): a patch that can live in a fork/git dep must not
+  occupy `vendor/`. No behavior change — `Cargo.lock` delta is the
+  source line only; full STM32 build matrix (default + CT30 + K30 +
+  F746-bitbang + F469-display), both clippy gates, and workspace host
+  tests green on the branch.
+
 ### Fixed — #278: c3-ccid boot-loop after the esp-idf-hal fork retirement (legacy-i2c coexistence abort)
 
 - Every esp32 image from `3382e4e` (PR #242's `[patch]` retirement)

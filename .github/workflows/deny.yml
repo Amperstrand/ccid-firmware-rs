@@ -1,7 +1,7 @@
 # Supply-chain gate (research 2026-10-17): cargo-deny over the root
 # workspace — RUSTSEC advisories, license allow-list (exact surface of
 # the current tree), duplicate-version trend, and source pinning
-# (crates.io + the five deliberate git pins). Config: deny.toml.
+# (crates.io + the six deliberate git pins). Config: deny.toml.
 
 name: Deny
 
@@ -31,9 +31,10 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      # submodules REQUIRED (AGENTS Gotcha): the [patch.crates-io]
-      # synopsys-usb-otg entry breaks cargo metadata on an empty
-      # vendor/ checkout — first CI run failed exactly there.
+      # submodules REQUIRED (AGENTS Gotcha): the [patch] tables carry
+      # path deps into vendor/ (stm32f469i-disc) — an empty vendor/
+      # checkout breaks cargo metadata (the synopsys path-patch era's
+      # first CI run failed exactly there).
       - uses: actions/checkout@v5
         with:
           submodules: true

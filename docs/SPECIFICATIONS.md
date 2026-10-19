@@ -244,7 +244,7 @@ This firmware builds on the Rust embedded ecosystem.
 | [usb-device](https://crates.io/crates/usb-device) | USB device framework | MIT |
 | [synopsys-usb-otg](https://crates.io/crates/synopsys-usb-otg) | Synopsys USB OTG driver | MIT/Apache-2.0 |
 
-**Our Fork:** `vendor/synopsys-usb-otg/` with warning suppressions for RAL-generated code.
+**Our Fork:** `Amperstrand/synopsys-usb-otg` (git dep, rev `764bc042`) — F469 endpoint re-enablement + warning suppressions for RAL-generated code; upstream has no F469 support (crates.io stuck at 0.5.0, verified 2026-10-18).
 
 ### HAL and BSP
 

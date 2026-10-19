@@ -2036,6 +2036,7 @@ dependencies = [
 [[package]]
 name = "synopsys-usb-otg"
 version = "0.5.0"
+source = "git+https://github.com/Amperstrand/synopsys-usb-otg?rev=764bc042f63cf00d0efd2417141438c1584cd187#764bc042f63cf00d0efd2417141438c1584cd187"
 dependencies = [
  "critical-section",
  "embedded-hal 0.2.7",

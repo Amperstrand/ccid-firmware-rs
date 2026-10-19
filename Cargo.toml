@@ -14,7 +14,14 @@ default-members = ["firmware/ccid-firmware"]
 resolver = "2"
 
 [patch.crates-io]
-synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
+# synopsys-usb-otg: retired from vendor/ to the canonical fork (#264) —
+# byte-identical source, rev-pinned. Upstream has no F469 feature and
+# crates.io is stuck at 0.5.0; the fork carries F469 USB endpoint
+# re-enablement + generated-RAL warning suppression. Vendoring-policy
+# class 2: the patch lives in a git dep, not vendor/.
+# Deletion condition: drop this patch when an upstream release ships
+# F469 support (then ride crates.io).
+synopsys-usb-otg = { git = "https://github.com/Amperstrand/synopsys-usb-otg", rev = "764bc042f63cf00d0efd2417141438c1584cd187" }
 # esp-idf-hal rides crates.io again (#149 P3): the Amperstrand fork's
 # only delta was the `legacy-i2c` opt-in, whose last consumers
 # (backend-mfrc522, the m5stick LCD's AXP192) moved to the shared

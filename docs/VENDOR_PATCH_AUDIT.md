@@ -35,7 +35,7 @@ adapter, the patch resolved to nothing and died in a two-commit PR.
 
 | # | Dependency | Shape | Delta vs upstream | Why it exists | Still needed? | Clean end state |
 |---|---|---|---|---|---|---|
-| 1 | `synopsys-usb-otg` | `[patch.crates-io]` → **submodule** @ `764bc04` (Amperstrand fork of stm32-rs) | **2 commits** on upstream v0.5.0: `ffc83f8` F469 support — **3 lines in `src/bus.rs`** (core_id `0x0000_1200` needs F446-like endpoint re-enable after OUT); `764bc04` RAL warning allow | upstream has **zero** F469 support; without it the F469-DISO does not enumerate USB at all | **YES** (hard) | upstream PR → stm32-rs; then drop submodule + patch, ride crates.io |
+| 1 | `synopsys-usb-otg` | `[patch.crates-io]` → **rev-pinned git dep** @ `764bc042` on the Amperstrand fork (**retired from vendor/ 2026-10-18, #264** — byte-identical source, was a submodule) | **2 commits** on upstream v0.5.0: `ffc83f8` F469 support — **3 lines in `src/bus.rs`** (core_id `0x0000_1200` needs F446-like endpoint re-enable after OUT); `764bc04` RAL warning allow | upstream has **zero** F469 support; without it the F469-DISO does not enumerate USB at all | **YES** (hard) | upstream PR → stm32-rs; then drop the patch entry, ride crates.io |
 | 2 | `stm32f469i-disc` | `[patch."Amperstrand/stm32f469i-disc"]` → in-repo `vendor/` copy | vs fork `main`: **diverged code line** — our copy is a stranded snapshot of the **deleted `sdio-support` branch** (fa6dc86 era) + HAL-pin realignment to `05d999d`; fork `main` evolved separately (feature gates, docs, button module, embassy sibling, ~855-line lcd.rs delta) and pins the HAL at `0c5bc3d` | #193: the BSP's HAL pin created a second HAL instance → display-init `Pin`/`Rcc` type mismatch; the patch injects the coherent pin | **YES** — and fragile: the dep declares `branch = "sdio-support"` which **no longer exists on the remote**; the patch is the sole provider | migration: branch off fork `main` with the HAL-pin bump → port the display feature onto it → bench-verify (#193-class) → dep points at the branch, delete patch + vendor tree |
 | 3 | `stm32f4xx-hal` | rev-pinned git dep (`05d999d`, Amperstrand fork of stm32-rs) — **no patch entry** | LTDC/DSI fixes (`b72958b` PLLSAI/R pixel clock, `ec6dc08` race-free `swap_buffers`), USB dep bump, time-crate pin | display bring-up needed working DSI/LTDC; not upstream | **YES** (display + USB + SDIO features ride it) | keep fork; upstream the LTDC fixes opportunistically; this git-dep shape (no `[patch]`) is the target form for all deltas |
 | 4 | `mfrc522` | git dep `e9ced1e` (Amperstrand **root repo**, not a GitHub fork) | fork content: 0.8.0 base + esp32 wait-loop iteration caps, eh02 test repair, licensing | upstream crate lacked esp32-safe blocking behavior | YES (shared canonically with bolty-rs) | it IS the canonical home (B28 doctrine); optionally offer the wait-loop cap upstream |
@@ -43,19 +43,19 @@ adapter, the patch resolved to nothing and died in a two-commit PR.
 
 ## What this means, per patch
 
-### 1. `synopsys-usb-otg` — the cheapest permanent win on the board
+### 1. `synopsys-usb-otg` — vendor→git retirement DONE (#264), upstream PR remains
 
-The entire delta is **3 functional lines + 1 lint allow**. The fork's
-`master` already carries both commits; upstream (`stm32-rs/synopsys-usb-otg`,
-latest release v0.5.0, tip = the same release merge we sit on) has no F469
-anywhere. **Owner action (external repo — channel rule, owner pastes):**
+The entire delta is **3 functional lines + 1 lint allow**. The patch now
+rides the canonical fork as a rev-pinned git dep (retired from `vendor/`
+2026-10-18, #264 — vendoring-policy class 2 applied: the delta always
+could live in a fork). Upstream (`stm32-rs/synopsys-usb-otg`, latest
+release v0.5.0) still has no F469 anywhere.
+**Owner action (external repo — channel rule, owner pastes):**
 open a PR `Amperstrand:master → stm32-rs:master` — the commits are
 `ffc83f8` + `764bc04`; PR text should lead with "STM32F469I-DISCO:
 core_id 0x0000_1200 requires F446-like endpoint re-enablement after OUT
-transactions". On the next upstream release: delete the submodule + the
-`[patch.crates-io]` entry, bump the crates.io pin. Until then the
-submodule+patch shape is correct (it keeps the delta visible and the
-submodule pinned).
+transactions". On the next upstream release: delete the `[patch.crates-io]`
+entry, bump the crates.io pin.
 
 ### 2. `stm32f469i-disc` — the fragile one (act on this first)
 

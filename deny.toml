@@ -58,5 +58,10 @@ allow-git = [
   "https://github.com/Amperstrand/iso14443-rs",
   "https://github.com/Amperstrand/mfrc522-rs",
   "https://github.com/Amperstrand/stm32f4xx-hal",
+  # synopsys-usb-otg fork (#264, retired from vendor/ 2026-10-18): upstream
+  # has no F469 feature, crates.io stuck at 0.5.0; the fork carries F469
+  # endpoint re-enablement + RAL warning suppression, rev-pinned byte-identical
+  # to the former submodule.
+  "https://github.com/Amperstrand/synopsys-usb-otg",
   "https://github.com/DougAnderson444/ft6x06",
 ]
