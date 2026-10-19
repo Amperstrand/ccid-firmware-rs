@@ -92,9 +92,17 @@ flash() {
     # (Gotcha #3) that used to force a physical replug after EVERY
     # flash here.
     local app_bin="/tmp/esp32-ccid-flash.$$.bin"
-    esptool --chip esp32 elf2image -o "${app_bin}" \
+    # --flash-mode dio (#309): esptool >=5 defaults the image header to
+    # QIO — a silent boot-loop on every DIO board this repo ships. The
+    # header guard fails loud on any future default change.
+    esptool --chip esp32 elf2image --flash-mode dio -o "${app_bin}" \
         "${WORKSPACE_ROOT}/${FIRMWARE}" || {
             error "elf2image failed"; exit 1; }
+    local img_mode
+    img_mode="$(od -An -tx1 -j2 -N1 "${app_bin}" | tr -d ' \n')"
+    [ "${img_mode}" = "02" ] || {
+        error "image flash-mode byte is 0x${img_mode} (expected 02/dio) — refusing (#309)"
+        exit 1; }
     local part_table
     part_table="$(ls -t "${WORKSPACE_ROOT}/target/xtensa-esp32-espidf"/release/build/esp-idf-sys*/out/build/partition_table/partition-table.bin 2>/dev/null | head -1 || true)"
     [ -z "${part_table}" ] && \

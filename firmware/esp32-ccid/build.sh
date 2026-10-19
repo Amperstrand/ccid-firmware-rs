@@ -428,7 +428,16 @@ if [ "${DRY_RUN}" -eq 0 ]; then
 fi
 
 # esptool cannot flash a raw cargo ELF ("will not fit in flash") — convert first.
-run esptool --chip "${CHIP}" elf2image -o "${IMAGE}" "${ELF}"
+# --flash-mode dio is load-bearing (#309): esptool >=5 defaults the image
+# header to QIO and a QIO-header app silently boot-loops every DIO board
+# this repo ships (all sdkconfigs mandate dio). The header guard below
+# fails loud if any future toolchain default changes.
+run esptool --chip "${CHIP}" elf2image --flash-mode dio -o "${IMAGE}" "${ELF}"
+img_mode="$(od -An -tx1 -j2 -N1 "${IMAGE}" | tr -d ' \n')"
+if [ "${img_mode}" != "02" ]; then
+    echo "error: ${IMAGE} flash-mode byte is 0x${img_mode} (expected 02/dio) — refusing (issue #309)" >&2
+    exit 1
+fi
 
 if [ -n "${FLASH_PORT}" ]; then
     # The OTA partition table rides along with the app (Codex reviews on
