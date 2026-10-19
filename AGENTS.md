@@ -2306,6 +2306,23 @@ collected here; the HIL flash path
 Rule: NEVER a bare `st-flash --reset write` on this board — foreign
 firmware may be on it, and the next project's session inherits the wedge.
 
+**ESP32 serial wedge table (2026-10-19 m5stick session, #278 xtensa
+leg).** The same doctrine for the serial-flash side — every ESP32 flash
+goes through `tests/hardware/labgrid/esp32_flash.py`
+(`flash_esp32()`), which encodes all of it:
+
+| Wedge class | Symptom | Recovery | Automated where |
+|---|---|---|---|
+| pcscd SOCKET-ACTIVATION race | esptool: "device reports readiness to read but returned no data (multiple access on port?)" — daemon respawned onto the reader port mid-flash | stop BOTH `pcscd.socket` AND `pcscd` under the bench flock before flashing; restart after | `flash_esp32` quiesce/restore |
+| Hades2001 FTDI baud flake | esptool: "Serial data stream stopped: possible serial noise or corruption" at 460800 | drop to the exporter-CONFIGURED speed (the m5stick port is pinned 115200) | `flash_esp32` baud cap vs exporter config |
+| Erase-before-write stranding | board unbootable AND bridge dead: erased otadata + partial PT + no serial = maximally stuck (the 2026-10-19 state) | NONE remotely — physical replug + reflash; PREVENT instead: writes FIRST, destructive erases LAST, after every write landed | `flash_esp32` ordering (unit-locked) |
+| FTDI/USB latch (persistent) | zero console bytes even across RTS pulses; `flash-id` fails | ladder: retry → USBDEVFS_RESET (sysfs serial match) → ftdi_sio unbind/rebind → retry; then physical replug (Gotcha #3 class) | ladder inside `flash_esp32`; verdict + board-state report on total failure |
+| FTDI latency_timer reset on re-enum | pcscd error-loops after the flash (issue #51) | write 1 back to the latency_timer sysfs node | `flash_esp32` restore step |
+
+Rule: NEVER a hand-rolled esptool sequence on a bench reader port —
+the tool owns quiesce, baud, ordering, the ladder, hygiene, and the
+boot signature check (`boot_check_no_conflict`, the #278 class).
+
 ### 3. espflash DTR/RTS wedge — physical replug required (issue #12)
 
 After `espflash flash ...` on the M5Stack Atom Matrix (FTDI FT232 bridge), the
