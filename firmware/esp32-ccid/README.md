@@ -125,16 +125,16 @@ The firmware binary will be at `target/xtensa-esp32-espidf/release/esp32-ccid`.
 
 ## Flash
 
-Connect the ESP32 via USB and flash with `espflash`:
+Connect the ESP32 via USB and flash with the wedge-discipline helper
+(`espflash` is deliberately NOT used — its DTR/RTS toggling wedges the
+FTDI bridge; see AGENTS "ESP32 serial wedge table"):
 
 ```bash
-espflash flash --monitor target/xtensa-esp32-espidf/release/esp32-ccid
-```
+# the full helper: build + flash (boot-proven) + pcscd test
+./flash_and_test.sh
 
-Or via cargo:
-
-```bash
-cargo espflash flash --monitor target/xtensa-esp32-espidf/release/esp32-ccid
+# or any build.sh board with --flash (routes through esp32_flash.py)
+./build.sh m5stick --flash /dev/serial/by-id/<port>
 ```
 
 ## ESP-IDF Rust toolchain and bring-up builds (verified on ai-legion, 2026-10)
@@ -190,16 +190,24 @@ Gotchas verified the hard way:
   picks up changed credentials. (On older checkouts without that fix, touch
   the main that reads them before a credential change.)
 
-Flash (esptool; C3 console is the same USB-Serial/JTAG CDC port):
+Flash (the same wedge-discipline helper applies on the bench — for a
+manual C3/M5Stick flow, `esp32_flash.py` owns quiesce/ordering/ladder;
+raw esptool sequences are bench-banned):
 
 ```bash
 # C3 / Nucula — ota_0 slot of the OTA table, 4 MB flash
 esptool --chip esp32c3 elf2image -o /tmp/c3.bin <target-dir>/riscv32imc-esp-espidf/debug/esp32-ccid
-esptool --chip esp32c3 -p /dev/serial/by-id/<espressif-jtag-port> --baud 460800 write-flash 0x40000 /tmp/c3.bin
+python3 ../../tests/hardware/labgrid/esp32_flash.py --chip esp32c3 \
+  -p /dev/serial/by-id/<espressif-jtag-port> \
+  --image 0x8000=<target-dir>/riscv32imc-esp-espidf/debug/build/partition-table.bin \
+  --image 0x40000=/tmp/c3.bin --erase 0x30000=0x2000
 
-# M5Stick — factory slot of the on-device table (nvs@0x9000, factory@0x30000/3904K)
+# M5Stick — OTA table, ota_0 slot
 esptool --chip esp32 elf2image -o /tmp/m5.bin <target-dir>/xtensa-esp32-espidf/release/esp32-ccid
-esptool --chip esp32 -p /dev/serial/by-id/<m5stick-port> --baud 115200 write-flash 0x30000 /tmp/m5.bin
+python3 ../../tests/hardware/labgrid/esp32_flash.py --chip esp32 \
+  -p /dev/serial/by-id/<m5stick-port> --baud 115200 \
+  --image 0x8000=<target-dir>/xtensa-esp32-espidf/release/build/partition-table.bin \
+  --image 0x40000=/tmp/m5.bin --erase 0x30000=0x2000
 ```
 
 On a failed station connect the firmware now scans and logs every visible AP
