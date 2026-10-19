@@ -43,6 +43,29 @@ multiple-versions = "warn"
 deny = []
 # Keep vendor/ and path deps first-party by construction; no wildcard
 # bans for now.
+#
+# Remaining duplicate families, justified (cargo-deny all-targets view,
+# refreshed 2026-10-18 with the heapless 0.9 unification — evidence on
+# issue #263). Three groups + one open lane:
+#
+# 1. embuild 0.33.5 build chain — esp-idf-sys 0.38.1 pins embuild 0.33
+#    and 0.33.5 is crates.io max (2026-10-18), so this chain is the
+#    ceiling until esp-idf-sys moves. Host-side build-dependencies only,
+#    never compiled into any firmware target:
+#      bitflags 1.3.2, syn 1.0.109 (via strum_macros 0.24),
+#      thiserror/-impl 1.0.69, rustix 0.38 (via which 4),
+#      linux-raw-sys 0.4, semver 0.9
+# 2. Cross-project shared-fork pins (doctrine D-9 — their dependency
+#    choices are the forks' call, not this repo's):
+#      heapless 0.8 (mfrc522 fork @e9ced1e — sole 0.8 consumer left
+#        after the in-repo crates unified on 0.9),
+#      embedded-hal/embedded-io/nb/bare-metal 0.2-generation
+#        (cortex-m/ft6x06/stm32f4xx-hal-fork chain),
+#      rand_core 0.6
+# 3. Host-toolchain-only noise (never on any firmware target):
+#      windows-sys (x3), wit-bindgen (x2)
+# 4. defmt 0.3 + panic-probe 0.3 vs 1.x — the STM32 debug-stack refresh
+#    (#262) owns this; NOT a permanent fixture, do not re-justify here.
 
 [sources]
 # crates.io + the deliberate git pins ONLY (the Amperstrand forks
