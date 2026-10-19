@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #309: `elf2image` gains explicit `--flash-mode dio` + header guard (esptool ≥5 QIO-default fix)
+
+- `build.sh` and `flash_and_test.sh` invoked bare `esptool elf2image`;
+  esptool ≥5 defaults the image header flash-mode to **QIO**, and a
+  QIO-header app silently boot-loops every DIO board this repo ships
+  (all sdkconfigs mandate `dio`; console-none bootloaders print nothing
+  — bench-earned 2026-10-19 during the #308 stamp: hash-verified flash,
+  byte-perfect partition table, ROM-banner reset loop until the header
+  was regenerated `dio`).
+- Both call sites now pass `--flash-mode dio` explicitly and verify the
+  produced image's header byte 2 == `0x2`, failing loud — the guard
+  catches any future toolchain default change instead of the bench.
+
 ### Changed — #264: retire `vendor/synopsys-usb-otg` path-patch → git dep on `Amperstrand/synopsys-usb-otg`
 
 - The synopsys-usb-otg patch now rides the canonical Amperstrand fork
