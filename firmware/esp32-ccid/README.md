@@ -185,6 +185,9 @@ Gotchas verified the hard way:
   `cp partitions-ota.csv <target-dir>/partitions.csv`.
 - **esptool needs a converted image** — the extension-less cargo ELF is written
   raw ("will not fit in flash"); run `esptool --chip esp32c3 elf2image` first.
+  Always pass `--flash-mode dio` (#308): esptool ≥5 defaults the image header
+  to QIO, which boot-loops the DIO-wired boards behind a silent ROM banner —
+  `build.sh`/`flash_and_test.sh` assert the header byte (0x2) after converting.
 - **WiFi credentials are baked by `option_env!`** — tracked as compilation
   inputs via `build.rs` `rerun-if-env-changed` (`00b36a0`); a plain rebuild
   picks up changed credentials. (On older checkouts without that fix, touch
@@ -196,14 +199,14 @@ raw esptool sequences are bench-banned):
 
 ```bash
 # C3 / Nucula — ota_0 slot of the OTA table, 4 MB flash
-esptool --chip esp32c3 elf2image -o /tmp/c3.bin <target-dir>/riscv32imc-esp-espidf/debug/esp32-ccid
+esptool --chip esp32c3 elf2image --flash-mode dio -o /tmp/c3.bin <target-dir>/riscv32imc-esp-espidf/debug/esp32-ccid
 python3 ../../tests/hardware/labgrid/esp32_flash.py --chip esp32c3 \
   -p /dev/serial/by-id/<espressif-jtag-port> \
   --image 0x8000=<target-dir>/riscv32imc-esp-espidf/debug/build/partition-table.bin \
   --image 0x40000=/tmp/c3.bin --erase 0x30000=0x2000
 
 # M5Stick — OTA table, ota_0 slot
-esptool --chip esp32 elf2image -o /tmp/m5.bin <target-dir>/xtensa-esp32-espidf/release/esp32-ccid
+esptool --chip esp32 elf2image --flash-mode dio -o /tmp/m5.bin <target-dir>/xtensa-esp32-espidf/release/esp32-ccid
 python3 ../../tests/hardware/labgrid/esp32_flash.py --chip esp32 \
   -p /dev/serial/by-id/<m5stick-port> --baud 115200 \
   --image 0x8000=<target-dir>/xtensa-esp32-espidf/release/build/partition-table.bin \
