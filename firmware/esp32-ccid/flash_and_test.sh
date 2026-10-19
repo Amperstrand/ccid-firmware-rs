@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # flash_and_test.sh — Build, flash, and test ESP32 CCID firmware
 #
-# FTDI FT232 wedge bug: espflash's UnixTightReset sends rapid DTR/RTS toggles
-# via TIOCMSET ioctl which corrupts the FTDI chip's USB state machine.
-# No software recovery exists — physical USB replug required every time.
-# Tested: --baud 115200 (no baud change) still wedges. DTR/RTS is the trigger.
-# See: esp-rs/espflash#646, serialport-rs#117, 2011 ftdi_sio.c kernel patch
-#
-# ALWAYS stop pcscd before flashing — it holds the serial port open.
+# FTDI FT232 wedge HISTORY (why espflash is banned here): its UnixTightReset
+# sends rapid DTR/RTS toggles via TIOCMSET ioctl which corrupts the FTDI
+# chip's USB state machine — no software recovery, physical USB replug
+# required every time. esp-rs/espflash#646, serialport-rs#117.
+# The flash now rides esptool through esp32_flash.py (#299): held pcscd
+# flock, capped baud, ordered writes, recovery ladder, boot proof.
 #
 # Usage:
-#   ./flash_and_test.sh              # Build + flash + replug reminder + test
+#   ./flash_and_test.sh              # Build + flash (boot-proven) + test
 #   ./flash_and_test.sh --no-flash   # Skip flash, just start pcscd + test
 #   ./flash_and_test.sh --test-only  # Only run pcsc_scan
 #   BOARD=m5stick ./flash_and_test.sh ...  # Select board variant (default m5atom)

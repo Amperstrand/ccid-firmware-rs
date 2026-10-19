@@ -206,7 +206,16 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
     # bare systemctl on purpose: the fd above IS the lock — wrapping
     # this in a shell `flock <path>` opens a second file description
     # and self-deadlocks against it (flock(1) blocks on LOCK_EX)
-    (run or _run_local)("systemctl stop pcscd.socket pcscd", timeout=60)
+    r = (run or _run_local)("systemctl stop pcscd.socket pcscd",
+                            timeout=60)
+    if r.returncode != 0:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        raise RuntimeError(
+            f"pcscd stop failed (rc={r.returncode}) — the socket unit "
+            "may still be armed and can re-grab the reader port "
+            "mid-flash; refusing to flash (run with the rights the "
+            f"bench expects). stderr: {(r.stderr or '')[-200:]}")
     return fd
 
 

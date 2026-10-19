@@ -29,12 +29,16 @@ check_prerequisites() {
     echo ""
     echo "=== Checking prerequisites ==="
 
-    if command -v espflash &>/dev/null; then
-        info "espflash found: $(espflash --version 2>/dev/null | head -1)"
-    elif command -v cargo &>/dev/null && cargo espflash --version &>/dev/null 2>&1; then
-        info "cargo espflash found: $(cargo espflash --version 2>/dev/null | head -1)"
+    # Wedge discipline (#299): the flash path rides esptool through
+    # esp32_flash.py — espflash is deliberately absent (FT232 wedge).
+    if ! command -v esptool &>/dev/null; then
+        error "Missing prerequisite: esptool (pip install esptool)"
+        missing=1
     else
-        warn "No flash tool found. Install espflash: cargo install espflash"
+        info "esptool found: $(esptool version 2>/dev/null | head -1)"
+    fi
+    if ! command -v python3 &>/dev/null; then
+        warn "python3 not found — needed by esp32_flash.py (boot check)"
         missing=1
     fi
 
@@ -83,8 +87,12 @@ flash_firmware() {
     # routes through esp32_flash.py (held pcscd flock, capped baud,
     # ordered writes, recovery ladder, boot proof). Never a bare
     # espflash — its DTR/RTS toggling is the documented FT232 wedge.
+    # no args = its documented full flow (build + flash + test); a
+    # subprocess, not exec — setup continues to install_config after
     if [ -x "${SCRIPT_DIR}/flash_and_test.sh" ]; then
-        exec "${SCRIPT_DIR}/flash_and_test.sh" --flash
+        "${SCRIPT_DIR}/flash_and_test.sh" || {
+            error "flash_and_test.sh failed"; exit 1; }
+        return
     fi
     error "flash_and_test.sh not found — use: ./build.sh <board> --flash"
     exit 1

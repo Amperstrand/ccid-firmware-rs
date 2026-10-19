@@ -230,6 +230,30 @@ class HygieneTests(unittest.TestCase):
         finally:
             fd.close()
 
+    def test_failed_pcscd_stop_aborts_and_releases_the_lock(self):
+        # Codex P1 on #299 round 3: a discarded stop result leaves
+        # pcscd.socket armed to re-grab the port mid-write — a failed
+        # stop must raise (the flash path reports it in the verdict
+        # without attempting any esptool op) and release the fd
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig_lock = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                with self.assertRaises(RuntimeError):
+                    esp32_flash.pcscd_lock_acquire(
+                        run=lambda c, timeout=60: FakeResult(
+                            1, err="Access denied"))
+                # fd was released: a fresh non-blocking acquire works
+                import fcntl
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe,
+                                fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+            finally:
+                esp32_flash.PCSCD_LOCK = orig_lock
+
     def test_failed_erase_reports_old_image_boot_risk(self):
         cmds = []
 
