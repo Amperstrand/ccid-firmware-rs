@@ -2199,7 +2199,7 @@ esptool does not auto-convert Rust ELF output — `write-flash 0x40000 <elf>`
 fails with "will not fit in flash". Convert first:
 
 ```bash
-esptool --chip esp32c3 elf2image --output app.bin \
+esptool --chip esp32c3 elf2image --flash-mode dio --output app.bin \
   /root/.cargo-target/riscv32imc-esp-espidf/debug/esp32-ccid
 PORT=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
 esptool --chip esp32c3 -p $PORT --baud 460800 write-flash \
