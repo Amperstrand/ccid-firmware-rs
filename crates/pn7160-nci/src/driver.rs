@@ -300,32 +300,18 @@ impl<T: Transport> Pn7160Driver<T> {
             self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
             if self.polls_since_ntf >= cadence {
                 self.polls_since_ntf = 0;
-                // #332 (Codex P1 on #328): pick the re-arm command by
-                // NFCC state. ACTIVE interface: RF_DEACTIVATE(type=
-                // DISCOVERY) tears it down AND returns to the discovery
-                // loop in one command (#105, bench-proven). PARKED (the
-                // RF_DEACTIVATE(type=IDLE) already happened — NFCC IDLE
-                // and deaf): the deactivate can be REFUSED (nothing to
-                // deactivate), so the idle-state restart is RF_DISCOVER
-                // — the same one-shot probe shape the #125 latch uses,
-                // here at the SLOW parked cadence (the ~11-RAPID-cycle
-                // mute class stays out of reach; the doc caution against
-                // RF_DISCOVER re-issue targets per-cycle re-issues on
-                // the active path).
-                let sent = if self.discovery_parked {
-                    let ok = self.transport.send(&reader::RF_DISCOVER_PASSIVE_A);
-                    if ok {
-                        self.rearm = Some(RearmPhase::DiscoverProbeRsp { polls: 0 });
-                    }
-                    ok
-                } else {
-                    let ok = self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY);
-                    if ok {
-                        self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
-                    }
-                    ok
-                };
-                let _ = sent;
+                // Re-arm step 1 is ALWAYS the #105 one-command
+                // RF_DEACTIVATE(type=DISCOVERY): from a running
+                // discovery (the perpetual run_ladder path — the
+                // NORMAL parked state, Codex P1 on #349) it tears the
+                // interface down and returns to the discovery loop in
+                // one command. From a TRULY idle NFCC (explicit
+                // RF_DEACTIVATE(type=IDLE) earlier) it can be REFUSED —
+                // the AwaitRsp handler then escalates to RF_DISCOVER
+                // instead of retrying the refused command forever.
+                if self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
+                    self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
+                }
                 // Write failure (mute link): keep the last known
                 // presence and retry after a full cadence.
             }
@@ -345,9 +331,19 @@ impl<T: Transport> Pn7160Driver<T> {
                         self.silent_rearms = 0;
                         self.rearm = if f.status() == Some(STATUS_OK) {
                             Some(RearmPhase::AwaitNtf { polls: 0 })
+                        } else if self.transport.send(&reader::RF_DISCOVER_PASSIVE_A) {
+                            // #349 (Codex): the deactivate was REFUSED —
+                            // the NFCC is IDLE (nothing to deactivate;
+                            // the perpetual-discovery parked state sends
+                            // OK instead). Restart discovery directly:
+                            // RF_DISCOVER, the #125 one-shot probe shape
+                            // (rapid-cycle mute stays out of reach —
+                            // this fires once per refused re-arm only).
+                            Some(RearmPhase::DiscoverProbeRsp { polls: 0 })
                         } else {
-                            // NFCC refused the re-arm: keep last known
-                            // presence, retry after a full cadence.
+                            // Refused AND the probe write failed (mute
+                            // link): keep last known presence, retry
+                            // after a full cadence.
                             None
                         };
                     }
@@ -411,6 +407,10 @@ impl<T: Transport> Pn7160Driver<T> {
 
     fn advance_probe_or_give_up(&mut self, polls: u8) {
         self.rearm = if polls + 1 >= REARM_RSP_POLLS {
+            // #349 (Codex): a probe whose RSP never arrives is a SILENT
+            // re-arm — count it so the wifi VEN-cycle recovery's
+            // silent-streak threshold can fire (matches AwaitRsp).
+            self.silent_rearms = self.silent_rearms.saturating_add(1);
             None
         } else {
             Some(RearmPhase::DiscoverProbeRsp { polls: polls + 1 })
@@ -1671,6 +1671,110 @@ mod tests {
     /// parked cadence — no fast cycling (the ~11-rapid-cycle chip-mute
     /// class), but never a permanent deaf state — and a tag NTF during
     /// the slow cycle must restore presence.
+    /// #349 (Codex P1): a REFUSED deactivate (NFCC truly idle) must
+    /// escalate to RF_DISCOVER — not retry the refused command forever.
+    #[test]
+    fn refused_deactivate_rearm_escalates_to_rf_discover() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // settle the #125 one-shot probe if armed
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        for _ in 0..16 {
+            let _ = drv.is_card_present();
+        }
+        // drain any stale queued frames so the scripted sequence below
+        // is consumed by the phases it was written for
+        for _ in 0..64 {
+            let _ = drv.is_card_present();
+        }
+        let settled = drv.transport_mut().sent.len();
+
+        // the parked re-arm: deactivate REFUSED (status != OK)
+        let refused = [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, 0xA0];
+        drv.transport_mut().push_reply(&refused);
+        // then the escalated RF_DISCOVER's RSP + a recovery NTF
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        drv.transport_mut().push_notification(&discover_ntf());
+
+        let mut escalated = false;
+        for _ in 0..(PARKED_REARM_POLLS as usize + 4 * REARM_RSP_POLLS as usize + 32) {
+            let _ = drv.is_card_present();
+            let sent = &drv.transport_mut().sent;
+            if sent.len() >= settled + 2 {
+                assert_eq!(
+                    sent[settled].as_slice(),
+                    reader::RF_DEACTIVATE_DISCOVERY.as_slice()
+                );
+                assert_eq!(
+                    sent[settled + 1].as_slice(),
+                    reader::RF_DISCOVER_PASSIVE_A.as_slice(),
+                    "refused deactivate must escalate to RF_DISCOVER"
+                );
+                escalated = true;
+                break;
+            }
+        }
+        assert!(escalated, "escalation never happened");
+        // and the NTF restores presence
+        for _ in 0..8 {
+            if drv.is_card_present() {
+                break;
+            }
+        }
+        assert!(drv.is_card_present(), "recovery NTF must restore presence");
+    }
+
+    /// #349 (Codex P1): a silent escalated probe counts as a silent
+    /// re-arm so the wifi VEN-cycle threshold can fire.
+    #[test]
+    fn silent_discover_probe_counts_as_silent_rearm() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // settle the #125 one-shot probe if armed
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        for _ in 0..16 {
+            let _ = drv.is_card_present();
+        }
+
+        // parked re-arm with NO responses at all: deactivate written,
+        // its RSP never arrives -> give-up (silent +1)
+        let before = drv.silent_rearms;
+        for _ in 0..(PARKED_REARM_POLLS as usize + REARM_RSP_POLLS as usize + 8) {
+            let _ = drv.is_card_present();
+        }
+        assert!(drv.silent_rearms > before, "silent AwaitRsp must count");
+        assert_eq!(drv.rearm, None);
+
+        // now a re-arm whose deactivate is REFUSED and whose RF_DISCOVER
+        // RSP never arrives: the probe give-up must ALSO count.
+        let refused = [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, 0xA0];
+        drv.transport_mut().push_reply(&refused);
+        let before2 = drv.silent_rearms;
+        for _ in 0..(PARKED_REARM_POLLS as usize + 2 * REARM_RSP_POLLS as usize + 8) {
+            let _ = drv.is_card_present();
+        }
+        assert!(
+            drv.silent_rearms > before2,
+            "silent escalated probe must count toward the VEN-cycle threshold"
+        );
+    }
+
     #[test]
     fn parked_driver_still_rearms_at_slow_cadence_and_recovers() {
         let mut t = MockTransport::new();
@@ -1711,21 +1815,20 @@ mod tests {
         );
 
         // the parked re-arm itself: a new write within the slow cadence.
-        // #332: parked = NFCC IDLE — the re-arm must be RF_DISCOVER
-        // (RF_DEACTIVATE from idle can be refused), so seed its RSP.
+        // #349: step 1 is ALWAYS the #105 deactivate (perpetual-
+        // discovery parked state — the NORMAL case); its OK RSP is
+        // seeded here.
         drv.transport_mut()
-            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+            .push_reply(&deactivate_discovery_rsp_ok());
         let mut rearmed = false;
         for i in 0..(PARKED_REARM_POLLS as usize + 8) {
             let _ = drv.is_card_present();
             if drv.transport_mut().sent.len() > settled {
-                // #332: the parked re-arm writes RF_DISCOVER_PASSIVE_A,
-                // not the deactivate (idle NFCC restart).
                 let w = &drv.transport_mut().sent[settled];
                 assert_eq!(
                     w.as_slice(),
-                    reader::RF_DISCOVER_PASSIVE_A.as_slice(),
-                    "parked re-arm must restart discovery with RF_DISCOVER"
+                    reader::RF_DEACTIVATE_DISCOVERY.as_slice(),
+                    "parked re-arm step 1 is the #105 deactivate"
                 );
                 rearmed = true;
                 break;
