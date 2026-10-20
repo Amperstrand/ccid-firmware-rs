@@ -18,14 +18,12 @@ import pytest
 
 from .console import BootMarker
 
+# #320: gating now happens in conftest's pytest_collection_modifyitems
+# (the flags are read from the LIVE config there). The old
+# module-level skipif(not _opt_test_firmware()) evaluated at import
+# time — before options existed — which is how --test-firmware became
+# a dead flag: only the NUCULA_TEST_FIRMWARE env var ever worked.
 
-
-
-def _opt_test_firmware():
-    """PR86 P1: pytest.config was removed — read options via the
-    registered conftest instead of the nonexistent global."""
-    import os
-    return os.environ.get("NUCULA_TEST_FIRMWARE", "").lower() in ("1", "true", "yes")
 
 @pytest.mark.hil
 def test_board_responsive(board):
@@ -44,6 +42,7 @@ def test_board_responsive(board):
 
 
 @pytest.mark.hil
+@pytest.mark.test_wallet
 def test_wallet_boots(flashed_wallet, console):
     """Wallet firmware boots: console responds to 'status' with nfc: idle."""
     console._buffer.clear()
@@ -56,6 +55,7 @@ def test_wallet_boots(flashed_wallet, console):
 
 
 @pytest.mark.hil
+@pytest.mark.test_wallet
 def test_wallet_i2c_scan(flashed_wallet, console):
     """Wallet firmware's i2cscan finds exactly 0x20, 0x28, 0x7C."""
     console._buffer.clear()
@@ -69,10 +69,7 @@ def test_wallet_i2c_scan(flashed_wallet, console):
 
 
 @pytest.mark.hil
-@pytest.mark.skipif(
-    not _opt_test_firmware(),
-    reason="need --test-firmware to flash our Rust firmware"
-)
+@pytest.mark.test_firmware
 def test_our_firmware_pn7160_acks(flashed_firmware, console):
     """Our Rust firmware gets sustained ACKs from the PN7160."""
     console._buffer.clear()
@@ -85,10 +82,7 @@ def test_our_firmware_pn7160_acks(flashed_firmware, console):
 
 
 @pytest.mark.hil
-@pytest.mark.skipif(
-    not _opt_test_firmware(),
-    reason="need --test-firmware to flash our Rust firmware"
-)
+@pytest.mark.test_firmware
 def test_our_firmware_nci_init(flashed_firmware, console):
     """NCI init ladder completes (full PN7160 bring-up).
 
@@ -103,10 +97,7 @@ def test_our_firmware_nci_init(flashed_firmware, console):
 
 
 @pytest.mark.hil
-@pytest.mark.skipif(
-    not _opt_test_firmware(),
-    reason="need --test-firmware to flash our Rust firmware"
-)
+@pytest.mark.test_firmware
 def test_our_firmware_sustained_acks(flashed_firmware, console):
     """Sustained ACK health over the heartbeat cadence (no flakiness).
 
