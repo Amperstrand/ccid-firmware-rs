@@ -129,6 +129,30 @@ fn serve_connection<D: NfcDriver>(
     }
 }
 
+/// #332: absence logging is TRANSITION-gated — the hot path is pcscd's
+/// ~400 ms ATR probe with no card present. Static keeps it allocation-
+/// free; 0 = still absent, starts as "not yet announced".
+fn note_absent_poll() {
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    static WAS_PRESENT: AtomicBool = AtomicBool::new(false);
+    static ABSENT_POLLS: AtomicU32 = AtomicU32::new(0);
+    const ABSENCE_LOG_EVERY: u32 = 900; // ~6 min at 400 ms — heartbeat
+    let first = !WAS_PRESENT.swap(false, Ordering::Relaxed);
+    let n = ABSENT_POLLS.fetch_add(1, Ordering::Relaxed);
+    if first {
+        log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
+        ABSENT_POLLS.store(1, Ordering::Relaxed);
+    } else if n % ABSENCE_LOG_EVERY == 0 {
+        log::warn!("vpcd: still absent ({} polls)", n);
+    }
+}
+
+fn note_present_poll() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static WAS_PRESENT: AtomicBool = AtomicBool::new(false);
+    WAS_PRESENT.store(true, Ordering::Relaxed);
+}
+
 fn handle_message<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     payload: &[u8],
@@ -147,6 +171,7 @@ fn handle_message<D: NfcDriver>(
                             // first thing that dies on this path — every
                             // request and its verdict goes to the console.
                             log::warn!("vpcd: ATR req → present, power_on ok ({} B)", len);
+                            note_present_poll();
                             Some(atr[..len].to_vec())
                         }
                         Err(_) => {
@@ -155,7 +180,13 @@ fn handle_message<D: NfcDriver>(
                         }
                     }
                 } else {
-                    log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
+                    // Codex P1 on #328 (tracked #332): pcscd probes ATR
+                    // presence at ~400 ms with no card — logging EVERY
+                    // absent answer spams the console indefinitely.
+                    // Log the ABSENCE TRANSITION only (first absent
+                    // after presence, or every ABSENCE_LOG_EVERY as a
+                    // slow heartbeat).
+                    note_absent_poll();
                     Some(Vec::new()) // no card → empty ATR (driver ejects + re-polls)
                 }
             }
