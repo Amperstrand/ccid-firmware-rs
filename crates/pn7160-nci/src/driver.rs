@@ -76,6 +76,9 @@ pub struct Pn7160Driver<T: Transport> {
     /// discovery (its natural state), where an arriving tag
     /// auto-activates and raises its NTF without host cycling.
     discovery_parked: bool,
+    /// Time of the last re-arm WRITE (ms domain of poll_maintenance);
+    /// None while un-parked (the poll counter owns the cadence then).
+    last_rearm_ms: Option<u64>,
     /// Re-arm writes ACKed but never answered (semi-mute signal): a
     /// healthy NFCC answers RF_DEACTIVATE in milliseconds; three
     /// silent re-arms mean the chip wedged — only a VEN power cycle
@@ -106,6 +109,12 @@ const PRESENCE_REARM_POLLS: u32 = 8;
 /// the only poller) "parked forever" wedges presence at absent. Slow
 /// enough to stay far from the ~11-rapid-cycle chip-mute class (#125).
 const PARKED_REARM_POLLS: u32 = 32;
+
+/// #328/#332 (Codex P1): time-based parked re-arm — pcscd STOPS polling
+/// entirely once it marks a reader dead, so a poll-count cadence can
+/// never fire again. Equivalent of PARKED_REARM_POLLS at the ~400 ms
+/// host probe cadence.
+const PARKED_REARM_MS: u64 = 12_800;
 
 /// Consecutive empty re-arm cycles before presence clears — a discovery
 /// NTF can arrive one poll after the re-arm (TOTAL_DURATION latency) and
@@ -141,6 +150,7 @@ impl<T: Transport> Pn7160Driver<T> {
             rearm: None,
             probe_armed: false,
             discovery_parked: false,
+            last_rearm_ms: None,
             silent_rearms: 0,
             stall_hook: None,
             wtx_last: 0,
@@ -317,6 +327,30 @@ impl<T: Transport> Pn7160Driver<T> {
             }
         }
         self.last_ntf.is_some()
+    }
+
+    /// #328/#332 (Codex P1): time-driven maintenance for host-silent
+    /// periods — pcscd stops polling once a reader is marked dead, so
+    /// the parked re-arm must advance by TIME, not poll count. Called
+    /// from the serve loop's idle wake (bounded, non-blocking: one
+    /// state-machine step + at most one write when the window elapses).
+    /// `now_ms` is the caller's monotonic clock (tests inject it
+    /// deterministically).
+    pub fn poll_maintenance(&mut self, now_ms: u64) {
+        // Advance any in-flight re-arm phase one bounded step (RSP/NTF
+        // collection) so the machine finishes even with no host polls.
+        self.step_rearm();
+        if !self.discovery_parked || self.rearm.is_some() {
+            return;
+        }
+        let due = match self.last_rearm_ms {
+            Some(last) => now_ms.saturating_sub(last) >= PARKED_REARM_MS,
+            None => true, // parked but never re-armed by time — due now
+        };
+        if due && self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
+            self.last_rearm_ms = Some(now_ms);
+            self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
+        }
     }
 
     /// Advance the split re-arm by one poll-bounded step (see
@@ -1671,6 +1705,63 @@ mod tests {
     /// parked cadence — no fast cycling (the ~11-rapid-cycle chip-mute
     /// class), but never a permanent deaf state — and a tag NTF during
     /// the slow cycle must restore presence.
+    /// #328/#332 (Codex P1): the parked re-arm fires by TIME when the
+    /// host stops polling entirely (pcscd marks the reader dead) — no
+    /// is_card_present call needed, only serve-loop maintenance ticks.
+    #[test]
+    fn parked_rearm_fires_by_time_without_host_polls() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        let writes0 = drv.transport_mut().sent.len();
+        // NO host polls — only maintenance ticks with an injected clock.
+        // The FIRST tick is immediately due (last_rearm_ms unknown — a
+        // parked driver gets one prompt time-re-arm, then the cadence).
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.poll_maintenance(1_000);
+        assert_eq!(
+            drv.transport_mut().sent[writes0].as_slice(),
+            reader::RF_DEACTIVATE_DISCOVERY.as_slice(),
+            "first maintenance tick fires the parked re-arm (unknown last time = due)"
+        );
+        // the phase machine completes on later ticks: deactivate RSP ->
+        // AwaitNtf expiry -> the latched #125 probe (RSP scripted too)
+        // -> None. Ticks are generous.
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        for _ in 0..16 {
+            drv.poll_maintenance(20_100);
+        }
+        assert_eq!(
+            drv.rearm, None,
+            "maintenance advances the machine through the NTF window and any latched probe"
+        );
+        // cadence: within 12.8 s of the last re-arm write, ticks stay
+        // silent; the next write comes only after the window.
+        let quiescent = drv.transport_mut().sent.len();
+        for _ in 0..8 {
+            drv.poll_maintenance(25_000);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            quiescent,
+            "no re-arm write inside the 12.8 s window"
+        );
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.poll_maintenance(35_000);
+        assert!(
+            drv.transport_mut().sent.len() > quiescent,
+            "re-arm fires again after the full window"
+        );
+    }
+
     /// #349 (Codex P1): a REFUSED deactivate (NFCC truly idle) must
     /// escalate to RF_DISCOVER — not retry the refused command forever.
     #[test]

@@ -98,6 +98,12 @@ fn serve_connection<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     rx_buf: &mut [u8],
 ) {
+    // #328/#332 (Codex P1): the idle wake doubles as the maintenance
+    // tick — a 5 s read timeout keeps the wake cheap while giving the
+    // parked re-arm a time base that does NOT depend on host polls
+    // (pcscd stops probing entirely once a reader is marked dead).
+    let started = std::time::Instant::now();
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     loop {
         let payload = match read_message(stream) {
             Ok(Some(p)) => p,
@@ -116,7 +122,14 @@ fn serve_connection<D: NfcDriver>(
                         | std::io::ErrorKind::Interrupted
                 ) =>
             {
-                continue
+                // Idle wake: advance the driver's parked re-arm by TIME
+                // (one bounded step; at most one write per 12.8 s
+                // window — the slow cadence keeps the rapid-cycle mute
+                // class out of reach).
+                handler
+                    .driver_mut()
+                    .poll_maintenance(started.elapsed().as_millis() as u64);
+                continue;
             }
             Err(_) => return, // hard I/O error — reconnect
         };
