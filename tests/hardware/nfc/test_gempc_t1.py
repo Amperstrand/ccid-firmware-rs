@@ -383,3 +383,33 @@ class TestCodex347Followups:
         assert is_sc_class_apdu(bytes.fromhex("8582000000"))
         assert is_sc_class_apdu(bytes.fromhex("81CA00E000"))
         assert is_sc_class_apdu(bytes.fromhex("00CA006E")) is False
+
+    def test_trailing_bytes_rejected(self):
+        # Codex P2 on #347: a valid block + trailing garbage must not
+        # parse as complete.
+        from nfc.gempc_t1 import parse_t1, i_block
+        good = i_block(0, 0, bytes.fromhex("00CA006E"))
+        tb = parse_t1(good + b"\xff")
+        assert tb is not None and not tb.complete
+
+    def test_corrupt_wtx_not_granted(self):
+        # Codex P2 on #347: a bad-EDC WTX request must raise, not grant.
+        import pytest
+        from nfc import gempc_t1
+        from nfc.gempc_t1 import T1Error, T1Session, MSG_XFR_BLOCK, Frame
+
+        # outer GemPC frame built with a correct LRC so parse_frames
+        # accepts it; the INNER T=1 block carries the wrong EC.
+        inner = bytes([0x00, 0xC3, 0x01, 0x02, 0x00])  # EDC 00; correct = C0
+        body = (bytes([0x03, 0x06, 0x80]) + len(inner).to_bytes(4, "little")
+                + bytes([0x00, 0x01, 0x00, 0x00, 0x00]) + inner)
+        wire = body + bytes([gempc_t1.lrc(body)])
+
+        class FakeSess:
+            verbose = False
+            def exchange(self, *a, **k):
+                return 0, wire
+
+        with pytest.raises(T1Error, match="BAD EDC"):
+            T1Session.xfr_block(FakeSess(), b"\x00\x00\x00\x00\x00",
+                                label="t")

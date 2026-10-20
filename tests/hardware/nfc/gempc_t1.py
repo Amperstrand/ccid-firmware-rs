@@ -317,11 +317,16 @@ class T1Block(NamedTuple):
 
 
 def parse_t1(block: bytes) -> T1Block | None:
-    """Structural + EDC parse of one T=1 block; None when < 4 bytes."""
+    """Structural + EDC parse of one T=1 block; None when < 4 bytes.
+
+    Codex P2 on #347: trailing bytes after the declared INF+EDC make
+    the block INCOMPLETE (a frameing desync, not a valid block) — the
+    old lenient check let [valid block]+garbage pass as complete.
+    """
     if len(block) < 4:
         return None
     nad, pcb, length = block[0], block[1], block[2]
-    complete = len(block) >= 4 + length
+    complete = len(block) == 4 + length
     inf = bytes(block[3:3 + length])
     edc = block[3 + length] if complete else None
     return T1Block(nad, pcb, length, inf, edc, complete)
@@ -520,6 +525,12 @@ class T1Session:
             ans = answers[-1].payload
             tb = parse_t1(ans)
             if tb is not None and tb.is_wtx_request() and tb.complete:
+                if not tb.edc_ok:
+                    # Codex P2 on #347: a corrupt WTX request must be
+                    # REPORTED, never granted — answering would leave
+                    # both sides in different WTX states.
+                    raise T1Error(f"{label}: S(WTX request) with BAD "
+                                  f"EDC — refusing to grant {ans.hex()}")
                 m = tb.inf[0] if tb.inf else 1
                 if self.verbose:
                     print(f"  [{label}] S(WTX request m={m}) -> granting")
