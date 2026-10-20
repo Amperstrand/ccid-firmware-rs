@@ -37,6 +37,8 @@ Exit 0 = every phase green; nonzero = the phase that failed is named.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import hashlib
 import subprocess
 import time
@@ -94,6 +96,30 @@ def sh(cmd: list[str] | str, timeout: int, shell: bool = False):
 def pcsc_readers() -> list[str]:
     import smartcard.System  # lazy: bench dep
     return [str(r) for r in smartcard.System.readers()]
+
+
+ALLOW_UNVERIFIED_CPLC = [False]  # set from argv in main()
+
+
+def plain_cplc(reader: str) -> str | None:
+    """Card CPLC via plain GET DATA (no GP auth) — None if unreadable."""
+    try:
+        from smartcard.pcsc.PCSCCardConnection import PCSCCardConnection
+        from smartcard.util import toBytes
+        cc = PCSCCardConnection(reader)
+        try:
+            cc.connect()
+            data, s1, s2 = cc.transmit(toBytes("80CA9F7F"))
+        finally:
+            try:
+                cc.disconnect()
+            except Exception:
+                pass
+        if s1 == 0x90 and data:
+            return bytes(data).hex()
+        return None
+    except Exception:
+        return None
 
 
 def card_atr(reader: str) -> str | None:
@@ -197,6 +223,36 @@ def preflight(reader: str, lines: list) -> bool:
         lines.append("preflight FAIL: skipping GP auth — ATR family "
                      "check failed (wrong-card key-burn guard)")
         return False
+    # Codex P1 on #333: an ATR prefix proves FAMILY, not identity. The
+    # fixed org keyset must only go to ledgered cards: when
+    # J3R180_CPLC_ALLOWLIST is set (comma-separated hex prefixes of the
+    # plain-readable CPLC, e.g. "47909E92..."), the card's CPLC must
+    # match one before any key-bearing exchange. Unreadable CPLC is a
+    # hard stop unless the operator passes --allow-unverified-cplc.
+    ledger = [s.strip().upper()
+              for s in os.environ.get("J3R180_CPLC_ALLOWLIST",
+                                      "").split(",") if s.strip()]
+    if ledger:
+        cplc = plain_cplc(reader)
+        if cplc is None:
+            if ALLOW_UNVERIFIED_CPLC[0]:
+                lines.append("WARN: CPLC unreadable; proceeding on "
+                             "--allow-unverified-cplc (operator call)")
+            else:
+                lines.append("preflight FAIL: CPLC unreadable — "
+                             "refusing GP auth with the fixed keyset "
+                             "(pin the card or pass "
+                             "--allow-unverified-cplc)")
+                return False
+        elif not any(cplc.upper().startswith(pfx) for pfx in ledger):
+            lines.append(f"preflight FAIL: CPLC {cplc[:16]}… not in "
+                         "the allowlist — unknown card, refusing GP auth")
+            return False
+        else:
+            lines.append(f"preflight: CPLC {cplc[:16]}… ledgered ✓")
+    else:
+        lines.append("WARN: J3R180_CPLC_ALLOWLIST unset — ATR-family "
+                     "gate only (weaker; pin bench CPLCs to harden)")
     r = gp(reader, "-l")
     check("GlobalPlatform ISD authenticates with org keyset",
           r.returncode == 0 and "ISD:" in r.stdout,
@@ -248,9 +304,12 @@ def cleanup_openpgp(reader: str, cap: Path | None) -> bool:
 
 
 def main() -> int:
+    ALLOW_UNVERIFIED_CPLC[0] = "--allow-unverified-cplc" in sys.argv
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--reader", required=True,
                     help="EXACT pcscd reader name (never an index)")
+    ap.add_argument("--allow-unverified-cplc", action="store_true",
+                    help="proceed when the CPLC is unreadable but a ledger is set")
     ap.add_argument("--status-only", action="store_true",
                     help="read-only: preflight + SELECT + gpg status")
     ap.add_argument("--cap", default=None,
@@ -279,15 +338,22 @@ def main() -> int:
     # cleanup (owner-approved full wipes!) must not run in that mode.
     if args.status_only:
         lines.append("[status-only] cleanup SKIPPED (read-only mode)")
-    cap = Path(args.cap) if args.cap else (
+    # Codex P2 on #333: --status-only is a read-only probe — it must
+    # not REQUIRE an applet CAP (cleanup is skipped in that mode, so
+    # the CAP is never used; non-bench machines have neither path).
+    cap: Path | None = Path(args.cap) if args.cap else (
         SMARTPGP_CAP if SMARTPGP_CAP.exists() else FALLBACK_CAP)
-    if not cap.exists():
+    if args.status_only:
+        cap = None
+        lines.append("[status-only] CAP not required (read-only mode)")
+    elif not cap.exists():
         lines.append(f"FAIL: no applet CAP (looked for {SMARTPGP_CAP} "
                      f"and {FALLBACK_CAP}; pass --cap)")
         return 3
-    digest = hashlib.sha256(cap.read_bytes()).hexdigest()
-    lines.append(f"# applet CAP sha256={digest} (pin this in the "
-                 "runbook after first green run)")
+    if cap is not None:
+        digest = hashlib.sha256(cap.read_bytes()).hexdigest()
+        lines.append(f"# applet CAP sha256={digest} (pin this in the "
+                     "runbook after first green run)")
 
     # --- idempotency: cleanup BEFORE baseline so the captured resting
     # state is the card's true baseline (not baseline+strays).
@@ -355,10 +421,17 @@ def main() -> int:
                  f"{'answered' if sw1 == 0x90 else 'finding'} — "
                  f"SW={sw1:02X}{sw2:02X} len={len(data)}")
 
-    data, sw1, sw2 = apdu("0020008106" + "313233343536")
-    lines.append(f"[{time.time()-t0:6.1f}s] VERIFY PW1: "
-                 f"{'answered' if sw1 == 0x90 else 'finding'} — "
-                 f"SW={sw1:02X}{sw2:02X}")
+    # Codex P1 on #333: NEVER send VERIFY in --status-only — a
+    # preserved applet with a NON-default PIN would count failed
+    # retries against its retry counter (three strikes block PW1).
+    if args.status_only:
+        lines.append(f"[{time.time()-t0:6.1f}s] VERIFY PW1: SKIPPED "
+                     "(status-only — PIN retry budget untouched)")
+    else:
+        data, sw1, sw2 = apdu("0020008106" + "313233343536")
+        lines.append(f"[{time.time()-t0:6.1f}s] VERIFY PW1: "
+                     f"{'answered' if sw1 == 0x90 else 'finding'} — "
+                     f"SW={sw1:02X}{sw2:02X}")
 
     data, sw1, sw2 = apdu("00CA005E")
     lines.append(f"[{time.time()-t0:6.1f}s] GET DATA 5E: "
