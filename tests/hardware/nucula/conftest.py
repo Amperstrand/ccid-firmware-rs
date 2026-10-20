@@ -39,12 +39,49 @@ def pytest_addoption(parser):
 
 
 
+def _flag_enabled(config, opt_name: str, env_name: str) -> bool:
+    """Flag OR env var (#320): `--test-firmware` used to be registered
+    but never read (the post-PR-86 fix swapped to the env var and left
+    the flag dead), so the DOCUMENTED invocation silently skipped the
+    firmware tests. Both now work; the env var stays for non-pytest
+    runners."""
+    import os
+    if config.getoption(opt_name):
+        return True
+    return os.environ.get(env_name, "").lower() in ("1", "true", "yes")
+
+
 def pytest_collection_modifyitems(config, items):
     if not config.getoption("--hil"):
         skip_marker = pytest.mark.skip(reason="need --hil option to run")
         for item in items:
             if "hil" in item.keywords:
                 item.add_marker(skip_marker)
+    # #320: the gating flags resolve HERE (collection time, with the
+    # live config) instead of at module import, where the old
+    # skipif(not _opt_test_firmware()) could only see the env var.
+    for opt_name, env_name, marker, reason in (
+        ("--test-firmware", "NUCULA_TEST_FIRMWARE", "test_firmware",
+         "need --test-firmware (or NUCULA_TEST_FIRMWARE=1) to flash our "
+         "Rust firmware"),
+        ("--test-wallet", "NUCULA_TEST_WALLET", "test_wallet",
+         "need --test-wallet (or NUCULA_TEST_WALLET=1) to flash the "
+         "wallet reference firmware"),
+    ):
+        if not _flag_enabled(config, opt_name, env_name):
+            skip_marker = pytest.mark.skip(reason=reason)
+            for item in items:
+                if marker in item.keywords:
+                    item.add_marker(skip_marker)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "test_firmware: flashes OUR Rust firmware (gate: "
+        "--test-firmware / NUCULA_TEST_FIRMWARE)")
+    config.addinivalue_line(
+        "markers", "test_wallet: flashes the wallet reference firmware "
+        "(gate: --test-wallet / NUCULA_TEST_WALLET)")
 
 
 @pytest.fixture(scope="session", autouse=True)

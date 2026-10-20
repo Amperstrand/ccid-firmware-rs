@@ -106,6 +106,26 @@ def flash_f469(bin_path: str, stlink_serial: str, run=None, reset=None,
     reset = reset or usbdevfs_reset
     log: list[str] = []
 
+    # #296 foot-gun 1: st-flash write does NOT parse ELF — it flashes
+    # the file verbatim (\x7fELF lands at 0x08000000, SP/vector become
+    # garbage, instant HardFault) and still reports "Flash written and
+    # verified! jolly good!" (it verifies the garbage against itself).
+    # A debug ELF also blows the 60 s timeout. Refuse before any bus
+    # touch; tell the operator the objcopy fix.
+    try:
+        with open(bin_path, "rb") as f:
+            magic = f.read(4)
+    except OSError as e:
+        log.append(f"# cannot read {bin_path}: {e}")
+        return False, "\n".join(log)
+    if magic == b"\x7fELF":
+        log.append(
+            f"# REFUSING to flash: {bin_path} is an ELF — st-flash write "
+            "flashes raw bytes (SP/vector garbage, instant HardFault, "
+            "still 'jolly good'). Pass the objcopy'd .bin "
+            "(arm-none-eabi-objcopy -O binary <elf> <bin>). (#296)")
+        return False, "\n".join(log)
+
     def attempt(tag: str) -> CmdResult:
         quoted_bin = shlex.quote(str(bin_path))
         cmd = (f"st-flash --connect-under-reset --serial {stlink_serial} "
@@ -119,13 +139,31 @@ def flash_f469(bin_path: str, stlink_serial: str, run=None, reset=None,
         # One USBDEVFS_RESET + one retry on failure (the .208 latch
         # lesson) — applies to BOTH the write and the post-write reset:
         # the ST-LINK can latch between them too (Codex P2 on #216).
-        r = attempt(tag)
+        # #296 foot-gun 2: subprocess timeout is a FAILURE like any
+        # other — it used to propagate straight through, so the
+        # documented recovery NEVER RAN on two consecutive 60 s
+        # timeouts (the 2 MB debug-ELF class, 2026-10-18 bench night).
+        try:
+            r = attempt(tag)
+        except subprocess.TimeoutExpired as e:
+            r = CmdResult(124, "", f"TIMEOUT after {e.timeout}s: {e.cmd}")
+            log.append(f"# TIMEOUT after {e.timeout}s on '{tag}' — the "
+                       "big-ELF / degraded-attach class (#296); running "
+                       "the documented USBDEVFS_RESET recovery")
         if r.returncode != 0:
             dev = stlink_usb_path(stlink_serial)
             if dev:
                 log.append(f"# st-link latch recovery: USBDEVFS_RESET {dev} "
                            f"-> {reset(dev)}")
-                r = attempt(tag)
+                try:
+                    r = attempt(tag)
+                except subprocess.TimeoutExpired as e:
+                    r = CmdResult(124, "", f"TIMEOUT after {e.timeout}s: "
+                                           f"{e.cmd}")
+                    log.append(f"# TIMEOUT again after recovery on '{tag}' "
+                               "— physical replug of the ST-LINK or the "
+                               "openocd adapter re-init (AGENTS #296 "
+                               "recovery procedure)")
         return r
 
     if attempt_with_recovery("write").returncode != 0:

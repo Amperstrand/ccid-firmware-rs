@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #296: `stm32_flash.py` ELF-magic guard + TimeoutExpired runs the recovery ladder
+
+- `st-flash write` does NOT parse ELF — it flashes the file verbatim
+  (\x7fELF at 0x08000000 → SP `0x464c4558`, instant HardFault) and
+  still reports "jolly good!". `flash_f469` now reads the first 4
+  bytes and REFUSES an ELF before any bus touch, with the objcopy
+  recipe in the verdict (2026-10-18 bench night evidence).
+- `subprocess.TimeoutExpired` used to propagate straight through
+  `attempt_with_recovery` — the documented USBDEVFS_RESET + one-retry
+  ladder never ran on two consecutive 60 s timeouts. A timeout is now
+  a failure like any other: recovery runs; a second timeout after
+  recovery returns `(False, log)` with the openocd adapter re-init /
+  physical-replug verdict instead of an exception.
+
+### Fixed — #313: `esp32_flash.py --boot-check wire` — console-none proof-of-boot on the wire
+
+- Every console-none build (xtensa `.full`, `CONFIG_ESP_CONSOLE_NONE=y`)
+  was forced onto `--no-boot-check` (the flag its own docstring calls
+  an explicit opt-out) because `boot_check_no_conflict` requires
+  `Calling app_main()`. `--boot-check wire` proves boot with one framed
+  GetSlotStatus round-trip instead — any LRC-valid RDR reply passes
+  (the #294 boot-smoke gate, now inside the flash path).
+- `tests/hardware/labgrid/gempc_smoke.py`: the #308 stamp's ad-hoc
+  `m5stick-smoke.py` promoted to standing repo tooling — GetSlotStatus,
+  optional Escape 0xD0 uptime liveness (frozen 28-byte LE diagnostics
+  layout, uptime must advance) and optional IccPowerOn ATR. Framing
+  primitives imported from `nfc/conformance_battery`, not re-implemented.
+
+### Fixed — #314: `esp32_flash.py --quiesce-unit` — systemd port owners stop/start under the flock
+
+- The nucula CDC is permanently held by the standing
+  `nucula-ccid-broker` service; `fuser -k` kills its process and
+  systemd restarts it onto the port MID-FLASH (the observed esptool
+  Checksum-error class). `--quiesce-unit NAME` stops the unit right
+  after the pcscd stop (same held bench flock; a failed stop aborts
+  before any esptool) and starts it during restore, before pcscd.
+  Ordering unit-tested the way #299 pinned the pcscd ordering.
+
+### Fixed — #320: `--test-firmware` / `--test-wallet` are real flags again (nucula HIL)
+
+- Both were registered but never read — only the undocumented
+  `NUCULA_TEST_FIRMWARE` env var worked, so the documented
+  `pytest --hil --test-firmware` silently skipped the three
+  Rust-firmware tests. Gating now resolves in
+  `pytest_collection_modifyitems` from the live config: flag OR env
+  var. `--test-wallet` gates the two wallet-reference tests the same
+  way (they reflash the wallet firmware over ours — no longer on the
+  plain `--hil` path).
+
 ### Fixed — #307: `hal_i2c` coalesces consecutive `Write` ops into ONE transmit (MFRC522 tag detection regression, driver_ng era)
 
 - The #242 driver_ng migration mapped `transaction([Write, Write])` (mfrc522

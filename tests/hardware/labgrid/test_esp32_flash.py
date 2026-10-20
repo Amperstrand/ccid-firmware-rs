@@ -357,6 +357,246 @@ class BootCheckTests(unittest.TestCase):
         self.assertIn("NOT boot-proven", log)
 
 
+class QuiesceUnitTests(unittest.TestCase):
+    # #314: the nucula CDC is permanently held by the STANDING
+    # nucula-ccid-broker service — fuser -k kills its process and
+    # systemd restarts it onto the port MID-FLASH (the Checksum-error
+    # class). The unit must be stopped under the SAME held pcscd flock
+    # and restarted during restore, before pcscd.
+    PORT = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00"
+
+    def _flash(self, calls, unit_ok=True, unit="nucula-ccid-broker", **kw):
+        import tempfile
+        def run(cmd, timeout=300):
+            calls.append(cmd)
+            if "esptool" in cmd:
+                return FakeResult(0)
+            if unit and f"systemctl stop {unit}" in cmd and not unit_ok:
+                return FakeResult(1, err="Unit not loaded")
+            return FakeResult(0)
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                return esp32_flash.flash_esp32(
+                    self.PORT, "esp32c3", {"0x40000": "/tmp/app.bin"},
+                    run=run, usb_reset=lambda d: True, rebind=lambda p: True,
+                    boot_check=lambda t: True,
+                    capture=lambda p: "Calling app_main()",
+                    quiesce_unit=unit, **kw)
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_unit_stop_start_ordering_under_the_flock(self):
+        calls = []
+        ok, log = self._flash(calls)
+        self.assertTrue(ok)
+        stop_pcscd = next(i for i, c in enumerate(calls)
+                          if "stop pcscd.socket pcscd" in c)
+        stop_unit = next(i for i, c in enumerate(calls)
+                         if "stop nucula-ccid-broker" in c)
+        first_esptool = next(i for i, c in enumerate(calls)
+                             if "esptool" in c)
+        start_unit = next(i for i, c in enumerate(calls)
+                          if "start nucula-ccid-broker" in c)
+        start_pcscd = next(i for i, c in enumerate(calls)
+                           if "start pcscd.socket pcscd" in c)
+        # pcscd stop -> unit stop -> esptool(s) -> unit start -> pcscd start
+        self.assertLess(stop_pcscd, stop_unit)
+        self.assertLess(stop_unit, first_esptool)
+        self.assertLess(first_esptool, start_unit)
+        self.assertLess(start_unit, start_pcscd)
+        self.assertEqual(
+            [c for c in calls if "nucula-ccid-broker" in c].count(
+                "systemctl stop nucula-ccid-broker"), 1)
+
+    def test_unit_stop_failure_aborts_before_any_esptool(self):
+        calls = []
+        ok, log = self._flash(calls, unit_ok=False)
+        self.assertFalse(ok)
+        self.assertFalse(any("esptool" in c for c in calls))
+        self.assertIn("QUIESCE FAILED", log)
+        self.assertIn("nucula-ccid-broker", log)
+        # restore still ran: pcscd was put back
+        self.assertTrue(any("start pcscd.socket pcscd" in c for c in calls))
+
+    def test_no_unit_flag_keeps_legacy_quiesce(self):
+        # the flag is opt-in: a plain flash touches ONLY pcscd — no
+        # other units are stopped/started
+        calls = []
+        ok, _ = self._flash(calls, unit=None)
+        self.assertTrue(ok)
+        unit_cmds = [c for c in calls if "systemctl" in c
+                     and "pcscd" not in c]
+        self.assertEqual(unit_cmds, [])
+
+
+class WireBootCheckTests(unittest.TestCase):
+    # #313: console-none families (xtensa .full, CONFIG_ESP_CONSOLE_NONE)
+    # never print `Calling app_main()` — their operators were trained
+    # into --no-boot-check + ad-hoc probe scripts. `boot_check="wire"`
+    # makes the proof-of-boot a GetSlotStatus round-trip IN the flash
+    # path.
+    PORT = "/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0"
+
+    def _flash(self, wire):
+        def run(cmd, timeout=300):
+            return FakeResult(0)
+        return esp32_flash.flash_esp32(
+            self.PORT, "esp32", {"0x40000": "/tmp/app.bin"}, run=run,
+            usb_reset=lambda d: True, rebind=lambda p: True,
+            quiesce=lambda: None, restore=lambda: None,
+            boot_check="wire", wire_check=wire)
+
+    def test_wire_pass_proves_boot(self):
+        ok, log = self._flash(lambda p: (True, "GetSlotStatus: OK bmICCStatus=2"))
+        self.assertTrue(ok)
+        self.assertIn("wire boot check: passed", log)
+
+    def test_wire_fail_fails_the_flash(self):
+        ok, log = self._flash(
+            lambda p: (False, "GetSlotStatus: NO LRC-valid reply"))
+        self.assertFalse(ok)
+        self.assertIn("BOOT CHECK FAILED (wire)", log)
+        self.assertIn("wire boot check: FAILED", log)
+
+    def test_wire_mode_does_not_touch_the_console_capture(self):
+        # the console path (capture + signature check) must NOT run in
+        # wire mode — console-none builds have no console to read
+        used = []
+        self._flash(lambda p: (True, "ok"))
+        # (the injectable capture would record a call; wire mode passes
+        # a capture that fails loudly if used)
+        def run(cmd, timeout=300):
+            return FakeResult(0)
+        ok, _ = esp32_flash.flash_esp32(
+            self.PORT, "esp32", {"0x40000": "/tmp/app.bin"}, run=run,
+            usb_reset=lambda d: True, rebind=lambda p: True,
+            quiesce=lambda: None, restore=lambda: None,
+            boot_check="wire",
+            wire_check=lambda p: (True, "ok"),
+            capture=lambda p: used.append(p) or (_ for _ in ()).throw(
+                AssertionError("console capture used in wire mode")))
+        self.assertTrue(ok)
+        self.assertEqual(used, [])
+
+
+class ObservabilityTests(unittest.TestCase):
+    # 2026-10-20 c3 incident: the CLI printed its whole log only at
+    # exit, so a multi-minute 115200 flash was indistinguishable from
+    # a hang (the first attempt got killed at a tool cap mid-write).
+    # The log now STREAMS with elapsed timestamps, esptool phases are
+    # announced BEFORE running, and a SIGKILL'd flash leaves a
+    # detectable pcscd-down marker.
+    PORT = "/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0"
+
+    def test_streaming_log_prints_with_timestamp_when_echo(self):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        log = esp32_flash.StreamingLog(echo=True)
+        with contextlib.redirect_stdout(buf):
+            log.append("phase one")
+        out = buf.getvalue()
+        self.assertIn("phase one", out)
+        self.assertRegex(out, r"\[\s*\d+\.\ds\]")
+
+    def test_streaming_log_silent_without_echo(self):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        log = esp32_flash.StreamingLog(echo=False)
+        with contextlib.redirect_stdout(buf):
+            log.append("quiet")
+        self.assertEqual(buf.getvalue(), "")
+        self.assertIn("quiet", log)  # still a list
+
+    def test_pcscd_marker_lifecycle_acquire_release(self):
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                fd = esp32_flash.pcscd_lock_acquire(
+                    run=lambda c, timeout=60: FakeResult(0))
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+                self.assertTrue(marker.exists(),
+                                "marker laid down while pcscd is down")
+                esp32_flash.pcscd_lock_release(
+                    fd, run=lambda c, timeout=60: FakeResult(0))
+                self.assertFalse(marker.exists(),
+                                 "marker removed after pcscd restart")
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_stale_marker_recovery_restarts_pcscd(self):
+        import tempfile
+        from pathlib import Path as P
+        cmds = []
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                P(esp32_flash.lock_marker_path(lockfile.name)).write_text(
+                    "pcscd down since flash quiesce, pid=dead\n")
+                recovered = esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60:
+                    (cmds.append(c), FakeResult(0))[1])
+                self.assertTrue(recovered)
+                self.assertTrue(any("start pcscd" in c for c in cmds))
+                self.assertFalse(
+                    P(esp32_flash.lock_marker_path(lockfile.name)).exists())
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_no_marker_no_recovery(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                self.assertFalse(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(0)))
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_esptool_phase_announced_before_the_op(self):
+        cmds = []
+        seen = []
+
+        class LogSpy(list):
+            def __init__(self, echo=False):
+                super().__init__()
+
+            def append(self, item):
+                seen.append(str(item))
+                super().append(item)
+
+        def run(cmd, timeout=300):
+            cmds.append(cmd)
+            return FakeResult(0)
+
+        orig_log = esp32_flash.StreamingLog
+        try:
+            esp32_flash.StreamingLog = LogSpy
+            ok, _ = esp32_flash.flash_esp32(
+                self.PORT, "esp32", {"0x40000": "/tmp/app.bin"}, run=run,
+                usb_reset=lambda d: True, rebind=lambda p: True,
+                quiesce=lambda: None, restore=lambda: None,
+                boot_check=lambda t: True,
+                capture=lambda p: "Calling app_main()")
+        finally:
+            esp32_flash.StreamingLog = orig_log
+        self.assertTrue(ok)
+        # the "→ starting" line precedes the FIRST esptool invocation
+        first_esptool = next(i for i, s in enumerate(seen)
+                             if s.startswith("$ esptool"))
+        self.assertTrue(any(s.startswith("→ esptool") for s in
+                            seen[:first_esptool]),
+                        f"no phase line before first esptool: {seen[:3]}")
+
+
 class SysfsTests(unittest.TestCase):
     def test_usb_dev_path_resolves_serial(self):
         with tempfile.TemporaryDirectory() as td:
