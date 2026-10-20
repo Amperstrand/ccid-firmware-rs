@@ -728,7 +728,19 @@ def run_probe(port: str, stopbits: int = 2, aid: bytes = DEFAULT_SELECT_AID,
         return 1
     finally:
         if lock_fd is not None and esp32_flash is not None:
-            esp32_flash.pcscd_lock_release(lock_fd)
+            try:
+                esp32_flash.pcscd_lock_release(lock_fd)
+            except BaseException:
+                # Codex P2 on #347 (23:27): restoration can raise (unit
+                # masked, flock lost) — the bench flock we still hold
+                # MUST be released anyway or every later probe on this
+                # host self-deadlocks. pcscd state is the operator's
+                # recovery (marker file), not ours to compound.
+                if bench_fd is not None:
+                    fcntl.flock(bench_fd, fcntl.LOCK_UN)
+                    os.close(bench_fd)
+                    bench_fd = None
+                raise
         if bench_fd is not None:
             fcntl.flock(bench_fd, fcntl.LOCK_UN)
             os.close(bench_fd)
