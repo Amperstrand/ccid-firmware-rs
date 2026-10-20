@@ -166,7 +166,13 @@ resolve_ruff() {
         RUFF="ruff"; return 0
     fi
     if command -v uvx >/dev/null 2>&1; then RUFF="uvx ruff@0.17.0"; return 0; fi
-    pip install --quiet ruff==0.17.0 >/dev/null 2>&1 && RUFF="ruff" && return 0
+    # pip fallback (Codex P2 on #317): PATH ruff may still shadow a fresh
+    # install, so invoke the interpreter's module — not the `ruff` name —
+    # and accept only the exact pin.
+    if pip install --quiet ruff==0.17.0 >/dev/null 2>&1 \
+        && [ "$(python3 -m ruff --version 2>/dev/null | awk '{print $2}')" = "0.17.0" ]; then
+        RUFF="python3 -m ruff"; return 0
+    fi
     return 1
 }
 
