@@ -1,6 +1,14 @@
-## [Unreleased] — fix(#330): T=1 endpoint session reset
+# Changelog
 
-### Fixed
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Fixed — #330: T=1 endpoint session reset
+
 - `ccid_handler`: reset the T=1 endpoint when SetParameters(T=1) is
   accepted. A long-lived pcscd keeps the card powered between client
   connections (no power cycle → no reset anchor), so the endpoint's
@@ -10,15 +18,6 @@
   220 B on a fresh one). libccidtwin resets its counters per
   SCardConnect — the endpoint now resets at the same anchor.
   Regression: `set_parameters_resets_stale_t1_endpoint_counters`.
-
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
 
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
