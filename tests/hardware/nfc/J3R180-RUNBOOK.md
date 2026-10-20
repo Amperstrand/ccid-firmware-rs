@@ -77,6 +77,30 @@ package AID (`PKG:` lines).
   JCOP4 but answers 6A88/6E00 to data commands — superseded by
   SmartPGP; kept as documented fallback only.
 
+## STATE OF THE WORLD (2026-10-20 end of day) — what works, what's blocked
+
+### Works (hardware-proven, reproducible)
+| Path | What's proven |
+|---|---|
+| **nucula serial** (c3-ccid → CDC → broker → pcscd) | FULL J3R180 lifecycle: install 65s, SELECT, GET DATA 6E 220B, PW1 verify, uninstall, baseline restore — EXIT=0. The reference leg. |
+| **F469 native USB CCID** (our STM32 fw) | Full lifecycle EXIT=0 (install 46s); 100/100 stability rounds. Currently unplugged by owner (cable borrowed). |
+| **m5stick serial** (GemPC → pcscd) | Card-management machinery: GP SCP03 auth, install 35s, SELECT, uninstall, baseline. ATR/uptime serving. |
+| ACR1252 oracle | Reference reader; full machinery. |
+| Flash/verify tooling | esp32_flash (streaming, wire boot-check, quiesce-unit, kill-safe), stm32_flash (ELF guard, timeout ladder), gempc_smoke — all merged + bench-proven. |
+| The `bs 200` recipe | The single flag that made serial installs viable (oversized-APDU SW 6400 retry crawl masqueraded as a transport wedge). |
+
+### Blocked (each with its precise gate)
+| Blocker | Gate | Detail |
+|---|---|---|
+| **#330** m5stick applet data ops | device-side exchange bug | The m5stick path corrupts XFR exchanges (echo shows APDU missing byte 0; GET DATA → 6A88 even with the known-good card that works fully through the nucula). Suspect `ccid_serial_server`/serial-parse layer, NOT the MFRC522 RF layer (bolty-rs standalone carried NTAG424 APDU traffic on the same hardware; its bench re-run is the decisive RF-vs-relay experiment — in flight). Next: one boundary log of the parsed XFR payload. |
+| **#326** wifi-vpcd (host half) | libifdvpcd | Firmware half FIXED+merged (#328: parked-presence deadlock; wire-proven ATR answers). Host half: driver serves both slots live-but-empty, ZERO per-connect queries; accept-time ATR answers don't update reader state. Instruments ready (fw logging, tcpdump, e2e suite). NOTE: wifi would BYPASS the #330 relay (vpcd.rs handles its own protocol) — so #326 fixed = working wifi readers even before #330 lands. |
+| **#327** card variance | applet-vs-card | 3 of 4 J3R180s answer 6A88 to applet data commands through NATIVE-USB readers (ACR1252/F469) — only the ex-SmartPGP-provisioned card is fully functional. CPLC comparison queued. Note: the m5stick-path failures are #330, NOT this. |
+| **#332** Codex follow-ups | backlog | Post-merge review feedback on #321/#324/#325/#328/#331 — the four quickest P1s fixed in #333; the rest listed. |
+
+### Is it a USB problem? Should we go wireless?
+- **USB itself is exonerated**: the F469 (our firmware, native USB CCID) ran the complete lifecycle; the ACR1252 ditto. The m5stick's USB is only a CP210x UART bridge — its host path is necessarily serial-protocol-over-USB, and the corruption lives in the firmware's serial serve/parse layer (#330), not the USB link (GetSlotStatus/installs/gempc_smoke all ride the same USB fine).
+- **Wireless is genuinely attractive but gated**: vpcd mode bypasses the suspect serial relay entirely (separate protocol handler), so fixing #326's host half would give working wifi readers even with #330 open. But #326 (libifdvpcd) is itself blocked host-side today. The strategic order: (1) #330 boundary-log fix — the m5stick serial reader is the product path; (2) #326 host-half — unlocks BOTH esp32 boards over wifi as a bonus.
+
 ## Results (2026-10-20, firmware e9173657 == main 6382509c content)
 
 | Reader (path) | install | SELECT | applet data ops | uninstall | baseline |
