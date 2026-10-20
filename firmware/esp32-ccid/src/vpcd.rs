@@ -142,7 +142,7 @@ fn note_absent_poll() {
     if first {
         log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
         ABSENT_POLLS.store(1, Ordering::Relaxed);
-    } else if n % ABSENCE_LOG_EVERY == 0 {
+    } else if n.is_multiple_of(ABSENCE_LOG_EVERY) {
         log::warn!("vpcd: still absent ({} polls)", n);
     }
 }
