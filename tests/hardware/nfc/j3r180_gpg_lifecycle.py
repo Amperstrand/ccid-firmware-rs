@@ -40,7 +40,6 @@ import argparse
 import hashlib
 import subprocess
 import time
-import urllib.request
 from pathlib import Path
 
 # --- org single source of truth (history: tests/soak/soak_02_globalplatform) ---
@@ -53,11 +52,22 @@ J3R180_ATR_PREFIXES = ("3B8580", "3B8581")  # ATR is negotiated per-reader
 # from the ATS: ACR1252 answers 3B 85 80 01 80 …, the m5stick MFRC522
 # 3B 85 81 31 FE 45 … — same card, both forms are the J3R180 family.
 OPENPGP_SELECT = "00A4040008D276000124010200"  # v2 AID, 8 bytes
-# Upstream applet (MIT): FluffyKaon/OpenPGP-Card ships a prebuilt CAP.
-CAP_URL = ("https://raw.githubusercontent.com/FluffyKaon/"
-           "OpenPGP-Card/master/gpg.cap")
-CAP_SHA256 = None  # filled on first fetch + printed; pin after first run
-CAP_CACHE = Path("/root/hil-stm32-redo/j3r180-gpg/gpg.cap")
+# OUR package AID (the ss3t CAP gp reports on load). Cleanup treats
+# ONLY artifacts under this package as ours; foreign D276000124*
+# packages are PRE-EXISTING owner applets (the nucula coil card ships
+# a real OpenPGP v3.4 applet D276000124010304AFAF… — plus "Satocash"
+# — never deleted, reported instead).
+OUR_PKG_AID = "D2760001240002000000000000000000"
+# Applet CAP: SmartPGP v1.23.0, javacard 3.0.4 (JCOP4-native), RSA to
+# 4096 — the gpg-proven applet from the wifi-vpcd e2e suite (which ran
+# the delete->install->gpg cycle twice). Bench path (caps are never
+# committed); override with --cap. The 9KB FluffyKaon ss3t CAP loads
+# on JCOP4 but is NOT functionally complete there (6A88/6E00) — kept
+# only as a documented fallback.
+SMARTPGP_CAP = Path("/root/src/ccid-firmware-rs/.omo/gp-artifacts/"
+                    "SmartPGP-v1.23.0-javacard-3.0.4/"
+                    "SmartPGPApplet-rsa_up_to_4096.cap")
+FALLBACK_CAP = Path("/root/hil-stm32-redo/j3r180-gpg/gpg.cap")
 
 GP_TIMEOUT = 90
 GPG_TIMEOUT = 30
@@ -102,10 +112,15 @@ def card_atr(reader: str) -> str | None:
 
 
 def gp(reader: str, sub: str, timeout: int = GP_TIMEOUT):
+    # --bs 200: APDUs >~245B fail SW 6400 on the bench card path (the
+    # wifi-vpcd e2e suite's proven recipe); without it gp's oversized
+    # blocks fail and retry at a crawl — the 2026-10-20 "slow LOAD"
+    # was largely THIS, not the transport.
     cmd = ["gp", "-r", reader,
            "--key-enc", AUTH_KEYS["enc"],
            "--key-mac", AUTH_KEYS["mac"],
-           "--key-dek", AUTH_KEYS["dek"]] + sub.split()
+           "--key-dek", AUTH_KEYS["dek"],
+           "--bs", "200"] + sub.split()
     return sh(cmd, timeout)
 
 
@@ -179,18 +194,6 @@ def preflight(reader: str, lines: list) -> bool:
     return ok
 
 
-def fetch_cap(lines: list[str]) -> Path | None:
-    if CAP_CACHE.exists():
-        return CAP_CACHE
-    lines.append("preflight WARN: fetching applet CAP from upstream "
-                 "(cache it and pin the sha256 for reproducibility)")
-    try:
-        CAP_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(CAP_URL, CAP_CACHE)
-        return CAP_CACHE
-    except Exception as e:  # noqa: BLE001
-        lines.append(f"preflight FAIL: CAP fetch — {e}")
-        return None
 
 
 def baseline_pkgs(reader: str) -> list[str]:
@@ -209,12 +212,16 @@ def cleanup_openpgp(reader: str, cap: Path | None) -> bool:
         r = gp(reader, "-l")
         found = []
         for ln in r.stdout.splitlines():
-            if ln.strip().startswith("Applet:") and \
-                    ln.strip().split()[1].upper().startswith("D276000124"):
-                found.append(ln.strip().split()[1])
-            if ln.startswith("PKG:") and \
-                    ln.split()[1].upper().startswith("D276000124"):
+            if ln.startswith("PKG:") and (
+                    ln.split()[1].upper().startswith("D276000124")
+                    or ln.split()[1].upper().startswith("5361746F63")):
                 found.append(ln.split()[1])
+            if ln.strip().startswith("Applet:"):
+                aid = ln.strip().split()[1]
+                # owner-approved full wipe (2026-10-20): all OpenPGP
+                # instances + SmartPGP/Satocash artifacts
+                if aid.upper().startswith(("D276000124", "5361746F63")):
+                    found.append(aid)
         return found
 
     pre = artifacts()
@@ -224,6 +231,8 @@ def cleanup_openpgp(reader: str, cap: Path | None) -> bool:
         gp(reader, f"--uninstall {cap}")
     for aid in artifacts():
         gp(reader, f"--delete {aid}")
+    for aid in artifacts():  # privileged strays: force
+        gp(reader, f"--delete {aid} --force")
     return not artifacts()
 
 
@@ -233,6 +242,8 @@ def main() -> int:
                     help="EXACT pcscd reader name (never an index)")
     ap.add_argument("--status-only", action="store_true",
                     help="read-only: preflight + SELECT + gpg status")
+    ap.add_argument("--cap", default=None,
+                    help="applet CAP (default: bench SmartPGP jc3.0.4)")
     ap.add_argument("--preflight", action="store_true",
                     help="run the checks only, no card writes")
     args = ap.parse_args()
@@ -253,9 +264,11 @@ def main() -> int:
         print("\n".join(lines))
         return 0
 
-    cap = fetch_cap(lines)
-    if cap is None:
-        print("\n".join(lines))
+    cap = Path(args.cap) if args.cap else (
+        SMARTPGP_CAP if SMARTPGP_CAP.exists() else FALLBACK_CAP)
+    if not cap.exists():
+        lines.append(f"FAIL: no applet CAP (looked for {SMARTPGP_CAP} "
+                     f"and {FALLBACK_CAP}; pass --cap)")
         return 3
     digest = hashlib.sha256(cap.read_bytes()).hexdigest()
     lines.append(f"# applet CAP sha256={digest} (pin this in the "
@@ -271,7 +284,7 @@ def main() -> int:
           f"{len(baseline)} pkgs")
 
     if not args.status_only:
-        r = gp(args.reader, f"-install {cap}", timeout=480)
+        r = gp(args.reader, f"-install {cap}", timeout=900)
         phase("install OpenPGP applet", r.returncode == 0
               and "loaded" in r.stdout.lower(),
               r.stdout.strip().splitlines()[-1][:70] if r.stdout else "")
@@ -292,8 +305,23 @@ def main() -> int:
             except Exception:
                 pass
 
-    data, sw1, sw2 = apdu(OPENPGP_SELECT)
-    phase("OpenPGP SELECT via pcscd", sw1 == 0x90, f"SW={sw1:02X}{sw2:02X}")
+    # SELECT: generic v2 AID, then the card's ACTUAL instance AID
+    # (discovered from the registry — a v3.4 instance does not answer
+    # the v2 prefix; the ss3t fallback does not answer the v3 one)
+    r = gp(args.reader, "-l")
+    instance_aids = [ln.strip().split()[1]
+                     for ln in r.stdout.splitlines()
+                     if ln.strip().startswith("Applet:")
+                     and ln.strip().split()[1].upper().startswith("D276")]
+    sel_ok, sel_detail = False, "no instance"
+    for hexsel in ([OPENPGP_SELECT] +
+                   [f"00A40400{len(a)//2:02X}{a}" for a in instance_aids]):
+        data, sw1, sw2 = apdu(hexsel)
+        if sw1 == 0x90:
+            sel_ok, sel_detail = True, f"SW=9000 via {hexsel[10:26]}"
+            break
+        sel_detail = f"SW={sw1:02X}{sw2:02X}"
+    phase("OpenPGP SELECT via pcscd", sel_ok, sel_detail)
 
     # Applet-function findings: the reader-stack contract is load/
     # select/uninstall/restore; whether THIS applet build answers

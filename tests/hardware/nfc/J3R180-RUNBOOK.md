@@ -61,22 +61,51 @@ gp syntax note: GlobalPlatformPro uses `--delete <AID>` /
 Uninstall takes the INSTANCE AID (`gp -l` `Applet:` lines), not the
 package AID (`PKG:` lines).
 
-## OpenPGP applet
+## OpenPGP applet — the proven recipe
 
-- CAP: FluffyKaon/OpenPGP-Card `gpg.cap` (MIT), cached at
-  `/root/hil-stm32-redo/j3r180-gpg/gpg.cap`,
-  sha256 `5ac4b45a25a95c01548743008c18eab35368e96f94250a38ab584d8dc3f5fcdb`.
-- Loads and SELECTs on the J3R180 (SW=9000, proper OpenPGP v2 FCI).
-- FINDING: this JC2.2.2-era applet is NOT functionally complete on
-  JCOP4 — GET DATA 6E/5E answer `6A88`, VERIFY PW1 answers `6E00`
-  (loads fine, selects fine, data commands don't answer). The
-  install/use/uninstall machinery is unaffected. A JCOP4-native
-  applet build (e.g. JavaCardOS/OpenPGPApplet via JCIDE) is the
-  follow-up for functional gpg keygen/sign.
+- **CAP: SmartPGP v1.23.0, javacard 3.0.4, RSA to 4096** — the
+  gpg-proven applet of the wifi-vpcd e2e suite. Bench path (caps are
+  never committed): `/root/src/ccid-firmware-rs/.omo/gp-artifacts/
+  SmartPGP-v1.23.0-javacard-3.0.4/SmartPGPApplet-rsa_up_to_4096.cap`,
+  sha256 `9213b1d6d53764b00b0752028b491971e1b210c768643434fc05de82acba7422`.
+- **`gp --bs 200` is MANDATORY**: APDUs >~245B fail SW 6400 on this
+  card path; without it gp's oversized blocks fail and retry at a
+  crawl. This single flag took the serial install from >480s-timeout
+  to 35-65s COMPLETE. Install budget 900s (117KB CAP ≈ 4 min over
+  vpcd per the e2e suite).
+- The 9KB FluffyKaon ss3t CAP (JC2.2.2 era) loads and SELECTs on
+  JCOP4 but answers 6A88/6E00 to data commands — superseded by
+  SmartPGP; kept as documented fallback only.
 
 ## Results (2026-10-20, firmware e9173657 == main 6382509c content)
 
-- ACR1252 (oracle): FULL GREEN — install/select/uninstall/baseline
-  restore, org keyset SCP all pass.
-- m5stick MFRC522 (our firmware): see evidence links in the PR.
-- nucula c3 (our firmware): see evidence links in the PR.
+| Reader (path) | install | SELECT | applet data ops | uninstall | baseline |
+|---|---|---|---|---|---|
+| ACR1252 oracle (USB CCID) | ✅ 16s | ✅ | ❌ 6A88 (card) | ✅ | ✅ 4 pkgs |
+| nucula c3-ccid (CDC→broker→pcscd) | ✅ 65s | ✅ | ✅ **FULL** (6E 220B, PW1 9000, 5E) | ✅ | ✅ EXIT=0 |
+| m5stick MFRC522 (GemPC serial) | ✅ 35s | ✅ | ❌ 6A88 (card) | ✅ | ✅ after IFD restart |
+| F469 (USB CCID, contact slot) | pending physical card move | | | | |
+
+- **The nucula serial path is the fully-proven reader**: complete
+  install/use/uninstall of the gpg-grade applet, clean baseline
+  restore, our firmware end to end.
+- FINDING (card variance, not reader): SmartPGP data commands answer
+  6A88/6E00 on the ACR-coil and m5stick-coil cards while the SAME
+  applet is fully functional through the same lifecycle on the
+  nucula-coil card (the card that shipped SmartPGP v1.23.2.0
+  preloaded). Reader-independent → card-state/batch investigation
+  filed.
+- FINDING (m5stick pcscd-IFD class): under heavy phases the
+  libccidtwin IFD wedges (SCardConnect hangs; firmware stays alive —
+  raw GetSlotStatus instant). Recovery: pcscd restart under the bench
+  flock. After ANY pcscd restart the serial readers may need one more
+  restart once the boards settle (init race, RFAddReader window).
+- FINDING (wifi-vpcd regression): the reversed-vpcd WiFi path (proven
+  2026-10-13, runbook + e2e suite) no longer completes the ATR
+  exchange — the board boots, joins WiFi, PN7160 inits (attempt 1),
+  connects to the host listener, but SCardConnect hangs waiting for
+  the ATR answer. First run since the driver_ng migration era
+  (#242/#321). Firmware-side debug filed.
+- gpg/scdaemon on this host stays DEGRADED-by-design in the tool
+  (reader-set wedge class) — card ops ride direct APDUs; the gpg leg
+  is a bounded probe.
