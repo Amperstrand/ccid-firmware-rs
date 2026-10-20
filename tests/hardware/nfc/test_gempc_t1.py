@@ -396,7 +396,7 @@ class TestCodex347Followups:
         # Codex P2 on #347: a bad-EDC WTX request must raise, not grant.
         import pytest
         from nfc import gempc_t1
-        from nfc.gempc_t1 import T1Error, T1Session, MSG_XFR_BLOCK, Frame
+        from nfc.gempc_t1 import T1Error, T1Session
 
         # outer GemPC frame built with a correct LRC so parse_frames
         # accepts it; the INNER T=1 block carries the wrong EC.
