@@ -109,15 +109,31 @@ def plain_cplc(reader: str) -> str | None:
         cc = PCSCCardConnection(reader)
         try:
             cc.connect()
-            data, s1, s2 = cc.transmit(toBytes("80CA9F7F"))
+            # Codex P1 on #341: GET DATA CPLC is case-2 SHORT Le — the
+            # four-byte case-1 form is malformed and cards reject it,
+            # making plain_cplc() always-None and every ledger-protected
+            # run abort.
+            data, s1, s2 = cc.transmit(toBytes("80CA9F7F00"))
         finally:
             try:
                 cc.disconnect()
             except Exception:
                 pass
-        if s1 == 0x90 and data:
-            return bytes(data).hex()
-        return None
+        if s1 != 0x90 or not data:
+            return None
+        raw = bytes(data)
+        # Codex P1 on #341: the response is BER-TLV — 9F7F <len> <42B
+        # CPLC value>. Ledger entries pin the CPLC VALUE hex (e.g.
+        # "47909E..." fabricator/ROM first), so unwrap before compare.
+        if len(raw) >= 2 and raw[0] == 0x9F and raw[1] == 0x7F:
+            body = raw[2:]
+            if len(body) < 1:
+                return None
+            ln = body[0]
+            if len(body) - 1 < ln:
+                return None
+            return body[1:1 + ln].hex()
+        return raw.hex()
     except Exception:
         return None
 
@@ -226,7 +242,8 @@ def preflight(reader: str, lines: list) -> bool:
     # Codex P1 on #333: an ATR prefix proves FAMILY, not identity. The
     # fixed org keyset must only go to ledgered cards: when
     # J3R180_CPLC_ALLOWLIST is set (comma-separated hex prefixes of the
-    # plain-readable CPLC, e.g. "47909E92..."), the card's CPLC must
+    # CPLC VALUE unwrapped from the 9F7F TLV, e.g. "47909E" pins
+    # fabricator+ROM), the card's CPLC must
     # match one before any key-bearing exchange. Unreadable CPLC is a
     # hard stop unless the operator passes --allow-unverified-cplc.
     ledger = [s.strip().upper()
