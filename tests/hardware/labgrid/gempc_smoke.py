@@ -128,7 +128,12 @@ def atr_of(frames) -> bytes | None:
 
 
 def open_safe(port: str, stopbits: int = 2, baud: int = 115200):
-    """Safe opener: DTR/RTS deasserted BEFORE open (bench rule)."""
+    """Safe opener: DTR/RTS deasserted BEFORE open (bench rule), and a
+    WRITE timeout — the 2026-10-20 c3 incident: a wedged USB-CDC (the
+    documented sustained-transfer wedge class) never drains its TX
+    buffer, and a write_timeout=None write then blocks FOREVER, hanging
+    the probe with no diagnostics. Every write here fails loudly in
+    bounded time instead."""
     import serial
     s = serial.Serial()
     s.port = port
@@ -139,20 +144,28 @@ def open_safe(port: str, stopbits: int = 2, baud: int = 115200):
     s.dtr = False
     s.rts = False
     s.timeout = 0.2
+    s.write_timeout = 2.0
     s.open()
     return s
 
 
 def exchange(s, frame: bytes, wait: float = 1.5,
              attempts: int = 3) -> bytes:
-    """Send + collect the reply window (echo + response)."""
+    """Send + collect the reply window (echo + response).
+
+    Write errors/timeouts (wedged CDC) end the exchange immediately
+    with what was collected — the caller reports NO LRC-valid reply
+    instead of hanging."""
+    import serial
     _, parse_frames = _battery()
     buf = b""
     for _ in range(attempts):
         try:
             s.reset_input_buffer()
             s.write(frame)
-        except Exception:  # noqa: BLE001 — CDC re-enumeration class
+        except (Exception, serial.SerialTimeoutException):  # noqa: BLE001
+            # write refused/timed out: the device is not draining TX
+            # (the c3 CDC wedge class) — bounded, loud, no hang
             return buf
         deadline = time.time() + wait
         while time.time() < deadline:

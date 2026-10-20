@@ -45,8 +45,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PCSCD_LOCK = "/run/lock/bench-pcscd.lock"
+PCSCD_DOWN_MARKER = PCSCD_LOCK + ".pcscd-down"
 USBDEVFS_RESET_IOCTL = 0x5514
 SETTLE_S = 2
+
+
+class StreamingLog(list):
+    """A log list that ALSO prints every line with an elapsed timestamp
+    the moment it is appended (2026-10-20 c3 incident: the CLI printed
+    its whole log only at exit, so a 7-minute 115200 flash was
+    indistinguishable from a hang — the first attempt got killed at a
+    420 s tool cap mid-write for exactly this reason). With streaming,
+    a stuck phase is visible as 'no next line for N seconds' in the
+    log FILE while the flash is still running."""
+    def __init__(self, echo: bool = False):
+        super().__init__()
+        self._t0 = time.time()
+        self._echo = echo
+
+    def append(self, item):
+        super().append(item)
+        if self._echo:
+            print(f"[{time.time() - self._t0:7.1f}s] {item}", flush=True)
+
+    def tail(self, n: int = 2) -> str:
+        return "\n".join(self[-n:])
 
 @dataclass
 class CmdResult:
@@ -197,6 +220,12 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
     held as an fd from quiesce until restore has restarted pcscd.
     (`lock_path=None` resolves the module constant at CALL time so
     tests can redirect it.)
+
+    A marker file is laid down while pcscd is down and removed after
+    the restart: a SIGKILL'd flash cannot run its finally-restore, and
+    the next invocation (or any bench script) can detect the stale
+    marker and put pcscd back instead of silently leaving every other
+    bench reader dead (2026-10-20 c3 incident follow-up).
     """
     import fcntl
     import os
@@ -215,7 +244,10 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
             f"pcscd stop failed (rc={r.returncode}) — the socket unit "
             "may still be armed and can re-grab the reader port "
             "mid-flash; refusing to flash (run with the rights the "
-            f"bench expects). stderr: {(r.stderr or '')[-200:]}")
+            "bench expects). stderr: {(r.stderr or '')[-200:]}")
+    marker = lock_marker_path(lp)
+    Path(marker).write_text(
+        f"pcscd down since flash quiesce, pid={os.getpid()}\n")
     return fd
 
 
@@ -232,7 +264,14 @@ def pcscd_lock_release(fd: int, run=None,
     import fcntl
     import os
     pcscd_ok = True
+    lp = PCSCD_LOCK
     try:
+        # resolve the ACTUAL lock file this fd was opened on (acquire
+        # may have been given a test-injected lock_path)
+        try:
+            lp = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            lp = PCSCD_LOCK
         r = (run or _run_local)("systemctl start pcscd.socket pcscd",
                                 timeout=60)
         if r.returncode != 0:
@@ -241,9 +280,46 @@ def pcscd_lock_release(fd: int, run=None,
                  f"bench readers are DOWN until restarted manually. "
                  f"stderr: {(r.stderr or '')[-200:]}")
     finally:
+        try:
+            os.unlink(lock_marker_path(lp))
+        except OSError:
+            pass
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
     return pcscd_ok, None
+
+
+def lock_marker_path(lock_path: str | None = None) -> str:
+    return (lock_path or PCSCD_LOCK) + ".pcscd-down"
+
+
+def recover_stale_pcscd_down(run=None) -> bool:
+    """If a previous flash was SIGKILL'd (finally-restore never ran),
+    a stale .pcscd-down marker sits next to the lock while pcscd is
+    down and the lock is free — restart pcscd and clear it. Returns
+    True if a recovery was performed."""
+    import fcntl
+    import os
+    marker = Path(lock_marker_path())
+    if not marker.exists():
+        return False
+    fd = os.open(PCSCD_LOCK, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False  # a live flash owns the window; its restore will handle it
+    try:
+        r = (run or _run_local)("systemctl start pcscd.socket pcscd",
+                                timeout=60)
+        marker.unlink(missing_ok=True)
+        print(f"# recovered stale pcscd-down marker: pcscd start rc="
+              f"{r.returncode} (a previous flash was killed before "
+              "restore)")
+        return True
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def pcscd_stop(run=None) -> None:
@@ -294,7 +370,7 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                 boot_check=None, capture=None, run=None, usb_reset=None,
                 rebind=None, usb_path=None, quiesce=None, restore=None,
                 quiesce_unit: str | None = None, wire_check=None,
-                stopbits: int = 2
+                stopbits: int = 2, stream_log: bool = False
                 ) -> tuple[bool, str]:
     """Flash an ESP32 with the full wedge discipline. Returns (ok, log).
 
@@ -325,7 +401,7 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     usb_reset = usb_reset or usbdevfs_reset
     rebind = rebind or ftdi_rebind
     capture = capture or _boot_capture
-    log: list[str] = []
+    log = StreamingLog(echo=stream_log)
     lock_state = {"fd": None}
 
     if quiesce is None:
@@ -393,6 +469,11 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
         write_op = f"--after no-reset write-flash {pairs}"
 
         def attempt_with_ladder(op: str) -> CmdResult:
+            # phase line BEFORE the op: with the streaming log a stuck
+            # esptool is attributable (which op, since when) instead of
+            # a silent multi-minute gap (2026-10-20 c3 incident)
+            log.append(f"→ esptool {op.split()[0]} starting "
+                       f"(port={port} baud={baud})")
             r = _esptool(port, chip, baud, op, run)
             log.append(f"$ esptool ... {op.split()[0]} ... rc={r.returncode}"
                        f"\n{(r.stderr or r.stdout)[-400:]}")
@@ -594,14 +675,30 @@ def _cli() -> int:
         boot_check = "wire"
     else:
         boot_check = None
+    # a previous SIGKILL'd flash may have left pcscd down with a stale
+    # marker — put the bench back before we begin (2026-10-20 c3
+    # incident follow-up)
+    recover_stale_pcscd_down()
+    # SIGTERM/SIGINT must run the finally-restore (pcscd back up,
+    # broker back up): a plain kill skips it and leaves the bench half
+    # quiesced. SIGKILL cannot be caught — that's what the marker is for.
+    import signal
+
+    def _graceful(signum, _frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    signal.signal(signal.SIGTERM, _graceful)
     ok, log = flash_esp32(
         args.port, args.chip, images, baud=args.baud,
         erase_regions=erases,
         exporter_cfg=Path(args.exporter_cfg) if args.exporter_cfg else None,
         boot_check=boot_check,
         quiesce_unit=args.quiesce_unit,
+        stream_log=True,
         wire_check=(lambda p: wire_boot_check(p, stopbits=args.stopbits))
         if boot_check == "wire" else None)
+    # the log already streamed live (stream_log=True); the returned copy
+    # is the canonical record — print it once more for file/pipe capture
     print(log)
     return 0 if ok else 1
 
