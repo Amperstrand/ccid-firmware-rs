@@ -165,18 +165,60 @@ pub enum OpKind {
     Read,
 }
 
-/// Pure, host-testable: does position `idx` begin a fuseable
-/// Write→Read pair? embedded-hal 1.0 `write_read(addr, w, r)`
-/// dispatches to `transaction(addr, [Write(w), Read(r)])`, and the
-/// adapter fuses exactly that pair into ONE repeated-START
-/// `i2c_master_transmit_receive` — the wire shape the legacy
-/// esp-idf-hal `I2cDriver::write_read` produced
-/// (`i2c_master_write_read_device`), which MFRC522/AXP192 register
-/// reads and the bench 0xD3 cadence compare rely on. A lone Write (or
-/// `[Write, Write]` — mfrc522 `write_many`) stays on plain
-/// `i2c_master_transmit`, also the legacy shape.
-pub fn fuses_write_read(kinds: &[OpKind], idx: usize) -> bool {
-    kinds.get(idx) == Some(&OpKind::Write) && kinds.get(idx + 1) == Some(&OpKind::Read)
+/// Pure, host-testable: length of the run of consecutive `Write` ops
+/// starting at `idx`. Consecutive Writes must coalesce into ONE
+/// `i2c_master_transmit` — a single START…address…bytes…STOP stream —
+/// because that is the wire shape the legacy esp-idf-hal cmd-link
+/// `I2cDriver::transaction` produced (one cmd link = one bus
+/// transaction; subsequent `i2c_master_write` stages append bytes, no
+/// new START). The MFRC522 I2C slave treats the first byte after the
+/// address as the register address in EVERY transaction (NXP MFRC522
+/// data sheet, I2C interface protocol), so two standalone transmits
+/// re-parse payload bytes as register addresses — which is #307: every
+/// `write_many` FIFO load (each transceive frame) scattered into
+/// random registers, tag presence never fired, while single-register
+/// reads/writes (probe, version read, CCID service) kept working.
+pub fn write_run_len(kinds: &[OpKind], idx: usize) -> usize {
+    let mut n = 0;
+    while kinds.get(idx + n) == Some(&OpKind::Write) {
+        n += 1;
+    }
+    n
+}
+
+/// Pure, host-testable: is the op at `idx` a `Read`? (Used to decide
+/// Write-run→Read fusion — embedded-hal 1.0 `write_read(addr, w, r)`
+/// dispatches to `transaction(addr, [Write(w), Read(r)])` and must ride
+/// ONE repeated-START `i2c_master_transmit_receive`, the legacy
+/// `i2c_master_write_read_device` shape the bench 0xD3 cadence compare
+/// reads on the wire.)
+pub fn op_is_read(kinds: &[OpKind], idx: usize) -> bool {
+    kinds.get(idx) == Some(&OpKind::Read)
+}
+
+/// Pure, host-testable: concatenate the payloads of a slice of `Write`
+/// operations into `buf`, returning the total length. Errors loudly on
+/// overflow — a truncated coalesce would silently change the wire
+/// shape, the exact failure class this adapter exists to prevent.
+pub fn concat_writes<'a>(ops: &[Operation<'a>], buf: &mut [u8]) -> Result<usize, AdapterError> {
+    let mut n = 0;
+    for op in ops {
+        let Operation::Write(bytes) = op else {
+            return Err(AdapterError {
+                kind: ErrorKind::Other,
+                raw: -(2/*EINVAL: non-Write op in a Write run — shape pinned by write_run_len*/),
+            });
+        };
+        if n + bytes.len() > buf.len() {
+            return Err(AdapterError {
+                kind: ErrorKind::Other,
+                raw: (n + bytes.len()) as i32, // required length for diagnostics
+            });
+        }
+        buf[n..n + bytes.len()].copy_from_slice(bytes);
+        n += bytes.len();
+    }
+    Ok(n)
 }
 
 /// Pure classification of an `Operation` (host-testable; no FFI).
@@ -331,6 +373,28 @@ impl I2cMasterDevice {
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
 const OP_TIMEOUT_MS: i32 = 100;
 
+/// Coalesced-transmit buffer. The largest real caller payload is an
+/// MFRC522 FIFO load: 64-byte FIFO + one register-address byte = 65;
+/// 128 leaves margin. Overflow errors loudly with the required length
+/// in `raw` — never silently truncates (that would change the wire
+/// shape, the exact failure class this adapter exists to prevent).
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+const WBUF_SZ: usize = 128;
+
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn run_len_ops(ops: &[Operation<'_>], idx: usize) -> usize {
+    let mut n = 0;
+    while matches!(ops.get(idx + n), Some(Operation::Write(_))) {
+        n += 1;
+    }
+    n
+}
+
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+fn read_at(ops: &[Operation<'_>], idx: usize) -> bool {
+    matches!(ops.get(idx), Some(Operation::Read(_)))
+}
+
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
 impl I2c for I2cMasterDevice {
     fn transaction(
@@ -341,31 +405,47 @@ impl I2c for I2cMasterDevice {
         self.check(address)?;
         let mut idx = 0;
         while idx < operations.len() {
-            // Fusion decision computed from immutable looks first, so
-            // the split_at_mut below gets disjoint mutable borrows.
-            let fused = match operations.get(idx..idx + 2) {
-                Some(pair) => {
-                    let kinds = [op_kind(&pair[0]), op_kind(&pair[1])];
-                    fuses_write_read(&kinds, 0)
-                }
-                None => false,
-            };
-            if fused {
-                let (head, tail) = operations[idx..].split_at_mut(1);
-                let Operation::Write(wbuf) = &head[0] else {
-                    unreachable!("shape pinned by fuses_write_read")
+            let run = run_len_ops(operations, idx);
+            if run == 0 {
+                let Operation::Read(buf) = &mut operations[idx] else {
+                    unreachable!("run_len_ops returned 0 at a non-Read op")
                 };
-                let Operation::Read(rbuf) = &mut tail[0] else {
-                    unreachable!("shape pinned by fuses_write_read")
-                };
-                self.transmit_receive(wbuf, rbuf, OP_TIMEOUT_MS)?;
-                idx += 2;
-            } else {
-                match &mut operations[idx] {
-                    Operation::Write(buf) => self.transmit(buf, OP_TIMEOUT_MS)?,
-                    Operation::Read(buf) => self.receive(buf, OP_TIMEOUT_MS)?,
-                }
+                self.receive(buf, OP_TIMEOUT_MS)?;
                 idx += 1;
+                continue;
+            }
+            if read_at(operations, idx + run) {
+                // (Write…Write run) → Read: ONE repeated-START
+                // `i2c_master_transmit_receive` whose tx payload is the
+                // CONCATENATED Write run — the legacy
+                // `i2c_master_write_read_device` wire shape. Covers
+                // embedded-hal `write_read` ([W,R]) and the general
+                // [W…W,R] cmd-link shape alike.
+                let (wr_ops, rest) = operations[idx..idx + run + 1].split_at_mut(run);
+                let mut wbuf = [0u8; WBUF_SZ];
+                let n = concat_writes(wr_ops, &mut wbuf)?;
+                let Operation::Read(rbuf) = &mut rest[0] else {
+                    unreachable!("shape pinned by read_at")
+                };
+                self.transmit_receive(&wbuf[..n], rbuf, OP_TIMEOUT_MS)?;
+                idx += run + 1;
+            } else if run == 1 {
+                let Operation::Write(buf) = &operations[idx] else {
+                    unreachable!("run_len_ops >= 1 at a non-Write op")
+                };
+                self.transmit(buf, OP_TIMEOUT_MS)?;
+                idx += 1;
+            } else {
+                // Write run of 2+: ONE `i2c_master_transmit` carrying the
+                // concatenated payloads — a single START…address…bytes…
+                // STOP stream. Two standalone transmits would make the
+                // MFRC522 re-parse payload bytes as register addresses
+                // (#307 — mfrc522 `write_many` FIFO loads).
+                let wr_ops = &operations[idx..idx + run];
+                let mut wbuf = [0u8; WBUF_SZ];
+                let n = concat_writes(wr_ops, &mut wbuf)?;
+                self.transmit(&wbuf[..n], OP_TIMEOUT_MS)?;
+                idx += run;
             }
         }
         Ok(())
@@ -414,25 +494,67 @@ mod tests {
     }
 
     #[test]
-    fn write_read_pair_fuses_but_plain_sequences_do_not() {
-        // embedded-hal 1.0 `write_read(addr, w, r)` dispatches to
-        // `transaction(addr, [Write(w), Read(r)])` — the adapter must
-        // fuse that pair into ONE repeated-START transmit_receive
-        // (legacy `write_read` wire shape), while `[Write, Write]`
-        // (mfrc522 `write_many`) and lone ops stay on plain
-        // transmit/receive. Locked here because the bench 0xD3 cadence
-        // compare reads the difference on the wire.
-        use super::{fuses_write_read, OpKind};
+    fn consecutive_writes_coalesce_into_one_transmit() {
+        // #307: [Write, Write] (mfrc522 `write_many`) MUST fuse into ONE
+        // transmit — the legacy esp-idf-hal cmd-link streamed consecutive
+        // writes as a single START…STOP transaction, and the MFRC522
+        // parses the first byte after the address as a register address
+        // in EVERY transaction. Two standalone transmits scattered FIFO
+        // loads into random registers: tag presence dead, probe/version/
+        // single-register ops fine — exactly the #307 evidence chain.
+        use super::{write_run_len, OpKind};
 
-        assert!(fuses_write_read(&[OpKind::Write, OpKind::Read], 0));
-        assert!(!fuses_write_read(&[OpKind::Write, OpKind::Write], 0));
-        assert!(!fuses_write_read(&[OpKind::Read, OpKind::Write], 0));
-        assert!(!fuses_write_read(&[OpKind::Write], 0));
-        assert!(!fuses_write_read(&[OpKind::Read], 0));
-        // A Write after a fused pair is judged fresh at its own index.
-        assert!(fuses_write_read(
-            &[OpKind::Read, OpKind::Write, OpKind::Read],
-            1
-        ));
+        assert_eq!(write_run_len(&[OpKind::Write, OpKind::Write], 0), 2);
+        assert_eq!(write_run_len(&[OpKind::Write, OpKind::Read], 0), 1);
+        assert_eq!(write_run_len(&[OpKind::Read, OpKind::Write], 0), 0);
+        assert_eq!(write_run_len(&[OpKind::Write], 0), 1);
+        assert_eq!(write_run_len(&[OpKind::Read], 0), 0);
+        assert_eq!(
+            write_run_len(&[OpKind::Write, OpKind::Write, OpKind::Read], 0),
+            2
+        );
+        // A run starting mid-sequence is judged fresh at its own index.
+        assert_eq!(write_run_len(&[OpKind::Read, OpKind::Write], 1), 1);
+    }
+
+    #[test]
+    fn write_run_followed_by_read_fuses_transmit_receive() {
+        // embedded-hal 1.0 `write_read(addr, w, r)` dispatches to
+        // `transaction(addr, [Write(w), Read(r)])` — ONE repeated-START
+        // transmit_receive, the legacy `write_read` wire shape; the
+        // general [W…W,R] shape rides the same fusion with a
+        // concatenated tx payload. The bench 0xD3 cadence compare reads
+        // this difference on the wire.
+        use super::{op_is_read, write_run_len, OpKind};
+
+        let kinds = [OpKind::Write, OpKind::Read];
+        let run = write_run_len(&kinds, 0);
+        assert_eq!(run, 1);
+        assert!(op_is_read(&kinds, run));
+
+        let kinds = [OpKind::Write, OpKind::Write, OpKind::Read];
+        let run = write_run_len(&kinds, 0);
+        assert_eq!(run, 2);
+        assert!(op_is_read(&kinds, run));
+
+        // [W,W] with NO following Read: plain transmit (no read fusion).
+        let kinds = [OpKind::Write, OpKind::Write];
+        let run = write_run_len(&kinds, 0);
+        assert!(!op_is_read(&kinds, run));
+    }
+
+    #[test]
+    fn concat_writes_orders_payloads_and_fails_loud_on_overflow() {
+        use super::concat_writes;
+
+        let ops = [Operation::Write(&[0x02u8]), Operation::Write(&[0xAA, 0xBB])];
+        let mut buf = [0u8; 8];
+        assert_eq!(concat_writes(&ops, &mut buf).unwrap(), 3);
+        assert_eq!(&buf[..3], &[0x02, 0xAA, 0xBB]);
+
+        // Never truncate silently — overflow reports the required length.
+        let mut small = [0u8; 2];
+        let err = concat_writes(&ops, &mut small).unwrap_err();
+        assert_eq!(err.raw, 3);
     }
 }

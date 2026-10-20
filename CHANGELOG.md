@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #307: `hal_i2c` coalesces consecutive `Write` ops into ONE transmit (MFRC522 tag detection regression, driver_ng era)
+
+- The #242 driver_ng migration mapped `transaction([Write, Write])` (mfrc522
+  `write_many`) to TWO standalone `i2c_master_transmit` calls — two full
+  START…STOP transactions. The legacy esp-idf-hal cmd-link streamed
+  consecutive writes as ONE continuous transaction, and the MFRC522 parses
+  the first byte after the address as the register address in EVERY
+  transaction, so the second transmit re-parsed payload bytes as register
+  addresses: every FIFO load (each transceive frame) scattered into random
+  registers. Result: tag presence never fired (`icc=ABSENT` forever) while
+  probe / version read / single-register ops / CCID service all kept working
+  — the exact #307 evidence chain.
+- `transaction` now walks Write runs: run + following Read fuses into one
+  repeated-START `i2c_master_transmit_receive` with the concatenated tx
+  payload (generalizes the previous `[W,R]`-only fusion); run of 2+ without a
+  Read rides ONE `i2c_master_transmit` of the concatenated payloads.
+  Concatenation is a fixed 128-byte stack buffer (largest real payload:
+  64-byte MFRC522 FIFO + register byte) that errors LOUDLY on overflow with
+  the required length — never silently truncates.
+- Host tests rewritten: the old
+  `write_read_pair_fuses_but_plain_sequences_do_not` pinned the bug
+  (`[W,W]` asserted NOT to fuse); replaced by
+  `consecutive_writes_coalesce_into_one_transmit`,
+  `write_run_followed_by_read_fuses_transmit_receive`, and
+  `concat_writes_orders_payloads_and_fails_loud_on_overflow`.
+
 ### Fixed — #309: `elf2image` gains explicit `--flash-mode dio` + header guard (esptool ≥5 QIO-default fix)
 
 - `build.sh` and `flash_and_test.sh` invoked bare `esptool elf2image`;
