@@ -261,8 +261,8 @@ class SessionLogicTests(unittest.TestCase):
         wtx_req = gempc_t1.t1_block(0xC3, b"\x05")
         answer = gempc_t1.i_block(0, 0, b"\x6a\x82")
         sess = self._sess([
-            gempc_t1.make_frame(0x80, 2, wtx_req),
-            gempc_t1.make_frame(0x80, 3, answer),
+            gempc_t1.make_frame(0x80, 1, wtx_req),
+            gempc_t1.make_frame(0x80, 2, answer),
         ])
         sel = bytes.fromhex("00A40400023132")
         inf = sess.transceive(sel, label="sel")
@@ -275,20 +275,20 @@ class SessionLogicTests(unittest.TestCase):
 
     def test_transceive_plain_answer(self):
         answer = gempc_t1.i_block(0, 0, bytes.fromhex("02233132" + "9000"))
-        sess = self._sess([gempc_t1.make_frame(0x80, 2, answer)])
+        sess = self._sess([gempc_t1.make_frame(0x80, 1, answer)])
         inf = sess.transceive(bytes.fromhex("00CA006E"), label="gd")
         self.assertEqual(inf[-2:], b"\x90\x00")
 
     def test_transceive_r_block_raises(self):
         sess = self._sess([
-            gempc_t1.make_frame(0x80, 2, gempc_t1.r_block(0, 0))])
+            gempc_t1.make_frame(0x80, 1, gempc_t1.r_block(0, 0))])
         with self.assertRaises(gempc_t1.T1Error):
             sess.transceive(bytes.fromhex("00CA006E"), label="gd")
 
     def test_transceive_bad_edc_raises(self):
         ans = bytearray(gempc_t1.i_block(0, 0, b"\x6a\x82"))
         ans[-1] ^= 0xFF
-        sess = self._sess([gempc_t1.make_frame(0x80, 2, bytes(ans))])
+        sess = self._sess([gempc_t1.make_frame(0x80, 1, bytes(ans))])
         with self.assertRaises(gempc_t1.T1Error):
             sess.transceive(bytes.fromhex("00CA006E"), label="gd")
 
@@ -321,7 +321,7 @@ class SessionLogicTests(unittest.TestCase):
     def test_negotiate_ifs_rejects_r_block_answer(self):
         # the no-EDC failure mode: endpoint answers R(retransmit)
         sess = self._sess([
-            gempc_t1.make_frame(0x80, 2, gempc_t1.r_block(0, 0))])
+            gempc_t1.make_frame(0x80, 1, gempc_t1.r_block(0, 0))])
         with self.assertRaises(gempc_t1.T1Error):
             sess.negotiate_ifs()
 
@@ -408,7 +408,7 @@ class TestCodex347Followups:
         class FakeSess:
             verbose = False
             def exchange(self, *a, **k):
-                return 0, wire
+                return 1, wire  # seq of the frame the fake emits
 
         with pytest.raises(T1Error, match="BAD EDC"):
             T1Session.xfr_block(FakeSess(), b"\x00\x00\x00\x00\x00",

@@ -515,10 +515,13 @@ class T1Session:
         block raw + parsed.
         """
         for _ in range(max_wtx):
-            _seq, raw = self.exchange(MSG_XFR_BLOCK, block, window=window,
+            seq, raw = self.exchange(MSG_XFR_BLOCK, block, window=window,
                                       label=label)
+            # Codex P2 on #347: match replies to the ACTIVE CCID
+            # sequence — a delayed DataBlock from an EARLIER command
+            # must not be consumed as this exchange's answer.
             answers = [f for f in parse_frames(raw)
-                       if f.msg_type == RDR_DATA_BLOCK]
+                       if f.msg_type == RDR_DATA_BLOCK and f.seq == seq]
             if not answers:
                 raise T1Error(f"{label}: no DataBlock response "
                               f"(wire: {raw[:64].hex()})")
@@ -695,7 +698,15 @@ def run_probe(port: str, stopbits: int = 2, aid: bytes = DEFAULT_SELECT_AID,
             bench_fd = None
             raise T1Error("bench flock held — another session owns the "
                           "DUT (labgrid place discipline, AGENTS.md)")
-        lock_fd = esp32_flash.pcscd_lock_acquire()
+        try:
+            lock_fd = esp32_flash.pcscd_lock_acquire()
+        except BaseException:
+            # Codex P2 on #347: pcscd stop can fail (unit masked,
+            # flock contended) — the bench flock we already hold MUST
+            # be released or every later probe self-deadlocks.
+            fcntl.flock(bench_fd, fcntl.LOCK_UN)
+            os.close(bench_fd)
+            raise
     try:
         with T1Session(port, stopbits=stopbits, verbose=verbose) as sess:
             print(f"port={port} 115200 8N{stopbits}")
