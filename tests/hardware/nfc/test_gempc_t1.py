@@ -355,3 +355,21 @@ class CrossCheckConformanceBattery(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCodex347Followups:
+    def test_gp_get_data_tag_in_p1p2_is_refused(self):
+        # Codex P1 on #347: GP GET DATA carries the SC-gated tag in
+        # P1/P2 (CLA/INS 80 CA or 84 CA + 00 E0) — a CLA-prefix check
+        # misses it.
+        from nfc.gempc_t1 import is_sc_class_apdu
+        assert is_sc_class_apdu(bytes.fromhex("80CA00E000"))
+        assert is_sc_class_apdu(bytes.fromhex("84CA00E000"))
+        assert is_sc_class_apdu(bytes.fromhex("80CA9F7F00")) is False
+        assert is_sc_class_apdu(bytes.fromhex("8050000000"))
+        assert is_sc_class_apdu(bytes.fromhex("00A4040010"))
+
+    def test_r_block_shape(self):
+        from nfc.gempc_t1 import r_block, lrc
+        b = r_block(1)
+        assert b[1] == 0x90 and b[2] == 0x00 and b[-1] == lrc(b[:-1])

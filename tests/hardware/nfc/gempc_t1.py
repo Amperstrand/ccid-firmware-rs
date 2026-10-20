@@ -66,6 +66,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
 import sys
 import time
 from pathlib import Path
@@ -125,15 +127,24 @@ MAX_IFSC = 254
 # card-safety doctrine allows unlimited SELECTs). Bench-proven 2026-10-20.
 DEFAULT_SELECT_AID = bytes.fromhex("D276000124010304AFAF000000000000")
 
-# SC-class APDU prefixes the harness REFUSES (AGENTS.md card-handling
-# doctrine): INITIALIZE UPDATE (80 50), EXTERNAL AUTHENTICATE (84 82),
-# SC-gated GET DATA (00 E0). Each is a budget-bearing authentication
-# event on JCOP-class cards — never in a loop, never from tooling.
+# SC-class APDUs the harness REFUSES (AGENTS.md card-handling doctrine):
+# INITIALIZE UPDATE (80 50), EXTERNAL AUTHENTICATE (84 82), SC-gated
+# GET DATA. The GET DATA tag rides P1/P2 (CLA/INS = 80 CA or 84 CA,
+# P1P2 = 00 E0) — a prefix check on CLA/INS alone misses it (Codex P1
+# on #347); the legacy 00 E0-CLA form is kept for belt and braces.
+# Each is a budget-bearing authentication event on JCOP-class cards —
+# never in a loop, never from tooling.
 SC_CLASS_PREFIXES = (b"\x80\x50", b"\x84\x82", b"\x00\xe0")
+GP_GET_DATA_INS = (0xCA,)
+GP_GET_DATA_TAGS = (b"\x00\xe0",)
 
 
 def is_sc_class_apdu(apdu: bytes) -> bool:
-    return apdu[:2] in SC_CLASS_PREFIXES
+    if apdu[:2] in SC_CLASS_PREFIXES:
+        return True
+    if len(apdu) >= 4 and apdu[1] in GP_GET_DATA_INS and apdu[2:4] in GP_GET_DATA_TAGS:
+        return True
+    return False
 
 
 def lrc(data: bytes) -> int:
@@ -589,7 +600,24 @@ class T1Session:
             raise T1Error(f"{label}: answer EDC BAD {ans.hex()}")
         self.nr = (tb.ns + 1) & 1
         self.ns ^= 1
-        return tb.inf
+        # Codex P2 on #347: responses longer than the negotiated IFSC
+        # arrive as a CHAIN — the first I-block carries M=1 and the
+        # remainder only goes out after our R(ACK). Drain the chain
+        # (bounded: a runaway chain cannot spin forever).
+        inf = bytearray(tb.inf)
+        guard = 0
+        while tb.more:
+            guard += 1
+            if guard > 16:
+                raise T1Error(f"{label}: response chain exceeded 16 "
+                              "blocks — aborting drain")
+            rack = r_block(self.nr)
+            ans, tb = self.xfr_block(rack, label=f"{label}+RACK{guard}")
+            if tb is None or not tb.is_i or not tb.edc_ok:
+                raise T1Error(f"{label}: chain block bad "
+                              f"({tb.describe() if tb else ans.hex()})")
+            inf += tb.inf
+        return bytes(inf)
 
     def select(self, aid: bytes) -> tuple[bytes, bytes]:
         """SELECT by AID (pure read, card-safety doctrine). Returns
@@ -605,8 +633,20 @@ def run_probe(port: str, stopbits: int = 2, aid: bytes = DEFAULT_SELECT_AID,
     """The --probe flow. Returns a process exit code."""
     esp32_flash = None
     lock_fd = None
+    bench_fd = None
     if lock:
         esp32_flash = _import_labgrid_module("esp32_flash")
+        # Codex P1 on #347: the pcscd flock prevents host interference
+        # but does NOT reserve the DUT — take the bench flock first so
+        # a concurrent HIL/flashing session cannot race the port.
+        bench_fd = os.open("/tmp/amperstrand-bench.lock", os.O_RDWR)
+        try:
+            fcntl.flock(bench_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(bench_fd)
+            bench_fd = None
+            raise T1Error("bench flock held — another session owns the "
+                          "DUT (labgrid place discipline, AGENTS.md)")
         lock_fd = esp32_flash.pcscd_lock_acquire()
     try:
         with T1Session(port, stopbits=stopbits, verbose=verbose) as sess:
@@ -630,6 +670,9 @@ def run_probe(port: str, stopbits: int = 2, aid: bytes = DEFAULT_SELECT_AID,
     finally:
         if lock_fd is not None and esp32_flash is not None:
             esp32_flash.pcscd_lock_release(lock_fd)
+        if bench_fd is not None:
+            fcntl.flock(bench_fd, fcntl.LOCK_UN)
+            os.close(bench_fd)
     return 0
 
 
