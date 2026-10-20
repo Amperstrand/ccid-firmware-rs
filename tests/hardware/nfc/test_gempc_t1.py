@@ -367,7 +367,7 @@ class TestCodex347Followups:
         assert is_sc_class_apdu(bytes.fromhex("84CA00E000"))
         assert is_sc_class_apdu(bytes.fromhex("80CA9F7F00")) is False
         assert is_sc_class_apdu(bytes.fromhex("8050000000"))
-        assert is_sc_class_apdu(bytes.fromhex("00A4040010"))
+        assert is_sc_class_apdu(bytes.fromhex("00A4040010")) is False
 
     def test_r_block_shape(self):
         from nfc.gempc_t1 import r_block, lrc
