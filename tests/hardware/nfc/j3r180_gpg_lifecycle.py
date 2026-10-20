@@ -63,6 +63,16 @@ GP_TIMEOUT = 90
 GPG_TIMEOUT = 30
 
 
+class LiveLog(list):
+    """Prints every line as it is appended — a killed run still leaves
+    its evidence in the log file (the 2026-10-20 m5stick LOAD lesson:
+    an 800s run died with an EMPTY log because everything printed at
+    exit)."""
+    def append(self, item):
+        super().append(item)
+        print(item, flush=True)
+
+
 def sh(cmd: list[str] | str, timeout: int, shell: bool = False):
     """Bounded subprocess — nothing in this tool runs unbounded."""
     return subprocess.run(cmd, shell=shell, capture_output=True,
@@ -127,7 +137,7 @@ def gpg_scd(reader: str, cmd: str, timeout: int = GPG_TIMEOUT,
                       "class: vpcd/modemifd IFDs) — killed -9")
 
 
-def preflight(reader: str, lines: list[str]) -> bool:
+def preflight(reader: str, lines: list) -> bool:
     ok = True
 
     def check(name: str, cond: bool, detail: str = ""):
@@ -227,7 +237,7 @@ def main() -> int:
                     help="run the checks only, no card writes")
     args = ap.parse_args()
 
-    lines: list[str] = []
+    lines = LiveLog()
     t0 = time.time()
 
     def phase(name: str, ok: bool, detail: str = ""):
@@ -261,7 +271,7 @@ def main() -> int:
           f"{len(baseline)} pkgs")
 
     if not args.status_only:
-        r = gp(args.reader, f"-install {cap}", timeout=240)
+        r = gp(args.reader, f"-install {cap}", timeout=480)
         phase("install OpenPGP applet", r.returncode == 0
               and "loaded" in r.stdout.lower(),
               r.stdout.strip().splitlines()[-1][:70] if r.stdout else "")
