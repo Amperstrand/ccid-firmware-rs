@@ -187,7 +187,16 @@ def preflight(reader: str, lines: list) -> bool:
           atr is not None and any(atr.upper().startswith(p)
                                   for p in J3R180_ATR_PREFIXES),
           f"ATR={atr}")
-    # 5. org keyset authenticates (ISD reachable) — read-only gp -l
+    # 5. org keyset authenticates (ISD reachable) — read-only gp -l.
+    # Codex P1 on #325: gated on the ATR check — authenticating with
+    # the fixed org keyset against a NON-J3R180 card burns its auth
+    # budget (gp warns re-tries can brick); a failed ATR check must
+    # stop the run before any key-bearing exchange.
+    if atr is None or not any(atr.upper().startswith(pfx)
+                              for pfx in J3R180_ATR_PREFIXES):
+        lines.append("preflight FAIL: skipping GP auth — ATR family "
+                     "check failed (wrong-card key-burn guard)")
+        return False
     r = gp(reader, "-l")
     check("GlobalPlatform ISD authenticates with org keyset",
           r.returncode == 0 and "ISD:" in r.stdout,
@@ -266,6 +275,10 @@ def main() -> int:
         print("\n".join(lines))
         return 0
 
+    # Codex P1 on #325: --status-only is READ-ONLY — the destructive
+    # cleanup (owner-approved full wipes!) must not run in that mode.
+    if args.status_only:
+        lines.append("[status-only] cleanup SKIPPED (read-only mode)")
     cap = Path(args.cap) if args.cap else (
         SMARTPGP_CAP if SMARTPGP_CAP.exists() else FALLBACK_CAP)
     if not cap.exists():
@@ -277,9 +290,16 @@ def main() -> int:
                  "runbook after first green run)")
 
     # --- idempotency: cleanup BEFORE baseline so the captured resting
-    # state is the card's true baseline (not baseline+strays) ---
-    phase("cleanup pre-existing OpenPGP artifacts",
-          cleanup_openpgp(args.reader, cap))
+    # state is the card's true baseline (not baseline+strays).
+    # Codex P1 on #325: a FAILED cleanup ABORTS — installing on top of
+    # undeletable strays produces mixed-state cards.
+    if not args.status_only:
+        if not cleanup_openpgp(args.reader, cap):
+            phase("cleanup pre-existing OpenPGP artifacts", False,
+                  "ABORT: undeletable strays — refusing to install over them")
+            print("\n".join(lines))
+            return 5
+        phase("cleanup pre-existing OpenPGP artifacts", True)
 
     baseline = baseline_pkgs(args.reader)
     phase("baseline registry captured", bool(baseline),

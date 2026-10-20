@@ -154,9 +154,19 @@ class Reader:
         for _ in range(5):
             time.sleep(1.0)
             try:
-                self.s = serial.Serial(self.port, 115200, timeout=0.2)
-                self.s.setDTR(False)
-                self.s.setRTS(False)
+                # Codex P1 on #331: preserve the constructor's serial
+                # settings on reopen — a bare Serial(port, 115200)
+                # resets to 8N1 and the m5stick GemPC UART (8N2) goes
+                # framing-dead, exactly the bug the safe-open fixed.
+                s = serial.Serial()
+                s.port = self.port
+                s.baudrate = 115200
+                s.timeout = 0.2
+                s.stopbits = self.s.stopbits if self.s else 2
+                s.dtr = False
+                s.rts = False
+                s.open()
+                self.s = s
                 return True
             except serial.SerialException:
                 continue
