@@ -48,9 +48,11 @@ AUTH_KEYS = {
     "mac": "7CCC1E79D64FC5FA263B8F2955282998",
     "dek": "B040703EC3DE23EE8AE4CFB6D632AA80",
 }
-J3R180_ATR_PREFIXES = ("3B8580", "3B8581")  # ATR is negotiated per-reader
-# from the ATS: ACR1252 answers 3B 85 80 01 80 …, the m5stick MFRC522
-# 3B 85 81 31 FE 45 … — same card, both forms are the J3R180 family.
+J3R180_ATR_PREFIXES = ("3B8580", "3B8581", "3BD518FF")  # ATR is
+# negotiated per-reader AND per-interface: ACR1252 answers 3B 85 80 01
+# 80 …, the m5stick MFRC522 3B 85 81 31 FE 45 … (contactless), and the
+# F469 reads the same card family over its CONTACT pads as
+# 3B D5 18 FF 81 91 FE … (all share the NXP 73 C8 21 tail).
 OPENPGP_SELECT = "00A4040008D276000124010200"  # v2 AID, 8 bytes
 # OUR package AID (the ss3t CAP gp reports on load). Cleanup treats
 # ONLY artifacts under this package as ours; foreign D276000124*
