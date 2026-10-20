@@ -73,12 +73,15 @@ want_leg() { local L; for L in "${wanted[@]}"; do [ "$L" = "$1" ] && return 0; d
 
 for c in git cargo python3; do command -v "$c" >/dev/null 2>&1 || die "$c is required but not on PATH"; done
 
+# The slug is only needed in PR mode (gh view/comment) — ref mode never
+# talks to GitHub, so a checkout with a missing/non-GitHub origin can still
+# verify local refs (Codex P2 on #300). Enforced below, inside PR mode.
 SLUG="$(git -C "$ROOT" remote get-url origin 2>/dev/null | sed -E 's#.*github\.com[:/]##; s#\.git$##')"
-[ -n "$SLUG" ] || die "cannot derive the GitHub slug from the origin remote"
 
 PR_NUMBER=""; PR_TITLE=""; PR_STATE=""; HEAD_REF=""; BASE_SHA=""
 if [[ "$TARGET" =~ ^[0-9]+$ ]]; then
-    command -v gh >/dev/null 2>&1 || die "PR mode needs gh (ref: $SLUG)"
+    command -v gh >/dev/null 2>&1 || die "PR mode needs gh"
+    [ -n "$SLUG" ] || die "PR mode needs the GitHub slug — origin remote is not a github URL"
     PR_NUMBER="$TARGET"
     meta="$(gh pr view "$PR_NUMBER" -R "$SLUG" --json title,state,headRefName,headRefOid --jq='[.title,.state,.headRefName,.headRefOid]|@tsv' 2>/dev/null)" \
         || die "gh pr view $PR_NUMBER failed"
@@ -152,11 +155,16 @@ record() {
 
 cd "$WT" || die "cannot cd into worktree"
 
-# ruff resolution: CI pins 0.17.0 (ruff.toml targets its behavior). Prefer an
-# existing ruff on PATH, else a pinned uvx/pip install — never a floating one.
+# ruff resolution: CI pins 0.17.0 exactly (ci.yml `pip install ruff==0.17.0`)
+# and rule behavior moves between releases — accept a PATH ruff only on the
+# exact pin, else a pinned uvx/pip install. Never a floating one (Codex P2
+# on #300: an unpinned PATH ruff silently diverged from CI).
 RUFF=""
 resolve_ruff() {
-    if command -v ruff >/dev/null 2>&1; then RUFF="ruff"; return 0; fi
+    if command -v ruff >/dev/null 2>&1 \
+        && [ "$(ruff --version 2>/dev/null | awk '{print $2}')" = "0.17.0" ]; then
+        RUFF="ruff"; return 0
+    fi
     if command -v uvx >/dev/null 2>&1; then RUFF="uvx ruff@0.17.0"; return 0; fi
     pip install --quiet ruff==0.17.0 >/dev/null 2>&1 && RUFF="ruff" && return 0
     return 1
@@ -234,8 +242,13 @@ run_clippy_crates() {
 run_host_tests() {
     echo "== leg: host-tests"
     local t=$SECONDS log="$LOGDIR/host-tests.log"
-    if cargo test --workspace --target x86_64-unknown-linux-gnu >"$log" 2>&1; then
-        record host-tests PASS "cargo test --workspace (x86_64)" $((SECONDS - t))
+    # Mirrors stm32-test INCLUDING its display-feature step (ci.yml, #285):
+    # --workspace enables only default features, so the pinpad-UI/PIN-flow
+    # test surface behind #[cfg(feature = "display")] needs the explicit
+    # -p run or the gate can go green where CI goes red (Codex P1 on #300).
+    if cargo test --workspace --target x86_64-unknown-linux-gnu >"$log" 2>&1 \
+    && cargo test -p ccid-firmware-rs --features display --target x86_64-unknown-linux-gnu >>"$log" 2>&1; then
+        record host-tests PASS "workspace + display-feature tests (x86_64)" $((SECONDS - t))
     else
         record host-tests FAIL "see host-tests.log" $((SECONDS - t))
     fi

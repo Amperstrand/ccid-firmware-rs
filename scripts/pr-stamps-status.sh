@@ -23,12 +23,20 @@ prs="$(gh pr list -R "$SLUG" --state open --json number,title,headRefOid --limit
     --jq '.[] | [.number, .headRefOid, .title] | @tsv')" || exit 2
 [ -n "$prs" ] || { echo "no open PRs on $SLUG"; exit 0; }
 
-fresh=0; stale=0; unstamped=0
+fresh=0; stale=0; unstamped=0; errored=0
 rows=""
 while IFS=$'\t' read -r num oid title; do
+    # A failed per-PR lookup (auth, rate limit, transient API error) must
+    # surface as ERRORED — silently reporting UNSTAMPED would mislabel a
+    # reachable stamp as missing (Codex P2 on #300).
+    if ! view_body="$(gh pr view "$num" -R "$SLUG" --json comments \
+            --jq '[.comments[] | select(.body | test("^### Local CI gate")) | .body] | last' 2>/dev/null)"; then
+        state="ERRORED"; errored=$((errored+1))
+        rows+="$num|$state|${oid:0:10}|$title"$'\n'
+        continue
+    fi
     stamped_sha="$(
-        gh pr view "$num" -R "$SLUG" --json comments \
-            --jq '[.comments[] | select(.body | test("^### Local CI gate")) | .body] | last' 2>/dev/null \
+        printf '%s' "$view_body" \
         | grep -m1 -- '- \*\*Head:\*\*' | grep -oE '@ [`]?[0-9a-f]{10}' | grep -oE '[0-9a-f]{10}$'
     )"
     if [ -z "$stamped_sha" ]; then
@@ -47,4 +55,5 @@ printf '%s' "$rows" | while IFS='|' read -r n s h t; do
     printf '%-6s %-16s %-10s %s\n' "$n" "$s" "$h" "$t"
 done
 echo "-----------------------------------------"
-echo "$SLUG: $fresh fresh, $stale stale, $unstamped unstamped"
+echo "$SLUG: $fresh fresh, $stale stale, $unstamped unstamped, $errored errored"
+[ "$errored" = 0 ]
