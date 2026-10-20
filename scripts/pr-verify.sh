@@ -101,7 +101,9 @@ else
 fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-LOGDIR="$ROOT/.omo/pr-verify/${TARGET//-/_}-$STAMP"
+# Slash-unsafe ref names (any ref-mode "review/x" target) must not nest
+# log dirs — sanitize every char outside [a-zA-Z0-9._-], not just dashes.
+LOGDIR="$ROOT/.omo/pr-verify/${TARGET//[^a-zA-Z0-9._-]/_}-$STAMP"
 mkdir -p "$LOGDIR"
 WT="$LOGDIR/worktree"
 cleanup() {
@@ -128,13 +130,13 @@ git -C "$ROOT" rev-parse --verify --quiet "${HEAD_OID}^{commit}" >/dev/null \
 git -C "$ROOT" worktree add --quiet --detach "$WT" "$HEAD_OID" || die "worktree add failed for $HEAD_OID"
 echo "== worktree: $WT"
 
-# vendor/synopsys-usb-otg is a git SUBMODULE consumed by the root [patch]
-# table — a fresh worktree holds an empty dir and every cargo command dies
-# at patch resolution ("does not contain packages matching"). The
-# reference/* submodules are quote-only (never compiled) and are
-# deliberately NOT initialized.
-git -C "$WT" submodule update --init --depth 1 vendor/synopsys-usb-otg \
-    || die "submodule init failed for vendor/synopsys-usb-otg"
+# NO submodule init (P1 fix on #300): the old step ran
+# `submodule update --init vendor/synopsys-usb-otg`, but that vendor copy
+# was retired to a rev-pinned git-fork [patch] dep in #264 — the path no
+# longer exists and git died ("pathspec ... did not match") before any
+# leg, on every ref (DOA, rc=2). No host leg needs a submodule:
+# synopsys-usb-otg resolves as a git dep, vendor/stm32f469i-disc is a
+# normally-tracked path, and reference/* are quote-only (never compiled).
 
 # The gate script itself may not be committed at the verified head (it can
 # post on PRs that predate it) — hash the INVOKING copy, not the worktree's.
@@ -167,8 +169,12 @@ run_hygiene() {
         record hygiene FAIL "committed conflict markers — see hygiene.log" $((SECONDS - t))
         return
     fi
+    # Every tracked shell script, enumerated — a static list rots the
+    # moment a new script lands (pr-stamps-status.sh was missing from
+    # round 2 while shipping in the same PR). s_check_sdkconfig carries
+    # no extension, so it is added explicitly.
     local shells
-    shells="tools/switch_role.sh scripts/pr-verify.sh firmware/esp32-ccid/flash_and_test.sh firmware/esp32-ccid/s_check_sdkconfig firmware/esp32-ccid/build.sh"
+    shells="$(git ls-files '*.sh') firmware/esp32-ccid/s_check_sdkconfig"
     local bad=0 s
     for s in $shells; do
         [ -f "$s" ] || continue
