@@ -300,9 +300,32 @@ impl<T: Transport> Pn7160Driver<T> {
             self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
             if self.polls_since_ntf >= cadence {
                 self.polls_since_ntf = 0;
-                if self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
-                    self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
-                }
+                // #332 (Codex P1 on #328): pick the re-arm command by
+                // NFCC state. ACTIVE interface: RF_DEACTIVATE(type=
+                // DISCOVERY) tears it down AND returns to the discovery
+                // loop in one command (#105, bench-proven). PARKED (the
+                // RF_DEACTIVATE(type=IDLE) already happened — NFCC IDLE
+                // and deaf): the deactivate can be REFUSED (nothing to
+                // deactivate), so the idle-state restart is RF_DISCOVER
+                // — the same one-shot probe shape the #125 latch uses,
+                // here at the SLOW parked cadence (the ~11-RAPID-cycle
+                // mute class stays out of reach; the doc caution against
+                // RF_DISCOVER re-issue targets per-cycle re-issues on
+                // the active path).
+                let sent = if self.discovery_parked {
+                    let ok = self.transport.send(&reader::RF_DISCOVER_PASSIVE_A);
+                    if ok {
+                        self.rearm = Some(RearmPhase::DiscoverProbeRsp { polls: 0 });
+                    }
+                    ok
+                } else {
+                    let ok = self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY);
+                    if ok {
+                        self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
+                    }
+                    ok
+                };
+                let _ = sent;
                 // Write failure (mute link): keep the last known
                 // presence and retry after a full cadence.
             }
@@ -1687,13 +1710,23 @@ mod tests {
             "probe settle wrote more than the pair: {settled} vs {writes_before}"
         );
 
-        // the parked re-arm itself: a new write within the slow cadence
+        // the parked re-arm itself: a new write within the slow cadence.
+        // #332: parked = NFCC IDLE — the re-arm must be RF_DISCOVER
+        // (RF_DEACTIVATE from idle can be refused), so seed its RSP.
         drv.transport_mut()
-            .push_reply(&deactivate_discovery_rsp_ok());
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
         let mut rearmed = false;
         for i in 0..(PARKED_REARM_POLLS as usize + 8) {
             let _ = drv.is_card_present();
             if drv.transport_mut().sent.len() > settled {
+                // #332: the parked re-arm writes RF_DISCOVER_PASSIVE_A,
+                // not the deactivate (idle NFCC restart).
+                let w = &drv.transport_mut().sent[settled];
+                assert_eq!(
+                    w.as_slice(),
+                    reader::RF_DISCOVER_PASSIVE_A.as_slice(),
+                    "parked re-arm must restart discovery with RF_DISCOVER"
+                );
                 rearmed = true;
                 break;
             }
