@@ -138,34 +138,56 @@ fn handle_message<D: NfcDriver>(
         match payload[0] {
             VPCD_CTRL_ATR => {
                 let d = handler.driver_mut();
-                if d.is_card_present() {
+                let present = d.is_card_present();
+                if present {
                     let mut atr = [0u8; 64];
                     match d.power_on(&mut atr) {
-                        Ok(len) => Some(atr[..len].to_vec()),
-                        Err(_) => Some(Vec::new()), // power failed → "no card"
+                        Ok(len) => {
+                            // #326 observability: the ATR exchange is the
+                            // first thing that dies on this path — every
+                            // request and its verdict goes to the console.
+                            log::warn!("vpcd: ATR req → present, power_on ok ({} B)", len);
+                            Some(atr[..len].to_vec())
+                        }
+                        Err(_) => {
+                            log::warn!("vpcd: ATR req → present, power_on FAILED → empty");
+                            Some(Vec::new()) // power failed → "no card"
+                        }
                     }
                 } else {
+                    log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
                     Some(Vec::new()) // no card → empty ATR (driver ejects + re-polls)
                 }
             }
             VPCD_CTRL_ON => {
                 let mut atr = [0u8; 64];
                 let _ = handler.driver_mut().power_on(&mut atr);
+                log::warn!("vpcd: ON ctrl");
                 None // fire-and-forget
             }
             VPCD_CTRL_OFF => {
                 handler.driver_mut().power_off();
+                log::warn!("vpcd: OFF ctrl");
                 None // fire-and-forget
             }
             VPCD_CTRL_RESET => {
                 handler.driver_mut().power_off();
                 let mut atr = [0u8; 64];
                 match handler.driver_mut().power_on(&mut atr) {
-                    Ok(len) => Some(atr[..len].to_vec()),
-                    Err(_) => Some(Vec::new()), // reset failed → "no card"
+                    Ok(len) => {
+                        log::warn!("vpcd: RESET ctrl → ATR ({} B)", len);
+                        Some(atr[..len].to_vec())
+                    }
+                    Err(_) => {
+                        log::warn!("vpcd: RESET ctrl → power_on FAILED → empty");
+                        Some(Vec::new()) // reset failed → "no card"
+                    }
                 }
             }
-            _ => None,
+            other => {
+                log::warn!("vpcd: unknown ctrl 0x{:02x}", other);
+                None
+            }
         }
     } else if !payload.is_empty() {
         match handler.driver_mut().transmit_apdu(payload, rx_buf) {
@@ -178,8 +200,10 @@ fn handle_message<D: NfcDriver>(
                 // next ATR rebuilds from a fresh activation. 64 00 on
                 // a dead session wedges the reader until board reboot.
                 if handler.driver_mut().session_active() {
+                    log::warn!("vpcd: APDU err on LIVE session → 6400");
                     Some(crate::ccid_handler::CARD_TIMEOUT_SW.to_vec())
                 } else {
+                    log::warn!("vpcd: APDU err on DEAD session → ICC absent");
                     Some(Vec::new())
                 }
             }
