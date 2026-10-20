@@ -382,16 +382,16 @@ def main() -> int:
     from smartcard.pcsc.PCSCCardConnection import PCSCCardConnection
     from smartcard.util import toBytes
 
+    # #330 (cause 2): ONE connection for the whole probe phase — a
+    # fresh pcscd connection per APDU powers the card down on
+    # last-disconnect (the MFRC522 path honors it), dropping the
+    # applet selection; the SELECT and the data commands must share a
+    # card session, exactly like a real application.
+    probe_cc = PCSCCardConnection(args.reader)
+    probe_cc.connect()
+
     def apdu(hexcmd: str) -> tuple[list, int, int]:
-        cc = PCSCCardConnection(args.reader)
-        try:
-            cc.connect()
-            return cc.transmit(toBytes(hexcmd))
-        finally:
-            try:
-                cc.disconnect()
-            except Exception:
-                pass
+        return probe_cc.transmit(toBytes(hexcmd))
 
     # SELECT: generic v2 AID, then the card's ACTUAL instance AID
     # (discovered from the registry — a v3.4 instance does not answer
@@ -437,6 +437,11 @@ def main() -> int:
     lines.append(f"[{time.time()-t0:6.1f}s] GET DATA 5E: "
                  f"{'answered' if sw1 == 0x90 else 'finding'} — "
                  f"SW={sw1:02X}{sw2:02X}")
+
+    try:
+        probe_cc.disconnect()
+    except Exception:
+        pass
 
     # --- gpg host-stack leg: bounded probe, wedge = named verdict ---
     r, err = gpg_scd(args.reader, "SERIALNO", kill_first=True)
