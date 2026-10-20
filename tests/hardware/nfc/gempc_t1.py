@@ -603,10 +603,21 @@ class T1Session:
         return atr
 
     # -- APDU-level -----------------------------------------------------------
-    def transceive(self, apdu: bytes, label: str = "apdu") -> bytes:
+    def transceive(self, apdu: bytes, label: str = "apdu",
+                   *, budgeted_sc: bool = False) -> bytes:
         """One APDU in a single I-block; returns the answer INF (SW tail
         included). APDUs longer than the negotiated IFSC must be chained
-        manually with xfr_block (see t1_retry_probe for the pattern)."""
+        manually with xfr_block (see t1_retry_probe for the pattern).
+
+        Codex P1 on #347: the SC-class guard is enforced HERE — at the
+        library send boundary — not only in the CLI loop, so no caller
+        can loop INITIALIZE UPDATE / EXTERNAL AUTHENTICATE / guarded
+        GET DATA through the advertised API. Pass budgeted_sc=True only
+        for an explicitly budgeted auth flow (never in a loop)."""
+        if is_sc_class_apdu(apdu) and not budgeted_sc:
+            raise T1Error(f"{label}: refusing SC-class APDU "
+                          f"{apdu.hex()} (card-safety doctrine, "
+                          "AGENTS.md; budgeted_sc=True to override)")
         if len(apdu) > self.ifsc:
             raise T1Error(f"APDU {len(apdu)}B exceeds IFSC {self.ifsc} — "
                           "chain I-blocks via xfr_block")
@@ -621,6 +632,13 @@ class T1Session:
                           "endpoint demanded retransmit or errored")
         if not tb.edc_ok:
             raise T1Error(f"{label}: answer EDC BAD {ans.hex()}")
+        # Codex P2 on #347: the response must carry the responder
+        # sequence we EXPECT (self.nr) — a stale/replayed or skipped
+        # block is a protocol fault this harness exists to detect.
+        if tb.ns != self.nr:
+            raise T1Error(f"{label}: response N(S)={tb.ns} but expected "
+                          f"{self.nr} — out-of-sequence/stale block")
+        chain_ns = tb.ns
         self.nr = (tb.ns + 1) & 1
         self.ns ^= 1
         # Codex P2 on #347: responses longer than the negotiated IFSC
@@ -641,6 +659,10 @@ class T1Session:
             if tb is None or not tb.is_i or not tb.edc_ok:
                 raise T1Error(f"{label}: chain block bad "
                               f"({tb.describe() if tb else ans.hex()})")
+            if tb.ns != chain_ns:
+                # §11.6.3: all blocks of one chain share N(S).
+                raise T1Error(f"{label}: chain N(S) changed "
+                              f"{chain_ns}->{tb.ns} mid-chain")
             inf += tb.inf
         return bytes(inf)
 

@@ -413,3 +413,53 @@ class TestCodex347Followups:
         with pytest.raises(T1Error, match="BAD EDC"):
             T1Session.xfr_block(FakeSess(), b"\x00\x00\x00\x00\x00",
                                 label="t")
+
+    def test_transceive_enforces_sc_guard(self):
+        # Codex P1 on #347: the LIBRARY boundary refuses SC-class APDUs
+        # even when the CLI loop is bypassed; budgeted_sc is the only way
+        # through, and it must be explicit.
+        from nfc.gempc_t1 import T1Error, T1Session
+        sess = T1Session.__new__(T1Session)
+        sess.ifsc = 254
+        called = []
+        sess.transceive.__self__ if False else None
+        import nfc.gempc_t1 as g
+        orig = g.T1Session.transceive
+        # call the real method with a stub session: guard fires before
+        # any port interaction
+        class S:
+            ifsc = 254
+        for apdu_hex in ("8050000000", "80CA00E000", "8150000000"):
+            try:
+                orig(S(), bytes.fromhex(apdu_hex))
+                raise AssertionError("guard did not fire for " + apdu_hex)
+            except T1Error as e:
+                assert "SC-class" in str(e)
+
+    def test_out_of_sequence_response_rejected(self):
+        # Codex P2 on #347: a response I-block whose N(S) != expected nr
+        # must raise, not silently advance state.
+        import pytest
+        from nfc import gempc_t1
+        from nfc.gempc_t1 import T1Error, T1Session
+
+        def wire_for(pcb):
+            inner = bytes([0x00, pcb, 0x02, 0x90, 0x00])
+            inner += bytes([gempc_t1.lrc(inner)])
+            body = (bytes([0x03, 0x06, 0x80]) + len(inner).to_bytes(4, "little")
+                    + bytes([0x00, 0x01, 0x00, 0x00, 0x00]) + inner)
+            return body + bytes([gempc_t1.lrc(body)])
+
+        class S:
+            ifsc = 254
+            verbose = False
+            ns = 0
+            nr = 0
+            def xfr_block(self, block, label="xfr", **k):
+                # answer I(ns=1) when the responder is expected at ns=0
+                inner = bytes([0x00, 0x40, 0x02, 0x90, 0x00])
+                inner += bytes([gempc_t1.lrc(inner)])
+                return inner, gempc_t1.parse_t1(inner)
+
+        with pytest.raises(T1Error, match="out-of-sequence"):
+            T1Session.transceive(S(), bytes.fromhex("00CA006E"))
