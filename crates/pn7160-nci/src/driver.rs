@@ -100,6 +100,13 @@ pub struct Pn7160Driver<T: Transport> {
 /// card-poll interval this re-arms discovery every ~4 s.
 const PRESENCE_REARM_POLLS: u32 = 8;
 
+/// Parked re-arm cadence (#326): after absence is confirmed the driver
+/// still re-arms at this SLOW cadence instead of never — a parked NFCC
+/// is idle and deaf, and on host-driven poll paths (vpcd: the host is
+/// the only poller) "parked forever" wedges presence at absent. Slow
+/// enough to stay far from the ~11-rapid-cycle chip-mute class (#125).
+const PARKED_REARM_POLLS: u32 = 32;
+
 /// Consecutive empty re-arm cycles before presence clears — a discovery
 /// NTF can arrive one poll after the re-arm (TOTAL_DURATION latency) and
 /// must not flap presence to absent.
@@ -268,9 +275,30 @@ impl<T: Transport> Pn7160Driver<T> {
             // power cycle), and the cycles yield no fresh NTFs anyway.
             return true;
         }
-        if self.rearm.is_none() && !self.discovery_parked {
+        // #326 (2026-10-20): PARKED FOREVER IS A DEADLOCK on host-driven
+        // poll paths. The park assumed "perpetual discovery sees the
+        // next arrival" — but an NCI discovery cycle only polls for
+        // TOTAL_DURATION (~510 ms) per re-arm; parked means the NFCC is
+        // IDLE and deaf while `last_ntf` stays None → is_card_present()
+        // answers false on every later poll, forever. On the serial
+        // serve loop the 500 ms cadence papered over parking (re-arms
+        // kept flowing); on vpcd the host is the ONLY poller, and
+        // pcscd's eject/re-poll loop against a parked driver wedges
+        // SCardConnect (the wifi-vpcd ATR regression). This also
+        // reintroduced the #88 "tag placed after the last notification"
+        // bug for host-driven paths. Fix: a parked driver still re-arms
+        // at a SLOW cadence — far slower than the fast-cycle chip-mute
+        // class (~11 rapid cycles, #125), so the link stays healthy —
+        // so a card placed (or sitting) in the field is found within
+        // one slow cycle.
+        let cadence = if self.discovery_parked {
+            PARKED_REARM_POLLS
+        } else {
+            PRESENCE_REARM_POLLS
+        };
+        if self.rearm.is_none() {
             self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
-            if self.polls_since_ntf >= PRESENCE_REARM_POLLS {
+            if self.polls_since_ntf >= cadence {
                 self.polls_since_ntf = 0;
                 if self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
                     self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
@@ -1612,6 +1640,81 @@ mod tests {
         assert!(!drv.is_card_present(), "second empty re-arm must clear");
         // And it stays absent (no cached NTF → no re-arm path).
         assert!(!drv.is_card_present());
+    }
+
+    /// #326: "parked forever" is a deadlock on host-driven poll paths
+    /// (vpcd: the host is the only poller). After the two empty re-arms
+    /// park the driver, continued polling must STILL re-arm at the slow
+    /// parked cadence — no fast cycling (the ~11-rapid-cycle chip-mute
+    /// class), but never a permanent deaf state — and a tag NTF during
+    /// the slow cycle must restore presence.
+    #[test]
+    fn parked_driver_still_rearms_at_slow_cadence_and_recovers() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+
+        // Two empty re-arm cycles → cleared + parked.
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(!drv.is_card_present());
+        assert!(drv.discovery_parked, "expected parked after 2 empty cycles");
+
+        // The #125 one-shot RF_DISCOVER probe may fire right after the
+        // park (probe_armed was set by the earlier latch) — let it
+        // complete before measuring the parked cadence.
+        drv.transport_mut().push_reply(&[
+            MT_RSP | GID_RF,
+            OID_RF_DISCOVER,
+            0x01,
+            STATUS_OK,
+        ]);
+        for _ in 0..16 {
+            let _ = drv.is_card_present();
+        }
+
+        // Parked: polling must (a) STILL re-arm — a new deactivate write
+        // within one slow-cadence budget (the #326 deadlock fix) — and
+        // (b) NOT fast-cycle: no window of 8 consecutive polls writes
+        // more than the deactivate+probe pair (the ~11-rapid-cycle
+        // chip-mute class stays out of reach).
+        let writes_before = drv.transport_mut().sent.len();
+
+        // settle: let the one-shot #125 probe (if pending) complete
+        for _ in 0..16 {
+            let _ = drv.is_card_present();
+        }
+        let settled = drv.transport_mut().sent.len();
+        assert!(
+            settled <= writes_before + 2,
+            "probe settle wrote more than the pair: {settled} vs {writes_before}"
+        );
+
+        // the parked re-arm itself: a new write within the slow cadence
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        let mut rearmed = false;
+        for i in 0..(PARKED_REARM_POLLS as usize + 8) {
+            let _ = drv.is_card_present();
+            if drv.transport_mut().sent.len() > settled {
+                rearmed = true;
+                break;
+            }
+            assert!(
+                drv.transport_mut().sent.len() <= settled,
+                "poll {i}: unexpected write before the parked cadence"
+            );
+        }
+        assert!(rearmed, "parked driver must still re-arm (slow cadence)");
+
+        // A tag NTF in the collect window restores presence + unparks.
+        drv.transport_mut().push_notification(&discover_ntf());
+        assert!(
+            drv.is_card_present(),
+            "tag NTF during the parked re-arm must restore presence"
+        );
+        assert!(!drv.discovery_parked, "latch must clear the park");
     }
 
     #[test]
