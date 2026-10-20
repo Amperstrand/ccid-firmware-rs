@@ -387,6 +387,12 @@ STM32 bundle: same schema with `targets: {"app": {"offset": "0x08000000", …}}`
 ### 4.3 bundle_id
 
 `sha256` over the canonical JSON of the manifest **with `bundle_id`
+(2026-10-21 review note: `built_at` and any other volatile
+metadata are ALSO excluded — two builds of the same revision must
+hash identically or the same-ID app-only reflash path cannot
+recognize a rebuilt artifact. Canonical digest = images, offsets,
+family, layout, revision, toolchain; `built_at` stays in the
+manifest for humans only.)
 removed**, keys sorted, no whitespace. Files referenced by the manifest
 are content-hashed into `targets[].sha256`, so a rebuilt-dirty-tree
 bundle never aliases a clean one (`git_dirty` is also recorded).
@@ -413,7 +419,7 @@ bundle never aliases a clean one (`git_dirty` is also recorded).
 | app-only, same `bundle_id` | same id | **flash** (idempotent reflash; otadata preserved) |
 | app-only, same family+layout, newer rev | family+layout match | **flash**; otadata per policy |
 | app-only | family OR layout mismatch | **REFUSE** — “device carries <id/family/layout>; full bundle or `--reprovision`” |
-| any flash | inventory unknown/stale (>1 flash-less family change) | **REFUSE** unless `--allow-unknown-inventory` (first adoption uses `--seed-inventory`) |
+| any flash | inventory unknown/stale (>1 flash-less family change) | **REFUSE** unless `--allow-unknown-inventory` (first adoption uses `--seed-inventory`). PRECEDENCE: the FULL-bundle row above WINS — a full bundle on unknown inventory is exactly the first-adoption/`--seed-inventory` path and flashes (the flash itself seeds the inventory); the refuse-unless-override rule applies to app-only/PT-only shapes |
 | erase otadata at offset X | X ∉ bundle layout `otadata` | **REFUSE** — this is the 0x30000-is-the-factory-app trap, structurally impossible now |
 | PT-only or bootloader-only | anything | **REFUSE** — never split the structural pair from the app |
 
