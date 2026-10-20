@@ -1,3 +1,16 @@
+## [Unreleased] — fix(#330): T=1 endpoint session reset
+
+### Fixed
+- `ccid_handler`: reset the T=1 endpoint when SetParameters(T=1) is
+  accepted. A long-lived pcscd keeps the card powered between client
+  connections (no power cycle → no reset anchor), so the endpoint's
+  ns/host_ns counters, chain buffers and retry cache survived the
+  re-arm; each new client's fresh ns=0 I-blocks then R-blocked and
+  garbled applet traffic (GET DATA → 6A88 against long-lived pcscd,
+  220 B on a fresh one). libccidtwin resets its counters per
+  SCardConnect — the endpoint now resets at the same anchor.
+  Regression: `set_parameters_resets_stale_t1_endpoint_counters`.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
