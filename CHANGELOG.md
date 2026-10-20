@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — flash-via-labgrid design + bench device-inventory seed (kanban `t_f62142b1`)
+
+- `docs/FLASH-VIA-LABGRID-DESIGN.md`: the 2026-10-20 bench research on
+  flashing every MCU DUT through labgrid coordination — promoted from the
+  bench notes with substance unchanged (provenance noted at the top).
+  Current-state map of installed labgrid 26.0 (what ships: FlashScript,
+  DFU, OpenOCD, USBPower via uhubctl — what doesn't: any Espressif
+  support), the DTR-hazard strap table per bridge, the flash-bundle
+  manifest format (`amperstrand.flash-bundle/1`) + refusal matrix that
+  structurally kills the mixed-family/boot-loop and
+  erase-otadata-at-a-factory-app incident classes, inventory/place-tag
+  design, power-replug (YKUSH3/uhubctl) plan, and the M0–M7 migration
+  ladder. One repo-path fix vs the notes: ota_push lives at
+  `tests/hardware/vpcd/`, not `host-tools/`.
+- `docs/device-inventory.json`: the M0 seed snapshot — six bench devices
+  (nucula-c3, m5stick, stm32f469, stm32f746, ref-acr1252, ref-cardman)
+  with role, port/by-id, firmware-known-good pointer and per-device
+  source citations (J3R180 runbook STATE/Results, exporter-ai-legion-nfc
+  resources, AGENTS.md bench tables/deltas, ROOT-REFLASH forensics).
+  Checked-in seed only — per the design (§4.6) the authoritative
+  live copy is the bench-local file the flash tool writes.
+
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
 - `tests/hardware/nfc/J3R180-RUNBOOK.md` + `j3r180_gpg_lifecycle.py`:
