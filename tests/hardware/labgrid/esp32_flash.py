@@ -259,11 +259,17 @@ def pcscd_lock_release(fd: int, run=None,
     A failed START does not fail the flash (the images are proven on
     flash) but is reported — the caller must know pcscd is down. The
     fd is unlocked/closed in a finally so a runner exception cannot
-    leak the flock in a long-lived caller.
+    leak the flock in a long-lived caller. The .pcscd-down marker is
+    cleared ONLY on a VERIFIED restart (#332, Codex P2 on #324): if
+    the start fails or raises, the marker STAYS so the stale-marker
+    recovery (next invocation's recover_stale_pcscd_down) can put
+    pcscd back — clearing it on a dead pcscd lost the only record
+    that the bench readers are down.
     """
     import fcntl
     import os
     pcscd_ok = True
+    restarted = False
     lp = PCSCD_LOCK
     try:
         # resolve the ACTUAL lock file this fd was opened on (acquire
@@ -272,18 +278,29 @@ def pcscd_lock_release(fd: int, run=None,
             lp = os.readlink(f"/proc/self/fd/{fd}")
         except OSError:
             lp = PCSCD_LOCK
-        r = (run or _run_local)("systemctl start pcscd.socket pcscd",
-                                timeout=60)
-        if r.returncode != 0:
-            pcscd_ok = False
-            warn(f"pcscd RESTART FAILED (rc={r.returncode}) — other "
-                 f"bench readers are DOWN until restarted manually. "
-                 f"stderr: {(r.stderr or '')[-200:]}")
-    finally:
         try:
-            os.unlink(lock_marker_path(lp))
-        except OSError:
-            pass
+            r = (run or _run_local)("systemctl start pcscd.socket pcscd",
+                                    timeout=60)
+        except Exception as e:  # noqa: BLE001 — reported in the verdict
+            pcscd_ok = False
+            warn(f"pcscd RESTART RAISED ({e!r}) — other bench readers "
+                 "are DOWN until restarted manually; the .pcscd-down "
+                 "marker is KEPT for the stale-marker recovery")
+        else:
+            if r.returncode != 0:
+                pcscd_ok = False
+                warn(f"pcscd RESTART FAILED (rc={r.returncode}) — other "
+                     "bench readers are DOWN until restarted manually; "
+                     "the .pcscd-down marker is KEPT for the stale-marker "
+                     f"recovery. stderr: {(r.stderr or '')[-200:]}")
+            else:
+                restarted = True
+    finally:
+        if restarted:
+            try:
+                os.unlink(lock_marker_path(lp))
+            except OSError:
+                pass
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
     return pcscd_ok, None
@@ -312,10 +329,16 @@ def recover_stale_pcscd_down(run=None) -> bool:
     try:
         r = (run or _run_local)("systemctl start pcscd.socket pcscd",
                                 timeout=60)
-        marker.unlink(missing_ok=True)
+        # #332: clear the marker ONLY on a verified restart — a failed
+        # start must leave it for the next retry, or the record that
+        # pcscd is down is lost (same class as the release-side fix).
+        if r.returncode == 0:
+            marker.unlink(missing_ok=True)
         print(f"# recovered stale pcscd-down marker: pcscd start rc="
               f"{r.returncode} (a previous flash was killed before "
-              "restore)")
+              f"restore)"
+              + ("" if r.returncode == 0 else
+                 " — START FAILED, marker KEPT for the next retry"))
         return True
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -370,7 +393,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                 boot_check=None, capture=None, run=None, usb_reset=None,
                 rebind=None, usb_path=None, quiesce=None, restore=None,
                 quiesce_unit: str | None = None, wire_check=None,
-                stopbits: int = 2, stream_log: bool = False
+                stopbits: int = 2, stream_log: bool = False,
+                console_none: bool = False
                 ) -> tuple[bool, str]:
     """Flash an ESP32 with the full wedge discipline. Returns (ok, log).
 
@@ -389,6 +413,12 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     GetSlotStatus round-trip on the freshly flashed port (via
     gempc_smoke — any LRC-valid RDR reply proves the serve loop is
     alive; the CONFLICT veto is console-side and does not apply).
+    `console_none` (#313/#332): the image was built console-less
+    (CONFIG_ESP_CONSOLE_NONE=y — sdkconfig-xtensa.full and the
+    sdkconfig.defaults.esp32 flow) — when NO explicit `boot_check` is
+    given, the proof-of-boot AUTO-defaults to the wire check (a
+    console signature can never appear on a console-none build);
+    explicit flags still win.
     `quiesce_unit` (#314): a systemd unit that owns the port (e.g. the
     nucula's standing `nucula-ccid-broker`) — stopped under the SAME
     held pcscd flock before the flash and restarted during restore.
@@ -403,6 +433,15 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     capture = capture or _boot_capture
     log = StreamingLog(echo=stream_log)
     lock_state = {"fd": None}
+
+    # #332 (Codex P2 on #324): a console-none build can never print
+    # the console signature — with no EXPLICIT boot_check, default the
+    # proof-of-boot to the wire check instead of an unavoidable fail.
+    if boot_check is None and console_none:
+        boot_check = "wire"
+        log.append("# boot check auto-default: console-none build — "
+                   "proof-of-boot is the wire check (#313); pass "
+                   "boot_check=False to opt out explicitly")
 
     if quiesce is None:
         def quiesce():
@@ -423,14 +462,26 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
         def restore():
             set_ftdi_latency(port)
             if quiesce_unit:
-                r = run(f"systemctl start {shlex.quote(quiesce_unit)}",
-                        timeout=60)
-                log.append(f"$ systemctl start {quiesce_unit} "
-                           f"rc={r.returncode}")
-                if r.returncode != 0:
-                    log.append(f"# WARNING: {quiesce_unit} RESTART FAILED "
-                               "(rc={r.returncode}) — the standing port "
-                               "owner is DOWN; restart it manually")
+                # #332 (Codex P2 on #324): a RAISING unit restart (e.g.
+                # subprocess.TimeoutExpired) used to propagate out of
+                # restore() BEFORE pcscd_lock_release below — stranding
+                # the held flock (and the marker) in a long-lived
+                # caller. The restart failure is reported loudly but
+                # must never skip the pcscd restore.
+                try:
+                    r = run(f"systemctl start {shlex.quote(quiesce_unit)}",
+                            timeout=60)
+                except Exception as e:  # noqa: BLE001 — reported below
+                    log.append(f"# WARNING: {quiesce_unit} RESTART RAISED "
+                               f"({e!r}) — the standing port owner is "
+                               "DOWN; restart it manually")
+                else:
+                    log.append(f"$ systemctl start {quiesce_unit} "
+                               f"rc={r.returncode}")
+                    if r.returncode != 0:
+                        log.append(f"# WARNING: {quiesce_unit} RESTART FAILED "
+                                   "(rc={r.returncode}) — the standing port "
+                                   "owner is DOWN; restart it manually")
             if lock_state["fd"] is not None:
                 ok_pcscd, _ = pcscd_lock_release(lock_state["fd"],
                                                  run=run,
@@ -642,9 +693,13 @@ def _cli() -> int:
     exporter-configured speed), --exporter-cfg PATH, --no-boot-check
     (explicit opt-out, logged), --boot-check wire (#313: console-none
     families — proof-of-boot is a GetSlotStatus round-trip, not a
-    console signature), --quiesce-unit NAME (#314: a systemd unit that
-    owns the port, e.g. nucula-ccid-broker — stopped/started under the
-    held flock), --stopbits N (2 = GemPC serial, 1 = USB-CDC).
+    console signature), --console-none (#332: the image was built
+    console-less, CONFIG_ESP_CONSOLE_NONE — with no explicit
+    --boot-check the proof-of-boot AUTO-defaults to the wire check;
+    --boot-check/--no-boot-check still win), --quiesce-unit NAME
+    (#314: a systemd unit that owns the port, e.g.
+    nucula-ccid-broker — stopped/started under the held flock),
+    --stopbits N (2 = GemPC serial, 1 = USB-CDC).
     """
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
@@ -658,7 +713,12 @@ def _cli() -> int:
     ap.add_argument("--exporter-cfg", default=None)
     ap.add_argument("--no-boot-check", action="store_true")
     ap.add_argument("--boot-check", choices=("console", "wire"),
-                    default="console")
+                    default=None)
+    ap.add_argument("--console-none", action="store_true",
+                    help="the image is console-less "
+                         "(CONFIG_ESP_CONSOLE_NONE): with no explicit "
+                         "--boot-check, default the proof-of-boot to "
+                         "the wire check")
     ap.add_argument("--quiesce-unit", default=None)
     ap.add_argument("--stopbits", type=int, default=2)
     args = ap.parse_args()
@@ -673,7 +733,15 @@ def _cli() -> int:
         boot_check = False
     elif args.boot_check == "wire":
         boot_check = "wire"
+    elif args.boot_check == "console":
+        # an EXPLICIT console choice beats --console-none: forwarded
+        # as-is, the library auto-default would silently flip it to
+        # the wire check (#332: explicit flags always win)
+        boot_check = None
+        args.console_none = False
     else:
+        # "console" or unspecified: the library-level console default
+        # applies — BUT console_none may auto-default it to "wire"
         boot_check = None
     # a previous SIGKILL'd flash may have left pcscd down with a stale
     # marker — put the bench back before we begin (2026-10-20 c3
@@ -695,8 +763,11 @@ def _cli() -> int:
         boot_check=boot_check,
         quiesce_unit=args.quiesce_unit,
         stream_log=True,
-        wire_check=(lambda p: wire_boot_check(p, stopbits=args.stopbits))
-        if boot_check == "wire" else None)
+        console_none=args.console_none,
+        # unconditional: harmless in console mode, and threads
+        # --stopbits into the wire check when console_none AUTO-defaults
+        # the boot proof (#332) exactly as an explicit --boot-check wire
+        wire_check=lambda p: wire_boot_check(p, stopbits=args.stopbits))
     # the log already streamed live (stream_log=True); the returned copy
     # is the canonical record — print it once more for file/pipe capture
     print(log)

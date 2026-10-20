@@ -597,6 +597,357 @@ class ObservabilityTests(unittest.TestCase):
                         f"no phase line before first esptool: {seen[:3]}")
 
 
+class ConsoleNoneDefaultTests(unittest.TestCase):
+    # #332 P2 on #324: console-none families (sdkconfig-xtensa.full,
+    # sdkconfig.defaults.esp32 — CONFIG_ESP_CONSOLE_NONE=y) can never
+    # print the console signature. With NO explicit boot_check the
+    # proof-of-boot AUTO-defaults to the wire check; explicit flags
+    # still win.
+    PORT = ("/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-"
+            "if00-port0")
+
+    def _flash(self, console_none=True, boot_check=None, text=None,
+               wire=(True, "GetSlotStatus: OK")):
+        caps, wires = [], []
+
+        def run(cmd, timeout=300):
+            return FakeResult(0)
+
+        ok, log = esp32_flash.flash_esp32(
+            self.PORT, "esp32", {"0x40000": "/tmp/app.bin"}, run=run,
+            usb_reset=lambda d: True, rebind=lambda p: True,
+            quiesce=lambda: None, restore=lambda: None,
+            boot_check=boot_check, console_none=console_none,
+            capture=lambda p: caps.append(p)
+            or (text if text is not None else "Calling app_main()"),
+            wire_check=lambda p: wires.append(p) or wire)
+        return ok, log, caps, wires
+
+    def test_console_none_defaults_to_wire(self):
+        ok, log, caps, wires = self._flash()
+        self.assertTrue(ok)
+        self.assertEqual(wires, [self.PORT])   # wire check ran
+        self.assertEqual(caps, [])             # console never touched
+        self.assertIn("auto-default", log)
+
+    def test_console_none_explicit_optout_wins(self):
+        ok, log, caps, wires = self._flash(boot_check=False)
+        self.assertTrue(ok)
+        self.assertIn("SKIPPED", log)
+        self.assertEqual(wires, [])
+        self.assertEqual(caps, [])
+
+    def test_console_none_explicit_check_wins(self):
+        ok, log, caps, wires = self._flash(
+            boot_check=lambda t: "Calling app_main" in t)
+        self.assertTrue(ok)
+        self.assertEqual(caps, [self.PORT])    # console check ran
+        self.assertEqual(wires, [])
+
+    def test_console_build_keeps_the_console_default(self):
+        # console_none=False (or omitted): nothing changes — the
+        # default console check still governs, wire never runs
+        ok, log, caps, wires = self._flash(
+            console_none=False,
+            text="E (250) i2c: CONFLICT! driver_ng is not allowed")
+        self.assertFalse(ok)
+        self.assertIn("BOOT CHECK FAILED", log)
+        self.assertEqual(caps, [self.PORT])
+        self.assertEqual(wires, [])
+
+
+class CliBootCheckResolutionTests(unittest.TestCase):
+    # #332: the CLI layer must forward the auto-default inputs so the
+    # LIBRARY does the defaulting (one code path), while an explicit
+    # --boot-check console must beat --console-none instead of being
+    # silently flipped to the wire check.
+    def _cli(self, *extra):
+        import io
+        import contextlib
+        captured = {}
+
+        def fake_flash(port, chip, images, **kw):
+            captured.update(kw)
+            return True, "stub"
+
+        orig_flash = esp32_flash.flash_esp32
+        orig_recover = esp32_flash.recover_stale_pcscd_down
+        orig_argv = sys.argv
+        esp32_flash.flash_esp32 = fake_flash
+        esp32_flash.recover_stale_pcscd_down = lambda run=None: False
+        sys.argv = ["esp32_flash.py", "--port", "/dev/null",
+                    "--chip", "esp32", "--image", "0x40000=/tmp/app.bin",
+                    *extra]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = esp32_flash._cli()
+        finally:
+            esp32_flash.flash_esp32 = orig_flash
+            esp32_flash.recover_stale_pcscd_down = orig_recover
+            sys.argv = orig_argv
+        self.assertEqual(rc, 0)
+        return captured
+
+    def test_console_none_forwards_and_threads_wire_check(self):
+        kw = self._cli("--console-none")
+        self.assertTrue(kw["console_none"])
+        self.assertIsNone(kw["boot_check"])   # library auto-defaults
+        self.assertIsNotNone(kw["wire_check"])  # --stopbits threading
+
+    def test_explicit_console_beats_console_none(self):
+        kw = self._cli("--console-none", "--boot-check", "console")
+        self.assertFalse(kw["console_none"])
+        self.assertIsNone(kw["boot_check"])   # plain console default
+
+    def test_explicit_no_boot_check_beats_console_none(self):
+        kw = self._cli("--console-none", "--no-boot-check")
+        self.assertFalse(kw["boot_check"])
+        self.assertTrue(kw["console_none"])   # forwarded, but inert
+
+    def test_plain_invocation_is_unchanged(self):
+        kw = self._cli()
+        self.assertFalse(kw["console_none"])
+        self.assertIsNone(kw["boot_check"])
+
+
+class UnitRestartRaiseTests(unittest.TestCase):
+    # #332 P2 on #324: a RAISING unit restart (e.g. a subprocess
+    # TimeoutExpired out of run()) used to propagate out of restore()
+    # BEFORE pcscd_lock_release — stranding the held bench flock in a
+    # long-lived caller. The raise is reported and the pcscd restore
+    # (and the lock release) must still happen.
+    PORT = ("/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_"
+            "90:DA:72:9A:50:18-if00")
+
+    def test_unit_restart_raise_still_releases_the_bench_lock(self):
+        import fcntl
+        import tempfile
+        calls = []
+        seen = []
+
+        class LogSpy(list):
+            def __init__(self, echo=False):
+                super().__init__()
+
+            def append(self, item):
+                seen.append(str(item))
+                super().append(item)
+
+        def run(cmd, timeout=300):
+            calls.append(cmd)
+            if "systemctl start nucula-ccid-broker" in cmd:
+                raise RuntimeError("systemd lost the bus")
+            return FakeResult(0)
+
+        orig_log = esp32_flash.StreamingLog
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig_lock = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            esp32_flash.StreamingLog = LogSpy
+            try:
+                ok, _ = esp32_flash.flash_esp32(
+                    self.PORT, "esp32c3", {"0x40000": "/tmp/app.bin"},
+                    run=run, usb_reset=lambda d: True,
+                    rebind=lambda p: True,
+                    boot_check=lambda t: True,
+                    capture=lambda p: "Calling app_main()",
+                    quiesce_unit="nucula-ccid-broker")
+                self.assertTrue(ok)
+                self.assertTrue(any("RESTART RAISED" in s for s in seen),
+                                f"no raise warning in log: {seen}")
+                # pcscd restore ran DESPITE the raise
+                self.assertTrue(any("start pcscd.socket pcscd" in c
+                                    for c in calls))
+                # the flock was NOT stranded: a fresh non-blocking
+                # acquire on the same file must succeed
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+            finally:
+                esp32_flash.PCSCD_LOCK = orig_lock
+                esp32_flash.StreamingLog = orig_log
+
+
+class MarkerUntilRestartTests(unittest.TestCase):
+    # #332 P2 on #324: the .pcscd-down marker is cleared ONLY on a
+    # VERIFIED pcscd restart — a failed/raising `systemctl start` used
+    # to clear it in the finally, losing the only recoverable record
+    # that pcscd (and every other bench reader) is down.
+
+    def test_marker_kept_when_restart_fails(self):
+        import fcntl
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                fd = esp32_flash.pcscd_lock_acquire(
+                    run=lambda c, timeout=60: FakeResult(0))
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+                self.assertTrue(marker.exists())
+                pcscd_ok, _ = esp32_flash.pcscd_lock_release(
+                    fd, run=lambda c, timeout=60:
+                    FakeResult(1, err="start request repeated too quickly"),
+                    warn=lambda msg: None)
+                self.assertFalse(pcscd_ok)
+                self.assertTrue(marker.exists(),
+                                "marker cleared on a DEAD pcscd — the "
+                                "stale-marker recovery can never fire")
+                # the lock itself was still released
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+                # and the stale-marker recovery can now put pcscd back
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(0)))
+                self.assertFalse(marker.exists())
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_marker_kept_when_restart_raises(self):
+        import fcntl
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                fd = esp32_flash.pcscd_lock_acquire(
+                    run=lambda c, timeout=60: FakeResult(0))
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+
+                def run(cmd, timeout=60):
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+
+                pcscd_ok, _ = esp32_flash.pcscd_lock_release(
+                    fd, run=run, warn=lambda msg: None)
+                self.assertFalse(pcscd_ok)
+                self.assertTrue(marker.exists())
+                # lock released even though the restart raised
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_stale_marker_recovery_keeps_marker_on_failed_restart(self):
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+                marker.write_text("pcscd down since flash quiesce\n")
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(1)))
+                self.assertTrue(
+                    marker.exists(),
+                    "recovery cleared the marker on a failed restart")
+                # a later successful retry clears it
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(0)))
+                self.assertFalse(marker.exists())
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+
+class EntryPointTests(unittest.TestCase):
+    # #332 P2s on #324: the in-repo flash entry points must actually
+    # USE the tool's protections — the nucula flow passes
+    # --quiesce-unit nucula-ccid-broker (not opt-in-only), and
+    # console-none builds default their boot proof to the wire check.
+    REPO = Path(__file__).resolve().parents[3]
+    BUILD_SH = REPO / "firmware" / "esp32-ccid" / "build.sh"
+    FLASH_AND_TEST = REPO / "firmware" / "esp32-ccid" / "flash_and_test.sh"
+
+    # build.sh resolves the partition table under CARGO_TARGET_DIR and
+    # runs `set -euo pipefail` — a missing glob match would abort the
+    # script before the flash line, so each dry run gets a fake target
+    # dir carrying a partition-table.bin at the expected path.
+    BOARDS = {
+        "c3-ccid": ("riscv32imc-esp-espidf", "debug"),
+        "m5stick": ("xtensa-esp32-espidf", "release"),
+    }
+
+    def _dry_run_flash_cmd(self, board, env=None):
+        import os
+        import subprocess
+        import tempfile
+        triple, profile = self.BOARDS[board]
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        pt = (Path(td.name) / triple / profile / "build"
+              / "esp-idf-sys-dryrun" / "out" / "build"
+              / "partition_table" / "partition-table.bin")
+        pt.parent.mkdir(parents=True)
+        pt.write_bytes(b"\xeb\xeb\xa7\x00" + b"\0" * 28)
+        r = subprocess.run(
+            ["bash", str(self.BUILD_SH), board, "--flash",
+             "/dev/serial/by-id/dry-run-port", "--dry-run"],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, "CARGO_TARGET_DIR": td.name,
+                 **(env or {})})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = next(l for l in r.stdout.splitlines()
+                    if "esp32_flash.py" in l)
+        return line
+
+    def test_nucula_flash_passes_the_broker_quiesce_unit(self):
+        # the nucula CDC is held by the standing broker — the c3 board
+        # family must quiesce it, no longer opt-in
+        line = self._dry_run_flash_cmd("c3-ccid")
+        self.assertIn("--quiesce-unit nucula-ccid-broker", line)
+
+    def test_console_board_does_not_claim_console_none(self):
+        line = self._dry_run_flash_cmd("c3-ccid")
+        self.assertNotIn("--console-none", line)
+        self.assertNotIn("--boot-check", line)
+
+    def test_console_none_board_defaults_to_wire(self):
+        # sdkconfig-xtensa.full is console-none: the boot proof rides
+        # the wire check without the operator remembering the flag
+        line = self._dry_run_flash_cmd("m5stick")
+        self.assertIn("--console-none", line)
+        self.assertNotIn("--quiesce-unit", line)  # xtensa ≠ nucula
+
+    def test_explicit_boot_check_env_overrides_the_default(self):
+        line = self._dry_run_flash_cmd(
+            "m5stick", env={"ESP_BOOT_CHECK": "console"})
+        self.assertIn("--boot-check console", line)
+        self.assertNotIn("--console-none", line)
+
+    def test_quiesce_unit_env_overrides_the_nucula_default(self):
+        # escape hatch for hosts without the broker deployed: an EMPTY
+        # ESP_QUIESCE_UNIT suppresses the flag entirely; a named unit
+        # is passed through verbatim
+        line = self._dry_run_flash_cmd("c3-ccid",
+                                       env={"ESP_QUIESCE_UNIT": ""})
+        self.assertNotIn("--quiesce-unit", line)
+        line = self._dry_run_flash_cmd(
+            "m5stick", env={"ESP_QUIESCE_UNIT": "other-owner.service"})
+        self.assertIn("--quiesce-unit other-owner.service", line)
+
+    def test_flash_and_test_defaults_to_wire(self):
+        # its sdkconfig.defaults.esp32 flow is console-none — the
+        # esp32_flash.py invocation must carry the wire default (no
+        # dry-run mode exists for this script, so the invocation is
+        # asserted on source)
+        text = self.FLASH_AND_TEST.read_text()
+        idx = text.rindex("esp32_flash.py")  # the invocation, not the header
+        window = text[max(0, idx - 200):idx + 2000]
+        self.assertIn("--console-none", window)
+        self.assertIn("ESP_BOOT_CHECK", window)
+
+
 class SysfsTests(unittest.TestCase):
     def test_usb_dev_path_resolves_serial(self):
         with tempfile.TemporaryDirectory() as td:
