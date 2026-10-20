@@ -90,7 +90,17 @@ class Reader:
     def __init__(self, name: str, port: str):
         self.name = name
         self.port = port
-        self.s = serial.Serial(port, 115200, timeout=0.2)
+        # GemPC-Twin serial is 115200 8N2 — at the 8N1 default the
+        # m5stick's UART sees framing errors and answers NOTHING (not
+        # even the echo), so the battery silently tests a dead port
+        # (found 2026-10-20 while instrumenting #330). The nucula CDC
+        # is 8N1 and tolerates the 2-stop framing either way.
+        self.s = serial.Serial(port=None, baudrate=115200, timeout=0.2,
+                               stopbits=2)
+        self.s.port = port
+        self.s.dtr = False
+        self.s.rts = False
+        self.s.open()
         # AGENTS.md DTR-latch rule: pyserial asserts DTR at open; on the
         # nucula CDC that latches boot:0x5 on the next reset. Deassert
         # both lines immediately (Codex PR 107 P1).

@@ -1664,12 +1664,8 @@ mod tests {
         // The #125 one-shot RF_DISCOVER probe may fire right after the
         // park (probe_armed was set by the earlier latch) — let it
         // complete before measuring the parked cadence.
-        drv.transport_mut().push_reply(&[
-            MT_RSP | GID_RF,
-            OID_RF_DISCOVER,
-            0x01,
-            STATUS_OK,
-        ]);
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
         for _ in 0..16 {
             let _ = drv.is_card_present();
         }
