@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
+
+- `tests/hardware/nfc/J3R180-RUNBOOK.md` + `j3r180_gpg_lifecycle.py`:
+  the proven-safe envelope for install/use/test of the J3R180 dev
+  JavaCards through ANY pcscd-visible bench reader — org GP keyset
+  single-sourced, idempotent cleanup → baseline → install → SELECT →
+  findings → bounded gpg probe → uninstall → baseline-restore
+  verification. Every trap from the establishing session is a
+  preflight: stale scdaemon reader-port pins, reader pinning by exact
+  name (never index), the J3R180 ATR *family* (ATR is negotiated
+  per-reader from the ATS), and the no-default-keys rule (wrong SCP
+  cryptograms burn auth budget).
+- Reader matrix documented: ACR1252 oracle (USB CCID), m5stick
+  (`/etc/reader.conf.d/m5stick-gempc`, libccidtwin GemPC-Twin
+  impersonation — our firmware carries the full GP SCP channel),
+  nucula c3 (`nucula-ccid-broker` PTY + pre-existing reader config;
+  requires the `c3-ccid` serving image).
+- Findings on record: the JC2.2.2-era prebuilt OpenPGP CAP loads and
+  SELECTs on JCOP4 but is not functionally complete there (6A88/6E00
+  on data commands) — JCOP4-native applet build is the follow-up;
+  scdaemon wedges uninterruptibly on the host's shared reader set
+  (vpcd/modemifd IFDs) — drive gpg through pinned readers only.
+
 ### Fixed — #296: `stm32_flash.py` ELF-magic guard + TimeoutExpired runs the recovery ladder
 
 - `st-flash write` does NOT parse ELF — it flashes the file verbatim
