@@ -93,6 +93,18 @@ class Syscall(NamedTuple):
     ret: int
 
 
+def _device_matches(device: str, proc_link: str) -> bool:
+    """Codex P2 on #347: /proc/<pid>/fd symlinks resolve to the real
+    dentry (/dev/ttyUSB0), NOT the stable /dev/serial/by-id path a user
+    passes — resolve the request the same way before comparing."""
+    want = os.path.realpath(device)
+    got = os.path.realpath(proc_link)
+    if want == got:
+        return True
+    # explicit tty names and substrings still work as a fallback
+    return device in proc_link or device in got
+
+
 def unescape(s: str) -> bytes:
     """strace string-literal -> bytes.
 
@@ -242,7 +254,7 @@ def pin_fd(events: list[Syscall], device: str | None = None,
                 continue
             if not is_serial_device(link):
                 continue
-            if device is not None and device not in link:
+            if device is not None and not _device_matches(device, link):
                 continue
             candidates[fd] = link
             break

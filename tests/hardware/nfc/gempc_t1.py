@@ -139,10 +139,22 @@ GP_GET_DATA_INS = (0xCA,)
 GP_GET_DATA_TAGS = (b"\x00\xe0",)
 
 
+def _strip_channel(cla: int) -> int:
+    """Drop the logical-channel bits (b1..b3 for CLA >= 0x80) so a GP
+    command on channel 1+ (`81 50`, `85 82`, ...) normalizes to its
+    channel-0 form before the safety check (Codex P1 on #347)."""
+    return (cla & 0xF8) if cla >= 0x80 else cla
+
+
 def is_sc_class_apdu(apdu: bytes) -> bool:
-    if apdu[:2] in SC_CLASS_PREFIXES:
+    if len(apdu) < 2:
+        return False
+    if bytes([_strip_channel(apdu[0]), apdu[1]]) in (
+            bytes([_strip_channel(p[0]), p[1]]) for p in SC_CLASS_PREFIXES):
         return True
-    if len(apdu) >= 4 and apdu[1] in GP_GET_DATA_INS and apdu[2:4] in GP_GET_DATA_TAGS:
+    if (len(apdu) >= 4 and apdu[1] in GP_GET_DATA_INS
+            and apdu[2:4] in GP_GET_DATA_TAGS
+            and _strip_channel(apdu[0]) in (0x80, 0x84)):
         return True
     return False
 
@@ -611,7 +623,9 @@ class T1Session:
             if guard > 16:
                 raise T1Error(f"{label}: response chain exceeded 16 "
                               "blocks — aborting drain")
-            rack = r_block(self.nr)
+            # Codex P2 on #347: a response chain's blocks SHARE N(S)
+            # — acknowledge with that sequence, not the toggled nr.
+            rack = r_block(tb.ns)
             ans, tb = self.xfr_block(rack, label=f"{label}+RACK{guard}")
             if tb is None or not tb.is_i or not tb.edc_ok:
                 raise T1Error(f"{label}: chain block bad "
@@ -639,7 +653,8 @@ def run_probe(port: str, stopbits: int = 2, aid: bytes = DEFAULT_SELECT_AID,
         # Codex P1 on #347: the pcscd flock prevents host interference
         # but does NOT reserve the DUT — take the bench flock first so
         # a concurrent HIL/flashing session cannot race the port.
-        bench_fd = os.open("/tmp/amperstrand-bench.lock", os.O_RDWR)
+        bench_fd = os.open("/tmp/amperstrand-bench.lock",
+        os.O_RDWR | os.O_CREAT, 0o644)
         try:
             fcntl.flock(bench_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:

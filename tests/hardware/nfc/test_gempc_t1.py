@@ -373,3 +373,13 @@ class TestCodex347Followups:
         from nfc.gempc_t1 import r_block, lrc
         b = r_block(1)
         assert b[1] == 0x90 and b[2] == 0x00 and b[-1] == lrc(b[:-1])
+
+    def test_logical_channel_clas_normalized(self):
+        # Codex P1 on #347: GP commands on supplementary logical
+        # channels carry the channel in CLA b1..b3 (81 50, 85 82, 81 CA)
+        # — the guard must normalize before comparing.
+        from nfc.gempc_t1 import is_sc_class_apdu
+        assert is_sc_class_apdu(bytes.fromhex("8150000000"))
+        assert is_sc_class_apdu(bytes.fromhex("8582000000"))
+        assert is_sc_class_apdu(bytes.fromhex("81CA00E000"))
+        assert is_sc_class_apdu(bytes.fromhex("00CA006E")) is False
