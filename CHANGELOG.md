@@ -82,7 +82,6 @@
   220 B on a fresh one). libccidtwin resets its counters per
   SCardConnect — the endpoint now resets at the same anchor.
   Regression: `set_parameters_resets_stale_t1_endpoint_counters`.
-<<<<<<< HEAD
 
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
@@ -1536,5 +1535,3 @@ Firmware logs ride BLE GATT notifications (Nordic UART Service lookalike — ser
 [0.0.3]: https://github.com/yourusername/ccid-reader/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/yourusername/ccid-reader/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/yourusername/ccid-reader/releases/tag/v0.0.1
-=======
->>>>>>> origin/main
