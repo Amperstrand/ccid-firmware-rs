@@ -452,7 +452,6 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     GetSlotStatus round-trip on the freshly flashed port (via
     gempc_smoke — any LRC-valid RDR reply proves the serve loop is
     alive; the CONFLICT veto is console-side and does not apply).
-<<<<<<< HEAD
     The DEFAULT console capture carries the C3 JTAG-reset fallback
     (#336): both esptool's post-flash RTS reset and raw `setRTS()` are
     intermittently dropped on the C3's USB-JTAG composite port (AGENTS
@@ -461,14 +460,12 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     shutdown'` reset and a re-capture before the check runs
     (`jtag_reset` injectable for tests; classic-ESP32 boards have no
     JTAG path and never fall back).
-=======
     `console_none` (#313/#332): the image was built console-less
     (CONFIG_ESP_CONSOLE_NONE=y — sdkconfig-xtensa.full and the
     sdkconfig.defaults.esp32 flow) — when NO explicit `boot_check` is
     given, the proof-of-boot AUTO-defaults to the wire check (a
     console signature can never appear on a console-none build);
     explicit flags still win.
->>>>>>> origin/main
     `quiesce_unit` (#314): a systemd unit that owns the port (e.g. the
     nucula's standing `nucula-ccid-broker`) — stopped under the SAME
     held pcscd flock before the flash and restarted during restore.
