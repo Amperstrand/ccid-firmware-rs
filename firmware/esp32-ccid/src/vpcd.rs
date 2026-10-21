@@ -102,7 +102,14 @@ fn serve_connection<D: NfcDriver>(
     // tick — a 5 s read timeout keeps the wake cheap while giving the
     // parked re-arm a time base that does NOT depend on host polls
     // (pcscd stops probing entirely once a reader is marked dead).
-    let started = std::time::Instant::now();
+    // #349 (Codex P1, 00:14): the clock origin is PROCESS-WIDE — the
+    // handler and its driver SURVIVE reconnects in client_loop, so a
+    // connection-local Instant would reset now_ms to ~0 against a
+    // last_rearm_ms from the previous connection's domain (saturating
+    // subtraction pinned at zero → re-arms suppressed for the new
+    // connection's whole lifetime).
+    static CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let started = *CLOCK_ORIGIN.get_or_init(std::time::Instant::now);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     loop {
         let payload = match read_message(stream) {

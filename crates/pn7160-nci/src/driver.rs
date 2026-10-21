@@ -378,7 +378,15 @@ impl<T: Transport> Pn7160Driver<T> {
             RearmPhase::AwaitRsp { polls } => {
                 match self.transport.poll_frame() {
                     Some(f) if f.is_rsp_to(&reader::RF_DEACTIVATE_DISCOVERY) => {
-                        self.silent_rearms = 0;
+                        // #349 (Codex P1, 00:14): reset the silent streak
+                        // ONLY on a successful deactivate — a REFUSAL is
+                        // itself a failure signal (idle NFCC), and wiping
+                        // the streak on it capped the recurring
+                        // refused-then-silent escalation at 1, forever
+                        // below the wifi VEN-cycle threshold.
+                        if f.status() == Some(STATUS_OK) {
+                            self.silent_rearms = 0;
+                        }
                         self.rearm = if f.status() == Some(STATUS_OK) {
                             Some(RearmPhase::AwaitNtf { polls: 0 })
                         } else if self.transport.send(&reader::RF_DISCOVER_PASSIVE_A) {
@@ -1721,6 +1729,43 @@ mod tests {
     /// parked cadence — no fast cycling (the ~11-rapid-cycle chip-mute
     /// class), but never a permanent deaf state — and a tag NTF during
     /// the slow cycle must restore presence.
+    /// #349 (Codex P1, 00:14): a REFUSED deactivate is a failure signal
+    /// — the silent streak must survive it, so the recurring
+    /// refused-then-silent escalation actually reaches the VEN-cycle
+    /// threshold instead of resetting to 0 each round.
+    #[test]
+    fn refused_deactivations_preserve_silent_streak() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        let refused = [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, 0xA0];
+        // three rounds of: re-arm -> REFUSED deactivate -> escalated
+        // RF_DISCOVER that is never answered (silent) -> give-up.
+        for round in 0..3 {
+            let before = drv.silent_rearms;
+            drv.transport_mut().push_reply(&refused);
+            // maintenance drives the whole cycle (host silent)
+            for _ in 0..(PARKED_REARM_POLLS as usize + 4 * REARM_RSP_POLLS as usize + 16) {
+                // keep the clock past the window each round
+                drv.poll_maintenance(20_000 + round * 60_000);
+            }
+            assert!(
+                drv.silent_rearms > before,
+                "round {round}: silent streak must GROW on refused+silent"
+            );
+        }
+        assert!(
+            drv.silent_rearms >= 3,
+            "the streak must reach the VEN-cycle class, got {}",
+            drv.silent_rearms
+        );
+    }
+
     /// #349 (Codex P1, 23:53): a tag NTF arriving during a host-silent
     /// maintenance re-arm is DRAINED and latched — not read as an empty
     /// window that re-arms against the now-active tag.
