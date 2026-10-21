@@ -146,6 +146,21 @@ def _strip_channel(cla: int) -> int:
     return (cla & 0xF8) if cla >= 0x80 else cla
 
 
+def is_probe_safe_apdu(apdu: bytes) -> bool:
+    """Zero-risk probe set for --apdu: SELECT, GET DATA (non-SC tag),
+    GET RESPONSE — pure reads (Codex P1 on #347)."""
+    if len(apdu) < 4:
+        return False
+    cla, ins = apdu[0], apdu[1]
+    if ins == 0xA4 and cla in (0x00, 0x80):
+        return True                      # SELECT
+    if ins == 0xCA and not is_sc_class_apdu(apdu):
+        return True                      # GET DATA
+    if ins == 0xC0 and cla == 0x00:
+        return True                      # GET RESPONSE
+    return False
+
+
 def is_sc_class_apdu(apdu: bytes) -> bool:
     if len(apdu) < 2:
         return False
@@ -504,6 +519,11 @@ class T1Session:
             print(line)
 
     # -- T=1 plumbing --------------------------------------------------------
+    XFR_SETTLE_FLOOR = 1.5  # card ops class: GemPC errors ~0.8s, cards
+    #                    take seconds — a 0.15s settle closes the window
+    #                    before the answer and misreports a wedge (Codex
+    #                    P1 on #347, 23:55).
+
     def xfr_block(self, block: bytes, label: str = "xfr",
                   window: float | None = None,
                   max_wtx: int = 6) -> tuple[bytes, T1Block | None]:
@@ -514,9 +534,10 @@ class T1Session:
         XfrBlock and the real answer follows. Returns the final answer
         block raw + parsed.
         """
+        settle_floor = max(self.settle, self.XFR_SETTLE_FLOOR)
         for _ in range(max_wtx):
             seq, raw = self.exchange(MSG_XFR_BLOCK, block, window=window,
-                                      label=label)
+                                      settle=settle_floor, label=label)
             # Codex P2 on #347: match replies to the ACTIVE CCID
             # sequence — a delayed DataBlock from an EARLIER command
             # must not be consumed as this exchange's answer.
@@ -545,10 +566,10 @@ class T1Session:
 
     # -- session steps (the libccidtwin opening order) -----------------------
     def get_slot_status(self) -> Frame:
-        _q, raw = self.exchange(MSG_GET_SLOT_STATUS, window=4.0,
-                                label="GetSlotStatus")
+        q, raw = self.exchange(MSG_GET_SLOT_STATUS, window=4.0,
+                               label="GetSlotStatus")
         for f in parse_frames(raw):
-            if f.msg_type == RDR_SLOT_STATUS:
+            if f.msg_type == RDR_SLOT_STATUS and f.seq == q:
                 return f
         raise T1Error(f"GetSlotStatus: no SlotStatus reply "
                       f"(wire: {raw[:64].hex()})")
@@ -557,10 +578,10 @@ class T1Session:
         """IccPowerOn with the marginal-coupling retry pattern (power
         off + settle between attempts — t1_retry_probe)."""
         for i in range(attempts):
-            _q, raw = self.exchange(MSG_ICC_POWER_ON, window=20.0,
-                                    label=f"IccPowerOn#{i}")
+            q, raw = self.exchange(MSG_ICC_POWER_ON, window=20.0,
+                                   label=f"IccPowerOn#{i}")
             for f in parse_frames(raw):
-                if f.msg_type == RDR_DATA_BLOCK and f.payload:
+                if f.msg_type == RDR_DATA_BLOCK and f.payload and f.seq == q:
                     return bytes(f.payload)
             self.exchange(MSG_ICC_POWER_OFF, window=4.0,
                           label="IccPowerOff(retry)")
@@ -570,10 +591,10 @@ class T1Session:
     def set_parameters_t1(self, params: bytes = SET_PARAMS_T1_PAYLOAD) -> Frame:
         """SetParameters with bProtocolNum=1 in the header tail — the
         step that ARMS the T=1 endpoint (see module docstring)."""
-        _q, raw = self.exchange(MSG_SET_PARAMETERS, params, proto=1,
-                                window=8.0, label="SetParameters(T=1)")
+        q, raw = self.exchange(MSG_SET_PARAMETERS, params, proto=1,
+                               window=8.0, label="SetParameters(T=1)")
         for f in parse_frames(raw):
-            if f.msg_type == RDR_PARAMETERS:
+            if f.msg_type == RDR_PARAMETERS and f.seq == q:
                 return f
         raise T1Error(
             "SetParameters(T=1) not acknowledged (no RDR_to_PC_Parameters); "
@@ -721,6 +742,15 @@ def run_probe(port: str, stopbits: int = 2, aid: bytes = DEFAULT_SELECT_AID,
                 if is_sc_class_apdu(apdu):
                     raise T1Error(f"refusing SC-class APDU {hexapdu} "
                                   "(card-safety doctrine, AGENTS.md)")
+                if not is_probe_safe_apdu(apdu):
+                    # Codex P1 on #347 (23:55): --apdu is a PROBE input,
+                    # not a general sender — restrict to the zero-risk
+                    # read set so a typo'd write/update cannot mutate the
+                    # card through the CLI.
+                    raise T1Error(f"refusing non-probe APDU {hexapdu} — "
+                                  "only SELECT/GET DATA/GET RESPONSE are "
+                                  "allowed via --apdu (library callers "
+                                  "use transceive directly)")
                 inf = sess.transceive(apdu, label=hexapdu)
                 print(f"{hexapdu} -> {inf.hex()} SW={inf[-2:].hex()}")
     except T1Error as exc:

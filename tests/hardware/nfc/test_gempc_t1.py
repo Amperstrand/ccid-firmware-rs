@@ -463,3 +463,14 @@ class TestCodex347Followups:
 
         with pytest.raises(T1Error, match="out-of-sequence"):
             T1Session.transceive(S(), bytes.fromhex("00CA006E"))
+
+    def test_probe_safe_allowlist(self):
+        # Codex P1 on #347 (23:55): --apdu restricted to the zero-risk
+        # read set — writes/updates must be refused at the CLI.
+        from nfc.gempc_t1 import is_probe_safe_apdu
+        assert is_probe_safe_apdu(bytes.fromhex("00A40400023132"))
+        assert is_probe_safe_apdu(bytes.fromhex("00CA006E"))
+        assert is_probe_safe_apdu(bytes.fromhex("00C0000000"))
+        assert is_probe_safe_apdu(bytes.fromhex("00D6000000")) is False  # UPDATE BINARY
+        assert is_probe_safe_apdu(bytes.fromhex("0020008106313233343536")) is False  # VERIFY
+        assert is_probe_safe_apdu(bytes.fromhex("80E40000")) is False  # DELETE
