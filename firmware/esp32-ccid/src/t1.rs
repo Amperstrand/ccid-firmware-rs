@@ -229,6 +229,13 @@ impl T1Endpoint {
         *self = T1Endpoint::new();
     }
 
+    /// Test-only: the live (ns, host_ns) counters — #330 regression
+    /// coverage asserts the SetParameters reset actually zeroed them.
+    #[cfg(test)]
+    pub fn debug_ns(&self) -> (u8, u8) {
+        (self.ns, self.host_ns)
+    }
+
     /// Process one host block (an XfrBlock payload while T=1 is active).
     pub fn feed(&mut self, bytes: &[u8]) -> FeedResult {
         if bytes.len() < 4 {
