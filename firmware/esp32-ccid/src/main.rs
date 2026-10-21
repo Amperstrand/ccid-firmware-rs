@@ -704,6 +704,12 @@ fn main() {
         } else {
             esp32_ccid::m5stick_lcd::spawn_ticker();
         }
+        // t_72e1e2ed: the handler kernel pushes presence through an
+        // installed sink (crate boundary — it cannot see m5stick_lcd).
+        // Same #275 defect-3 wiring as the old in-handler call.
+        esp32_ccid::ccid_handler::install_card_presence_sink(
+            esp32_ccid::m5stick_lcd::set_card_present,
+        );
     }
 
     #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]

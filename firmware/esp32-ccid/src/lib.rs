@@ -12,13 +12,12 @@
 
 #[cfg(test)]
 pub mod ccid_fuzz;
-pub mod ccid_handler;
-
 // Serving-kernel modules extracted to crates/ccid-service (t_72e1e2ed):
 // re-exported under their historical paths so mains, drivers and tests
 // keep compiling unchanged. The crate boundary (ccid-service sees only
 // card-interface + ccid-core/protocol/transport-serial) is what makes
 // "works on any board" compiler-enforced.
+pub use ccid_service::ccid_handler;
 pub use ccid_service::ccid_types;
 pub use ccid_service::frontend;
 pub use ccid_service::nfc;
