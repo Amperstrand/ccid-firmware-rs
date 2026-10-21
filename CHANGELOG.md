@@ -40,6 +40,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — HIL verification protocol (draft): card registry + test manifests + human-ops queue
+
+- `docs/HIL-VERIFICATION-PROTOCOL.md`: generalizes the PR #321
+  hardware-verification-recipe shape (the protocol pilot) into a standing
+  protocol with three artifacts. (1) **Card registry** — the J3R180 dev
+  JavaCards keyed by CPLC (ATR is per-reader-negotiated and never
+  identity), serial/batch ledger rows citing #127/#155/#327, and the
+  card-state invariants: baseline-or-applet (the 4-package resting
+  registry incl. ISD `A000000151000000`), never-speculative-auth
+  (SC-class budget rules), org keyset only to CPLC-ledgered cards (the
+  `J3R180_CPLC_ALLOWLIST` gate, PR #341). (2) **Per-claim test
+  manifests** — a format binding each bench claim to firmware rev,
+  board, exact pcscd reader name, card CPLC, commands, and expected
+  evidence tied to the lifecycle tool's `phase()` lines + the ACR1252
+  field recorder's JSONL events (PR #355) + escape-counter probes, with
+  PASS/GATED/SKIP-amber/FAIL verdicts. (3) **Human-ops queue** — the
+  card moves, cable replugs, physical inspections and power
+  interventions only a human can do, each with a kanban
+  request/ack/post-verify protocol where the machine-readable post-state
+  (not the photo, not the ack text) is the required evidence. Includes a
+  worked example manifest (HIL-M-0001) for the proven m5stick J3R180
+  card-management lifecycle (install 35 s → SELECT → uninstall → baseline
+  restore; applet data ops #330-gated amber). Status: draft — no CI
+  gates; adoption path and in-repo source index included; every
+  bench-result claim cites a real source.
 ### Added — flash-via-labgrid design + bench device-inventory seed (kanban `t_f62142b1`)
 
 - `docs/FLASH-VIA-LABGRID-DESIGN.md`: the 2026-10-20 bench research on
@@ -1591,6 +1616,28 @@ Firmware logs ride BLE GATT notifications (Nordic UART Service lookalike — ser
   format documented in the module docstring +
   `tests/hardware/README.md`. Bench verification on the ACR1252 is
   the parent follow-up (this PR touches no hardware).
+### Changed — #332: `hal_i2c` production dispatch routes through the tested classifier (Codex review on #321)
+
+- The `#307` coalescing walk lived in the cfg(esp)-only `impl I2c for
+  I2cMasterDevice::transaction` and classified operations through
+  private `run_len_ops`/`read_at` twins of the host-tested
+  `write_run_len`/`op_is_read` — code that never compiled on host, so
+  the pinned-by-test classification and the classification actually
+  driving the wire could drift apart silently (the repo's #1 bug
+  class: mock/hardware divergence).
+- The walk is now the pure, host-compiled `dispatch_transaction`
+  (over the new `RawI2cMaster` FFI seam): it classifies exclusively
+  via `classify_ops` → `next_step` → `write_run_len`/`op_is_read`, and
+  the esp side is reduced to the three verbatim driver_ng FFI calls
+  plus a two-line `transaction` wrapper. Wire shape unchanged (#307
+  contract: [W…W] → ONE transmit; [W…W,R] → ONE fused
+  repeated-START transmit_receive).
+- Host tests now execute the production dispatch against a recording
+  `RawI2cMaster` mock: the #307 `write_many` sequence, `write_read`
+  fusion, mixed sequences, per-Read buffer placement, loud
+  coalesce-overflow and the new loud `MAX_TRANSACTION_OPS` cap
+  (32 — real drivers issue 1–2 ops) are all pinned on host by
+  construction. `pn7160-nci --lib`: 104 tests green.
 
 ### Fixed — #330: T=1 endpoint session reset
 
