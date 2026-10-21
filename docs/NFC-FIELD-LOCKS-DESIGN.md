@@ -102,6 +102,8 @@ discipline of `bench.py` / bolty-rs `docs/labgrid-bench-sharing.md`).
 | 1 | Single-field card ops (no pcscd lifecycle) | `tests/hardware/nfc/turnaround_probe.py`, `t1_retry_probe.py`, one differential leg (`test_differential.py`), Escape 0xD0/0xD2/0xD3 probes | **field lock** for that place → labgrid place |
 | 2 | Single-field pcscd-serving ops (connection opens, GP/gpg flows) | `test_gpg.py` leg, `j3r180_gpg_lifecycle.py` on one reader | **field lock** → labgrid place (pcscd stays up; serving is per-reader — proven, §1) |
 | 3 | Multi-field sequential ops | full differential run (same card through every reader — sequential by design) | field locks acquired **one at a time**, released between seats; never hold two |
+
+**Differential seat (review P2):** the full differential's premise — ONE card through EVERY reader — is incompatible with permanently fixed per-reader cards. Keep a dedicated **rotation card** (its own labeled seat, CPLC-ledgered) that is the ONLY card allowed to move between fields; per-reader resident cards stay fixed. The differential run then uses the rotation card seat-to-seat (field lock per seat, one at a time), and the drift-detection HIL asserts both the fixed map AND the rotation ledger. Cost: the differential no longer exercises the *resident* cards — acceptable because residents exist to keep each reader's field deterministic, while card-variance questions (#327-class) are exactly what the rotation card exists to answer.
 | 4 | pcscd lifecycle | conformance battery (`conformance_battery.py` stops pcscd), reader.conf enable/disable + restart | **whole-bench** + `/run/lock/bench-pcscd.lock` (existing rule) |
 | 5 | Flashing / OTA / console | `esp32_flash.py`, `stm32_flash.py`, `host-tools/ota_push.py`, coredump trigger/retrieve/erase, any serial open | **whole-bench** → labgrid place |
 | 6 | /dev or USB topology | replug, ST-LINK ops, exporter/coordinator restart or config deploy, udev work | **whole-bench** |
@@ -209,7 +211,11 @@ exclusion safely if the sibling projects recognize the same paths:
 ## 9. Verification plan — ALL TODO (design only, nothing bench-proven yet)
 
 - [ ] Fix cards physically; record per-seat CPLC via the #127
-      raw INITIALIZE UPDATE / CPLC probe; land `co-location.json`.
+      plain GET DATA CPLC (`80 CA 9F 7F 00` — no secure channel, no
+      auth budget; bench-proven 2026-10-21 via the field recorder:
+      full BER-TLV response + 9000 in 17 ms). NEVER raw INITIALIZE
+      UPDATE — it is SC-class and burns auth budget (review P1);
+      land `co-location.json`.
 - [ ] Drift test: HIL leg asserting each seat's co-location entry
       (present flag + CPLC) — red on any moved/swapped card.
 - [ ] Concurrency soak: two sessions on disjoint fields (e.g. m5stick
