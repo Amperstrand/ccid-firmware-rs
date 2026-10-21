@@ -36,6 +36,77 @@
   duplex/real-socket host tests (`tcp_server::tests`, the vpcd-suite
   pattern: `Read + Write` seam so a `ScriptedStream` drives the loop).
 
+### Docs — evening stamp (2026-10-21)
+
+- TESTED_AND_WORKING matrix rows brought level with main @428e834d:
+  m5stick serial now PASS incl. sustained LOAD (#372/#378 closed via
+  the WTX-grant interop fix #386); m5stick wifi-vpcd PARTIAL upgraded
+  with the first EXT AUTH 9000 (#380 auth half) and its GET STATUS
+  remainder.
+- ISO14443_PCB_CONFORMANCE §4: final verdict prepended — the deployed
+  card population rejects the spec-correct 0xF3 grant; fork ships the
+  0xF2 request-form echo (documented deviation, strict-mode opt-in
+  retained).
+
+### Fixed — #378/#380: WTX grant interop + vpcd probe session-safety
+
+- **#378 resolved (wire-proven)**: the J3R180 population REJECTS the
+  spec-correct S(WTX response) encoding (0xF3) — after a 0xF3 grant the
+  card goes silent and the exchange dies (netlog capture: three 0xF3
+  grants, zero card answers → the SW 6400 class). The iso14443 fork
+  (0f7d9d70) now sends the request-form echo (0xF2 + WTXM) — a
+  deliberate, documented, evidence-backed deviation; the b1/response
+  model stays for a future strict-mode opt-in. With 0xF2 grants the
+  FULL conformance set (b1 model, mid-chain S(WTX) per §7.5.7, BN
+  toggling) installs GREEN on the m5stick serial path (aacbe062).
+- **#380 (auth half) fixed**: vpcd ATR probes no longer re-run power_on
+  during a live session — the #360 capability gate forced MFRC522
+  mid-session probes into deactivate/reactivate, destroying the GP
+  security state during host key derivation (EXTERNAL AUTHENTICATE
+  6985). Mid-session probes answer from the cached ATR; removal
+  mid-session surfaces via the next APDU failure (documented trade);
+  sessionless probes unchanged. First-ever m5stick-vpcd EXTERNAL
+  AUTHENTICATE 9000. Remaining vpcd wrinkle (GET STATUS 6982
+  post-auth) tracked on #380.
+- Pins: iso14443@0f7d9d70, mfrc522-pcd@f9fb57b7 (unified). 242/242
+  host tests (new: sessionless-probe regression test).
+
+### Fixed — ISO 14443-4 S-block conformance (pin fa4f91f8)
+
+- Two spec deviations fixed in the iso14443 fork (PR #12, failing-test-
+  first; see docs/ISO14443_PCB_CONFORMANCE.md §6, now closed out):
+  1. S-block b1 is the request/response indicator, not a block number —
+     WTX grants were previously state-dependent 0xF2/0xF3 (strict cards
+     would reject intermittently; the J3R180 tolerated). Grants are now
+     always 0xF3.
+  2. Mid-chain S(WTX) (§7.5.7) no longer hard-errors the exchange: the
+     PCD grants and the chain continues, bounded by the session Limits.
+- Consumer effect: pins bump to iso14443@fa4f91f8 + mfrc522-pcd@122bce96
+  (unified). esp32-ccid 241/241 host tests, fmt/clippy clean.
+- Note: local xtensa builds currently need `--ignore-rust-version`
+  (#377: a shared-toolchain downgrade below the repo MSRV floor).
+
+### Fixed — #372: sustained LOAD SW 6400 after iso14443 re-pin (WTX budget)
+
+- Root cause (hardware A/B + host wire-mock, see
+  `docs/ISO14443_PCB_CONFORMANCE.md`): the rewritten `iso14443`
+  session (73db6d4) bounds work per exchange with defaults tuned for
+  fast readers — 8 consecutive S(WTX) / 32 total. A flash-writing
+  GlobalPlatform ISD legitimately emits longer WTX runs per APDU
+  during package LOAD; at MFRC522-over-I2C speeds the default budget
+  aborted the exchange (`LimitExceeded(ConsecutiveWtx)` → SW 6400 on
+  the wire) while single APDUs stayed green.
+- Fix: `mfrc522_driver.rs` configures explicit session limits
+  (consecutive WTX 64, total 4096, frames 4096, retransmissions 5).
+  Pins stay at 73db6d4/2a1afea — no fork, no re-pin.
+- Regression tests (`pcd_sustained_load_tests.rs`, wire-level mock):
+  chaining INF integrity, R(ACK) echo semantics, 20-run WTX dance,
+  and the budget behavior (defaults abort; configured limits survive).
+- Standards analysis recorded in `docs/ISO14443_PCB_CONFORMANCE.md`,
+  including the old pin's non-toggling-PCD-chain conformance deviation
+  (worked only because real cards are lenient) and the upstream
+  follow-ups filed.
+
 ### Added — shared-crates manifest (kernel graph SSOT)
 
 - `docs/SHARED-CRATES.md`: the cross-repo kernel dependency graph (crate

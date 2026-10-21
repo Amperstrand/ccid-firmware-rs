@@ -37,6 +37,8 @@ pub fn install_platform_clock() {
 
 pub mod m5stick_lcd;
 pub mod ota_header;
+#[cfg(all(test, feature = "backend-mfrc522"))]
+mod pcd_sustained_load_tests;
 pub mod pn532_driver;
 pub mod serial_framing;
 #[cfg(test)]

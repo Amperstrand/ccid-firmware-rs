@@ -325,19 +325,19 @@ fn handle_message<D: NfcDriver>(
                 // not observe the removal until it sent an APDU. The
                 // check is non-blocking and does NOT reactivate.
                 let present = handler.driver_mut().is_card_present();
-                // #360 P1 (merged-head follow-up): the fast path is
-                // only sound on backends whose presence poll
-                // physically observes removal — `present` above is
-                // meaningless during an ActiveSession on MFRC522
-                // (poll_physical_card short-circuits to true), so gate
-                // on the backend capability; MFRC522 keeps the
-                // per-probe power_on behavior that eventually notices
-                // the missing card.
-                if present
-                    && handler.driver_mut().presence_poll_detects_removal()
-                    && handler.driver_mut().session_active()
-                    && !cached_atr.is_empty()
-                {
+                // #360 P1 + #380: answer from the cache whenever a
+                // session is live. The old capability gate forced
+                // MFRC522 mid-session probes into power_on — which
+                // DEACTIVATES/REACTIVATES the card and destroys the
+                // GlobalPlatform security state during multi-second
+                // host-side key derivation (EXTERNAL AUTHENTICATE →
+                // 6985; m5stick-vpcd GP auth was never green). Trade,
+                // accepted: a card removed mid-session reads present
+                // until the next APDU fails; pcscd then tears the
+                // session down and the sessionless probe path runs a
+                // real power_on that observes the removal. PN7160's
+                // behavior is unchanged (it passed the old gate).
+                if present && handler.driver_mut().session_active() && !cached_atr.is_empty() {
                     return Some(cached_atr.clone());
                 }
                 let d = handler.driver_mut();
@@ -775,9 +775,10 @@ mod tests {
     }
 
     /// #360 P1 follow-up: an MFRC522-class backend (presence poll
-    /// short-circuits to `present` during ActiveSession) must NOT take
-    /// the cached-ATR fast path — per-probe power_on is the only thing
-    /// that eventually observes card removal there.
+    /// #380: a capability-less backend (MFRC522-class, presence poll
+    /// short-circuits to `present` during ActiveSession) MUST take the
+    /// cached-ATR fast path mid-session — per-probe power_on reactivates
+    /// the card and destroys GP auth state (EXTERNAL AUTHENTICATE 6985).
     #[test]
     fn no_capability_no_fast_path() {
         // Models MFRC522 during an ActiveSession: present=true without
@@ -821,17 +822,71 @@ mod tests {
         let _ = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx, &mut cached);
         assert!(!cached.is_empty());
 
-        // Capability false ⇒ the fast path must be skipped and
-        // power_on re-run on every probe — per-probe power_on is what
-        // eventually observes card removal on MFRC522.
+        // #380: mid-session probes MUST take the cached-ATR fast path
+        // on every backend — power_on here reactivates (DESELECTs) the
+        // card and destroys the GP security state during host-side key
+        // derivation. Removal mid-session surfaces via the next APDU
+        // failure instead; sessionless probes still run a real
+        // power_on.
         let before = handler.driver_mut().power_on_calls;
         for _ in 0..3 {
-            let _ = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx, &mut cached);
+            let ans = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx, &mut cached);
+            assert_eq!(
+                ans,
+                Some(cached.clone()),
+                "mid-session probe answers from cache"
+            );
         }
         assert_eq!(
             handler.driver_mut().power_on_calls,
-            before + 3,
-            "MFRC522-class backend must keep per-probe power_on (no fast path)"
+            before,
+            "session-active probes must not re-run power_on (#380)"
+        );
+    }
+
+    #[test]
+    fn sessionless_probe_still_runs_power_on() {
+        // No active session ⇒ the probe must do the real work even when
+        // a stale cache exists (card-swap correctness, #360 P2).
+        #[derive(Default)]
+        struct IdleMfr {
+            power_on_calls: usize,
+        }
+        impl NfcDriver for IdleMfr {
+            type Error = MockError;
+            fn init(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn is_card_present(&mut self) -> bool {
+                true
+            }
+            fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Self::Error> {
+                self.power_on_calls += 1;
+                atr[..2].copy_from_slice(&[0x3b, 0x02]);
+                Ok(2)
+            }
+            fn power_off(&mut self) {}
+            fn transmit_apdu(
+                &mut self,
+                _command: &[u8],
+                _response: &mut [u8],
+            ) -> Result<usize, Self::Error> {
+                Ok(0)
+            }
+            fn session_active(&self) -> bool {
+                false // sessionless
+            }
+        }
+
+        let mut handler = crate::ccid_handler::CcidHandler::new(IdleMfr::default());
+        let mut cached: Vec<u8> = vec![0x3b, 0x9u8, 0x9u8]; // stale cache
+        let mut rx = [0u8; 1024];
+        let before = handler.driver_mut().power_on_calls;
+        let _ = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx, &mut cached);
+        assert_eq!(
+            handler.driver_mut().power_on_calls,
+            before + 1,
+            "sessionless probe must run the real power_on"
         );
     }
 
