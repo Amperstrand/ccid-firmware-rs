@@ -101,6 +101,12 @@ impl<D: NfcDriver> CcidHandler<D> {
         self.core.set_current_protocol(protocol)
     }
 
+    /// Test-only: live T=1 endpoint counters (#330 regression coverage).
+    #[cfg(test)]
+    pub fn t1_debug_ns(&self) -> (u8, u8) {
+        self.t1.debug_ns()
+    }
+
     pub fn presence_state(&self) -> PresenceState {
         self.core.presence_state()
     }
@@ -216,6 +222,18 @@ impl<D: NfcDriver> CcidHandler<D> {
 
         if self.core.take_parameters_accepted() {
             self.t1_armed = true;
+            // #330: SetParameters(T=1) opens a NEW host T=1 session —
+            // libccidtwin restarts its block counters on every
+            // SCardConnect. A long-lived pcscd keeps the card powered
+            // between clients (no power cycle, so the take_card_reset
+            // disarm never fires) and the endpoint's ns/host_ns, chain
+            // buffers and retry cache would survive the re-arm: the new
+            // connection's very first I(ns=0) hits stale counters,
+            // R-block churn garbles the applet traffic and every data
+            // op reads 6A88/6E00 (bench 2026-10-20: GET DATA 220 B on a
+            // fresh pcscd, 6A88 on a long-lived one, same wire bytes).
+            // Reset the endpoint HERE, then apply the negotiated timing.
+            self.t1.reset();
             // G-04: apply the negotiated T=1 timing to the endpoint —
             // WTX requests are then sized against the BWT the host
             // actually believes, and chain pieces up to the negotiated
@@ -1144,6 +1162,87 @@ mod tests {
         assert_eq!(header.message_type, RDR_TO_PC_DATABLOCK);
         assert!(payload.is_empty());
         assert_eq!(header.specific[1], ICC_NOT_ACTIVE);
+    }
+
+    #[test]
+    fn set_parameters_resets_stale_t1_endpoint_counters() {
+        // Regression (#330, bench 2026-10-20): a long-lived pcscd keeps
+        // the card POWERED between client connections — no power cycle,
+        // so the take_card_reset disarm never fires. Each new client's
+        // SCardConnect still sends SetParameters(T=1) + fresh ns=0
+        // I-blocks. If the endpoint's counters survive the re-arm, the
+        // first I(ns=0) hits the stale host_ns and the exchange
+        // R-blocks/garbles the applet traffic (GET DATA → 6A88).
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        let mut response = [0u8; 512];
+
+        // Connection 1: arm the T=1 route and run one full exchange so
+        // the endpoint's ns/host_ns toggle away from zero.
+        let sp = build_set_parameters_cmd(0, 40, 1, &DEFAULT_T1_PARAMS);
+        let _ = handler.process_command(&sp, &mut response);
+        assert!(handler.t1_armed);
+
+        let mut ib = Vec::new();
+        ib.extend_from_slice(&[0x00, 0x00, 0x04, 0x00, 0xA4, 0x00, 0x00]);
+        let mut x = 0u8;
+        for &b in &ib {
+            x ^= b;
+        }
+        ib.push(x);
+        let payload = xfr_and_drive_wtx(&mut handler, 41, &ib);
+        assert_eq!(
+            payload[1] & 0x80,
+            0x00,
+            "sanity: connection-1 I-block must be answered with an I-block"
+        );
+        assert_ne!(
+            handler.t1_debug_ns(),
+            (0, 0),
+            "sanity: counters must have advanced past the first exchange"
+        );
+
+        // Connection 2 WITHOUT a power cycle (long-lived pcscd): the new
+        // client repeats SetParameters(T=1) then sends I(ns=0).
+        let sp2 = build_set_parameters_cmd(0, 50, 1, &DEFAULT_T1_PARAMS);
+        let _ = handler.process_command(&sp2, &mut response);
+        assert_eq!(
+            handler.t1_debug_ns(),
+            (0, 0),
+            "#330: SetParameters must reset the endpoint counters"
+        );
+
+        let payload2 = xfr_and_drive_wtx(&mut handler, 51, &ib);
+        assert_eq!(
+            payload2[1] & 0x80,
+            0x00,
+            "#330: fresh-session I(ns=0) must be answered with an I-block, \
+             not R-block churn from stale counters"
+        );
+    }
+
+    /// Send an I-block XfrBlock and drive the S(WTX) dance if the
+    /// endpoint defers the answer behind one (DEFAULT_T1_PARAMS timing
+    /// trips the WTX margin in the mock) — returns the final DataBlock
+    /// T=1 payload.
+    fn xfr_and_drive_wtx(handler: &mut CcidHandler<MockNfcDriver>, seq: u8, ib: &[u8]) -> Vec<u8> {
+        let mut response = [0u8; 512];
+        let xfr = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, seq, ib);
+        let len = handler.process_command(&xfr, &mut response);
+        let payload = parse_response(&response[..len]).1.to_vec();
+        if payload[1] == 0xC3 {
+            let m = payload.get(3).copied().unwrap_or(2);
+            let mut wtx_resp = vec![0x00, 0xE3, 0x01, m];
+            let mut x = 0u8;
+            for &b in &wtx_resp {
+                x ^= b;
+            }
+            wtx_resp.push(x);
+            let wxfr = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, seq + 1, &wtx_resp);
+            let len = handler.process_command(&wxfr, &mut response);
+            return parse_response(&response[..len]).1.to_vec();
+        }
+        payload
     }
 
     #[test]

@@ -36,7 +36,7 @@ forks, never copied into this tree (issues #19, #6 removed the old
 | Crate | Source | Pin | Shared with |
 |---|---|---|---|
 | `mfrc522` | `Amperstrand/mfrc522-rs` (`ai-experiments`) | rev `e9ced1e` | bolty-rs |
-| `iso14443` | `Amperstrand/iso14443-rs` (`ai-experiments`) | rev `268db79` | bolty-rs |
+| `iso14443` | `Amperstrand/iso14443-rs` (`ai-experiments`, rebased on Foundation main 216d1b9) | rev `73db6d4` | bolty-rs |
 | `mfrc522-pcd` | `Amperstrand/bolty-rs` | rev `3808ba9` | bolty-rs |
 | `pn532-transport` | `Amperstrand/bolty-rs` | rev `5f1215da` | bolty-rs |
 
