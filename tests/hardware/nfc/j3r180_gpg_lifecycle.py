@@ -138,9 +138,77 @@ def plain_cplc(reader: str) -> str | None:
             if len(body) - 1 < ln:
                 return None
             return body[1:1 + ln].hex()
-        return raw.hex()
+        # Unexpected response shape (not the 9F7F BER-TLV we asked
+        # for) is UNREADABLE, not "compare the raw bytes" — a garbage
+        # answer must never reach the ledger compare (fail closed).
+        return None
     except Exception:
         return None
+
+
+# GP Card Spec (v2.3 §11.9 / Table 11-86) CPLC '9F7F' value layout:
+# ICS fabricator(2) ICS type(2) OS id(2) OS date(2) OS level(2)
+# ICF fabricator(1) ICF type(1) ICF serial(4) — the ICF serial ends at
+# byte 16, so an identity-level pin needs >= 32 hex chars; the ICF
+# batch number follows (batch kinship). A batch-scoped entry must SAY
+# so with a trailing '*' (operator-accepted weaker guarantee).
+CPLC_IDENTITY_MIN_HEX = 32  # bytes 0..15: fabricator .. ICF serial
+
+
+def cplc_ledger_verdict(cplc_hex: str | None, ledger: list[str],
+                        allow_unverified: bool) -> tuple[bool, str]:
+    """Pure gate: may the fixed org keyset be used on this card?
+
+    Fail-closed on: no ledger, malformed/under-length ledger entries,
+    unreadable CPLC (unless allow_unverified), unregistered identity.
+    Returns (proceed, log-line)."""
+    if not ledger:
+        return False, ("preflight FAIL: J3R180_CPLC_ALLOWLIST unset — "
+                       "refusing GP auth with the fixed keyset (pin the "
+                       "card's CPLC value; an ATR prefix is family, not "
+                       "identity)")
+    if cplc_hex is None:
+        if allow_unverified:
+            return True, ("WARN: CPLC unreadable; proceeding on "
+                          "--allow-unverified-cplc (operator call)")
+        return False, ("preflight FAIL: CPLC unreadable — refusing GP "
+                       "auth with the fixed keyset (pin the card or "
+                       "pass --allow-unverified-cplc)")
+    cplc = cplc_hex.upper()
+    hexdigits = set("0123456789ABCDEF")
+    # Pass 1 — validate EVERY entry before any match: a malformed
+    # ledger is a configuration error and must refuse everything,
+    # even when another entry would have matched.
+    for raw in ledger:
+        entry = raw.strip().upper()
+        if not entry:
+            continue
+        if entry.endswith("*"):
+            pfx = entry[:-1].strip()
+            if len(pfx) < 6 or not set(pfx) <= hexdigits:
+                return False, (f"preflight FAIL: batch entry '{raw}' is "
+                               "not hex/a usable prefix")
+            continue
+        if len(entry) < CPLC_IDENTITY_MIN_HEX \
+                or not set(entry) <= hexdigits:
+            return False, (f"preflight FAIL: ledger entry '{raw}' is not "
+                           "an identity pin — need >= "
+                           f"{CPLC_IDENTITY_MIN_HEX} hex chars (through "
+                           "the GP CPLC ICF serial) or an explicit "
+                           "'*' batch prefix")
+    # Pass 2 — match.
+    for raw in ledger:
+        entry = raw.strip().upper()
+        if not entry:
+            continue
+        if entry.endswith("*") and cplc.startswith(entry[:-1].strip()):
+            return True, (f"preflight: CPLC {cplc[:16]}… matches declared "
+                          f"batch prefix {entry[:-1]} (operator-scoped, "
+                          "weaker than identity)")
+        if not entry.endswith("*") and cplc.startswith(entry):
+            return True, f"preflight: CPLC {cplc[:16]}… ledgered ✓"
+    return False, (f"preflight FAIL: CPLC {cplc[:16]}… not in the "
+                   "allowlist — unknown card, refusing GP auth")
 
 
 def card_atr(reader: str) -> str | None:
@@ -245,36 +313,20 @@ def preflight(reader: str, lines: list) -> bool:
                      "check failed (wrong-card key-burn guard)")
         return False
     # Codex P1 on #333: an ATR prefix proves FAMILY, not identity. The
-    # fixed org keyset must only go to ledgered cards: when
-    # J3R180_CPLC_ALLOWLIST is set (comma-separated hex prefixes of the
-    # CPLC VALUE unwrapped from the 9F7F TLV, e.g. "47909E" pins
-    # fabricator+ROM), the card's CPLC must
-    # match one before any key-bearing exchange. Unreadable CPLC is a
-    # hard stop unless the operator passes --allow-unverified-cplc.
-    ledger = [s.strip().upper()
-              for s in os.environ.get("J3R180_CPLC_ALLOWLIST",
-                                      "").split(",") if s.strip()]
-    if ledger:
-        cplc = plain_cplc(reader)
-        if cplc is None:
-            if ALLOW_UNVERIFIED_CPLC[0]:
-                lines.append("WARN: CPLC unreadable; proceeding on "
-                             "--allow-unverified-cplc (operator call)")
-            else:
-                lines.append("preflight FAIL: CPLC unreadable — "
-                             "refusing GP auth with the fixed keyset "
-                             "(pin the card or pass "
-                             "--allow-unverified-cplc)")
-                return False
-        elif not any(cplc.upper().startswith(pfx) for pfx in ledger):
-            lines.append(f"preflight FAIL: CPLC {cplc[:16]}… not in "
-                         "the allowlist — unknown card, refusing GP auth")
-            return False
-        else:
-            lines.append(f"preflight: CPLC {cplc[:16]}… ledgered ✓")
-    else:
-        lines.append("WARN: J3R180_CPLC_ALLOWLIST unset — ATR-family "
-                     "gate only (weaker; pin bench CPLCs to harden)")
+    # fixed org keyset goes ONLY to ledgered cards: every entry in
+    # J3R180_CPLC_ALLOWLIST pins either the card's CPLC value at
+    # identity level (>= 32 hex chars, through the GP CPLC ICF serial)
+    # or an explicit '*' batch prefix. A MISSING ledger refuses GP
+    # auth outright — the ATR-family gate alone is not enough (mission
+    # card-safety hardening on #341).
+    ledger = [s.strip() for s
+              in os.environ.get("J3R180_CPLC_ALLOWLIST",
+                                "").split(",") if s.strip()]
+    proceed, verdict_line = cplc_ledger_verdict(
+        plain_cplc(reader), ledger, ALLOW_UNVERIFIED_CPLC[0])
+    lines.append(verdict_line)
+    if not proceed:
+        return False
     r = gp(reader, "-l")
     check("GlobalPlatform ISD authenticates with org keyset",
           r.returncode == 0 and "ISD:" in r.stdout,
@@ -329,6 +381,12 @@ def cleanup_openpgp(reader: str, cap: Path | None) -> bool:
     for aid in artifacts():  # privileged strays: force
         gp(reader, f"--delete {aid} --force")
     return not artifacts()
+
+
+def status_only_exit(lines: list[str]) -> int:
+    """--status-only must FAIL when its checks fail (#332, Codex on
+    #325): a probe that always exits 0 is invisible to CI/cron."""
+    return 7 if any("FAIL" in ln for ln in lines) else 0
 
 
 def main() -> int:
