@@ -30,3 +30,4 @@ pub mod frontend;
 pub mod nfc;
 pub mod t1;
 pub mod turnaround;
+pub mod vpcd;

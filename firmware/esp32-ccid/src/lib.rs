@@ -124,7 +124,8 @@ pub mod netlog;
 ))]
 pub mod ota;
 
-// x86_64: pure std, always host-tested. Targets: wifi-vpcd builds only.
+// x86_64: pure std, always host-tested in ccid-service. Targets:
+// re-exported for wifi-vpcd builds only (kernel compiles it always).
 #[cfg(any(
     target_arch = "x86_64",
     all(
@@ -132,7 +133,7 @@ pub mod ota;
         any(target_arch = "xtensa", target_arch = "riscv32")
     )
 ))]
-pub mod vpcd;
+pub use ccid_service::vpcd;
 
 #[cfg(all(
     any(
