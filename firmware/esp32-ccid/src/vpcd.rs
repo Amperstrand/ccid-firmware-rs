@@ -325,7 +325,19 @@ fn handle_message<D: NfcDriver>(
                 // not observe the removal until it sent an APDU. The
                 // check is non-blocking and does NOT reactivate.
                 let present = handler.driver_mut().is_card_present();
-                if present && handler.driver_mut().session_active() && !cached_atr.is_empty() {
+                // #360 P1 (merged-head follow-up): the fast path is
+                // only sound on backends whose presence poll
+                // physically observes removal — `present` above is
+                // meaningless during an ActiveSession on MFRC522
+                // (poll_physical_card short-circuits to true), so gate
+                // on the backend capability; MFRC522 keeps the
+                // per-probe power_on behavior that eventually notices
+                // the missing card.
+                if present
+                    && handler.driver_mut().presence_poll_detects_removal()
+                    && handler.driver_mut().session_active()
+                    && !cached_atr.is_empty()
+                {
                     return Some(cached_atr.clone());
                 }
                 let d = handler.driver_mut();
@@ -479,6 +491,13 @@ mod tests {
     }
 
     impl NfcDriver for ScriptedDriver {
+        // Mirrors PN7160 (the backend wifi-vpcd is proven on): the
+        // presence poll physically observes removal, so the #360 P1
+        // capability gate lets the cached-ATR fast path run.
+        fn presence_poll_detects_removal(&self) -> bool {
+            true
+        }
+
         type Error = MockError;
 
         fn init(&mut self) -> Result<(), MockError> {
@@ -752,6 +771,67 @@ mod tests {
         assert!(
             handler.driver_mut().power_on_calls == 0,
             "absence handling must not attempt an activation"
+        );
+    }
+
+    /// #360 P1 follow-up: an MFRC522-class backend (presence poll
+    /// short-circuits to `present` during ActiveSession) must NOT take
+    /// the cached-ATR fast path — per-probe power_on is the only thing
+    /// that eventually observes card removal there.
+    #[test]
+    fn no_capability_no_fast_path() {
+        // Models MFRC522 during an ActiveSession: present=true without
+        // any physical check — the trait default capability (false).
+        #[derive(Default)]
+        struct MfrLike {
+            power_on_calls: usize,
+        }
+        impl NfcDriver for MfrLike {
+            type Error = MockError;
+            fn init(&mut self) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn is_card_present(&mut self) -> bool {
+                true // ActiveSession short-circuit, no physical check
+            }
+            fn power_on(&mut self, atr: &mut [u8]) -> Result<usize, Self::Error> {
+                self.power_on_calls += 1;
+                atr[..2].copy_from_slice(&[0x3b, 0x02]);
+                Ok(2)
+            }
+            fn power_off(&mut self) {}
+            fn transmit_apdu(
+                &mut self,
+                _command: &[u8],
+                _response: &mut [u8],
+            ) -> Result<usize, Self::Error> {
+                Ok(0)
+            }
+            fn session_active(&self) -> bool {
+                true
+            }
+            // presence_poll_detects_removal: trait default (false)
+        }
+
+        let mut handler = crate::ccid_handler::CcidHandler::new(MfrLike::default());
+        let mut cached: Vec<u8> = Vec::new();
+        let mut rx = [0u8; 1024];
+
+        // Warm the cache once through the slow path.
+        let _ = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx, &mut cached);
+        assert!(!cached.is_empty());
+
+        // Capability false ⇒ the fast path must be skipped and
+        // power_on re-run on every probe — per-probe power_on is what
+        // eventually observes card removal on MFRC522.
+        let before = handler.driver_mut().power_on_calls;
+        for _ in 0..3 {
+            let _ = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx, &mut cached);
+        }
+        assert_eq!(
+            handler.driver_mut().power_on_calls,
+            before + 3,
+            "MFRC522-class backend must keep per-probe power_on (no fast path)"
         );
     }
 
