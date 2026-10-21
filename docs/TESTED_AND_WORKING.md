@@ -27,12 +27,12 @@ that axis; **FAIL** = verified broken.
 |---|---|---|---|---|---|
 | STM32F469-DISCO (Cherry ST-2xxx profile) | contact slot, USART2 smartcard mode | USB CCID (TPDU level) | T=1 contact card (ComSign eID): ATR, APDU relay, T=0/T=1 | **PASS** @ e9173657 (2026-10-20, three-device stamp closing #308); labgrid HIL 7/7 @ 67bcfbc (2026-10-12) | #308 stamp; `pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` |
 | STM32F746-DISCO (Cherry profile, bit-bang) | contact slot, GPIO bit-bang | USB CCID | bench-distinct iSerial `ST2XXX-F746` landed; release build cached; **USB plug never re-attached since bring-up prep** | **NOT TESTED** (hardware off bench USB — see "Unavailable hardware") | 0af0fb0 prep; #302 deferred legs |
-| ESP32 M5StickC + MFRC522 (serial CCID, `build.sh m5stick`) | NFC (ISO 14443-4 / ISO-DEP) | GemPC Twin serial over FTDI, 115200 8N2, pcscd via libccidtwin | J3R180 (P71D321) contactless: ATR, T=1 endpoint (S-blocks, IFS, WTX, chaining), full GP lifecycle incl. applet data ops; reconnect stability | **PASS** @ **f2efdb97 (current main)** (2026-10-21: flash + wire boot proof, T=1 wire session, 5/5 pcscd reconnect cycles; battery/fuzz/soak at dd948466 same day) | PR #347 harness probe; #330 closure evidence; this file's session log below |
+| ESP32 M5StickC + MFRC522 (serial CCID, `build.sh m5stick`) | NFC (ISO 14443-4 / ISO-DEP) | GemPC Twin serial over FTDI, 115200 8N2, pcscd via libccidtwin | J3R180 (P71D321) contactless: ATR, T=1 endpoint (S-blocks, IFS, WTX, chaining), full GP lifecycle incl. applet data ops; reconnect stability | **PASS** @ **f2efdb97 (current main)** for all single-exchange ops (boot, ATR, T=1 session, 5/5 pcscd reconnects; battery at dd948466) — **EXCEPT sustained LOAD: CAP install fails SW 6400 (regression #372, post-#348 dep re-pin; pre-re-pin image green)** | PR #347 harness probe; #330 closure evidence; this file's session log below |
 | ESP32 M5StickC + MFRC522, SPP variant | NFC | Bluetooth Classic SPP → `/dev/rfcomm0`, pcscd | card-level verified, 30/30 soak, p50 48 ms/APDU | **PASS** @ m5stick-spp bench conf (2026-10-11) | firmware/esp32-ccid/README.md recipe |
 | ESP32 M5StickC, wifi-vpcd variant | NFC | WiFi VPCD (libifdvpcd) | card-present + ATR + first APDU round-trip proven with the patched host lib; APDU pairing wrinkle open | **PARTIAL** (2026-10-21; fw half merged in #360, host patch PR #359) | #326 trail |
 | ESP32 M5Atom + MFRC522 (default backend) | NFC | serial | builds green in CI; on-device bring-up pending | **NOT TESTED** on hardware | `esp32-build-secondary` |
 | ESP32 + PN532 (SPI) | NFC | serial | builds green; hardware verification pending | **NOT TESTED** on hardware | #249 bench card placements |
-| ESP32-C3 nucula + PN7160 (`build.sh c3-ccid` + PTY broker) | NFC | USB-CDC → `nucula-ccid-broker` PTY → pcscd | J3R180: ATR, APDU relay, **full GP lifecycle green** (install/SELECT/data ops/uninstall/baseline) | **PASS** @ **f2efdb97 (current main)** (2026-10-21: c3-ccid image flashed, boot-proven, broker reader serving — 3/3 sessions ATR+ISD SELECT 9000+CPLC 9000); earlier full-lifecycle + wire-silence + coredump evidence at e9173657-era | #308/#327 evidence; `tests/hardware/nucula/` |
+| ESP32-C3 nucula + PN7160 (`build.sh c3-ccid` + PTY broker) | NFC | USB-CDC → `nucula-ccid-broker` PTY → pcscd | J3R180: ATR, APDU relay, **full GP lifecycle green** (install/SELECT/data ops/uninstall/baseline) | **PASS** @ **f2efdb97 (current main)** — **FULL GP lifecycle green** (install 107 s → SELECT/VERIFY/GET DATA 9000 → uninstall → baseline restore, exit 0, 2026-10-21) + 3/3 broker sessions; wire-silence/coredump evidence at e9173657-era | #308/#327 evidence; `tests/hardware/nucula/` |
 | ESP32-C3 nucula bring-up image (`build.sh c3`) | PN7160 ladder | console | NCI init ladder + PN7160 alive, FWID self-stamp | **PASS** @ 0b8e33e (2026-10-20) | #312 (closed) |
 
 Direct pcscd/libccidtwin enumeration of the nucula CDC is impossible on
@@ -64,6 +64,7 @@ C3 silicon (USB-Serial/JTAG chip-resets on port-open, no disable bit —
 | Path | Metric | Value | When |
 |---|---|---|---|
 | m5stick serial GemPC ↔ J3R180 | APDU round-trip (empty SELECT, n=200, one connection) | **p50 42.0 ms / p95 47.0 ms / p99 47.1 ms**, connect 130.7 ms — measured @ dd948466 | 2026-10-21, `tests/hardware/perf/benchmark_readers.py -n 200` |
+| Nucula broker ↔ J3R180 | APDU round-trip (n=200) | **p50 400.0 ms / p99 400.5 ms, connect 1196.6 ms** — the C3 USB-CDC per-command latency floor class (#117); optimization lane |
 | ACR1252 reference oracle ↔ J3R180 | same workload | p50 8.84 ms / p95 8.96 ms, connect 38.9 ms (the ~5× serial-path gap is the known FTDI+firmware budget) | 2026-10-21, same run |
 | m5stick serial | decomposition | ~16 ms class = ≈5–6 ms wire @115200 8N2 + ≈10 ms firmware gap (MFRC522 I2C @100 kHz + card I/O) | issue #51 decomposition, 2026-08-30 |
 | m5stick SPP | p50 per APDU | 48 ms, 30/30 soak | 2026-10-11 |
@@ -179,3 +180,18 @@ are tracked on #127.
   (sha256 `48936445…04ace739`) + full-4MB m5stick backup
   (sha256 `7fb8b178…91728b037`) for the #326 lane.
 - Post-merge Codex sweep: 0 late findings across all 20 merged PRs.
+
+## Session verification log (2026-10-21, third pass — lifecycles + perf)
+
+- **Nucula broker FULL GP LIFECYCLE @ f2efdb97**: EXIT 0 — install
+  (107 s, --bs 200, CAP sha 9213b1d6…), SELECT 9000, VERIFY PW1 9000,
+  GET DATA 5E 9000, uninstall, baseline restore (5 pkgs). gpg SCD leg
+  DEGRADED (known host scdaemon-wedge class, not a device defect).
+- **m5stick regression #372**: same command at current main →
+  `LOAD failed: 0x6400` ×3; PRE-re-pin (e9173657-era) image on the same
+  board/card → install GREEN. A/B isolated to the #348 dep window;
+  single APDUs unaffected. Pre-re-pin image cached on the bench as the
+  known-good for CAP-install work until the bisect lands.
+- **Perf (n=200, both readers live)**: m5stick p50 42.0 ms; nucula
+  broker p50 400.0 ms / connect 1196.6 ms (C3 CDC floor class); ACR1252
+  oracle p50 8.8 ms.
