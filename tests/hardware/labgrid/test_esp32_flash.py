@@ -969,3 +969,27 @@ class SysfsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerdictCarriesRestoreTest(unittest.TestCase):
+    def test_restore_warning_rides_returned_log(self):
+        # #352 (Codex P2): the DEFAULT restore() appends warnings to the
+        # function's log AFTER the verdict returns in source order — the
+        # deferred join must include them.
+        import subprocess
+        import esp32_flash as ef
+
+        def failing_run(cmd, timeout):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        ok, log = ef.flash_esp32(
+            "/dev/null", "esp32",
+            {"0x40000": "/tmp/nonexistent.bin"},
+            quiesce_unit="broken-unit",
+            run=failing_run,
+            boot_check=False, usb_reset=lambda dev: True,
+            rebind=lambda port: True,
+        )
+        self.assertFalse(ok)
+        self.assertIn("RESTART RAISED", log,
+                      "restore warnings must ride the returned verdict")

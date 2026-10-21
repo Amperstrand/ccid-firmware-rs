@@ -502,13 +502,19 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     if baud is None:
         baud = 460800
 
+    # #352 (Codex P2): the verdict log is JOINED AFTER restore() — its
+    # warnings (RESTART RAISED, marker kept) must ride the returned log
+    # or a failed broker restart returns (True, log) invisibly in
+    # library mode (stream_log=False).
+    outcome: list = [False, []]
     try:
         try:
             quiesce()
         except Exception as e:  # noqa: BLE001 — reported in the verdict
             log.append(f"# QUIESCE FAILED ({e}) — flash NOT attempted; "
                        "pcscd state unknown, verify before bench use")
-            return False, "\n".join(log)
+            outcome[:] = (False, log)
+            return
         state = {"written": False, "erased": False}
         # DESCENDING offset order: the app lands before the partition
         # table — a mid-write failure leaves the OLD table describing
@@ -557,7 +563,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                 "boots; re-run this flash. If the port stays dead this "
                 "is the physical-replug class (Gotcha #3): replug USB, "
                 "then re-run.")
-            return False, "\n".join(log)
+            outcome[:] = (False, log)
+            return
         state["written"] = True
 
         # -- destructive steps ONLY after every write landed --
@@ -570,7 +577,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                            "flash but the old otadata/selector still "
                            "points at the previous slot — the board "
                            "may boot the OLD image. Re-run this flash.")
-                return False, "\n".join(log)
+                outcome[:] = (False, log)
+                return
         state["erased"] = True
 
         # -- final reset + sync sanity (the documented chip-reset step) --
@@ -579,7 +587,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
             log.append("# reset/flash-id failed after successful "
                        "write+erase — power-cycle or replug, images ARE "
                        "on flash.")
-            return False, "\n".join(log)
+            outcome[:] = (False, log)
+            return
 
         if boot_check is not False:
             if boot_check == "wire":
@@ -594,7 +603,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                     log.append("# BOOT CHECK FAILED (wire) — the freshly "
                                "flashed image does not answer GetSlotStatus; "
                                "flash verified ≠ boot verified.")
-                    return False, "\n".join(log)
+                    outcome[:] = (False, log)
+                    return
             else:
                 check = boot_check if boot_check is not None \
                     else boot_check_no_conflict
@@ -605,15 +615,18 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                                "verified; the dropped-reset class is "
                                "documented in AGENTS). Console tail:\n"
                                f"{text[-600:]}")
-                    return False, "\n".join(log)
+                    outcome[:] = (False, log)
+                    return
             log.append("# boot check passed")
         else:
             log.append("# BOOT CHECK SKIPPED (caller explicitly opted "
                        "out) — flash success is esptool-only, NOT "
                        "boot-proven")
-        return True, "\n".join(log)
+        outcome[:] = (True, log)
+        return
     finally:
         restore()
+        return outcome[0], "\n".join(outcome[1])
 
 
 def _boot_capture(port: str, seconds: float = 6.0) -> str:
