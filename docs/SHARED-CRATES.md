@@ -30,6 +30,10 @@ its home repo's default-branch HEAD; the report lands in
 
 ## Vendor / driver forks (repo-scoped, not shared)
 
+Per-fork fields — fork delta, **runtime role**, upstream status/PR, retirement
+trigger — live in the #294 vendor-patch manifest: `docs/vendor-patches.md`.
+This table is the pin map only.
+
 | dep | repo | pin | scope |
 |---|---|---|---|
 | `synopsys-usb-otg` | `Amperstrand/synopsys-usb-otg` | `764bc042` | ccid only (F469 USB; deletion condition in root `Cargo.toml` — drop when upstream ships F469) |
