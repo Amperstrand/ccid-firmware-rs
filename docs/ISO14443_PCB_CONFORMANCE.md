@@ -102,7 +102,15 @@ MFRC522-over-I2C speeds — dies. The defaults encode an assumption
 (fast reader, quick card) that our hardware violates by design. On our
 bench this was indistinguishable from a broken reader.
 
-**Verdict**: not a protocol-conformance bug in the new pin; a **policy
+**Verdict (final, 2026-10-21 evening — supersedes the limits-era analysis below):**
+the wire capture settled it: the deployed J3R180 population **rejects
+the spec-correct S(WTX response) encoding** (0xF3) — after a 0xF3
+grant the card goes silent (three grants, zero answers; netlog capture
+in #378). The fork therefore sends the request-form echo (0xF2 + WTXM,
+fork PR #13) — a deliberate, documented, reversible deviation (the b1
+model stays for a strict-mode opt-in). With 0xF2 grants the FULL
+conformance set installs GREEN on hardware. Limits-era verdict kept for
+history: not a protocol-conformance bug in the new pin; a **policy
 default that does not fit slow-PCCD + flash-writing-card workflows**,
 plus an old pin that was silently non-conformant and worked only
 because real cards are lenient about PCD-side block numbers. The
