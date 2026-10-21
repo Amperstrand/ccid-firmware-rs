@@ -78,7 +78,8 @@ state, (d) flashing. Only (a) is per-reader — (b)–(d) stay serialized.
    `/tmp/amperstrand-field-<place>.lock` instead of the whole-bench
    flock, so sessions on disjoint fields run concurrently — while
    flashing, USB, power, and pcscd-lifecycle operations keep the
-   whole-bench lock.
+   whole-bench lock **and acquire every field lock before proceeding**
+   (whole-bench exclusivity is coupled to the field locks, §6).
 
 ## 3. Coupling domains
 
@@ -93,32 +94,53 @@ The design decomposes the lock graph along exactly these lines.
 
 ## 4. Lock taxonomy (op class → lock)
 
-Acquisition order is always top-down; a field lock is a **leaf** — never
-acquire any other lock while holding one (preserves the existing AB-BA
+One canonical acquisition order for every class (2026-10-21 review
+note: an earlier draft called the field lock a "leaf — never acquire
+any other lock while holding one", contradicting the
+`field lock → labgrid place` arrows below; the two now agree):
+**bench lock (whole-bench ops only) → field lock(s) → labgrid place**,
+always acquired top-down, never in reverse. While a field session holds
+its one field lock it may acquire only its labgrid place — never a
+second field lock and never the bench lock (this preserves the AB-BA
 discipline of `bench.py` / bolty-rs `docs/labgrid-bench-sharing.md`).
+Whole-bench ops are the defined exception on the field-lock count: they
+hold the bench lock and then **every** field lock (§6) — that coupling
+is what keeps them exclusive with field sessions.
 
 | # | Op class | Examples (in-repo callers) | Lock(s) |
 |---|---|---|---|
 | 1 | Single-field card ops (no pcscd lifecycle) | `tests/hardware/nfc/turnaround_probe.py`, `t1_retry_probe.py`, one differential leg (`test_differential.py`), Escape 0xD0/0xD2/0xD3 probes | **field lock** for that place → labgrid place |
 | 2 | Single-field pcscd-serving ops (connection opens, GP/gpg flows) | `test_gpg.py` leg, `j3r180_gpg_lifecycle.py` on one reader | **field lock** → labgrid place (pcscd stays up; serving is per-reader — proven, §1) |
-| 3 | Multi-field sequential ops | full differential run (same card through every reader — sequential by design) | field locks acquired **one at a time**, released between seats; never hold two |
+| 3 | Multi-field sequential ops | full differential run (rotation card through every reader — sequential by design; see differential-seat note below) | field locks acquired **one at a time**, released between seats; never hold two |
+| 4 | pcscd lifecycle | conformance battery (`conformance_battery.py` stops pcscd), reader.conf enable/disable + restart | **whole-bench + all field locks** + `/run/lock/bench-pcscd.lock` (existing pcscd rule) |
+| 5 | Flashing / OTA / console | `esp32_flash.py`, `stm32_flash.py`, `host-tools/ota_push.py`, coredump trigger/retrieve/erase, any serial open | **whole-bench + all field locks** → labgrid place |
+| 6 | /dev or USB topology | replug, ST-LINK ops, exporter/coordinator restart or config deploy, udev work | **whole-bench + all field locks** |
+| 7 | Power ops | board power-cycle, bench PDU | **whole-bench + all field locks** |
 
-**Differential seat (review P2):** the full differential's premise — ONE card through EVERY reader — is incompatible with permanently fixed per-reader cards. Keep a dedicated **rotation card** (its own labeled seat, CPLC-ledgered) that is the ONLY card allowed to move between fields; per-reader resident cards stay fixed. The differential run then uses the rotation card seat-to-seat (field lock per seat, one at a time), and the drift-detection HIL asserts both the fixed map AND the rotation ledger. Cost: the differential no longer exercises the *resident* cards — acceptable because residents exist to keep each reader's field deterministic, while card-variance questions (#327-class) are exactly what the rotation card exists to answer.
-| 4 | pcscd lifecycle | conformance battery (`conformance_battery.py` stops pcscd), reader.conf enable/disable + restart | **whole-bench** + `/run/lock/bench-pcscd.lock` (existing rule) |
-| 5 | Flashing / OTA / console | `esp32_flash.py`, `stm32_flash.py`, `host-tools/ota_push.py`, coredump trigger/retrieve/erase, any serial open | **whole-bench** → labgrid place |
-| 6 | /dev or USB topology | replug, ST-LINK ops, exporter/coordinator restart or config deploy, udev work | **whole-bench** |
-| 7 | Power ops | board power-cycle, bench PDU | **whole-bench** |
+**Differential seat (review P2):** the full differential's premise — ONE
+card through EVERY reader — is incompatible with permanently fixed
+per-reader cards. Keep a dedicated **rotation card** (its own labeled
+seat, CPLC-ledgered) that is the ONLY card allowed to move between
+fields; per-reader resident cards stay fixed. The differential run then
+uses the rotation card seat-to-seat (field lock per seat, one at a
+time), and the drift-detection HIL asserts both the fixed map AND the
+rotation ledger. Cost: the differential no longer exercises the
+*resident* cards — acceptable because residents exist to keep each
+reader's field deterministic, while card-variance questions
+(#327-class) are exactly what the rotation card exists to answer.
 
 Rule of thumb: **if the op couples exactly one field and nothing else,
-it takes one field lock. Everything else takes the bench.**
+it takes one field lock. Everything else takes the bench lock — and,
+before proceeding, every field lock (§6).**
 
 ## 5. Co-location map (target state)
 
 Card IDs are CPLC serials (stable); ATR is *negotiated per reader from
 the ATS* (J3R180 runbook) so ATR alone must never identify a card.
 Verification probe per seat: card-present via Escape 0xD0 `present` flag
-+ CPLC read — both already exist as bench patterns (AGENTS.md,
-"Bench coordination rules"; #127 card table).
++ CPLC read — the CPLC read is **plain GET DATA CPLC (`80 CA 9F 7F 00`,
+no auth)** from the zero-risk set only, never raw INITIALIZE UPDATE
+(§9 first item; AGENTS.md auth-budget rules; #127 card table).
 
 | Place (exporter-ai-legion-nfc.yaml) | Coupling domain | Card fixed there (CPLC) | Notes |
 |---|---|---|---|
@@ -155,15 +177,24 @@ stale.)
   (`results/history.jsonl`, existing) gains an event on acquire/release
   so `bench_inventory.py`-style tooling can show field-lock holders.
   TODO if insufficient: a `<path>.info` sidecar written best-effort.
-- **No nested field locks**: classes 1–3 only ever hold one field lock;
-  if a future op truly needs two, acquire in sorted place order and
-  document it here first.
-- **Whole-bench ops ignore field locks** (class 4–7): the bench lock
-  outranks everything by protocol, and those ops assume bench-wide
-  exclusivity anyway — including against field holders (a pcscd restart
-  or a flash legitimately stomps an in-flight field session; the
-  field holder's guard is that pcscd/flash ops are advertised in the
-  ledger and, per class 4–7, may only run under the bench lock).
+- **Nested field locks**: classes 1–3 hold at most ONE field lock; the
+  defined exception is class 4–7 (whole-bench ops), which acquires
+  EVERY field lock, in sorted place order, while holding the bench
+  lock. Any further multi-lock shape must be documented here first.
+- **Whole-bench ops couple to the field locks** (class 4–7, review
+  P1): after taking the bench lock, a whole-bench op acquires **every**
+  `/tmp/amperstrand-field-<place>.lock` (exclusive, sorted place
+  order, timeout polling) before it touches pcscd, a port, or a
+  device — and releases them together with the bench lock. Field locks
+  are exclusive for both sides, so a class 4–7 op can no longer restart
+  pcscd or flash underneath an active GP/GPG field session: the
+  whole-bench op WAITS for the holder (named in the wait log) or skips
+  — it never stomps. This is what the AGENTS.md bench-coordination rule
+  requires ("no other test can hold it during a battery run" — a pcscd
+  stop must exclude every field session; ledger advertisements are
+  observability, not synchronization). No AB-BA cycle is possible:
+  field sessions never take the bench lock, so the bench → field →
+  place order of §4 is a strict hierarchy.
 
 ## 7. What still needs the whole-bench lock (explicit list)
 
@@ -195,15 +226,19 @@ exclusion safely if the sibling projects recognize the same paths:
 - **Phase 2 (docs + siblings)**: update the cross-project canon —
   bolty-rs `docs/labgrid-bench-sharing.md` and the conwrt-bench
   `docs/labgrid-coordination.md` (org-wide canon per the
-  labgrid README header) — to define the field-lock family and the
-  "leaf lock, bench lock outranks" protocol.
+  labgrid README header) — to define the field-lock family, the single
+  bench → field → place acquisition order, and the all-field-locks
+  coupling for whole-bench ops.
 - **Phase 3 (relax)**: ccid single-field ops drop the bench-lock
   requirement once no sibling session can be surprised — i.e. after
   bolty/micronuts tooling either takes field locks for their own
-  single-field work or is confirmed labgrid-place-only. Per-place
-  labgrid exclusion (coordinator-enforced, verified 2026-10-14) remains
-  the belt-and-braces layer against non-adopting siblings during the
-  transition.
+  single-field work or is confirmed labgrid-place-only. Safety here
+  RESTS on the §6 coupling: since Phase 1, every whole-bench op in
+  this repo acquires all field locks, so dropping the bench lock for
+  classes 1–3 cannot let a pcscd restart or a flash land under a field
+  session. Per-place labgrid exclusion (coordinator-enforced, verified
+  2026-10-14) remains the belt-and-braces layer against non-adopting
+  siblings during the transition.
 - **Phase 4 (default flip + doctrine)**: flip the `bench_lock` fixture
   default off for classes 1–3; update AGENTS.md ("Bench coordination
   rules", "Testing through labgrid") and both READMEs.
@@ -223,9 +258,15 @@ exclusion safely if the sibling projects recognize the same paths:
       zero lock errors, results identical to serialized runs.
 - [ ] Exclusion check: two sessions on the SAME field — second skips
       with holder named, first unaffected.
-- [ ] Class 4–7 guard: pcscd restart under bench lock while a field
-      session runs — verify the field session's failure mode is a clean
-      skip/error, not a wedge (scdaemon shared-reader-set lesson).
+- [ ] Class 4–7 exclusion: pcscd restart (class 4) while a field
+      session holds a field lock — the restart BLOCKS on that field
+      lock (holder named), proceeds only after release; no overlap, no
+      stomp. Also verify the whole-bench op holds ALL field locks,
+      acquired after the bench lock in sorted place order.
+- [ ] Wedge containment: a field session whose reader/port vanishes
+      mid-op (bounce caused by a non-participating actor, e.g. systemd)
+      fails as a clean skip/error, not a wedge (scdaemon
+      shared-reader-set lesson).
 - [ ] Sibling dry-run: a bolty/micronuts-shaped session (bench lock
       only) vs a ccid field session — confirm the Phase-3 safety
       argument on the real bench.
@@ -236,7 +277,9 @@ exclusion safely if the sibling projects recognize the same paths:
 1. This PR: design doc + CHANGELOG only. No behavior change.
 2. Physical fixation + `co-location.json` + drift test (its own PR).
 3. `bench.py`: `FIELD_LOCK_PATHS`, `field_lock(place, timeout_s=0.0)`,
-   `FieldLockHeld`; ledger events; conftest fixture. (Phase 1)
+   `FieldLockHeld`; `acquire_all_field_locks()` for class 4–7 (bench
+   lock first, then every field lock, sorted place order); ledger
+   events; conftest fixture. (Phase 1)
 4. Opt-in per suite: classes 1–3 callers add the field lock (Phase 1).
 5. Canon updates in bolty-rs / conwrt-bench (Phase 2).
 6. Relax + flip + AGENTS.md doctrine rewrite (Phases 3–4), gated on §9.
