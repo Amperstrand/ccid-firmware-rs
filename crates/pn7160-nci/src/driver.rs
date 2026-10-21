@@ -340,6 +340,22 @@ impl<T: Transport> Pn7160Driver<T> {
         // Advance any in-flight re-arm phase one bounded step (RSP/NTF
         // collection) so the machine finishes even with no host polls.
         self.step_rearm();
+        // #349 (Codex P1, 23:53): the AwaitNtf window absorbs queued tag
+        // NTFs HERE too — normally the is_card_present() caller drains
+        // via wait_for_event after step_rearm, but this host-silent path
+        // never runs that, so an arriving activation NTF was read as an
+        // empty window and the next maintenance re-arm could fire an RF
+        // command against an already-activated tag. One bounded drain,
+        // same shape as the poll path.
+        match reader::wait_for_event(&mut self.transport) {
+            Some(reader::TagEvent::Tag(n, ats)) => self.latch_tag(n, ats),
+            Some(reader::TagEvent::LinkLost) => {
+                // Only meaningful with a latched tag; mirror the poll
+                // path's clear.
+                self.clear_tag();
+            }
+            None => {}
+        }
         if !self.discovery_parked || self.rearm.is_some() {
             return;
         }
@@ -1705,6 +1721,33 @@ mod tests {
     /// parked cadence — no fast cycling (the ~11-rapid-cycle chip-mute
     /// class), but never a permanent deaf state — and a tag NTF during
     /// the slow cycle must restore presence.
+    /// #349 (Codex P1, 23:53): a tag NTF arriving during a host-silent
+    /// maintenance re-arm is DRAINED and latched — not read as an empty
+    /// window that re-arms against the now-active tag.
+    #[test]
+    fn maintenance_rearm_absorbs_tag_ntf() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // maintenance fires the re-arm; queue the RSP *and* a fresh tag
+        // NTF — the NTF must be latched by the maintenance drain.
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.transport_mut().push_notification(&discover_ntf());
+        for _ in 0..16 {
+            drv.poll_maintenance(1_000);
+        }
+        assert!(
+            drv.is_card_present(),
+            "maintenance drain must latch the tag"
+        );
+    }
+
     /// #328/#332 (Codex P1): the parked re-arm fires by TIME when the
     /// host stops polling entirely (pcscd marks the reader dead) — no
     /// is_card_present call needed, only serve-loop maintenance ticks.
