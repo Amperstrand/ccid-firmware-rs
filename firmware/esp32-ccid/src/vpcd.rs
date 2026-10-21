@@ -19,6 +19,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::nfc::NfcDriver;
@@ -175,6 +176,109 @@ fn serve_connection<D: NfcDriver>(
     }
 }
 
+/// What the absence gate decided to log for one absent ATR poll.
+/// Returned by [`note_absent_poll`] so tests observe the exact decision.
+#[derive(Debug, PartialEq, Eq)]
+enum AbsenceNote {
+    /// present→absent transition (or first absence from the initial
+    /// unannounced state) — announce once.
+    Transition,
+    /// Still absent — slow heartbeat; payload is the poll count.
+    Heartbeat(u32),
+}
+
+/// #332/#350: ONE shared absence-transition gate for the ATR path.
+///
+/// Codex P1 on #350: the previous code kept two function-local
+/// `WAS_PRESENT` statics (one per note fn) and announced when the swap
+/// returned *absent*, so (a) on every consecutive absent poll the flag
+/// was already `false` and the warning repeated each ~400 ms probe
+/// instead of decaying to a ~6 min heartbeat, and (b) a successful ATR
+/// wrote a static the absent path never read, so presence could not
+/// re-arm the announcement. This struct is the single state both paths
+/// share; [`ABSENCE_GATE`] below is the live instance.
+///
+/// Transition-gated semantics:
+/// * absent after present (or after boot — the initial state counts as
+///   unannounced) → announce once;
+/// * absent after absent → silent, except a heartbeat every
+///   [`AbsenceGate::ABSENCE_LOG_EVERY`] polls;
+/// * present → silent, and re-arms the next transition.
+#[derive(Debug)]
+struct AbsenceGate {
+    /// Verdict of the last poll seen by EITHER path. Starts `true` so
+    /// the first absence at boot announces (the initial-unannounced
+    /// state behaves as a transition, per the #350 review).
+    was_present: bool,
+    /// Consecutive absent polls since the last announcement (wraps like
+    /// the old fetch_add counter; presence resets it).
+    absent_polls: u32,
+}
+
+impl AbsenceGate {
+    /// ~6 min at pcscd's ~400 ms ATR probe — the absence heartbeat.
+    const ABSENCE_LOG_EVERY: u32 = 900;
+
+    const fn new() -> Self {
+        Self {
+            was_present: true,
+            absent_polls: 0,
+        }
+    }
+
+    /// Absent ATR verdict: `Some(note)` when a warning should be logged.
+    fn note_absent(&mut self) -> Option<AbsenceNote> {
+        self.absent_polls = self.absent_polls.wrapping_add(1);
+        if self.was_present {
+            self.was_present = false;
+            self.absent_polls = 1;
+            Some(AbsenceNote::Transition)
+        } else if self.absent_polls.is_multiple_of(Self::ABSENCE_LOG_EVERY) {
+            Some(AbsenceNote::Heartbeat(self.absent_polls))
+        } else {
+            None
+        }
+    }
+
+    /// Present ATR verdict (successful power_on): silent, re-arms the
+    /// present→absent announcement and resets the heartbeat counter.
+    fn note_present(&mut self) {
+        self.was_present = true;
+        self.absent_polls = 0;
+    }
+}
+
+impl Default for AbsenceGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Live gate shared by both ATR paths — the single state the #350 P1
+/// asked for. Mutex only because a static must be `Sync`; the vpcd
+/// client is one thread.
+static ABSENCE_GATE: Mutex<AbsenceGate> = Mutex::new(AbsenceGate::new());
+
+fn note_absent_poll() -> Option<AbsenceNote> {
+    let mut gate = ABSENCE_GATE.lock().unwrap_or_else(|p| p.into_inner());
+    let note = gate.note_absent();
+    match note {
+        Some(AbsenceNote::Transition) => {
+            log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
+        }
+        Some(AbsenceNote::Heartbeat(n)) => log::warn!("vpcd: still absent ({} polls)", n),
+        None => {}
+    }
+    note
+}
+
+fn note_present_poll() {
+    ABSENCE_GATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .note_present();
+}
+
 /// #360 review (P1): request log line. NEVER include APDU payload
 /// bytes — VERIFY (`00 20 00 81 Lc …`) carries PIN digits in the first
 /// eight, CHANGE REFERENCE DATA likewise, and bench-net broadcasts
@@ -231,6 +335,7 @@ fn handle_message<D: NfcDriver>(
                         Ok(len) => {
                             *cached_atr = atr[..len].to_vec();
                             log::warn!("vpcd: ATR req → present, power_on ok ({} B)", len);
+                            note_present_poll();
                             Some(atr[..len].to_vec())
                         }
                         Err(_) => {
@@ -239,11 +344,19 @@ fn handle_message<D: NfcDriver>(
                         }
                     }
                 } else {
+                    // Codex P1 on #328 (tracked #332): pcscd probes ATR
+                    // presence at ~400 ms with no card — logging EVERY
+                    // absent answer spams the console indefinitely.
+                    // Log the ABSENCE TRANSITION only (first absent
+                    // after presence, or every ABSENCE_LOG_EVERY as a
+                    // slow heartbeat).
+                    // #350 gate does the transition-gated logging
+                    // (Transition announces once; Heartbeat every ~6 min).
+                    note_absent_poll();
                     // card gone (or never inserted): the cache no longer
                     // describes what is in the field — drop it so a
                     // later probe re-runs a fresh activation.
                     *cached_atr = Vec::new();
-                    log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
                     Some(Vec::new()) // no card → empty ATR (driver ejects + re-polls)
                 }
             }
@@ -499,6 +612,94 @@ mod tests {
             resp.is_empty(),
             "session-fatal failure must answer ICC-absent, got {resp:?}"
         );
+    }
+
+    /// #350 regression (Codex P1), part 1: N consecutive absent polls
+    /// must produce exactly ONE announcement plus the slow heartbeat.
+    /// The old swap-based gate saw `was_present == false` on every
+    /// consecutive absent poll and re-announced each ~400 ms probe.
+    #[test]
+    fn absent_streak_announces_once_then_heartbeats() {
+        let mut gate = AbsenceGate::new();
+        // First absence (the initial-unannounced state counts as a
+        // transition): announced exactly once.
+        assert_eq!(gate.note_absent(), Some(AbsenceNote::Transition));
+        let polls = 2 * AbsenceGate::ABSENCE_LOG_EVERY; // ~12 min of absence
+        let mut heartbeats = 0;
+        let mut silent = 0;
+        for _ in 2..=polls {
+            match gate.note_absent() {
+                Some(AbsenceNote::Heartbeat(n)) => {
+                    heartbeats += 1;
+                    assert_eq!(
+                        n,
+                        heartbeats * AbsenceGate::ABSENCE_LOG_EVERY,
+                        "heartbeat must fire on the exact poll multiple"
+                    );
+                }
+                Some(AbsenceNote::Transition) => panic!(
+                    "absent-after-absent must not re-announce — per-poll \
+                     spam is the #350 regression"
+                ),
+                None => silent += 1,
+            }
+        }
+        assert_eq!(heartbeats, 2, "one heartbeat per ~6 min of absence");
+        assert_eq!(silent, polls - 3, "every other absent poll is silent");
+    }
+
+    /// #350 regression (Codex P1), part 2: a present poll between
+    /// absences re-arms the transition. The old present path wrote a
+    /// different function-local static, so the gate never saw it and a
+    /// successful ATR could not close the absence announcement.
+    #[test]
+    fn present_poll_rearms_the_absence_transition() {
+        let mut gate = AbsenceGate::new();
+        assert_eq!(gate.note_absent(), Some(AbsenceNote::Transition));
+        assert_eq!(gate.note_absent(), None);
+        gate.note_present(); // successful ATR between absences
+        assert_eq!(
+            gate.note_absent(),
+            Some(AbsenceNote::Transition),
+            "present→absent after a successful ATR must announce again"
+        );
+        assert_eq!(gate.note_absent(), None);
+        // The re-arm also resets the heartbeat cadence: the next
+        // heartbeat is a full ABSENCE_LOG_EVERY absent polls after the
+        // re-armed transition, not sooner (2 absent polls counted
+        // above).
+        for _ in 3..AbsenceGate::ABSENCE_LOG_EVERY {
+            assert_eq!(gate.note_absent(), None);
+        }
+        assert_eq!(
+            gate.note_absent(),
+            Some(AbsenceNote::Heartbeat(AbsenceGate::ABSENCE_LOG_EVERY))
+        );
+    }
+
+    /// #350 wiring regression: both `note_*_poll` fns must drive the
+    /// ONE shared `ABSENCE_GATE`. This is the only test touching the
+    /// process-wide statics, so it cannot race the gate-local tests
+    /// above under the parallel test harness.
+    #[test]
+    fn note_poll_fns_share_one_gate() {
+        {
+            let mut gate = ABSENCE_GATE.lock().unwrap_or_else(|p| p.into_inner());
+            *gate = AbsenceGate::new();
+        }
+        assert_eq!(note_absent_poll(), Some(AbsenceNote::Transition));
+        assert_eq!(
+            note_absent_poll(),
+            None,
+            "consecutive absent polls must stay silent"
+        );
+        note_present_poll(); // the call the split-statics bug hid from the gate
+        assert_eq!(
+            note_absent_poll(),
+            Some(AbsenceNote::Transition),
+            "a successful ATR must close and re-arm the SHARED gate"
+        );
+        assert_eq!(note_absent_poll(), None);
     }
 
     /// #360 review (P1) "poll for link loss before serving the cached
