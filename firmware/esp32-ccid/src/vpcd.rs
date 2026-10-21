@@ -43,8 +43,15 @@ const VPCD_CTRL_ATR: u8 = 0x04;
 /// deterministically instead of racing one listener.
 pub fn spawn<D: NfcDriver + Send + 'static>(driver: D, host_ip: &str, port: u16) {
     let host = host_ip.to_string();
+    // #326 (core-dump 2026-10-21): 16 KiB is NOT enough for the APDU
+    // exchange path — the first transmit_apdu drove this thread to
+    // 16384/8 bytes used/free and the next interrupt landed on the
+    // smashed stack (panic in interrupt context, task 'pthread').
+    // The serial image runs the identical exchange on a task with
+    // ~31 KiB free, which is why only wifi-vpcd crashed. 32 KiB = 2x
+    // the observed high-water mark.
     let _ = std::thread::Builder::new()
-        .stack_size(16 * 1024)
+        .stack_size(32 * 1024)
         .name("vpcd".into())
         .spawn(move || client_loop(driver, &host, port));
 }
@@ -98,6 +105,12 @@ fn serve_connection<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     rx_buf: &mut [u8],
 ) {
+    // #326: last successful ATR, cached so the 1.2 s presence probes
+    // can answer WITHOUT re-running power_on (which re-activates and
+    // thereby DESELECTS the card — the churn that made the first APDU
+    // after connect take 1.6 s of T=1 resync and blow every host-side
+    // response-pairing race).
+    let mut cached_atr: Vec<u8> = Vec::new();
     loop {
         let payload = match read_message(stream) {
             Ok(Some(p)) => p,
@@ -120,8 +133,35 @@ fn serve_connection<D: NfcDriver>(
             }
             Err(_) => return, // hard I/O error — reconnect
         };
-        let response = handle_message(handler, &payload, rx_buf);
+        // #326 discriminator: log EVERY request kind and answer with a
+        // millisecond stamp so console and tcpdump correlate 1:1.
+        let t0 = std::time::Instant::now();
+        log::warn!(
+            "vpcd req: {}",
+            if payload.len() == 1 {
+                format!("ctrl 0x{:02x}", payload[0])
+            } else {
+                format!(
+                    "APDU {}B {}",
+                    payload.len(),
+                    payload[..payload.len().min(8)]
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                )
+            }
+        );
+        let response = handle_message(handler, &payload, rx_buf, &mut cached_atr);
         if let Some(resp) = response {
+            log::warn!(
+                "vpcd ans (+{}ms): {}B {}",
+                t0.elapsed().as_millis(),
+                resp.len(),
+                resp[..resp.len().min(8)]
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            );
             if send_message(stream, &resp).is_err() {
                 return;
             }
@@ -133,19 +173,25 @@ fn handle_message<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     payload: &[u8],
     rx_buf: &mut [u8],
+    cached_atr: &mut Vec<u8>,
 ) -> Option<Vec<u8>> {
     if payload.len() == 1 {
         match payload[0] {
             VPCD_CTRL_ATR => {
+                // #326: with a LIVE session answer from the cache —
+                // power_on here would re-activate (and deselect) the
+                // card on every 1.2 s presence probe.
+                if handler.driver_mut().session_active() && !cached_atr.is_empty() {
+                    return Some(cached_atr.clone());
+                }
                 let d = handler.driver_mut();
                 let present = d.is_card_present();
                 if present {
                     let mut atr = [0u8; 64];
                     match d.power_on(&mut atr) {
                         Ok(len) => {
-                            // #326 observability: the ATR exchange is the
-                            // first thing that dies on this path — every
-                            // request and its verdict goes to the console.
+                            cached_atr.clear();
+                            cached_atr.extend_from_slice(&atr[..len]);
                             log::warn!("vpcd: ATR req → present, power_on ok ({} B)", len);
                             Some(atr[..len].to_vec())
                         }
