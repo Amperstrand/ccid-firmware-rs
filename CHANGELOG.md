@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Added — shared-crates manifest (kernel graph SSOT)
+
+- `docs/SHARED-CRATES.md`: the cross-repo kernel dependency graph (crate
+  homes, consumers, current rev-pins, bump rules) written down as the SSOT
+  replacing tribal knowledge. Weekly drift check (consumer rev vs home main,
+  unified-pin agreement) lands in the ops sweep via
+  `ops/shared_crates_drift.py` → `ops/reports/shared-crates-drift.txt`.
+
 ### Fixed — #360 merged-head follow-up (Codex P1)
 
 - vpcd cached-ATR fast path is now gated on
