@@ -1,3 +1,18 @@
+### Added — NFC field-scoped locking design doc (draft proposal, t_145dec63)
+
+- `docs/NFC-FIELD-LOCKS-DESIGN.md`: design for replacing whole-bench
+  serialization with per-field locks (`/tmp/amperstrand-field-<place>.lock`)
+  for operations that couple exactly one RF coil / contact slot — plus
+  PERMANENT card co-location (cards fixed to specific reader coils,
+  checked-in `co-location.json` + drift-detection HIL test) so field
+  ownership is static. Includes the lock taxonomy (op class → lock),
+  the co-location map, the staged cross-project rollout (bolty-rs /
+  micronuts must adopt the same lock family before the bench flock is
+  relaxed), and the explicit keep-whole-bench list (flashing, OTA,
+  serial console opens, pcscd lifecycle, /dev/USB topology, power).
+  New design, no prior art in-repo (searched); all verification items
+  are TODO — nothing bench-proven yet, no behavior change in this PR.
+
 ### Added — raw GemPC wire/T=1 harness (gempc_t1) + pcscd strace decoder
 
 - `tests/hardware/nfc/gempc_t1.py`: the 2026-10-20 bench-session
