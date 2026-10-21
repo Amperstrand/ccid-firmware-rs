@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Docs — evening stamp (2026-10-21)
+
+- TESTED_AND_WORKING matrix rows brought level with main @428e834d:
+  m5stick serial now PASS incl. sustained LOAD (#372/#378 closed via
+  the WTX-grant interop fix #386); m5stick wifi-vpcd PARTIAL upgraded
+  with the first EXT AUTH 9000 (#380 auth half) and its GET STATUS
+  remainder.
+- ISO14443_PCB_CONFORMANCE §4: final verdict prepended — the deployed
+  card population rejects the spec-correct 0xF3 grant; fork ships the
+  0xF2 request-form echo (documented deviation, strict-mode opt-in
+  retained).
+
 ### Fixed — #378/#380: WTX grant interop + vpcd probe session-safety
 
 - **#378 resolved (wire-proven)**: the J3R180 population REJECTS the
