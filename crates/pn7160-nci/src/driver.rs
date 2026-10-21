@@ -1793,6 +1793,103 @@ mod tests {
         );
     }
 
+    /// #349 (Codex P1, 23:53) — the ANTI-WEDGE pin the simple regression
+    /// above cannot catch: `maintenance_rearm_absorbs_tag_ntf` also passes
+    /// WITHOUT the maintenance drain (its final `is_card_present()` drains
+    /// the NTF itself, and its frozen clock never makes a later tick due
+    /// again). Here the chip AUTO-ACTIVATES the tag after the parked
+    /// re-arm's deactivate, the activation NTF must be latched by
+    /// MAINTENANCE ticks alone (zero host polls), and no later RF write
+    /// may land on the already-active interface — repeatedly deactivating
+    /// an auto-activated tag is the PN7160 chip-wedge class (bench
+    /// 2026-10-10: I2C NACKs after ~10-11 cycles).
+    #[test]
+    fn maintenance_rearm_latches_auto_activation_and_stops_writes() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // First tick fires the parked re-arm (unknown last time = due);
+        // the deactivate RSP is scripted for the write.
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.poll_maintenance(1_000);
+        assert_eq!(
+            drv.rearm_phase(),
+            Some(RearmPhase::AwaitRsp { polls: 0 }),
+            "first maintenance tick wrote the parked deactivate"
+        );
+        // The restarted discovery AUTO-ACTIVATES the ISO-DEP tag while
+        // the host stays silent: activation NTF (ATS tail) queued.
+        drv.transport_mut().push_notification(&auto_activation_ntf());
+
+        // Next tick: the RSP is collected and the maintenance DRAIN
+        // absorbs the queued activation — latched with its ATS,
+        // un-parked, phase exited — with ZERO host polls.
+        drv.poll_maintenance(6_000);
+        assert_eq!(
+            drv.rearm_phase(),
+            None,
+            "the latched activation must exit the phase machine"
+        );
+        assert!(!drv.discovery_parked, "latch must un-park");
+        assert!(
+            drv.last_auto_ats.is_some(),
+            "the auto-activation ATS must be cached from the maintenance drain"
+        );
+
+        // Anti-wedge: maintenance ticks far past the 12.8 s window must
+        // NOT write RF commands against the auto-activated interface.
+        let writes = drv.transport_mut().sent.len();
+        for now_ms in [16_000u64, 26_000, 36_000, 46_000] {
+            drv.poll_maintenance(now_ms);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            writes,
+            "no RF write may hit the auto-activated tag after the latch"
+        );
+        assert!(drv.is_card_present(), "presence holds via the latch");
+    }
+
+    /// #349 (Codex P1, 23:53), purest form: the tag auto-activated during
+    /// a silent gap BEFORE a maintenance tick — the queued activation NTF
+    /// must be drained and latched BEFORE the due re-arm write fires, so
+    /// NO RF command is ever sent against the already-active interface.
+    #[test]
+    fn maintenance_drains_active_tag_before_rearm_write() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // Tag couples and auto-activates while the host is silent: the
+        // activation NTF sits queued when the next maintenance tick runs.
+        drv.transport_mut().push_notification(&auto_activation_ntf());
+        let writes_before = drv.transport_mut().sent.len();
+        // First tick is immediately due (unknown last time) — but the
+        // event drain runs FIRST, latches the activation, un-parks: the
+        // re-arm write must never fire, on this tick or any later one.
+        for now_ms in [1_000u64, 11_000, 21_000, 31_000] {
+            drv.poll_maintenance(now_ms);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            writes_before,
+            "the activation drain must precede any maintenance RF write"
+        );
+        assert!(drv.last_auto_ats.is_some(), "activation latched");
+        assert!(!drv.discovery_parked, "and un-parked");
+        assert!(drv.is_card_present());
+    }
+
     /// #328/#332 (Codex P1): the parked re-arm fires by TIME when the
     /// host stops polling entirely (pcscd marks the reader dead) — no
     /// is_card_present call needed, only serve-loop maintenance ticks.
