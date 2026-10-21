@@ -189,6 +189,14 @@ class Reader:
         """
         got = bytearray()
         deadline = time.time() + window_s
+        # #361 review P2: a flapping port (drop → reopen ok → drop …)
+        # must not extend the quiet window forever — the bench
+        # launchers' `timeout` kill bypasses cleanup while labgrid
+        # places are held and pcscd is stopped. Bounded reopens only
+        # (no wall-clock multiple: a legitimately slow reopen cycle is
+        # not a fault).
+        reopens = 0
+        MAX_QUIET_REOPENS = 3
         self.s.timeout = 0.1
         while time.time() < deadline:
             try:
@@ -200,6 +208,13 @@ class Reader:
                         "quiet window and reopen failed — bench hardware "
                         "fault, not wire silence (#339)"
                     ) from None
+                reopens += 1
+                if reopens > MAX_QUIET_REOPENS:
+                    raise AssertionError(
+                        f"{self.name}: {reopens - 1} reopens inside one "
+                        "quiet window — flapping port, bench hardware "
+                        "fault (#361 review P2)"
+                    )
                 # Codex #145 P2 twin: a successful reconnect restarts
                 # the FULL quiet window.
                 deadline = time.time() + window_s

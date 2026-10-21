@@ -17,7 +17,22 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import serial  # noqa: E402  (the battery imports it at module level)
+# python-collect runs in a MINIMAL env (pytest only, no pyserial — the
+# gate exists exactly to catch collection-time hardware imports). Stub
+# the module when absent so importing the battery cannot fail there;
+# the bench keeps the real pyserial. (#361 review P1)
+try:
+    import serial  # noqa: E402  (the battery imports it at module level)
+except ModuleNotFoundError:
+    import types as _types
+    _serial_stub = _types.ModuleType("serial")
+
+    class _StubSerialException(Exception):
+        pass
+
+    _serial_stub.SerialException = _StubSerialException
+    sys.modules["serial"] = _serial_stub
+    serial = _serial_stub
 
 import conformance_battery  # noqa: E402
 
@@ -124,3 +139,27 @@ class QuietBytesDropTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuietBytesFlappingTests(unittest.TestCase):
+    def test_flapping_port_is_bounded_not_infinite(self):
+        """#361 review P2: a port that drops and reopens forever must not
+        extend the quiet window without bound (the bench launchers'
+        `timeout` kill bypasses cleanup while labgrid places are held
+        and pcscd is stopped). After MAX_QUIET_REOPENS reopens the
+        quiet check raises as a bench hardware fault."""
+        clock = {"t": 100.0}
+
+        class AlwaysDropping(_FakePort):
+            def read(self, n):
+                self.reads += 1
+                raise serial.SerialException("flapping CDC")
+
+        port = AlwaysDropping()
+        r = _reader(port)
+        r.reopen = lambda: (clock.__setitem__("t", clock["t"] + 0.2) or True)
+        with mock.patch.object(conformance_battery.time, "time",
+                               lambda: clock["t"]):
+            with self.assertRaises(AssertionError) as cm:
+                r.quiet_bytes(1.0)
+        self.assertIn("flapping", str(cm.exception))
