@@ -98,6 +98,11 @@ def pcsc_readers() -> list[str]:
     return [str(r) for r in smartcard.System.readers()]
 
 
+
+# #332: armed after a successful install; the crash handler rolls the
+# card back to baseline instead of leaving artifacts on an exception.
+_ROLLBACK: dict = {"reader": None, "cap": None, "armed": False}
+
 ALLOW_UNVERIFIED_CPLC = [False]  # set from argv in main()
 
 
@@ -280,8 +285,14 @@ def preflight(reader: str, lines: list) -> bool:
 
 
 
-def baseline_pkgs(reader: str) -> list[str]:
+def baseline_pkgs(reader: str) -> list[str] | None:
+    """Package registry, or None when the QUERY itself failed (#332,
+    Codex on #325: a transient empty `gp -l` after heavy traffic was
+    silently read as '0 pkgs' — a clean card never has zero packages,
+    the ISD row always exists)."""
     r = gp(reader, "-l")
+    if r.returncode != 0 or "ISD:" not in r.stdout:
+        return None
     return sorted(ln.split()[1] for ln in r.stdout.splitlines()
                   if ln.startswith("PKG:"))
 
@@ -329,6 +340,9 @@ def main() -> int:
                     help="proceed when the CPLC is unreadable but a ledger is set")
     ap.add_argument("--status-only", action="store_true",
                     help="read-only: preflight + SELECT + gpg status")
+    ap.add_argument("--expect-cap-sha256", default=None,
+                    help="pin the CAP digest (or J3R180_CAP_SHA256 env); "
+                         "a mismatch aborts before install")
     ap.add_argument("--cap", default=None,
                     help="applet CAP (default: bench SmartPGP jc3.0.4)")
     ap.add_argument("--preflight", action="store_true",
@@ -371,6 +385,15 @@ def main() -> int:
         digest = hashlib.sha256(cap.read_bytes()).hexdigest()
         lines.append(f"# applet CAP sha256={digest} (pin this in the "
                      "runbook after first green run)")
+        # #332 (Codex on #325): enforce a pinned digest when provided —
+        # a corrupted/replaced cache must never reach an install.
+        want = (args.expect_cap_sha256
+                or os.environ.get("J3R180_CAP_SHA256", ""))
+        if want and want.lower() != digest:
+            lines.append(f"FAIL: CAP sha256 {digest} != pinned {want} — "
+                         "refusing to install an unverified artifact")
+            print("\n".join(lines))
+            return 3
 
     # --- idempotency: cleanup BEFORE baseline so the captured resting
     # state is the card's true baseline (not baseline+strays).
@@ -385,14 +408,30 @@ def main() -> int:
         phase("cleanup pre-existing OpenPGP artifacts", True)
 
     baseline = baseline_pkgs(args.reader)
+    if baseline is None:
+        phase("baseline registry captured", False,
+              "ABORT: registry query failed (gp -l) — not a card state")
+        print("\n".join(lines))
+        return 5
     phase("baseline registry captured", bool(baseline),
           f"{len(baseline)} pkgs")
 
     if not args.status_only:
         r = gp(args.reader, f"-install {cap}", timeout=900)
-        phase("install OpenPGP applet", r.returncode == 0
-              and "loaded" in r.stdout.lower(),
+        install_ok = r.returncode == 0 and "loaded" in r.stdout.lower()
+        phase("install OpenPGP applet", install_ok,
               r.stdout.strip().splitlines()[-1][:70] if r.stdout else "")
+        # #332 (Codex on #325): mid-lifecycle crashes must not leave the
+        # installed artifacts behind — arm the rollback the __main__
+        # crash handler honors.
+        if install_ok:
+            _ROLLBACK.update(reader=args.reader, cap=cap, armed=True)
+        if not install_ok:
+            # #332 (Codex on #325): a failed install leaves partial
+            # artifacts — roll back to baseline instead of continuing
+            # into probes against a half-loaded package.
+            phase("rollback after failed install",
+                  cleanup_openpgp(args.reader, cap))
 
     # --- the card answers OpenPGP protocol on THIS reader (direct APDUs,
     # deterministic — no scdaemon dependency; every exchange bounded) ---
@@ -475,11 +514,21 @@ def main() -> int:
 
     if args.status_only:
         print("\n".join(lines))
-        return 0
+        # #332 (Codex on #325): status-only must FAIL when its checks
+        # fail — a probe that always exits 0 is invisible to CI/cron.
+        failed = [l for l in lines if "FAIL" in l]
+        return 7 if failed else 0
 
     # --- uninstall + verify baseline restored ---
+    _ROLLBACK["armed"] = False  # explicit uninstall supersedes rollback
     phase("uninstall OpenPGP artifacts", cleanup_openpgp(args.reader, cap))
     now = baseline_pkgs(args.reader)
+    if now is None:
+        phase("baseline registry restored", False,
+              "registry query failed on verify — rerun `gp -l` before "
+              "trusting the card state")
+        print("\n".join(lines))
+        return 6
     phase("baseline registry restored", now == baseline,
           f"{len(now)} pkgs" + ("" if now == baseline else f" != {baseline}"))
 
@@ -495,4 +544,12 @@ if __name__ == "__main__":
     except Exception as e:  # noqa: BLE001 — evidence ALWAYS prints
         print(f"TOOL CRASH: {e!r}")
         code = 4
+        if _ROLLBACK["armed"]:
+            print(f"ROLLBACK: removing installed artifacts on "
+                  f"{_ROLLBACK['reader']}…")
+            try:
+                ok = cleanup_openpgp(_ROLLBACK["reader"], _ROLLBACK["cap"])
+                print(f"ROLLBACK: {'OK — baseline restored' if ok else 'FAILED — card needs manual cleanup'}")
+            except Exception as rb:  # noqa: BLE001
+                print(f"ROLLBACK CRASH: {rb!r} — card needs manual cleanup")
     raise SystemExit(code)
