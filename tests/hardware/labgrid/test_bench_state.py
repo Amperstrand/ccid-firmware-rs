@@ -74,23 +74,36 @@ def test_place_identity(place_name, bench_lock):
     assert result["ok"], f"{place_name}: {result['detail']}"
 
 
-def test_dut_identities_unique_in_pcscd(bench_lock):
+def selected_duts(places_csv: str) -> dict[str, str]:
+    """#334: the pcscd uniqueness check covers only the operator's
+    --places selection. An unselected-yet-present wedged DUT must not
+    fail a run the operator explicitly scoped away from it."""
+    wanted = {p.strip() for p in places_csv.split(",") if p.strip()}
+    return {p: i for p, i in DUT_IDENTITIES.items() if p in wanted}
+
+
+def test_dut_identities_unique_in_pcscd(request, bench_lock):
     """Doctrine rule 3: each DUT identity matches EXACTLY ONE pcscd
     reader — the bench's reference devices (ACR1252, CardMan, NR7101)
     can never collide with our emulated identities. Absent hardware
-    contributes no assertion (#183 SKIP≠FAIL)."""
+    contributes no assertion (#183 SKIP≠FAIL); unselected places are
+    out of scope (#334 — the check respects --places)."""
     import bench as benchmod
+
+    duts = selected_duts(request.config.getoption("--places"))
+    if not duts:
+        pytest.skip("--places selected no DUT identities to check")
 
     _pcscd(stop=False)
     absent = []
-    for place, identity in DUT_IDENTITIES.items():
+    for place, identity in duts.items():
         holder = benchmod.place_holder(place)
         if holder:
             pytest.skip(f"{place} held by {holder} — its pcscd state is theirs")
         reason = benchmod.dut_absent_reason(place)
         if reason:
             absent.append(f"{place}: {reason}")
-    checkable = [(p, i) for p, i in DUT_IDENTITIES.items()
+    checkable = [(p, i) for p, i in duts.items()
                  if not any(p in a for a in absent)]
     if not checkable:
         pytest.skip("no DUT hardware testable — " + "; ".join(absent))
