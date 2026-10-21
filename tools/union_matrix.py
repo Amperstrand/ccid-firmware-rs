@@ -147,7 +147,23 @@ def parse_build_sh(text: str) -> list[dict]:
 def load_manifest_features() -> set[str]:
     with open(FW_MANIFEST, "rb") as f:
         manifest = tomllib.load(f)
-    return set(manifest.get("features", {}).keys())
+    feats = set(manifest.get("features", {}).keys())
+
+    def add_optional(deps: dict) -> None:
+        for name, spec in deps.items():
+            if isinstance(spec, dict) and spec.get("optional"):
+                feats.add(name)
+
+    # #394 analysis item: cargo treats every optional dependency as an
+    # implicit feature — the [features] table alone is NOT the feature
+    # space (8 implicit names here: mfrc522, iso14443, mfrc522-pcd,
+    # pn532, pn532-transport, pn7160-nci, mipidsi, embedded-graphics).
+    # Validating against [features] only would mis-flag cargo-valid
+    # combo entries. Target-section deps ride along.
+    add_optional(manifest.get("dependencies", {}))
+    for cfg in (manifest.get("target") or {}).values():
+        add_optional(cfg.get("dependencies", {}))
+    return feats
 
 
 def sdkconfig_paths_ok(sdkconfig: str) -> bool:
@@ -253,6 +269,15 @@ def selftest(quiet: bool = False) -> list[str]:
     got = {c["name"]: (c["features"], c["no_default_features"], c["target"], c["sdkconfig"]) for c in cases}
     if got != expect:
         errors.append(f"selftest: parser output drifted: {got!r}")
+    # #394: a non-matching --filter must exit (vacuous-green guard); a
+    # matching one keeps exactly the hits.
+    try:
+        select(cases, None, "no-such-combo")
+        errors.append("selftest: non-matching --filter did not exit")
+    except SystemExit:
+        pass
+    if [c["name"] for c in select(cases, None, "lph")] != ["alpha"]:
+        errors.append("selftest: --filter substring match drifted")
     if not quiet:
         print("selftest: OK" if not errors else f"selftest: FAILED {errors}")
     return errors
@@ -287,6 +312,11 @@ def select(combos: list[dict], variant: str | None, filt: str | None) -> list[di
             sys.exit(f"error: unknown variant {variant!r} (see --format table)")
     if filt:
         out = [c for c in out if filt in c["name"]]
+        # #394: an empty filtered set must be LOUD (exit contract, line 32).
+        # In the workflow a silent [] skips the whole matrix job — a typo'd
+        # dispatch filter would produce a vacuous green run.
+        if not out:
+            sys.exit(f"error: --filter {filt!r} matched no variants (see --format table)")
     return out
 
 
