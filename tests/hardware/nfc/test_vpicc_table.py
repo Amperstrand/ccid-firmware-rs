@@ -10,7 +10,6 @@ setup (one-time):
 Then: python3 -m pytest tests/hardware/nfc/test_vpicc_table.py -v
 """
 
-import os
 import time
 
 import pytest
@@ -60,7 +59,6 @@ def card():
     # Readiness WITHOUT touching pcscd: a pyscard connect/disconnect
     # power-cycles the mock and leaves the slot flapping — instead wait
     # until the daemon has ANSWERED one of the driver's own probes.
-    deadline = time.time() + POLL_S
     assert c.answered_probe.wait(POLL_S), (
         "driver never probed the mock — check the daemon reaches port "
         f"{PORT} and the reader.conf entry (dedicated .so copy + "
