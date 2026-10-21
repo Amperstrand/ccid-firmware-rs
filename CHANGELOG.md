@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — host-side libifdvpcd patch for wifi-vpcd (#326)
+
+- `tests/hardware/host/`: `libifdvpcd-amperstrand.patch` +
+  `build_libifdvpcd_amperstrand.sh` + README — fixes two upstream
+  vsmartcard driver bugs (empty-ATR answer triggering `vicc_eject`,
+  and unbounded `recvall` wedging pcscd's EH thread with a backlog-0
+  listener), with build/deploy/restore runbook. Bench-proven: first
+  card-present + ATR + APDU round-trip over the nucula wifi-vpcd path.
 ### Added — wedge-prevention design doc (kanban t_6cafe4eb)
 
 - `docs/WEDGE-PREVENTION-DESIGN.md` (DRAFT, software-only): three
