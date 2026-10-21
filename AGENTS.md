@@ -467,6 +467,37 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
   `USB_UART_CHIP_RST_DIS`), an external USB-UART bridge (FTDI, like
   the m5stick), or USB-OTG class CCID (S2/S3 only).
 
+## Host pcscd instances — system + lane-private (2026-10-21)
+
+**Read this before any pcscd-visible bench work on ai-legion.** The
+SYSTEM pcscd (socket `/run/pcscd/pcscd.comm`) carries every reader
+config in `/etc/reader.conf.d/` and is STOPPED/RESTARTED by any
+ESP32 flash window (`esp32_flash.py`) — concurrent lanes kill each
+other's runs this way (two lifecycle runs died to it 2026-10-21).
+
+- `/etc/reader.conf.d/vpcd-nucula-35967` (the wifi-vpcd wifi67 reader)
+  lives in the LANE dir `/etc/reader.conf.d-lanes/wifi-verify/` — the
+  system instance intentionally does NOT load it. wifi-vpcd bench work
+  runs against a PRIVATE pcscd instance (recipe below). Full migration
+  of the remaining serial entries is `docs/PCSD-LANE-INSTANCES-DESIGN.md`
+  §7 (owner-gated steps; §9 now carries the pilot's bench proof).
+- **Private-instance recipe (bench-proven 2026-10-21, ran the full
+  J3R180 lifecycle green through two external system-pcscd restarts):**
+  ```sh
+  mkdir -p /run/pcscd-lanes /etc/reader.conf.d-lanes/<lane>
+  # put ONLY your lane's reader.conf entries in the lane dir
+  systemd-socket-activate -l /run/pcscd-lanes/<lane>.sock -- \
+      /usr/sbin/pcscd --foreground -c /etc/reader.conf.d-lanes/<lane> &
+  # then EVERY client (pyscard, gp/JNA, scripts) needs:
+  export PCSCLITE_CSOCK_NAME=/run/pcscd-lanes/<lane>.sock
+  ```
+  Mechanism per PCSD-LANE-INSTANCES-DESIGN §3 (socket activation skips
+  the second-instance check; the daemon otherwise hardcodes the socket
+  path). Caveats: the instance still writes the shared
+  `/run/pcscd/pcscd.pid` (harmless lie; `-H` is racy), and USB hotplug
+  readers fail to add inside it (system instance owns them — cosmetic).
+  Kill the `systemd-socket-activate` process to tear down.
+
 ## CI Testing Protocol
 
 
