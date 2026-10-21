@@ -105,6 +105,19 @@ fn serve_connection<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     rx_buf: &mut [u8],
 ) {
+    // #328/#332 (Codex P1): the idle wake doubles as the maintenance
+    // tick — a 5 s read timeout keeps the wake cheap while giving the
+    // parked re-arm a time base that does NOT depend on host polls
+    // (pcscd stops probing entirely once a reader is marked dead).
+    // #349 (Codex P1, 00:14): the clock origin is PROCESS-WIDE — the
+    // handler and its driver SURVIVE reconnects in client_loop, so a
+    // connection-local Instant would reset now_ms to ~0 against a
+    // last_rearm_ms from the previous connection's domain (saturating
+    // subtraction pinned at zero → re-arms suppressed for the new
+    // connection's whole lifetime).
+    static CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let started = *CLOCK_ORIGIN.get_or_init(std::time::Instant::now);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     // #326: last successful ATR, cached so the 1.2 s presence probes
     // can answer WITHOUT re-running power_on (which re-activates and
     // thereby DESELECTS the card — the churn that made the first APDU
@@ -129,7 +142,14 @@ fn serve_connection<D: NfcDriver>(
                         | std::io::ErrorKind::Interrupted
                 ) =>
             {
-                continue
+                // Idle wake: advance the driver's parked re-arm by TIME
+                // (one bounded step; at most one write per 12.8 s
+                // window — the slow cadence keeps the rapid-cycle mute
+                // class out of reach).
+                handler
+                    .driver_mut()
+                    .poll_maintenance(started.elapsed().as_millis() as u64);
+                continue;
             }
             Err(_) => return, // hard I/O error — reconnect
         };
