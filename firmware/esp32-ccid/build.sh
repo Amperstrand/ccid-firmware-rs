@@ -508,7 +508,11 @@ if [ -n "${FLASH_PORT}" ]; then
     elif [ "${FLASH_CONSOLE_NONE}" -eq 1 ]; then
         ESP_FLASH_ARGS+=(--console-none)
     fi
-    run python3 "${ESP_FLASH_TOOL}" "${ESP_FLASH_ARGS[@]}"
+    # #335: sudo — the tool's pcscd stop/start need service rights; an
+    # unsudoed stop fails and the tool correctly refuses to flash (same
+    # elevation flash_and_test.sh:111-114 already uses for this tool —
+    # this was the remaining unsudoed caller).
+    run sudo python3 "${ESP_FLASH_TOOL}" "${ESP_FLASH_ARGS[@]}"
     if [ "${CHIP}" = "esp32" ]; then
         warn "FTDI DTR/RTS wedge: physically replug the M5Stack board before expecting"
         warn "serial communication to work again (see flash_and_test.sh header)."
