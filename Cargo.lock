@@ -1171,7 +1171,7 @@ dependencies = [
 [[package]]
 name = "iso14443"
 version = "0.3.1"
-source = "git+https://github.com/Amperstrand/iso14443-rs.git?rev=941131eb6d0f0768ab921842a303dce5175d6036#941131eb6d0f0768ab921842a303dce5175d6036"
+source = "git+https://github.com/Amperstrand/iso14443-rs.git?rev=0f7d9d70#0f7d9d70f986e924397f5b7245eeabd553cb375f"
 dependencies = [
  "bitflags 2.11.1",
  "bounded-integer",
@@ -1301,7 +1301,7 @@ dependencies = [
 [[package]]
 name = "mfrc522-pcd"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=519823ce81b991212307cc3be81614d62613c464#519823ce81b991212307cc3be81614d62613c464"
+source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=f9fb57b7#f9fb57b7b9ff3ed391d08e48bac70c42a97eabd2"
 dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-sys",

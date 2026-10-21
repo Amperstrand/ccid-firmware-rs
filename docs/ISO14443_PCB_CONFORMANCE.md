@@ -122,7 +122,22 @@ PCD class instead of forking or re-pinning.
   changes either must consciously update these tests.
 - This document.
 
-## 6. Follow-ups filed upstream (owner-filed per member-org rule)
+## 6. Follow-ups (update 2026-10-21: items 2–3 DONE)
+
+1. OPEN (owner-filed): upstream note to Foundation-Devices re: default
+   `max_consecutive_wtx` for slow PCDs / a "patient reader" preset.
+2. DONE — fork PR #12 (fa4f91f8), failing-test-first: S-block b1
+   modeled as the response indicator; WTX grants now always 0xF3,
+   state-independent (previously the I/R block-number counter leaked
+   onto b1). Old-pin constant-BN deviation is historical (that line is
+   superseded).
+3. DONE — fork PR #12: mid-chain S(WTX) granted per §7.5.7 (chain
+   continues, bounded by Limits). Not observed on the J3R180 wire, so
+   the failing wire-mock is the evidence; upstreamable as-is.
+4. NEW: prepare the Foundation-Devices upstream PR carrying both fixes
+   (tests included). Blocked on owner filing per the member-org rule.
+
+## 6-old. Follow-ups filed upstream (owner-filed per member-org rule)
 
 1. Ask upstream to document/soften the default `max_consecutive_wtx`
    (8) for slow-PCD use cases, or expose a "patient reader" preset.
