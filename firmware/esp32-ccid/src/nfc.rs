@@ -32,6 +32,12 @@ pub trait NfcDriver {
     /// Must be called before any other operations.
     fn init(&mut self) -> Result<(), Self::Error>;
 
+    /// #328/#332: time-driven maintenance during host-silent periods
+    /// (serve-loop idle wake). Default no-op — drivers whose presence
+    /// model depends on host poll cadence override it (PN7160: the
+    /// parked re-arm).
+    fn poll_maintenance(&mut self, _now_ms: u64) {}
+
     /// Init routed through the backend's recovery machinery when it has
     /// one (MFRC522: the failure tracker + threshold-triggered
     /// `full_reinit`, Codex reviews on #43/#40/#38). Retry paths — the
