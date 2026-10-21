@@ -24,7 +24,7 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -111,6 +111,41 @@ class PlaceBusy(Exception):
             f"labgrid place '{place}' held by "
             f"{holder or 'unknown session'} {detail}".strip()
         )
+
+
+def bench_lock_mode(skip_labgrid: bool) -> str:
+    """#334: what --skip-labgrid skips, in one testable place.
+
+    The flag is the documented coordinator-outage escape hatch: it
+    skips PLACE acquisition only. The cross-project flock
+    (/tmp/amperstrand-bench.lock) does not depend on the coordinator —
+    pcscd/serial legs must still exclude bolty-rs/micronuts sessions,
+    so the lock mode is never "none".
+    """
+    return "flock-only" if skip_labgrid else "flock+places"
+
+
+def yield_acquired_place(place: str, skip, ledger_fn=None):
+    """#334: acquire `place` for a fixture body; SKIP on the acquire race.
+
+    `acquired_place` RAISES PlaceBusy when another session wins the
+    place between the holder check and the acquire — with no caller
+    catching it, the promised busy-place skip surfaced as a setup
+    ERROR. This wrapper turns that raise into `skip(reason)` (with the
+    winning holder named) and releases the place on teardown. `skip` is
+    injected (bench.py stays pytest-free); the fixture passes
+    `pytest.skip`.
+    """
+    ledger_fn = ledger_fn or ledger
+    with ExitStack() as stack:
+        try:
+            p = stack.enter_context(acquired_place(place))
+        except PlaceBusy as e:
+            skip(f"place busy (lost the check→acquire race): {e}")
+            return
+        ledger_fn("place_acquired", place=p)
+        yield p
+    ledger_fn("place_released", place=place)
 
 
 # F469 ST-LINK serial, pinned by the exporter config (flashed_firmware
