@@ -22,3 +22,9 @@
 //! firmware is a separate consumer of the same kernel. Modes stay
 //! explicit so a future merged firmware selects them by feature flag or
 //! runtime config — never by `cfg` inside this crate.
+
+pub mod ccid_types;
+pub mod frontend;
+pub mod nfc;
+pub mod t1;
+pub mod turnaround;

@@ -425,6 +425,7 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    esp32_ccid::install_platform_clock();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge).
@@ -521,6 +522,7 @@ fn main() {
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    esp32_ccid::install_platform_clock();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge). In

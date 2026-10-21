@@ -65,6 +65,7 @@ fn write_wire_tcp(bytes: &[u8]) {
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
+    crate::install_platform_clock();
 
     // netlog writes every log line to the serial console AND (once
     // the network is up) to a UDP broadcast on :4567 — the bench log

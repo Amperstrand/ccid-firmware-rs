@@ -93,3 +93,7 @@ tests/hardware/perf/results/
 # bench build artifacts (host-tools/ifd-nucula)
 host-tools/ifd-nucula/*.so
 host-tools/ifd-nucula/nucula-selftest
+
+# Worktree-local build dirs (t_72e1e2ed session)
+/.cargo-target/
+/.embuild

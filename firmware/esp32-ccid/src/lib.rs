@@ -13,18 +13,35 @@
 #[cfg(test)]
 pub mod ccid_fuzz;
 pub mod ccid_handler;
+
+// Serving-kernel modules extracted to crates/ccid-service (t_72e1e2ed):
+// re-exported under their historical paths so mains, drivers and tests
+// keep compiling unchanged. The crate boundary (ccid-service sees only
+// card-interface + ccid-core/protocol/transport-serial) is what makes
+// "works on any board" compiler-enforced.
+pub use ccid_service::ccid_types;
+pub use ccid_service::frontend;
+pub use ccid_service::nfc;
+pub use ccid_service::t1;
+pub use ccid_service::turnaround;
+
+/// Hand the kernel the platform monotonic clock (t_72e1e2ed): the
+/// serving kernel injects time (`ccid_service::t1::install_clock`) and
+/// carries no ESP-IDF dependency. Every target main that serves CCID
+/// calls this before constructing the handler — before it, the kernel
+/// clock reads 0 (the historical host-build behavior).
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn install_platform_clock() {
+    ccid_service::t1::install_clock(|| unsafe { esp_idf_sys::esp_timer_get_time() });
+}
+
 pub mod ccid_serial_server;
-pub mod ccid_types;
-pub mod frontend;
 pub mod m5stick_lcd;
-pub mod nfc;
 pub mod ota_header;
 pub mod pn532_driver;
 pub mod serial_framing;
-pub mod t1;
 #[cfg(test)]
 pub mod t1_fuzz;
-pub mod turnaround;
 
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;

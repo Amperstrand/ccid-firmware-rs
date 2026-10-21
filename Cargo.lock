@@ -876,6 +876,7 @@ dependencies = [
  "card-interface",
  "ccid-core",
  "ccid-protocol",
+ "ccid-service",
  "ccid-transport-serial",
  "embedded-graphics",
  "embedded-hal 1.0.0",

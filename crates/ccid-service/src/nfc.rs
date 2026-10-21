@@ -284,7 +284,9 @@ impl MockNfcDriver {
         self.stall_probe = probe;
     }
 
-    #[cfg(test)]
+    // Cross-crate test instrumentation (t_72e1e2ed): esp32-ccid's and
+    // ccid-service's own tests both drive the mock — a cfg(test) gate
+    // here hides it from downstream test builds, so it stays public.
     pub fn set_card_present(&mut self, card_present: bool) {
         self.card_present = card_present;
         if !card_present {
