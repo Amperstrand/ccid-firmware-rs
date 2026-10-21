@@ -95,14 +95,14 @@ heapless = "0.9"
 log = "0.4"
 nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
-iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "268db79", features = ["alloc"], optional = true }
+iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "73db6d4", features = ["alloc"], optional = true }
 # Transceiver bridge + bus recovery shared with bolty-rs; only the
 # backend-mfrc522 feature pulls it (dep: wiring keeps PN7160/PN532 builds
 # from compiling — and warning about — an unused git dependency.
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "dccf86e3660073291a59a5569141a4093024fd14", optional = true }
+mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "2a1afea", optional = true }
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
-pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "dccf86e3660073291a59a5569141a4093024fd14", optional = true }
+pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "2a1afea", optional = true }
 
 # LCD status screen (bolty-rs display.rs port) — pinned to bolty's exact
 # bench-proven pair (apps/bolty-esp32/Cargo.toml):

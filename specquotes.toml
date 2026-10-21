@@ -71,6 +71,15 @@ format = "markdown"
 file = "reference/osmo-ccid-firmware/ccid_common/iso7816_3.c"
 comment_marker = "ISO7816"
 
+# T=1 protocol engine the HOST actually runs (libccidtwin terminates the
+# serial GemPC-Twin dialect with this code): PCB bit-position macros and
+# build/receive validation rules — the implementation authority for the
+# serial dialect's I/R/S block encodings (docs/t1_pcb_layout_audit.md).
+[sources.T1]
+format = "markdown"
+file = "reference/CCID/src/openct/proto-t1.c"
+comment_marker = "T1"
+
 # PDF-only authority (UM11495 Rev 1.8): quotes are transcribed verbatim
 # into the tracked markdown below (docs/quote-sources/ policy, #140/#156).
 [sources.UM11495]

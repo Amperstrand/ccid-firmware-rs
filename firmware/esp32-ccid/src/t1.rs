@@ -15,11 +15,14 @@
 //! LRC = XOR of all preceding bytes (§11.3.3.1). The endpoint is the
 //! T=1 "card" side; the host (libccid t1.c) is the initiator.
 //!
-//! PCBs (§11.4.2):
-//! - I-block: 0 N(S) 0 M N(R)          — 0x00 | ns<<6 | m<<5 | nr
-//! - R-block: 10 N(R) 0 ss             — 0x80 | nr<<3 | err
-//! - S-block request/response: C0/D0 RESYNC, C1/D1 IFS, C2/D2 ABORT,
-//!   C3/D3 WTX (response = request | 0x10).
+//! PCBs (§11.4.2; bit names b8..b1, b1 = LSB — audit
+//! docs/t1_pcb_layout_audit.md):
+//! - I-block: 0 N(S) M N(R) 0 0 0 0  — ns<<6 | m<<5 | nr<<4
+//!   (N(R) at b5/weight 0x10 — the SAME position as in R-blocks; the
+//!   piggybacked ACK of the host's last chain, NOT an RFU violation)
+//! - R-block: 1 0 0 N(R) 0 0 err     — 0x80 | nr<<4 | err
+//! - S-block request/response: C0/E0 RESYNC, C1/E1 IFS, C2/E2 ABORT,
+//!   C3/E3 WTX (response = request | 0x20 — b6, weight 0x20).
 //!
 //! SPEC-CITED INVARIANTS:
 //! - §11.6.2: S(IFS request N) announces the SENDER's new receive size;
@@ -75,8 +78,9 @@ pub enum SKind {
 }
 
 fn parse_pcb(pcb: u8) -> Option<Pcb> {
-    // ISO 7816-3 Table 45: N(S) at b7, M at b6, N(R) at b4 — in BOTH I-
-    // and R-blocks. The b3..b1 positions are 0 (I) / error code (R).
+    // ISO 7816-3 Table 45 (§11.4.2): N(S) at b7 (weight 0x40), M at b6
+    // (0x20), N(R) at b5 (0x10) — in BOTH I- and R-blocks. b4..b1 are
+    // 0 (I) / error code (R). Bit names are b8..b1 with b1 = LSB.
     match pcb & 0x80 {
         0x00 => Some(Pcb::I {
             ns: (pcb >> 6) & 1,
@@ -117,11 +121,17 @@ fn block(pcb: u8, inf: &[u8]) -> Vec<u8, 520> {
     v
 }
 
+/// Serial-dialect I-block PCB: b8=0, b7=N(S), b6=M, b5=N(R), b4..b1=0.
+/// N(R) at b5 (weight 0x10) is the piggybacked ACK of the host's last
+/// chain — conformant, and UNCHECKED by the host engine (it validates a
+/// received I-block's N(S) at b7 only). Audit: docs/t1_pcb_layout_audit.md.
 fn i_pcb(ns: u8, more: bool, nr: u8) -> u8 {
+    // T1: #define T1_I_SEQ_SHIFT 6
     (ns << 6) | ((more as u8) << 5) | (nr << 4)
 }
 
 fn r_pcb(nr: u8, err: u8) -> u8 {
+    // T1: #define T1_R_SEQ_SHIFT 4
     0x80 | (nr << 4) | err
 }
 
@@ -132,9 +142,11 @@ fn s_pcb(kind: SKind, response: bool) -> u8 {
         SKind::Abort => 0xC2,
         SKind::Wtx => 0xC3,
     };
-    // §11.4.2 / proto-t1.c:38: S-response sets bit 5 (0x20), NOT bit 4.
-    // The host engine validates `pcb == S | 0x20 | type` (proto-t1.c:806)
-    // and rejects 0x1x-encodings.
+    // §11.4.2: S-response sets b6 (weight 0x20), per proto-t1.c
+    // `#define T1_S_RESPONSE 0x20`. The host engine validates
+    // `pcb == S | 0x20 | type` (proto-t1.c t1_negotiate_ifsd) and
+    // rejects 0x1x-encodings.
+    // T1: #define T1_S_RESPONSE 0x20
     base | ((response as u8) << 5)
 }
 
@@ -215,6 +227,13 @@ impl T1Endpoint {
 
     pub fn reset(&mut self) {
         *self = T1Endpoint::new();
+    }
+
+    /// Test-only: the live (ns, host_ns) counters — #330 regression
+    /// coverage asserts the SetParameters reset actually zeroed them.
+    #[cfg(test)]
+    pub fn debug_ns(&self) -> (u8, u8) {
+        (self.ns, self.host_ns)
     }
 
     /// Process one host block (an XfrBlock payload while T=1 is active).
@@ -469,6 +488,86 @@ mod tests {
             Some(Pcb::I { ns, more, nr }) => assert_eq!((ns, more, nr), (0, false, 1)),
             other => panic!("0x10 must decode as I(0, M=0, nr=1), got {other:?}"),
         }
+    }
+
+    /// GREAT EXPECTATION (2026-10-20 audit, docs/t1_pcb_layout_audit.md):
+    /// the SERIAL dialect's I-PCB bytes pinned to the ISO 7816-3 §11.4.2
+    /// Table-45 layout as triangulated against tracked sources (openct
+    /// proto-t1.c `T1_I_SEQ_SHIFT 6` / `T1_R_SEQ_SHIFT 4` + ST template +
+    /// G-01/G-02, commit 7f136a0): b8=0, b7=N(S), b6=M, b5=N(R), b4..b1=0.
+    ///
+    /// All eight (N(S), M, N(R)) combinations as BYTE LITERALS — a builder
+    /// regression must be visible as a number, not as a shifted copy of
+    /// itself. If this test breaks, re-verify against the audit's quotes —
+    /// never "fix" the literals to match new unverified bytes.
+    #[test]
+    fn serial_i_pcb_matches_7816_3_section_11_quote() {
+        assert_eq!(i_pcb(0, false, 0), 0x00);
+        assert_eq!(i_pcb(0, false, 1), 0x10); // N(R)=1: piggybacked ACK (bench 2026-10-20 byte #1)
+        assert_eq!(i_pcb(0, true, 0), 0x20);
+        assert_eq!(i_pcb(0, true, 1), 0x30);
+        assert_eq!(i_pcb(1, false, 0), 0x40); // bench 2026-10-20 byte #2
+        assert_eq!(i_pcb(1, false, 1), 0x50);
+        assert_eq!(i_pcb(1, true, 0), 0x60);
+        assert_eq!(i_pcb(1, true, 1), 0x70);
+
+        // Per-bit properties over the full (N(S), M, N(R)) domain.
+        for ns in [0u8, 1] {
+            for more in [false, true] {
+                for nr in [0u8, 1] {
+                    let pcb = i_pcb(ns, more, nr);
+                    assert_eq!(pcb >> 7, 0, "b8 must be 0 (I-block type)");
+                    assert_eq!((pcb >> 6) & 1, ns, "b7 = N(S)");
+                    assert_eq!((pcb >> 5) & 1, u8::from(more), "b6 = M (chaining)");
+                    assert_eq!((pcb >> 4) & 1, nr, "b5 = N(R) — the piggyback ACK bit");
+                    assert_eq!(pcb & 0x0F, 0, "b4..b1 are RFU and must be 0");
+                    // Round-trip through our own decoder.
+                    match parse_pcb(pcb) {
+                        Some(Pcb::I {
+                            ns: pns,
+                            more: pm,
+                            nr: pnr,
+                        }) => {
+                            assert_eq!((pns, pm, pnr), (ns, more, nr));
+                        }
+                        other => panic!("pcb {pcb:#04x} must decode as I, got {other:?}"),
+                    }
+                    // Host-compat: openct classifies I-blocks via `pcb & 0xC0`
+                    // — anything other than R (0x80) / S (0xC0) is I, so the
+                    // ns bit (0x40) is legal type-wise — and reads N(S) via
+                    // `(pcb >> T1_I_SEQ_SHIFT) & 1` (proto-t1.c
+                    // t1_block_type/t1_seq).
+                    assert!(
+                        !matches!(pcb & 0xC0, 0x80 | 0xC0),
+                        "openct block-type class must be I"
+                    );
+                    assert_eq!((pcb >> 6) & 1, ns, "openct t1_seq reads N(S)");
+                }
+            }
+        }
+    }
+
+    /// The 2026-10-20 bench wire captures, pinned WITH their sequence
+    /// context so the bytes carry their provenance (audit §3): response #1
+    /// is I(N(S)=0, M=0, N(R)=1) = 0x10 — N(R)=1 because the host's ns=0
+    /// chain completed and `host_ns` toggled — and response #2 is
+    /// I(N(S)=1, M=0, N(R)=0) = 0x40. Neither bit is an artifact.
+    #[test]
+    fn bench_capture_2026_10_20_pinned_conformant_serial_i_pcbs() {
+        let mut ep = T1Endpoint::new();
+        match ep.feed(&host_i(0, false, 0, &[0x00])) {
+            FeedResult::Apdu(_) => {}
+            other => panic!("expected Apdu, got {other:?}"),
+        }
+        let rsp = ep.card_response(&[0x90, 0x00], 5);
+        assert_eq!(rsp[1], 0x10, "I(0, M=0, N(R)=1) — the captured 0x10");
+        // Second exchange: host ns toggled to 1 (and its nr=1 ACKs our I(0)).
+        match ep.feed(&host_i(1, false, 1, &[0x00])) {
+            FeedResult::Apdu(_) => {}
+            other => panic!("expected Apdu, got {other:?}"),
+        }
+        let rsp2 = ep.card_response(&[0x90, 0x00], 5);
+        assert_eq!(rsp2[1], 0x40, "I(1, M=0, N(R)=0) — the captured 0x40");
     }
 
     #[test]
