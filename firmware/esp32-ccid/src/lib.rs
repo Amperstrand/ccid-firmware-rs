@@ -19,11 +19,14 @@ pub mod frontend;
 pub mod m5stick_lcd;
 pub mod nfc;
 pub mod ota_header;
+#[cfg(all(test, feature = "backend-mfrc522"))]
+mod pcd_sustained_load_tests;
 pub mod pn532_driver;
 pub mod serial_framing;
 pub mod t1;
 #[cfg(test)]
 pub mod t1_fuzz;
+
 pub mod turnaround;
 
 #[cfg(feature = "backend-mfrc522")]

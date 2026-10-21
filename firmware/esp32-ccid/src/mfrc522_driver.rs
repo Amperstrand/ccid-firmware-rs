@@ -110,6 +110,7 @@ use esp_idf_hal::delay::FreeRtos;
     any(target_arch = "xtensa", target_arch = "riscv32"),
     feature = "backend-mfrc522"
 ))]
+use iso14443::type_a::limits::Limits;
 use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
 
 #[cfg(all(
@@ -605,6 +606,24 @@ where
             .enable_hw_crc()
             .map_err(|_| NfcError::CommunicationError)?;
         let mut session = PcdSession::from_ats(&ats, None, true);
+
+        // #372: the rewritten upstream session bounds work per exchange
+        // with defaults tuned for fast commercial readers (8 consecutive
+        // S(WTX), 32 total, 3 retransmissions, 512 frames). A
+        // flash-writing GlobalPlatform ISD legitimately emits longer WTX
+        // runs per APDU during package LOAD, and at MFRC522-over-I2C
+        // speeds the defaults abort the exchange (LimitExceeded → the
+        // SW 6400 class seen on hardware). Raise the budgets for this
+        // PCD class; the WTX-run semantics are pinned by
+        // `pcd_sustained_load_tests.rs` and the full analysis lives in
+        // docs/ISO14443_PCB_CONFORMANCE.md.
+        session.set_limits(Limits {
+            max_consecutive_wtx: 64,
+            max_total_wtx: 4096,
+            max_frames: 4096,
+            max_retransmissions: 5,
+            ..Limits::default()
+        });
 
         let sfgt_us = ats.tb.sfgi.sfgt_us();
         let card_fsc = ats.format.fsci.fsc();
