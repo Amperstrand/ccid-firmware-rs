@@ -24,6 +24,7 @@
 //! runtime config — never by `cfg` inside this crate.
 
 pub mod ccid_handler;
+pub mod ccid_serial_server;
 pub mod ccid_types;
 pub mod frontend;
 pub mod nfc;

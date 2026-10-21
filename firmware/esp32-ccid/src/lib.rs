@@ -18,6 +18,7 @@ pub mod ccid_fuzz;
 // card-interface + ccid-core/protocol/transport-serial) is what makes
 // "works on any board" compiler-enforced.
 pub use ccid_service::ccid_handler;
+pub use ccid_service::ccid_serial_server;
 pub use ccid_service::ccid_types;
 pub use ccid_service::frontend;
 pub use ccid_service::nfc;
@@ -34,7 +35,6 @@ pub fn install_platform_clock() {
     ccid_service::t1::install_clock(|| unsafe { esp_idf_sys::esp_timer_get_time() });
 }
 
-pub mod ccid_serial_server;
 pub mod m5stick_lcd;
 pub mod ota_header;
 pub mod pn532_driver;
