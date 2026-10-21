@@ -27,12 +27,27 @@ name: spec-quote-drift
 on:
   push:
     branches: [main]
+  # Owner decision #366 (2026-10-21): PR leg is OPT-IN, label-driven —
+  # fires only on label additions, and only the `ci-run` label lights the
+  # job up (guard below). Push/schedule/dispatch legs unchanged in spirit;
+  # workflow_dispatch added for parity so a spec-quote check can be run
+  # manually without waiting for a merge or the weekly cron.
   pull_request:
+    types: [labeled]
   schedule:
     - cron: "0 6 * * 1" # weekly: catch upstream reference changes
+  workflow_dispatch:
 
 jobs:
   spec-quote-drift:
+    # #366 label gate: non-`ci-run` label events short-circuit here
+    # (job-level if => skipped => green; no required checks ride on this
+    # workflow). Push/schedule/dispatch events carry no label payload and
+    # pass the guard.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'ci-run'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

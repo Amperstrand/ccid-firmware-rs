@@ -81,11 +81,20 @@ Env:
   OTA_TOKEN                    32 chars — arms the authenticated OTA2
                                push protocol (ota_header); unset builds
                                keep the OTA1 (unauthenticated) form
+  ESP_BOOT_CHECK               console|wire — overrides the boot-proof
+                               default for the --flash step (console-none
+                               boards otherwise auto-default to wire,
+                               #313/#332)
+  ESP_QUIESCE_UNIT             overrides the --quiesce-unit the --flash
+                               step passes for esp32c3/nucula boards
+                               (default nucula-ccid-broker, #332); set
+                               it EMPTY on hosts without that unit
 EOF
 }
 
 DRY_RUN=0
 FLASH_PORT=""
+FLASH_CONSOLE_NONE=0
 
 BOARD="${1:-}"
 if [ -z "${BOARD}" ] || [ "${BOARD}" = "-h" ] || [ "${BOARD}" = "--help" ]; then
@@ -220,6 +229,7 @@ case "${BOARD}" in
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
+        FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
     m5stick-plus-lcd)
         # m5stick + MFRC522 CCID + the ST7789 status screen (bolty-rs
@@ -237,6 +247,7 @@ case "${BOARD}" in
         CHIP="esp32"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="115200"
+        FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
     m5stick-ble)
         TOOLCHAIN="esp"
@@ -270,6 +281,7 @@ case "${BOARD}" in
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
+        FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
     *)
         echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, or m5atom)" >&2
@@ -473,6 +485,28 @@ if [ -n "${FLASH_PORT}" ]; then
         --erase "${OTADATA_OFFSET}=0x2000")
     if [ -f "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" ]; then
         ESP_FLASH_ARGS+=(--exporter-cfg "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml")
+    fi
+    # #332 (Codex P2 on #324): every esp32c3 board here IS the nucula,
+    # whose CDC is permanently held by the STANDING nucula-ccid-broker
+    # service — fuser -k alone lets systemd restart it onto the port
+    # mid-flash (the #314 Checksum-error class). The quiesce-unit
+    # protection is no longer opt-in: this flow always passes it for
+    # c3 boards. ESP_QUIESCE_UNIT overrides (set it empty on hosts
+    # without the broker deployed).
+    if [ -z "${ESP_QUIESCE_UNIT+x}" ] && [ "${CHIP}" = "esp32c3" ]; then
+        ESP_QUIESCE_UNIT="nucula-ccid-broker"
+    fi
+    if [ -n "${ESP_QUIESCE_UNIT:-}" ]; then
+        ESP_FLASH_ARGS+=(--quiesce-unit "${ESP_QUIESCE_UNIT}")
+    fi
+    # #313/#332: console-none boards (sdkconfig-xtensa.full carries
+    # CONFIG_ESP_CONSOLE_NONE=y) can never print the console signature
+    # the default boot check looks for — default their proof-of-boot
+    # to the WIRE check. An explicit ESP_BOOT_CHECK=console|wire wins.
+    if [ -n "${ESP_BOOT_CHECK:-}" ]; then
+        ESP_FLASH_ARGS+=(--boot-check "${ESP_BOOT_CHECK}")
+    elif [ "${FLASH_CONSOLE_NONE}" -eq 1 ]; then
+        ESP_FLASH_ARGS+=(--console-none)
     fi
     run python3 "${ESP_FLASH_TOOL}" "${ESP_FLASH_ARGS[@]}"
     if [ "${CHIP}" = "esp32" ]; then

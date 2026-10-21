@@ -1,3 +1,34 @@
+### Fixed — #332 (Codex P2s on #324): `esp32_flash.py` quiesce plumbing, wire boot-proof default, lock/marker edges
+
+- **The nucula flash flow now passes `--quiesce-unit nucula-ccid-broker`
+  itself** (was opt-in and unused by every in-repo caller): `build.sh`
+  appends it for every `esp32c3` board — the standing broker owns the
+  nucula CDC, and `fuser -k` alone lets systemd restart it onto the
+  port mid-flash (the #314 Checksum-error class). The README manual C3
+  flow documents the flag as mandatory. (`flash_and_test.sh` is
+  xtensa-only — not a nucula entry point.)
+- **Console-free build flows default to `--boot-check wire`**: new
+  `console_none` parameter / `--console-none` CLI flag auto-defaults an
+  unspecified boot check to the wire proof (a console signature can
+  never appear on a `CONFIG_ESP_CONSOLE_NONE=y` build); explicit
+  `--boot-check`/`--no-boot-check` still win. `build.sh` passes it for
+  the `sdkconfig-xtensa.full` boards (m5stick, m5stick-plus-lcd,
+  m5atom), `flash_and_test.sh` for its `sdkconfig.defaults.esp32`
+  flow; `ESP_BOOT_CHECK=console|wire` overrides both.
+- **The bench flock is released even if the unit restart raises**: a
+  `systemctl start <quiesce-unit>` exception (e.g. a subprocess
+  timeout) used to propagate out of restore() before
+  `pcscd_lock_release`, stranding the held flock in a long-lived
+  caller — now reported loudly (`RESTART RAISED`) and never fatal to
+  the restore path.
+- **The `.pcscd-down` marker is kept until pcscd actually restarts**:
+  `pcscd_lock_release` used to unlink it in a `finally` even when
+  `systemctl start pcscd` failed or raised — losing the only record
+  that every bench reader is down. The marker is cleared only on a
+  verified restart (rc=0) and the warning names the kept marker;
+  `recover_stale_pcscd_down` got the same rule (a failed retry keeps
+  the marker for the next attempt).
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -26,6 +57,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   monitor's RX journal and NEVER opens or injects on the CCID wire
   (clean-wire doctrine — stock ser2net is banned on GemPC/CDC paths).
   All verification explicitly TODO (§7 of the doc).
+### Added — flash-via-labgrid design + bench device-inventory seed (kanban `t_f62142b1`)
+
+- `docs/FLASH-VIA-LABGRID-DESIGN.md`: the 2026-10-20 bench research on
+  flashing every MCU DUT through labgrid coordination — promoted from the
+  bench notes with substance unchanged (provenance noted at the top).
+  Current-state map of installed labgrid 26.0 (what ships: FlashScript,
+  DFU, OpenOCD, USBPower via uhubctl — what doesn't: any Espressif
+  support), the DTR-hazard strap table per bridge, the flash-bundle
+  manifest format (`amperstrand.flash-bundle/1`) + refusal matrix that
+  structurally kills the mixed-family/boot-loop and
+  erase-otadata-at-a-factory-app incident classes, inventory/place-tag
+  design, power-replug (YKUSH3/uhubctl) plan, and the M0–M7 migration
+  ladder. One repo-path fix vs the notes: ota_push lives at
+  `tests/hardware/vpcd/`, not `host-tools/`.
+- `docs/device-inventory.json`: the M0 seed snapshot — six bench devices
+  (nucula-c3, m5stick, stm32f469, stm32f746, ref-acr1252, ref-cardman)
+  with role, port/by-id, firmware-known-good pointer and per-device
+  source citations (J3R180 runbook STATE/Results, exporter-ai-legion-nfc
+  resources, AGENTS.md bench tables/deltas, ROOT-REFLASH forensics).
+  Checked-in seed only — per the design (§4.6) the authoritative
+  live copy is the bench-local file the flash tool writes.
 
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
