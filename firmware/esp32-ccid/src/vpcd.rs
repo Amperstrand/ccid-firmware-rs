@@ -156,7 +156,6 @@ fn serve_connection<D: NfcDriver>(
     }
 }
 
-<<<<<<< HEAD
 /// What the absence gate decided to log for one absent ATR poll.
 /// Returned by [`note_absent_poll`] so tests observe the exact decision.
 #[derive(Debug, PartialEq, Eq)]
@@ -260,7 +259,6 @@ fn note_present_poll() {
         .note_present();
 }
 
-=======
 /// #360 review (P1): request log line. NEVER include APDU payload
 /// bytes — VERIFY (`00 20 00 81 Lc …`) carries PIN digits in the first
 /// eight, CHANGE REFERENCE DATA likewise, and bench-net broadcasts
@@ -287,7 +285,6 @@ fn response_log_line(resp: &[u8], was_apdu: bool) -> String {
     }
 }
 
->>>>>>> origin/main
 fn handle_message<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     payload: &[u8],
@@ -327,21 +324,19 @@ fn handle_message<D: NfcDriver>(
                         }
                     }
                 } else {
-<<<<<<< HEAD
                     // Codex P1 on #328 (tracked #332): pcscd probes ATR
                     // presence at ~400 ms with no card — logging EVERY
                     // absent answer spams the console indefinitely.
                     // Log the ABSENCE TRANSITION only (first absent
                     // after presence, or every ABSENCE_LOG_EVERY as a
                     // slow heartbeat).
+                    // #350 gate does the transition-gated logging
+                    // (Transition announces once; Heartbeat every ~6 min).
                     note_absent_poll();
-=======
                     // card gone (or never inserted): the cache no longer
                     // describes what is in the field — drop it so a
                     // later probe re-runs a fresh activation.
                     *cached_atr = Vec::new();
-                    log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
->>>>>>> origin/main
                     Some(Vec::new()) // no card → empty ATR (driver ejects + re-polls)
                 }
             }
@@ -599,7 +594,6 @@ mod tests {
         );
     }
 
-<<<<<<< HEAD
     /// #350 regression (Codex P1), part 1: N consecutive absent polls
     /// must produce exactly ONE announcement plus the slow heartbeat.
     /// The old swap-based gate saw `was_present == false` on every
@@ -686,7 +680,8 @@ mod tests {
             "a successful ATR must close and re-arm the SHARED gate"
         );
         assert_eq!(note_absent_poll(), None);
-=======
+    }
+
     /// #360 review (P1) "poll for link loss before serving the cached
     /// ATR": a live session + populated cache must still consult
     /// presence — on the PN7160 path that check drains the pending
@@ -913,6 +908,5 @@ mod tests {
             2,
             "probe must re-run activation (failed ON + probe)"
         );
->>>>>>> origin/main
     }
 }
