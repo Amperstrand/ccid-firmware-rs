@@ -81,6 +81,10 @@ def open_cdc() -> serial.Serial:
     s.port = port
     s.baudrate = 115200
     s.timeout = 0.05
+    s.write_timeout = 2.0  # bench rule: a wedged C3 CDC never drains TX —
+    #                     # an unbounded write() blocks FOREVER (py-spy'd
+    #                     # 2026-10-21: broker stuck in write() inside
+    #                     # wait_serving while the board sat dead)
     s.dtr = False  # bench rule: deassert BEFORE open — no DTR pulse
     s.rts = False
     s.open()
@@ -115,7 +119,13 @@ def wait_serving(s: serial.Serial, budget_s: float = 2.5) -> bool:
     deadline = time.monotonic() + budget_s
     while time.monotonic() < deadline:
         seq = (seq % 255) + 1
-        s.write(gss_frame(seq))
+        try:
+            s.write(gss_frame(seq))
+        except serial.SerialTimeoutException:
+            # write_timeout tripped: TX is not draining (dead/wedged CDC).
+            # Bounded failure, not a forever-block — let the caller's
+            # retry ladder decide (bring_up_cdc reopens or reports).
+            return False
         t0 = time.monotonic()
         buf = b""
         while time.monotonic() - t0 < 0.3:
