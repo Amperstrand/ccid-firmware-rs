@@ -428,10 +428,13 @@ def main() -> int:
             _ROLLBACK.update(reader=args.reader, cap=cap, armed=True)
         if not install_ok:
             # #332 (Codex on #325): a failed install leaves partial
-            # artifacts — roll back to baseline instead of continuing
-            # into probes against a half-loaded package.
+            # artifacts — roll back to baseline and ABORT (Codex P1,
+            # 00:12: falling through probed a half-loaded package).
             phase("rollback after failed install",
                   cleanup_openpgp(args.reader, cap))
+            _ROLLBACK["armed"] = False
+            print("\n".join(lines))
+            return 8
 
     # --- the card answers OpenPGP protocol on THIS reader (direct APDUs,
     # deterministic — no scdaemon dependency; every exchange bounded) ---
@@ -549,7 +552,20 @@ if __name__ == "__main__":
                   f"{_ROLLBACK['reader']}…")
             try:
                 ok = cleanup_openpgp(_ROLLBACK["reader"], _ROLLBACK["cap"])
-                print(f"ROLLBACK: {'OK — baseline restored' if ok else 'FAILED — card needs manual cleanup'}")
+                if not ok:
+                    print("ROLLBACK: FAILED — card needs manual cleanup")
+                else:
+                    # Codex P1 (00:12): verify the REGISTRY QUERY before
+                    # claiming success — a transient gp -l failure must
+                    # not read as a restored baseline.
+                    verify = baseline_pkgs(_ROLLBACK["reader"])
+                    if verify is None:
+                        print("ROLLBACK: cleanup reported OK but the "
+                              "registry verify query FAILED — re-check "
+                              "with a fresh gp -l before trusting state")
+                    else:
+                        print(f"ROLLBACK: OK — baseline restored "
+                              f"({len(verify)} pkgs)")
             except Exception as rb:  # noqa: BLE001
                 print(f"ROLLBACK CRASH: {rb!r} — card needs manual cleanup")
     raise SystemExit(code)
