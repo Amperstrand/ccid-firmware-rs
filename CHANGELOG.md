@@ -19,6 +19,15 @@
   does not.
 - Setup recipe in the test module docstring (reader.conf.d entry on
   the dedicated 0x8C82 base + .so copy).
+### Docs — ecosystem scan (fork/join/learn inventory)
+
+- `docs/ECOSYSTEM_SCAN.md`: three-agent verified scan of the smart-card
+  firmware ecosystem. Headlines: no Rust reader firmware exists besides
+  ours (trussed-dev stack = token firmware — join on USB); Ledger
+  lib_ccid (Apache-2.0) is the fork prize for device-side CCID
+  semantics; scll is the Rust GP lifecycle tool to co-own; #261 gets a
+  three-tier software-card plan (vpcd+jcardsim now, S20 HCE cheap,
+  PN7160 listen CE endgame). License guardrails per item.
 
 ### Refactor — M2 step 1: mfrc522-pcd homed in ccid (one-way kernel)
 
