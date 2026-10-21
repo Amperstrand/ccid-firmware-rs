@@ -36,6 +36,7 @@ pins 1.94.1 per their README + release notes.
 ## D-2: esp-idf-svc 0.53 / hal 0.47 generation (legacy-I2C lane closed)
 
 **Authority**: ccid + bolty `Cargo.toml` pins (unified 2026-10-15/16).
+Fork-pin map per dep: `docs/vendor-patches.md` (#294 manifest).
 **Decision**: both ESP32 repos ride the hal-0.47/sys-0.38/svc-0.53 generation
 on IDF v5.5.5, crosstool `esp-14.2.0_20260121`, fork `v1.98.1.0`.
 **Evidence**: the cross-repo SDK-version matrix was the root of repeated
@@ -152,7 +153,9 @@ revisit whether it belongs in a policy enum.
 ## D-9: Single I2C driver generation — driver_ng everywhere; esp-idf-hal fork retired
 
 **Authority**: PR #242 + this entry (root `Cargo.toml` `[patch]` comment +
-AGENTS.md vendoring-policy class 2).
+AGENTS.md vendoring-policy class 2). Every patched/forked dep's pin, fork
+delta, runtime role, upstream status and retirement trigger are manifest-ed
+in `docs/vendor-patches.md` (#294 item 3 — the WS3 vendor-patch manifest).
 **Decision**: every embedded-hal I2C consumer rides the shared adapter
 (`pn7160-nci::hal_i2c`); the PN7160 transport itself rides the raw
 driver_ng FFI directly by design (esp_transport.rs); the Amperstrand
@@ -166,7 +169,9 @@ run on the patch-removal commit green on every esp leg (9 build legs +
 swapped git `c1d4ec35` → registry v0.47.0.
 **Change triggers**: a future crate needing the legacy `i2c` driver API →
 reintroduce via a git fork pin (vendoring-policy class 2 still applies),
-never a silent re-vendor; IDF 6 removing the legacy driver entirely →
+never a silent re-vendor — and the new fork gets a manifest row (pin, delta,
+runtime role, upstream status, retirement trigger) in `docs/vendor-patches.md`
+the same session; IDF 6 removing the legacy driver entirely →
 this decision becomes moot.
 
 **Trigger FIRED and RESOLVED (2026-10-18, #278)**: registry hal links
