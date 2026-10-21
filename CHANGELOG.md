@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — #330: T=1 endpoint session reset
+
+- `ccid_handler`: reset the T=1 endpoint when SetParameters(T=1) is
+  accepted. A long-lived pcscd keeps the card powered between client
+  connections (no power cycle → no reset anchor), so the endpoint's
+  ns/host_ns counters, chain buffers and retry cache survived the
+  re-arm; each new client's fresh ns=0 I-blocks then R-blocked and
+  garbled applet traffic (GET DATA → 6A88 against long-lived pcscd,
+  220 B on a fresh one). libccidtwin resets its counters per
+  SCardConnect — the endpoint now resets at the same anchor.
+  Regression: `set_parameters_resets_stale_t1_endpoint_counters`.
+
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
 - `tests/hardware/nfc/J3R180-RUNBOOK.md` + `j3r180_gpg_lifecycle.py`:
