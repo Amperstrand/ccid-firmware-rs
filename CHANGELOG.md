@@ -1,5 +1,45 @@
 ## [Unreleased]
 
+### Added — M3 product presets: named build compositions (t_0492b7c6)
+
+- `products.toml` — the single source of truth for the product tier:
+  reader-min (kernel + frontend + ccid-service over serial/USB; no
+  wifi/bt/screen), provisioner-min (kernel + frontend + bolty-core
+  app), connected (+WiFi-VPCD / SPP / BLE console), nucula-all-in-one
+  (screen + PMU + wallet — composition pending), stm32-f469 (wired
+  contact reader). Per product: feature composition + boards + artifact
+  name. Products are DELTAS on the verified build.sh bench variants,
+  not copies of their feature lists.
+- `tools/products.py` — the manifest's compiler and gate (same doctrine
+  as union_matrix.py): `check` re-derives every preset LIVE from
+  build.sh (via union_matrix's parser) and the crate feature
+  vocabularies, failing loud on drift; `resolve` maps product/board to
+  a concrete feature set; `--format matrix` generates the CI
+  product-artifact matrix (CI never inlines a product definition);
+  `selftest` covers the resolver arithmetic (add/remove-on-base,
+  default-features bases, unknown product/board/variant).
+- `build.sh product=<X> [board=<Y>]` — the preset dispatch entrypoint:
+  resolves products.toml through products.py and rides the existing
+  per-board machinery unchanged (sdkconfig stamps, cache contamination
+  guards, elf2image + the dio flash-mode byte check). Images are named
+  after the preset artifact (`esp32-ccid-reader-min-m5stick.bin`).
+  Board-only invocations (`./build.sh m5stick`) behave exactly as
+  before. No xtask crate exists in this workspace; shelling through
+  build.sh reuses ~300 lines of load-bearing bench hardening an xtask
+  would have to duplicate — that is the dispatch decision.
+- `provisioner` feature (esp32-ccid) + `src/provisioner_app.rs`: the
+  provisioner-min composition marker and app mount point. Honest scope:
+  the bolty-core app itself is NOT vendored (one-way-kernel doctrine,
+  M2) — it lands as a rev-pinned git dep in a follow-up bolty-rs PR;
+  until then `product=provisioner-min` builds the exact kernel +
+  frontend surface the app mounts on.
+- union-matrix.yml `product-artifacts` job (additive): reader-min
+  (m5stick, m5atom, nucula) + provisioner-min (m5stick, m5atom)
+  release builds per board through the same build.sh dispatch, .bin
+  artifacts uploaded; matrix generated from products.toml, manifest
+  validated in the `matrix` job; `union-ok` aggregates the new leg.
+  Path filter extended with products.toml + tools/products.py.
+
 ### Added — #261 tier (a): scripted vpcd table card (zero hardware)
 
 - `tests/hardware/nfc/vpicc_table.py` + `test_vpicc_table.py`: a

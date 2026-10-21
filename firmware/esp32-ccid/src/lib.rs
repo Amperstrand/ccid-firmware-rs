@@ -171,3 +171,9 @@ pub mod ble_logger;
 
 #[cfg(all(feature = "ble", any(target_arch = "xtensa", target_arch = "riscv32")))]
 pub mod ble_console;
+
+// M3 product preset (t_0492b7c6): the provisioner-min app mount point —
+// host-buildable pure Rust today; the bolty-core app lands behind this
+// gate as a rev-pinned dep (see src/provisioner_app.rs).
+#[cfg(feature = "provisioner")]
+pub mod provisioner_app;

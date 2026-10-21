@@ -84,6 +84,15 @@ ble-diag = ["ble"]
 # at the esp-idf-svc `bt::spp` imports, same compile-loud pairing rule as
 # `ble`. ESP32 silicon only (BR/EDR). Mutually exclusive with `ble` (modem).
 spp = []
+# M3 product preset (t_0492b7c6, products.toml provisioner-min): kernel +
+# NFC frontend + the bolty-core provisioner app (card burn / wipe /
+# derive-keys). The app module is NOT vendored here — it lands as a
+# rev-pinned git dep from bolty-rs in a follow-up PR (one-way-kernel
+# doctrine, M2). Until it lands this feature is the composition marker:
+# `build.sh product=provisioner-min` compiles the exact kernel+frontend
+# surface the app mounts on (src/provisioner_app.rs is the mount point),
+# so the preset and its CI artifact leg are real today.
+provisioner = []
 
 [dependencies]
 card-interface = { path = "../../crates/card-interface" }
