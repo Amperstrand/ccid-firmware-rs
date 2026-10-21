@@ -1825,7 +1825,8 @@ mod tests {
         );
         // The restarted discovery AUTO-ACTIVATES the ISO-DEP tag while
         // the host stays silent: activation NTF (ATS tail) queued.
-        drv.transport_mut().push_notification(&auto_activation_ntf());
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
 
         // Next tick: the RSP is collected and the maintenance DRAIN
         // absorbs the queued activation — latched with its ATS,
@@ -1872,7 +1873,8 @@ mod tests {
 
         // Tag couples and auto-activates while the host is silent: the
         // activation NTF sits queued when the next maintenance tick runs.
-        drv.transport_mut().push_notification(&auto_activation_ntf());
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
         let writes_before = drv.transport_mut().sent.len();
         // First tick is immediately due (unknown last time) — but the
         // event drain runs FIRST, latches the activation, un-parks: the
