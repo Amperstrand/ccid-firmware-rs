@@ -30,5 +30,6 @@ pub mod frontend;
 pub mod nfc;
 pub mod spp_server;
 pub mod t1;
+pub mod tcp_server;
 pub mod turnaround;
 pub mod vpcd;

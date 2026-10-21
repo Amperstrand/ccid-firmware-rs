@@ -20,11 +20,21 @@
   `install_card_presence_sink` (inversion of the old direct
   `m5stick_lcd::set_card_present` call — the LCD main installs the
   forwarder, host tests a counting sink; unset = inert as before).
-- Still firmware-side (tracked follow-up): the `wifi_ccid` TCP session
-  loop (bench-hardened, PN7160 mute-recovery pokes driver internals —
-  needs a recovery-hook seam before it can move) and the esp-idf SPP
-  bring-up shell (`spp_shell`, deliberately: transport bring-up is the
-  bin's duty).
+- Still firmware-side (tracked follow-up): the esp-idf SPP bring-up
+  shell (`spp_shell`, deliberately: transport bring-up is the bin's
+  duty).
+- `tcp_server` (the `wifi_ccid` TCP session loop, the last tracked
+  follow-up of this card) now lives in the kernel too, with the
+  mute-recovery ladder as the boundary seam: the loop calls an
+  injected on-tick hook (`&mut dyn FnMut(&mut D)`, once per serve
+  tick, in the exact position the inline ladder occupied) with the
+  live driver; the firmware main keeps the streak check
+  (`pn7160_i2c::i2c_send_failure_streak` + `silent_rearm_streak`),
+  VEN cycle and init-ladder replay — the kernel never sees
+  `pn7160_i2c`. #153 arrival-floor, answer-or-silence and idle-close
+  semantics carried over byte-identically, locked by five scripted-
+  duplex/real-socket host tests (`tcp_server::tests`, the vpcd-suite
+  pattern: `Read + Write` seam so a `ScriptedStream` drives the loop).
 
 ### Added — shared-crates manifest (kernel graph SSOT)
 

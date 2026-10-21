@@ -13,6 +13,13 @@ its home repo's default-branch HEAD; the report lands in
 `ops/reports/shared-crates-drift.txt`. Pins below are illustrative of the
 2026-10-21 state — the script, not this prose, is the live truth.
 
+Scope note (t_72e1e2ed, 2026-10-21): this manifest tracks **cross-repo git
+deps only** — crates homed in one repo and rev-pinned by the other. Repo
+*internal* extraction crates (path deps inside `ccid-firmware-rs`, e.g. the
+`ccid-service` serving kernel under `crates/ccid-service`) are deliberately
+NOT listed here: they have no consumer pin to drift. The day bolty-rs starts
+consuming one via a git dep, it joins the Kernel crates table with its pin.
+
 ## Kernel crates (one home each)
 
 | crate | home | consumed by | consumer pin (2026-10-21) | notes |

@@ -16,17 +16,16 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
-use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows, ServeAction};
+use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows};
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
 use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
 use crate::wifi::WifiManager;
 
-use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener};
+use std::io::{ErrorKind, Write};
+use std::net::TcpListener;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::time::Duration;
 
 const CARD_POLL_INTERVAL_MS: u32 = 500;
 const INIT_ATTEMPTS: u32 = 5;
@@ -34,8 +33,6 @@ const TCP_PORT: u16 = 29443;
 /// Consecutive NAKed I2C writes that mean the PN7160 wedged (mute):
 /// below this the driver's retry cadence absorbs transient bus errors.
 const I2C_MUTE_THRESHOLD: u32 = 3;
-/// 250 ms read ticks × 2400 = 10 min without host bytes → drop client.
-const IDLE_CLOSE_TICKS: u32 = 2400;
 
 #[link_section = ".rodata"]
 static _BUILD_TAG: &[u8] = b"wifi-ccid-v1";
@@ -175,13 +172,13 @@ pub fn run() -> ! {
     );
 
     // Single-session serve loop, tick architecture (bench hardening
-    // 2026-10-12): a 250 ms read timeout makes every iteration a tick,
-    // so RF presence polling runs on CARD_POLL_INTERVAL even when the
-    // host goes quiet (the old blocking read froze polling through
-    // pcscd restarts). Extra TCP clients are accepted-and-rejected —
-    // queued clients used to sit in the kernel backlog as ESTAB-looking
-    // zombies while carrying no session. A PN7160 that NAKs writes
-    // (mute) is recovered by VEN power cycle + ladder replay.
+    // 2026-10-12): the session loop lives in the serving kernel
+    // (`ccid_service::tcp_server`, t_72e1e2ed) — host-tested there —
+    // with the #153 arrival-floor + idle-close semantics carried over
+    // byte-identically. This main keeps the board half: session-fd
+    // publication for the stall hook, the accept/reject outer loop,
+    // and the mute-recovery ladder injected as the kernel's on-tick
+    // hook (the kernel must not reach into pn7160_i2c).
     listener
         .set_nonblocking(true)
         .expect("listener nonblocking");
@@ -200,109 +197,44 @@ pub fn run() -> ! {
             }
         };
         let _ = stream.set_nodelay(true);
-        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
         SESSION_FD.store(stream.as_raw_fd(), Ordering::SeqCst);
         log::warn!("wifi-ccid: client {} connected", peer);
-        let mut burst_buf = [0u8; 64];
-        let mut idle_ticks: u32 = 0;
-        // #153 arrival floor (Codex round 2 on #158): bytes queued in
-        // the TCP stack during a blocking handler are returned by the
-        // NEXT read — anchor them at the tick of the last dispatch,
-        // never at the drain-time read. A timed-out read proves the
-        // stream idle and raises the floor.
-        let mut arrival_floor = unsafe { esp_idf_sys::xTaskGetTickCount() };
-        loop {
-            match stream.read(&mut burst_buf) {
-                Ok(0) => {
-                    log::warn!("wifi-ccid: client {} closed", peer);
-                    break;
-                }
-                Ok(n) => {
-                    idle_ticks = 0;
-                    // One read = one burst: every byte in it shares the
-                    // floor captured before it.
-                    let read_end = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                    let floor = arrival_floor;
-                    for &byte in &burst_buf[..n] {
-                        let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                        if server.feed_byte(byte, now) == ServeAction::Respond {
-                            // #153: the frame may have queued behind the
-                            // previous handler — anchor it at the burst's
-                            // arrival floor before judging expiry, then drop
-                            // responses that outlived the host's read window
-                            // instead of poisoning the stream.
-                            server.refresh_host_deadline(floor);
-                            let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                            if server.response_expired(post) {
-                                server.record_late_response();
-                                continue;
-                            }
-                            let echo = server.echo();
-                            let resp = server.response();
-                            if stream.write_all(echo).is_err() || stream.write_all(resp).is_err() {
-                                break;
-                            }
-                            // Dump-and-retrieve: escape 0xD1 ack went out —
-                            // panic now so the flash coredump captures state.
-                            if server.take_snapshot_request() {
-                                panic!("escape 0xD1: diagnostic snapshot requested");
-                            }
-                        }
-                    }
-                    // Codex round 3 on #168: advance the floor only on a
-                    // SHORT read (queue plausibly drained at read
-                    // return) — a full read may leave older queued bytes.
-                    if n < burst_buf.len() {
-                        arrival_floor = read_end;
-                    }
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {
-                    idle_ticks += 1;
-                    if idle_ticks >= IDLE_CLOSE_TICKS {
-                        log::warn!("wifi-ccid: client {} idle timeout — closing", peer);
-                        break;
-                    }
-                    // The timed-out read proves nothing queued: later
-                    // bytes are fresh arrivals.
-                    arrival_floor = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                }
-                Err(e) => {
-                    log::warn!("wifi-ccid: read error ({:?}) — dropping client", e);
-                    break;
+        // Mute recovery (two faces, bench 2026-10-12): a NAKing PN7160
+        // (send streak) or a semi-muted one that ACKs writes but never
+        // answers RSPs (silent streak) — both stay wedged until VEN
+        // power cycle; power_off clears driver state, the ladder
+        // re-inits. Injected at the kernel boundary: the kernel calls
+        // this once per serve tick with the live driver.
+        let mut mute_recovery = |drv: &mut Pn7160NfcDriver<EspPn7160Transport>| {
+            let send_streak = crate::pn7160_i2c::i2c_send_failure_streak();
+            let silent_streak = u32::from(drv.silent_rearm_streak());
+            if send_streak >= I2C_MUTE_THRESHOLD || silent_streak >= I2C_MUTE_THRESHOLD {
+                log::warn!(
+                    "wifi-ccid: PN7160 mute (send={}, silent={}) — VEN cycle + ladder replay",
+                    send_streak,
+                    silent_streak
+                );
+                drv.power_off();
+                drv.transport_mut().ven_cycle();
+                match drv.init() {
+                    Ok(()) => log::warn!("wifi-ccid: PN7160 recovered (ladder ok)"),
+                    Err(e) => log::warn!("wifi-ccid: recovery ladder failed ({:?})", e),
                 }
             }
-            // Single-session contract: reject queued extra clients now,
-            // not when the current session ends.
-            if let Ok((extra, extra_peer)) = listener.accept() {
-                let _ = extra.shutdown(Shutdown::Both);
-                log::warn!("wifi-ccid: rejected extra client {}", extra_peer);
-            }
-            // Mute recovery (two faces, bench 2026-10-12): a NAKing
-            // PN7160 (send streak) or a semi-muted one that ACKs writes
-            // but never answers RSPs (silent streak) — both stay wedged
-            // until VEN power cycle; power_off clears driver state, the
-            // ladder re-inits.
-            {
-                let drv = server.handler_mut().driver_mut();
-                let send_streak = crate::pn7160_i2c::i2c_send_failure_streak();
-                let silent_streak = u32::from(drv.silent_rearm_streak());
-                if send_streak >= I2C_MUTE_THRESHOLD || silent_streak >= I2C_MUTE_THRESHOLD {
-                    log::warn!(
-                        "wifi-ccid: PN7160 mute (send={}, silent={}) — VEN cycle + ladder replay",
-                        send_streak,
-                        silent_streak
-                    );
-                    drv.power_off();
-                    drv.transport_mut().ven_cycle();
-                    match drv.init() {
-                        Ok(()) => log::warn!("wifi-ccid: PN7160 recovered (ladder ok)"),
-                        Err(e) => log::warn!("wifi-ccid: recovery ladder failed ({:?})", e),
-                    }
-                }
-            }
-            let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-            server.poll_if_due(now);
-        }
+        };
+        let mut clock = || unsafe { esp_idf_sys::xTaskGetTickCount() };
+        let _session_end = ccid_service::tcp_server::serve_tcp_session(
+            &mut stream,
+            &listener,
+            &mut server,
+            &ccid_service::tcp_server::SessionParams {
+                cfg: ccid_service::tcp_server::SessionConfig::default(),
+                log_tag: "wifi-ccid",
+                peer,
+            },
+            &mut clock,
+            &mut mute_recovery,
+        );
         // Session over (closed/idle/error): retire the stall-hook fd
         // before the stream drops and the fd could be reused.
         SESSION_FD.store(-1, Ordering::SeqCst);
