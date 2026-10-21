@@ -15,20 +15,26 @@ Current hardware combinations:
 | ESP32 dev boards | PN532 over SPI | ✓ serial | Secondary | Kept supported, current focus is MFRC522 |
 | ESP32-C3 (nucula board) | PN7160 over I2C | ✓ via PTY broker | Card-level verified | Direct pcscd/libccidtwin enumeration impossible on C3 silicon (chip-resets on port-open, no disable bit — #117) |
 
-## Status: generated, never hand-written
+## Status: generated + curated digest
 
-**What works and what doesn't is NOT maintained in this README.** It is
-generated from evidence by the nightly device-CI run (issue #183):
+**What works and what doesn't is NOT maintained as prose here.** Two
+evidence-backed pages carry it:
 
+- **[docs/TESTED_AND_WORKING.md](blob/main/docs/TESTED_AND_WORKING.md)** —
+  the curated digest: firmware × hardware × transport matrix with
+  PASS/SKIP/NOT-TESTED per row, measured performance with stamps, the
+  honest unavailable-hardware list, and the ranked known-issues index.
+  Every row cites its evidence (commit, date, test).
 - **[docs/STATUS.md on the `bench/status` branch](../blob/bench/status/docs/STATUS.md)** —
-  the live bench wiring matrix + on-device HIL results, every claim
-  stamped with commit + date + the test that verified it. Regenerated
-  nightly; hand edits are never made.
-- **The issue tracker is the roadmap** — priorities, known gaps, and
-  per-board deep state (BLE #66, GP cards #127, device CI #183) live in
-  issues with checklists, not in prose here.
-- Card & GP safety doctrine: AGENTS.md "Card-Handling Doctrine" (#144
-  records the card lost learning it; the retry ledger is #127).
+  the live bench wiring matrix + on-device HIL results, generated
+  nightly from real runs (issue #183). Hand edits are never made;
+  when it disagrees with anything else, it wins.
+
+The issue tracker is the roadmap — priorities, known gaps, and
+per-board deep state (BLE #66, GP cards #127, device CI #183) live in
+issues with checklists. Card & GP safety doctrine: AGENTS.md
+"Card-Handling Doctrine" (#144 records the card lost learning it; the
+retry ledger is #127; the CPLC identity ledger gate is #341).
 
 The practical architecture is a shared CCID core with interchangeable axes:
 
@@ -75,7 +81,16 @@ Rust firmware for STM32-based USB CCID readers.
 
 ## CCID Specification Compliance
 
-This implementation targets **98%+ compliance** with CCID Rev 1.1 specification.
+**No blanket percentage claim.** What the implementation actually
+carries is per-command coverage, reference-locked against the spec
+(every protocol byte traces to a citation per the Reference-First
+doctrine), and what has been exercised is recorded per target in the
+verification digest — see **[docs/TESTED_AND_WORKING.md](
+blob/main/docs/TESTED_AND_WORKING.md)** and the generated
+**[docs/STATUS.md on `bench/status`]**(
+../blob/bench/status/docs/STATUS.md). A command marked "implemented"
+below is host-test-covered; hardware verification varies by target
+and is tracked per row in the digest.
 
 **Spec Reference**: [DWG_Smart-Card_CCID_Rev110.pdf](https://www.usb.org/sites/default/files/DWG_Smart-Card_CCID_Rev110.pdf)
 
