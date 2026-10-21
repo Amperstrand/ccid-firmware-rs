@@ -1406,7 +1406,7 @@ mod tests {
         let mut resp = [0u8; 512];
 
         let apdu: Vec<u8> = std::iter::once(0x80)
-            .chain(std::iter::repeat(0x5A).take(298))
+            .chain(std::iter::repeat_n(0x5A, 298))
             .chain([0x90, 0x00].iter().copied())
             .collect();
         assert_eq!(apdu.len(), 301);
@@ -1414,7 +1414,7 @@ mod tests {
         let chunks: Vec<&[u8]> = apdu.chunks(32).collect();
         for (i, chunk) in chunks.iter().enumerate() {
             let more = i < chunks.len() - 1;
-            let pcb = (0u8 << 6) | ((more as u8) << 5);
+            let pcb = (more as u8) << 5; // I-block: PCB bit 6 clear (§11.3)
             let mut blk = vec![0x00u8, pcb, chunk.len() as u8];
             blk.extend_from_slice(chunk);
             blk.push(blk.iter().fold(0u8, |a, b| a ^ b));
@@ -1460,7 +1460,7 @@ mod tests {
         // A 64-byte INF piece exceeds DEFAULT_HOST_IFSD (32) but fits
         // the negotiated 254 — must be chain-ACKed, not bad_block'ed.
         let piece = [0x5Au8; 64];
-        let pcb = (0u8 << 6) | (1u8 << 5);
+        let pcb = 1u8 << 5; // I-block (bit 6 clear) + more-bit set (§11.3)
         let mut blk = vec![0x00u8, pcb, piece.len() as u8];
         blk.extend_from_slice(&piece);
         blk.push(blk.iter().fold(0u8, |a, b| a ^ b));

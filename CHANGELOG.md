@@ -1,5 +1,31 @@
 ## [Unreleased]
 
+### Added — ccid-service crate: the serving kernel moves behind a board-blind boundary (t_72e1e2ed, in flight)
+
+- New workspace member `crates/ccid-service` — the reader-mode serving
+  kernel. Moved from `firmware/esp32-ccid` (re-exported there under the
+  historical paths): `ccid_serial_server` (GemPC-Twin serial server),
+  `vpcd`, `spp_server`'s pure pump, `ccid_handler`, `t1`, `turnaround`,
+  `ccid_types`, `nfc` (the `NfcDriver` contract), `frontend`
+  (RetryFrontend/EitherFrontend policy).
+- The boundary is the point: the crate depends ONLY on card-interface,
+  ccid-core, ccid-protocol, ccid-transport-serial (+ std/heapless) —
+  it cannot see pins, peripherals or board drivers, so "works on any
+  board" is compiler-enforced. The firmware bin keeps the board table +
+  frontend constructor + service spawn (`wifi_vpcd` and `spp_shell`
+  already have exactly that shape).
+- Platform services cross the boundary as injected hooks: `t1::
+  install_clock` (esp-idf `esp_timer` installed by every serving main
+  via `esp32_ccid::install_platform_clock`) and the handler's
+  `install_card_presence_sink` (inversion of the old direct
+  `m5stick_lcd::set_card_present` call — the LCD main installs the
+  forwarder, host tests a counting sink; unset = inert as before).
+- Still firmware-side (tracked follow-up): the `wifi_ccid` TCP session
+  loop (bench-hardened, PN7160 mute-recovery pokes driver internals —
+  needs a recovery-hook seam before it can move) and the esp-idf SPP
+  bring-up shell (`spp_shell`, deliberately: transport bring-up is the
+  bin's duty).
+
 ### Added — shared-crates manifest (kernel graph SSOT)
 
 - `docs/SHARED-CRATES.md`: the cross-repo kernel dependency graph (crate

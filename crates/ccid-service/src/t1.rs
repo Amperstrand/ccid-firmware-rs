@@ -460,6 +460,52 @@ impl T1Endpoint {
     }
 }
 
+/// Monotonic microseconds for the WTX decision (§11.6.2): the card path
+/// can run seconds (on-card RSA) — beyond any host BWT.
+///
+/// Clock is INJECTED (t_72e1e2ed crate boundary): the kernel crate has
+/// no ESP-IDF dependency, so target mains install the platform clock
+/// (`install_clock`, esp-idf `esp_timer_get_time`) at boot — same hook
+/// pattern as [`crate::ccid_serial_server::time_extension`]. Before
+/// install (and on host builds) the clock reads 0, exactly the old
+/// host-build behavior.
+static CLOCK_FN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// Install the platform monotonic clock (microseconds). Firmware bins
+/// call this as the first serving-setup step; the kernel never calls it.
+pub fn install_clock(clock: fn() -> i64) {
+    CLOCK_FN.store(clock as usize, core::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn now_us() -> i64 {
+    let raw = CLOCK_FN.load(core::sync::atomic::Ordering::SeqCst);
+    if raw == 0 {
+        return 0;
+    }
+    // Sound: `raw` was stored by `install_clock` from a `fn() -> i64`.
+    let clock: fn() -> i64 = unsafe { core::mem::transmute(raw) };
+    clock()
+}
+
+pub fn elapsed_ms_since(started_us: i64) -> u32 {
+    ((now_us() - started_us) / 1000).max(0) as u32
+}
+
+/// True for an S-block REQUEST (RESYNC/IFS/ABORT/WTX) — the reader's own
+/// link-layer duty per ISO 7816-3 §11.5.2: negotiation is answered by the
+/// reader itself and does not require an active card session. I-blocks and
+/// R-blocks DO need the card (APDU payload / retransmission of a card-bound
+/// response) and stay gated on PresentActive.
+pub fn is_s_block_request(bytes: &[u8]) -> bool {
+    // Block layout §11.3: NAD(1) | PCB(1) | LEN(1) | INF | LRC.
+    if bytes.len() < 4 {
+        return false;
+    }
+    let pcb = bytes[1];
+    // S-block: 11 b5 0 kind — request has bit 4 clear (response sets it).
+    (pcb & 0xC0) == 0xC0 && (pcb & 0x10) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -956,50 +1002,4 @@ mod tests {
             other => panic!("expected R-block, got {other:?}"),
         }
     }
-}
-
-/// Monotonic microseconds for the WTX decision (§11.6.2): the card path
-/// can run seconds (on-card RSA) — beyond any host BWT.
-///
-/// Clock is INJECTED (t_72e1e2ed crate boundary): the kernel crate has
-/// no ESP-IDF dependency, so target mains install the platform clock
-/// (`install_clock`, esp-idf `esp_timer_get_time`) at boot — same hook
-/// pattern as [`crate::ccid_serial_server::time_extension`]. Before
-/// install (and on host builds) the clock reads 0, exactly the old
-/// host-build behavior.
-static CLOCK_FN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
-/// Install the platform monotonic clock (microseconds). Firmware bins
-/// call this as the first serving-setup step; the kernel never calls it.
-pub fn install_clock(clock: fn() -> i64) {
-    CLOCK_FN.store(clock as usize, core::sync::atomic::Ordering::SeqCst);
-}
-
-pub fn now_us() -> i64 {
-    let raw = CLOCK_FN.load(core::sync::atomic::Ordering::SeqCst);
-    if raw == 0 {
-        return 0;
-    }
-    // Sound: `raw` was stored by `install_clock` from a `fn() -> i64`.
-    let clock: fn() -> i64 = unsafe { core::mem::transmute(raw) };
-    clock()
-}
-
-pub fn elapsed_ms_since(started_us: i64) -> u32 {
-    ((now_us() - started_us) / 1000).max(0) as u32
-}
-
-/// True for an S-block REQUEST (RESYNC/IFS/ABORT/WTX) — the reader's own
-/// link-layer duty per ISO 7816-3 §11.5.2: negotiation is answered by the
-/// reader itself and does not require an active card session. I-blocks and
-/// R-blocks DO need the card (APDU payload / retransmission of a card-bound
-/// response) and stay gated on PresentActive.
-pub fn is_s_block_request(bytes: &[u8]) -> bool {
-    // Block layout §11.3: NAD(1) | PCB(1) | LEN(1) | INF | LRC.
-    if bytes.len() < 4 {
-        return false;
-    }
-    let pcb = bytes[1];
-    // S-block: 11 b5 0 kind — request has bit 4 clear (response sets it).
-    (pcb & 0xC0) == 0xC0 && (pcb & 0x10) == 0
 }
