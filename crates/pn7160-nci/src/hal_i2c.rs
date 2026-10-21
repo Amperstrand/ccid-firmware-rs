@@ -26,6 +26,15 @@
 //! `i2c_master_transmit_receive` path — the wire-shape parity the
 //! legacy esp-idf-hal `I2cDriver` produced, which the bench 0xD3
 //! cadence compare and the MFRC522/AXP192 register reads depend on.
+//!
+//! Dispatch layering (#332, Codex review on #321): the production
+//! `transaction` walk lives in the PURE, host-compiled
+//! [`dispatch_transaction`] and classifies exclusively through the
+//! tested [`write_run_len`] / [`op_is_read`] / [`classify_ops`] — the
+//! esp-side `run_len_ops`/`read_at` private duplicates are deleted.
+//! The only target-only code left is the FFI seam
+//! (`impl RawI2cMaster for I2cMasterDevice`) and the two-line
+//! `I2c::transaction` wrapper.
 
 use embedded_hal::i2c::{ErrorKind, NoAcknowledgeSource, Operation};
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
@@ -229,6 +238,171 @@ pub fn op_kind(op: &Operation<'_>) -> OpKind {
     }
 }
 
+/// Cap on operations per `transaction` slice: the dispatch walk
+/// materializes the kind of every op up front ([`classify_ops`]).
+/// Real embedded-hal 1.0 drivers issue command-style sequences (the
+/// MFRC522 fork: `write_many` → 2 ops, `write_read` → 2; the AXP192
+/// LCD path: 1–2); 32 is far beyond any real caller, and exceeding it
+/// errors LOUDLY — never silently truncates (the same contract as the
+/// coalesce buffer `WBUF_SZ` below).
+pub const MAX_TRANSACTION_OPS: usize = 32;
+
+/// Pure, host-testable: classify a whole `transaction` slice into
+/// per-op kinds. THE only production path from `Operation` to
+/// `OpKind` (#332) — the esp dispatch walks this Vec through
+/// [`write_run_len`] / [`op_is_read`]; it keeps no private classifier.
+pub fn classify_ops(
+    ops: &[Operation<'_>],
+) -> Result<heapless::Vec<OpKind, MAX_TRANSACTION_OPS>, AdapterError> {
+    let mut kinds = heapless::Vec::new();
+    for op in ops {
+        kinds.push(op_kind(op)).map_err(|_| AdapterError {
+            kind: ErrorKind::Other,
+            raw: -(2 /*EINVAL: transaction longer than MAX_TRANSACTION_OPS — refuse, never truncate*/),
+        })?;
+    }
+    Ok(kinds)
+}
+
+/// Pure, host-testable: ONE dispatch decision of the transaction
+/// walk — the complete set of rulings the target-side executor makes.
+/// Every run-length / read-fusion ruling rides the tested
+/// [`write_run_len`] / [`op_is_read`] (via [`next_step`]), so host
+/// tests pin the production wire shape BY CONSTRUCTION (#332: the
+/// pre-refactor dispatch classified through private cfg(esp)
+/// `run_len_ops`/`read_at` twins that never compiled on host).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchStep {
+    /// Standalone Read at `idx`: one `i2c_master_receive`.
+    Read { idx: usize },
+    /// Run of `run` Write ops at `idx` fused with the Read at
+    /// `idx + run`: ONE repeated-START `i2c_master_transmit_receive`
+    /// whose tx payload is the CONCATENATED Write run.
+    WriteRead { idx: usize, run: usize },
+    /// Run of `run` Write ops at `idx` with no following Read: ONE
+    /// `i2c_master_transmit` of the concatenated payloads (a run of 1
+    /// passes the single payload straight through, no coalesce copy).
+    Write { idx: usize, run: usize },
+}
+
+impl DispatchStep {
+    /// Walk-cursor advance: index of the first op this step does NOT
+    /// cover.
+    pub fn next_idx(&self) -> usize {
+        match *self {
+            DispatchStep::Read { idx } => idx + 1,
+            DispatchStep::Write { idx, run } => idx + run,
+            DispatchStep::WriteRead { idx, run } => idx + run + 1,
+        }
+    }
+}
+
+/// Pure, host-testable: the next dispatch step at `idx` (`None` when
+/// the walk has covered the slice). Implemented ONLY through
+/// [`write_run_len`] and [`op_is_read`] — the single classification
+/// authority for the production dispatch.
+pub fn next_step(kinds: &[OpKind], idx: usize) -> Option<DispatchStep> {
+    if idx >= kinds.len() {
+        return None;
+    }
+    let run = write_run_len(kinds, idx);
+    Some(if run == 0 {
+        DispatchStep::Read { idx }
+    } else if op_is_read(kinds, idx + run) {
+        DispatchStep::WriteRead { idx, run }
+    } else {
+        DispatchStep::Write { idx, run }
+    })
+}
+
+/// The three driver_ng primitives the coalescing walk maps onto.
+/// Split out as a trait so the dispatch brain ([`dispatch_transaction`])
+/// is ONE generic, host-testable function (#332): `I2cMasterDevice`
+/// implements it with the real FFI on target; host tests drive it with
+/// a recording mock — so the production call sequence is exercised on
+/// host by construction.
+pub trait RawI2cMaster {
+    /// `i2c_master_transmit` — one START…address…bytes…STOP stream.
+    fn raw_transmit(&mut self, bytes: &[u8], timeout_ms: i32) -> Result<(), AdapterError>;
+    /// `i2c_master_receive` — one read-phase transaction.
+    fn raw_receive(&mut self, buffer: &mut [u8], timeout_ms: i32) -> Result<(), AdapterError>;
+    /// `i2c_master_transmit_receive` — one repeated-START fused
+    /// write→read transaction.
+    fn raw_transmit_receive(
+        &mut self,
+        tx: &[u8],
+        rx: &mut [u8],
+        timeout_ms: i32,
+    ) -> Result<(), AdapterError>;
+}
+
+/// Pure orchestration over any [`RawI2cMaster`] — THE production
+/// dispatch (#332, Codex review on #321). `impl I2c for
+/// I2cMasterDevice::transaction` validates the address, supplies the
+/// stack buffers, and delegates here; every classification decision
+/// routes through the tested [`classify_ops`] / [`next_step`] /
+/// [`write_run_len`] / [`op_is_read`]. Wire shape (the #307/#321
+/// contract, unchanged by this refactor):
+///
+/// - Write run followed by a Read → ONE fused repeated-START
+///   `raw_transmit_receive`, tx = concatenated run payloads;
+/// - Write run of 2+ with no following Read → ONE `raw_transmit` of
+///   the concatenated payloads;
+/// - single Write → one `raw_transmit` of its payload as-is;
+/// - standalone Read → one `raw_receive`.
+pub fn dispatch_transaction(
+    bus: &mut impl RawI2cMaster,
+    ops: &mut [Operation<'_>],
+    wbuf: &mut [u8],
+    timeout_ms: i32,
+) -> Result<(), AdapterError> {
+    let kinds = classify_ops(ops)?;
+    let mut idx = 0;
+    while let Some(step) = next_step(&kinds, idx) {
+        match step {
+            DispatchStep::Read { idx } => {
+                let Operation::Read(buf) = &mut ops[idx] else {
+                    unreachable!(
+                        "write_run_len returned 0 at a non-Read op — kinds from classify_ops"
+                    )
+                };
+                bus.raw_receive(buf, timeout_ms)?;
+            }
+            DispatchStep::WriteRead { idx, run } => {
+                // (Write…Write run) → Read: ONE repeated-START
+                // `i2c_master_transmit_receive` whose tx payload is the
+                // CONCATENATED Write run — the legacy
+                // `i2c_master_write_read_device` wire shape. Covers
+                // embedded-hal `write_read` ([W,R]) and the general
+                // [W…W,R] cmd-link shape alike.
+                let (wr_ops, rest) = ops[idx..idx + run + 1].split_at_mut(run);
+                let n = concat_writes(wr_ops, wbuf)?;
+                let Operation::Read(rbuf) = &mut rest[0] else {
+                    unreachable!("shape pinned by op_is_read")
+                };
+                bus.raw_transmit_receive(&wbuf[..n], rbuf, timeout_ms)?;
+            }
+            DispatchStep::Write { idx, run: 1 } => {
+                let Operation::Write(buf) = &ops[idx] else {
+                    unreachable!("write_run_len >= 1 at a non-Write op — kinds from classify_ops")
+                };
+                bus.raw_transmit(buf, timeout_ms)?;
+            }
+            DispatchStep::Write { idx, run } => {
+                // Write run of 2+: ONE `i2c_master_transmit` carrying the
+                // concatenated payloads — a single START…address…bytes…STOP
+                // stream. Two standalone transmits would make the MFRC522
+                // re-parse payload bytes as register addresses (#307 —
+                // mfrc522 `write_many` FIFO loads).
+                let n = concat_writes(&ops[idx..idx + run], wbuf)?;
+                bus.raw_transmit(&wbuf[..n], timeout_ms)?;
+            }
+        }
+        idx = step.next_idx();
+    }
+    Ok(())
+}
+
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
 impl RawDeviceHandle {
     /// Wrap a raw driver_ng device handle.
@@ -300,8 +474,25 @@ impl I2cMasterDevice {
     fn check(&self, address: u8) -> Result<(), AdapterError> {
         validate_address(address, self.addr)
     }
+}
 
-    fn transmit(&mut self, bytes: &[u8], timeout_ms: i32) -> Result<(), AdapterError> {
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+const OP_TIMEOUT_MS: i32 = 100;
+
+/// Coalesced-transmit buffer. The largest real caller payload is an
+/// MFRC522 FIFO load: 64-byte FIFO + one register-address byte = 65;
+/// 128 leaves margin. Overflow errors loudly with the required length
+/// in `raw` — never silently truncates (that would change the wire
+/// shape, the exact failure class this adapter exists to prevent).
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+const WBUF_SZ: usize = 128;
+
+/// FFI seam of the dispatch (#332): the three driver_ng primitives,
+/// verbatim from the pre-refactor private methods. All classification
+/// lives in the host-tested pure layer; this impl only executes.
+#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+impl RawI2cMaster for I2cMasterDevice {
+    fn raw_transmit(&mut self, bytes: &[u8], timeout_ms: i32) -> Result<(), AdapterError> {
         let rc = unsafe {
             esp_idf_sys::i2c_master_transmit(
                 self.dev.handle,
@@ -320,7 +511,7 @@ impl I2cMasterDevice {
         }
     }
 
-    fn receive(&mut self, buffer: &mut [u8], timeout_ms: i32) -> Result<(), AdapterError> {
+    fn raw_receive(&mut self, buffer: &mut [u8], timeout_ms: i32) -> Result<(), AdapterError> {
         let rc = unsafe {
             esp_idf_sys::i2c_master_receive(
                 self.dev.handle,
@@ -343,7 +534,7 @@ impl I2cMasterDevice {
     /// STOP between the phases) — `i2c_master_transmit_receive`
     /// (esp-idf components/esp_driver_i2c/i2c_master.h), the driver_ng
     /// equivalent of the legacy `i2c_master_write_read_device`.
-    fn transmit_receive(
+    fn raw_transmit_receive(
         &mut self,
         tx: &[u8],
         rx: &mut [u8],
@@ -371,31 +562,6 @@ impl I2cMasterDevice {
 }
 
 #[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
-const OP_TIMEOUT_MS: i32 = 100;
-
-/// Coalesced-transmit buffer. The largest real caller payload is an
-/// MFRC522 FIFO load: 64-byte FIFO + one register-address byte = 65;
-/// 128 leaves margin. Overflow errors loudly with the required length
-/// in `raw` — never silently truncates (that would change the wire
-/// shape, the exact failure class this adapter exists to prevent).
-#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
-const WBUF_SZ: usize = 128;
-
-#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn run_len_ops(ops: &[Operation<'_>], idx: usize) -> usize {
-    let mut n = 0;
-    while matches!(ops.get(idx + n), Some(Operation::Write(_))) {
-        n += 1;
-    }
-    n
-}
-
-#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
-fn read_at(ops: &[Operation<'_>], idx: usize) -> bool {
-    matches!(ops.get(idx), Some(Operation::Read(_)))
-}
-
-#[cfg(all(feature = "esp", any(target_arch = "xtensa", target_arch = "riscv32")))]
 impl I2c for I2cMasterDevice {
     fn transaction(
         &mut self,
@@ -403,52 +569,8 @@ impl I2c for I2cMasterDevice {
         operations: &mut [Operation<'_>],
     ) -> Result<(), Self::Error> {
         self.check(address)?;
-        let mut idx = 0;
-        while idx < operations.len() {
-            let run = run_len_ops(operations, idx);
-            if run == 0 {
-                let Operation::Read(buf) = &mut operations[idx] else {
-                    unreachable!("run_len_ops returned 0 at a non-Read op")
-                };
-                self.receive(buf, OP_TIMEOUT_MS)?;
-                idx += 1;
-                continue;
-            }
-            if read_at(operations, idx + run) {
-                // (Write…Write run) → Read: ONE repeated-START
-                // `i2c_master_transmit_receive` whose tx payload is the
-                // CONCATENATED Write run — the legacy
-                // `i2c_master_write_read_device` wire shape. Covers
-                // embedded-hal `write_read` ([W,R]) and the general
-                // [W…W,R] cmd-link shape alike.
-                let (wr_ops, rest) = operations[idx..idx + run + 1].split_at_mut(run);
-                let mut wbuf = [0u8; WBUF_SZ];
-                let n = concat_writes(wr_ops, &mut wbuf)?;
-                let Operation::Read(rbuf) = &mut rest[0] else {
-                    unreachable!("shape pinned by read_at")
-                };
-                self.transmit_receive(&wbuf[..n], rbuf, OP_TIMEOUT_MS)?;
-                idx += run + 1;
-            } else if run == 1 {
-                let Operation::Write(buf) = &operations[idx] else {
-                    unreachable!("run_len_ops >= 1 at a non-Write op")
-                };
-                self.transmit(buf, OP_TIMEOUT_MS)?;
-                idx += 1;
-            } else {
-                // Write run of 2+: ONE `i2c_master_transmit` carrying the
-                // concatenated payloads — a single START…address…bytes…
-                // STOP stream. Two standalone transmits would make the
-                // MFRC522 re-parse payload bytes as register addresses
-                // (#307 — mfrc522 `write_many` FIFO loads).
-                let wr_ops = &operations[idx..idx + run];
-                let mut wbuf = [0u8; WBUF_SZ];
-                let n = concat_writes(wr_ops, &mut wbuf)?;
-                self.transmit(&wbuf[..n], OP_TIMEOUT_MS)?;
-                idx += run;
-            }
-        }
-        Ok(())
+        let mut wbuf = [0u8; WBUF_SZ];
+        dispatch_transaction(self, operations, &mut wbuf, OP_TIMEOUT_MS)
     }
 }
 
@@ -556,5 +678,267 @@ mod tests {
         let mut small = [0u8; 2];
         let err = concat_writes(&ops, &mut small).unwrap_err();
         assert_eq!(err.raw, 3);
+    }
+
+    // --- #332: the PRODUCTION dispatch, executed on host ----------------
+    // `impl I2c for I2cMasterDevice::transaction` validates the address
+    // and delegates to `dispatch_transaction`; these tests drive that
+    // exact function against a recording mock of the driver_ng FFI
+    // seam. Pre-refactor this walk classified through the private
+    // cfg(esp) `run_len_ops`/`read_at` twins that never compiled on
+    // host — now the wire shape is pinned by construction: if the
+    // dispatch stops routing through `classify_ops`/`next_step`
+    // (write_run_len/op_is_read), these are the calls that change.
+
+    /// One recorded driver_ng primitive call.
+    #[derive(Debug, PartialEq, Eq)]
+    enum RawCall {
+        Transmit(Vec<u8>),
+        Receive(usize),
+        TransmitReceive(Vec<u8>, usize),
+    }
+
+    /// Recording mock of the FFI seam: logs every bus call and fills
+    /// each read buffer with a per-call pattern (so tests can prove a
+    /// read landed in the RIGHT `Operation`'s buffer).
+    #[derive(Default)]
+    struct RecordingBus {
+        calls: Vec<RawCall>,
+        fill: u8,
+    }
+
+    impl super::RawI2cMaster for RecordingBus {
+        fn raw_transmit(&mut self, bytes: &[u8], _timeout_ms: i32) -> Result<(), AdapterError> {
+            self.calls.push(RawCall::Transmit(bytes.to_vec()));
+            Ok(())
+        }
+
+        fn raw_receive(&mut self, buffer: &mut [u8], _timeout_ms: i32) -> Result<(), AdapterError> {
+            self.fill = self.fill.wrapping_add(1);
+            buffer.fill(self.fill);
+            self.calls.push(RawCall::Receive(buffer.len()));
+            Ok(())
+        }
+
+        fn raw_transmit_receive(
+            &mut self,
+            tx: &[u8],
+            rx: &mut [u8],
+            _timeout_ms: i32,
+        ) -> Result<(), AdapterError> {
+            self.fill = self.fill.wrapping_add(1);
+            rx.fill(self.fill);
+            self.calls
+                .push(RawCall::TransmitReceive(tx.to_vec(), rx.len()));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn dispatch_coalesces_write_many_into_one_transmit() {
+        // #307 on the wire, end to end through the dispatch: mfrc522
+        // `write_many` issues [Write(addr), Write(payload)] and the
+        // production path MUST issue ONE transmit carrying the
+        // concatenation. The pre-#321 code (and any regression back to
+        // standalone per-op transmits) records TWO calls here — the
+        // MFRC522 then re-parses payload bytes as register addresses.
+        let mut bus = RecordingBus::default();
+        let mut ops = [Operation::Write(&[0x02u8]), Operation::Write(&[0xAA, 0xBB])];
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap();
+        assert_eq!(bus.calls, vec![RawCall::Transmit(vec![0x02, 0xAA, 0xBB])]);
+    }
+
+    #[test]
+    fn dispatch_write_read_pair_is_one_fused_call() {
+        // embedded-hal `write_read` → [W, R]: ONE repeated-START
+        // transmit_receive (the legacy `write_read` wire shape the
+        // bench 0xD3 cadence compare reads), never transmit+receive.
+        let mut bus = RecordingBus::default();
+        let mut rbuf = [0u8; 2];
+        let mut ops = [Operation::Write(&[0x0Au8]), Operation::Read(&mut rbuf)];
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap();
+        assert_eq!(bus.calls, vec![RawCall::TransmitReceive(vec![0x0A], 2)]);
+        // The read phase landed in the caller's buffer.
+        assert_eq!(rbuf, [1, 1]);
+    }
+
+    #[test]
+    fn dispatch_fuses_general_write_run_then_read() {
+        // [W(reg), W(data), R(n)]: same fusion with a concatenated tx —
+        // the cmd-link generalization beyond the plain [W,R] pair.
+        let mut bus = RecordingBus::default();
+        let mut rbuf = [0u8; 3];
+        let mut ops = [
+            Operation::Write(&[0x0Au8]),
+            Operation::Write(&[0x01, 0x02]),
+            Operation::Read(&mut rbuf),
+        ];
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap();
+        assert_eq!(
+            bus.calls,
+            vec![RawCall::TransmitReceive(vec![0x0A, 0x01, 0x02], 3)]
+        );
+    }
+
+    #[test]
+    fn dispatch_standalone_read_is_one_receive() {
+        let mut bus = RecordingBus::default();
+        let mut rbuf = [0u8; 4];
+        let mut ops = [Operation::Read(&mut rbuf)];
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap();
+        assert_eq!(bus.calls, vec![RawCall::Receive(4)]);
+        assert_eq!(rbuf, [1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn dispatch_single_write_passes_straight_through() {
+        // run of 1: payload transmitted as-is (no coalesce copy).
+        let mut bus = RecordingBus::default();
+        let mut ops = [Operation::Write(&[0x0Au8, 0x55])];
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap();
+        assert_eq!(bus.calls, vec![RawCall::Transmit(vec![0x0A, 0x55])]);
+    }
+
+    #[test]
+    fn dispatch_mixed_sequence_splits_at_every_read() {
+        // [W, W, R, W, R] → fused(run 2), fused(run 1) — and each read
+        // phase lands in its OWN buffer (distinct fill patterns prove
+        // the split_at_mut wiring never swaps read targets).
+        let mut bus = RecordingBus::default();
+        let mut r1 = [0u8; 1];
+        let mut r2 = [0u8; 2];
+        let mut ops = [
+            Operation::Write(&[0x01u8]),
+            Operation::Write(&[0x02]),
+            Operation::Read(&mut r1),
+            Operation::Write(&[0x03]),
+            Operation::Read(&mut r2),
+        ];
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap();
+        assert_eq!(
+            bus.calls,
+            vec![
+                RawCall::TransmitReceive(vec![0x01, 0x02], 1),
+                RawCall::TransmitReceive(vec![0x03], 2),
+            ]
+        );
+        assert_eq!(r1, [1]);
+        assert_eq!(r2, [2, 2]);
+    }
+
+    #[test]
+    fn dispatch_empty_transaction_is_a_noop() {
+        let mut bus = RecordingBus::default();
+        let mut wbuf = [0u8; 128];
+        super::dispatch_transaction(&mut bus, &mut [], &mut wbuf, 100).unwrap();
+        assert!(bus.calls.is_empty());
+    }
+
+    #[test]
+    fn dispatch_errors_loud_when_a_run_exceeds_the_coalesce_buffer() {
+        // Never truncate: a Write run whose concatenation does not fit
+        // the caller's buffer reports the required length.
+        let mut bus = RecordingBus::default();
+        let mut ops = [Operation::Write(&[0u8; 40]), Operation::Write(&[0u8; 40])];
+        let mut wbuf = [0u8; 64];
+        let err = super::dispatch_transaction(&mut bus, &mut ops, &mut wbuf, 100).unwrap_err();
+        assert_eq!(err.raw, 80);
+        assert!(bus.calls.is_empty());
+    }
+
+    #[test]
+    fn next_step_pins_the_dispatch_branches() {
+        use super::{next_step, DispatchStep, OpKind};
+
+        // [W, W, R, R]: run 2 fused with the following Read; the next
+        // standalone Read; walk terminates exactly past the slice.
+        let kinds = [OpKind::Write, OpKind::Write, OpKind::Read, OpKind::Read];
+        assert_eq!(
+            next_step(&kinds, 0),
+            Some(DispatchStep::WriteRead { idx: 0, run: 2 })
+        );
+        assert_eq!(next_step(&kinds, 3), Some(DispatchStep::Read { idx: 3 }));
+        assert_eq!(next_step(&kinds, 4), None);
+
+        // [R, W]: standalone Read first, then an unfused single Write.
+        let kinds = [OpKind::Read, OpKind::Write];
+        assert_eq!(next_step(&kinds, 0), Some(DispatchStep::Read { idx: 0 }));
+        assert_eq!(
+            next_step(&kinds, 1),
+            Some(DispatchStep::Write { idx: 1, run: 1 })
+        );
+
+        // [W, W] with no following Read: coalesced transmit, no fusion.
+        let kinds = [OpKind::Write, OpKind::Write];
+        assert_eq!(
+            next_step(&kinds, 0),
+            Some(DispatchStep::Write { idx: 0, run: 2 })
+        );
+    }
+
+    #[test]
+    fn next_step_walk_advances_to_exactly_the_slice_end() {
+        // The executor's cursor (`step.next_idx()`) must land on
+        // ops.len() — never skip an op, never re-execute one.
+        use super::{next_step, OpKind};
+
+        let sequences: &[&[OpKind]] = &[
+            &[],
+            &[OpKind::Read],
+            &[OpKind::Write],
+            &[OpKind::Write, OpKind::Write],
+            &[OpKind::Write, OpKind::Read],
+            &[OpKind::Read, OpKind::Write, OpKind::Write, OpKind::Read],
+            &[
+                OpKind::Write,
+                OpKind::Write,
+                OpKind::Read,
+                OpKind::Read,
+                OpKind::Write,
+            ],
+        ];
+        for kinds in sequences {
+            let mut idx = 0;
+            let mut steps = 0;
+            while let Some(step) = next_step(kinds, idx) {
+                assert!(step.next_idx() > idx, "cursor must advance");
+                idx = step.next_idx();
+                steps += 1;
+                assert!(steps <= kinds.len() + 1, "walk must terminate");
+            }
+            assert_eq!(idx, kinds.len(), "walk must cover the whole slice");
+        }
+    }
+
+    #[test]
+    fn classify_ops_is_the_single_operation_to_kind_path() {
+        // classify_ops must agree with op_kind element-for-element,
+        // and refuse (loudly, raw=-2) transactions beyond the cap —
+        // never silently truncate the walk's input.
+        use super::{classify_ops, op_kind, OpKind, MAX_TRANSACTION_OPS};
+
+        let writes: [u8; 3] = [1, 2, 3];
+        let mut read_buf: [u8; 2] = [0; 2];
+        let ops = [Operation::Write(&writes), Operation::Read(&mut read_buf)];
+        let kinds = classify_ops(&ops).unwrap();
+        assert_eq!(kinds.as_slice(), &[OpKind::Write, OpKind::Read]);
+        assert_eq!(op_kind(&ops[0]), OpKind::Write);
+
+        let too_many: Vec<Operation<'_>> = (0..=MAX_TRANSACTION_OPS)
+            .map(|_| Operation::Write(&[]))
+            .collect();
+        let err = classify_ops(&too_many).unwrap_err();
+        assert_eq!(err.raw, -2);
+
+        let at_cap: Vec<Operation<'_>> = (0..MAX_TRANSACTION_OPS)
+            .map(|_| Operation::Write(&[]))
+            .collect();
+        assert_eq!(classify_ops(&at_cap).unwrap().len(), MAX_TRANSACTION_OPS);
     }
 }

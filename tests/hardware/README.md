@@ -61,3 +61,27 @@ pySim-read.py -p <slot>
 
 Avoid running any `pySim-shell` commands that write files, modify ADM settings,
 or update profiles.
+
+## NFC field recorder (ACR1252 oracle evidence)
+
+`tests/hardware/nfc/field_recorder.py` records what the bench ORACLE
+reader (ACS ACR1252 PICC) observes into an **append-only JSONL file**
+— one event per line, tcpdump-style evidence for issues:
+
+```bash
+python3 tests/hardware/nfc/field_recorder.py --out evidence.jsonl \
+    --apdu 00A40400023132 --apdu 00CA006E00   # scripted APDUs (opt.)
+```
+
+Event kinds: `reader_list` (pcscd listing), `card_atr` (connect+ATR),
+`apdu_exchange` (request/response/SW + ms), `poll_presence`
+(insert/remove transitions, sampled without powering the card),
+framed by `recorder_meta`/`recorder_stop` markers. Every line is
+`{"ts", "kind", "reader", "data"}` — the full schema is the module
+docstring. The reader is pinned by EXACT pcscd name (default the
+ACR1252 PICC slot, `--reader` to override), loops are bounded
+(`--interval`/`--duration`/`--max-events`), and SC-class APDUs
+(INIT_UPDATE, EXT_AUTH, SC-gated GET DATA) are refused at both the
+CLI and the library boundary (AGENTS.md card-handling doctrine).
+Hardware is bench-verified separately; unit tests run without
+pyscard (duck-typed fakes — `test_field_recorder.py`).

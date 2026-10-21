@@ -99,10 +99,29 @@ catch-all (`ccid_handler.rs:115`): `RDR_to_PC_SlotStatus` with
 | 6.1.13 | Abort | 0x72 | ⚠️ stub | catch-all | fuzz | no USB control endpoint on serial transport; synchronous single-slot server has nothing to abort (matches STM32 audit's stub rationale) |
 | 6.1.14 | SetDataRateAndClockFrequency | 0x73 | ⚠️ stub | catch-all | fuzz | baud fixed at 115200 by libccidtwin (see Serial Performance Notes in AGENTS.md) |
 
-Truncated transport frames (declared `dwLength` exceeds delivered bytes) are
-rejected before dispatch with a counted protocol error
-(`ccid_handler.rs:88-102`); every failed response increments the diagnostics
-error counter (`:126-128`).
+Truncated wire frames (declared `dwLength` exceeds the bytes actually
+delivered) are handled by the **transport parser, not the handler**: the
+frame assembler stays in `ReadPayload` until the declared payload
+completes — an unterminated frame never reaches
+`CcidHandler::process_command` or the core dispatcher. Recovery is the
+serve loop's inter-byte stall reset (`ccid_serial_server.rs`
+`INTER_BYTE_STALL_TICKS = 10`: bytes of a valid frame arrive
+back-to-back, so a gap that large resets the parser — fuzz-proven
+2026-10-09; the parser exposes the same condition as `mid_frame()` for
+callers applying their own stall timeouts) plus the UART mains'
+read-idle reset (`on_read_idle`), which drop the partial frame and
+resynchronize on the next SYNC. **Nothing counts truncated wire frames
+in the 0xD0 diagnostics** — a truncation costs a stall-reset resync,
+not a protocol-error increment.
+
+The handler-side truncation guard (core dispatcher
+`ccid-core/src/handler.rs` `record_protocol_error()` early return; the
+same guard in `ccid_handler.rs` `xfr_via_t1` — issue #114, Codex on
+#93) is **direct-input-only**: it fires when a caller hands the
+dispatcher a header declaring more payload than the supplied buffer
+carries (host unit tests, direct invocations), recording exactly one
+protocol error and answering a failed SlotStatus. It is not on the
+serial transport path.
 
 ### XfrBlock notes (§6.1.4)
 

@@ -29,6 +29,10 @@ pub struct MockSmartcardDriver {
     raw_response_idx: usize,
     power_on_should_fail: bool,
     transmit_apdu_should_fail: bool,
+    /// #344 test seam: when set, the 0xD0 diagnostics fold stamps this
+    /// card_present (models a driver whose live hardware view differs
+    /// from the polled presence cache — the F746 presence-pin case).
+    diag_card_present: Option<bool>,
     call_log: [MockCall; MAX_CALL_LOG],
     call_log_len: usize,
 }
@@ -62,6 +66,7 @@ impl MockSmartcardDriver {
             raw_response_idx: 0,
             power_on_should_fail: false,
             transmit_apdu_should_fail: false,
+            diag_card_present: None,
             call_log: [MockCall::PowerOff; MAX_CALL_LOG],
             call_log_len: 0,
         }
@@ -113,6 +118,14 @@ impl MockSmartcardDriver {
 
     pub fn with_transmit_apdu_error(mut self) -> Self {
         self.transmit_apdu_should_fail = true;
+        self
+    }
+
+    /// #344: make the 0xD0 diagnostics fold report this card_present
+    /// (the driver-live view), independently of the polled
+    /// `card_present` cache.
+    pub fn with_diag_card_present(mut self, present: bool) -> Self {
+        self.diag_card_present = Some(present);
         self
     }
 
@@ -218,5 +231,11 @@ impl SmartcardDriver for MockSmartcardDriver {
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.log(MockCall::SetClockAndRate { clock_hz, rate_bps });
         Ok((clock_hz, rate_bps))
+    }
+
+    fn diagnostics(&self, base: &mut ccid_core::Diagnostics) {
+        if let Some(present) = self.diag_card_present {
+            base.card_present = present;
+        }
     }
 }
