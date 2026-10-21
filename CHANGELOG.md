@@ -1,11 +1,27 @@
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
 ## [Unreleased]
+
+### Changed — #332: `hal_i2c` production dispatch routes through the tested classifier (Codex review on #321)
+
+- The `#307` coalescing walk lived in the cfg(esp)-only `impl I2c for
+  I2cMasterDevice::transaction` and classified operations through
+  private `run_len_ops`/`read_at` twins of the host-tested
+  `write_run_len`/`op_is_read` — code that never compiled on host, so
+  the pinned-by-test classification and the classification actually
+  driving the wire could drift apart silently (the repo's #1 bug
+  class: mock/hardware divergence).
+- The walk is now the pure, host-compiled `dispatch_transaction`
+  (over the new `RawI2cMaster` FFI seam): it classifies exclusively
+  via `classify_ops` → `next_step` → `write_run_len`/`op_is_read`, and
+  the esp side is reduced to the three verbatim driver_ng FFI calls
+  plus a two-line `transaction` wrapper. Wire shape unchanged (#307
+  contract: [W…W] → ONE transmit; [W…W,R] → ONE fused
+  repeated-START transmit_receive).
+- Host tests now execute the production dispatch against a recording
+  `RawI2cMaster` mock: the #307 `write_many` sequence, `write_read`
+  fusion, mixed sequences, per-Read buffer placement, loud
+  coalesce-overflow and the new loud `MAX_TRANSACTION_OPS` cap
+  (32 — real drivers issue 1–2 ops) are all pinned on host by
+  construction. `pn7160-nci --lib`: 104 tests green.
 
 ### Fixed — #330: T=1 endpoint session reset
 
@@ -768,7 +784,6 @@ were selection-starved without it. Differential now 16/16. CI: lazy
 pyserial imports in the nucula conftest (python-collect minimal env),
 strict spec-quote coverage scoped to the fully-covered sources,
 cargo-target resolver OSError-guarded, fmt drift fixed.
-
 
 ### Fixed — pn7160 pcscd ATR synthesis + PTY broker bring-up (#117, bench 2026-10-11)
 
