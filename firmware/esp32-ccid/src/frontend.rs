@@ -99,6 +99,11 @@ impl<D: NfcDriver> NfcDriver for RetryFrontend<D> {
         !self.degraded && self.inner.session_active()
     }
 
+    fn presence_poll_detects_removal(&self) -> bool {
+        // #369 P2: delegate — a wrapped PN7160 must keep its fast path.
+        !self.degraded && self.inner.presence_poll_detects_removal()
+    }
+
     fn exchange_decomposition(&self) -> Option<(u32, u32, u32, u32)> {
         (!self.degraded)
             .then(|| self.inner.exchange_decomposition())
@@ -238,6 +243,15 @@ impl<A: NfcDriver, B: NfcDriver<Error = A::Error>> NfcDriver for EitherFrontend<
         match self {
             Self::Primary(d) => d.session_active(),
             Self::Fallback(d) => d.session_active(),
+        }
+    }
+
+    fn presence_poll_detects_removal(&self) -> bool {
+        // #369 P2: delegate to the live arm; an unavailable arm must
+        // NOT claim the capability.
+        match self {
+            Self::Primary(d) => d.presence_poll_detects_removal(),
+            Self::Fallback(d) => d.presence_poll_detects_removal(),
         }
     }
 
