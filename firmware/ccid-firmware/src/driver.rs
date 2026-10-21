@@ -1,3 +1,5 @@
+use ccid_core::Diagnostics;
+
 pub trait SmartcardDriver {
     type Error: core::fmt::Debug;
 
@@ -30,5 +32,21 @@ pub trait SmartcardDriver {
     /// self-healing keep the 0.
     fn reinit_count(&self) -> u32 {
         0
+    }
+    /// Fold driver-known state into the Escape 0xD0 diagnostics
+    /// snapshot (issue #344).
+    ///
+    /// `base` arrives carrying the handler's LIVE counters
+    /// (apdu_tx/rx, nak, error, uptime) — core-owned since the #268
+    /// fix retired the old driver-side stub, which fabricated zeros
+    /// for them on the F469. The default leaves it untouched; drivers
+    /// whose hardware knows more than the polled presence cache
+    /// override this — the F746 bit-bang wrapper stamps its live
+    /// presence-pin reading, so a 0xD0 query between presence polls
+    /// can never answer the fabricated all-zero default with a card
+    /// inserted. The answer is serialized in the frozen ccid-core
+    /// 28-byte layout (see `ccid_core::Diagnostics`).
+    fn diagnostics(&self, base: &mut Diagnostics) {
+        let _ = base;
     }
 }
