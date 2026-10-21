@@ -96,8 +96,14 @@ jobs:
           fi
           {
             if [ "$ESP_RUNS" = "true" ]; then
-              echo "esp=$(python3 tools/union_matrix.py --format matrix --filter "$COMBO_FILTER")"
-              echo "esp-count=$(python3 tools/union_matrix.py --format matrix --filter "$COMBO_FILTER" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+              # Capture before echoing (#402 review): inside echo "…$(…)"
+              # the shell sees echo's rc, not the tool's — the empty-filter
+              # exit would be masked and downstream fromJSON would choke
+              # on malformed output instead of the real filter error.
+              esp="$(python3 tools/union_matrix.py --format matrix --filter "$COMBO_FILTER")" || exit 1
+              esp_count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$esp")"
+              echo "esp=$esp"
+              echo "esp-count=$esp_count"
             else
               echo "esp=[]"
               echo "esp-count=0"

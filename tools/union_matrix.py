@@ -149,21 +149,25 @@ def load_manifest_features() -> set[str]:
         manifest = tomllib.load(f)
     feats = set(manifest.get("features", {}).keys())
 
-    def add_optional(deps: dict) -> None:
-        for name, spec in deps.items():
-            if isinstance(spec, dict) and spec.get("optional"):
-                feats.add(name)
+    def optional_deps(deps: dict) -> set[str]:
+        return {name for name, spec in deps.items()
+                if isinstance(spec, dict) and spec.get("optional")}
 
-    # #394 analysis item: cargo treats every optional dependency as an
-    # implicit feature — the [features] table alone is NOT the feature
-    # space (8 implicit names here: mfrc522, iso14443, mfrc522-pcd,
-    # pn532, pn532-transport, pn7160-nci, mipidsi, embedded-graphics).
-    # Validating against [features] only would mis-flag cargo-valid
-    # combo entries. Target-section deps ride along.
-    add_optional(manifest.get("dependencies", {}))
+    opt: set[str] = optional_deps(manifest.get("dependencies", {}))
     for cfg in (manifest.get("target") or {}).values():
-        add_optional(cfg.get("dependencies", {}))
-    return feats
+        opt |= optional_deps(cfg.get("dependencies", {}))
+
+    # Cargo's dep: suppression rule (#402 review): an optional dependency
+    # gets an implicit same-name feature ONLY while no feature references
+    # it as dep:<name> — once referenced, the implicit feature is
+    # suppressed and --features <dep-name> is INVALID. This manifest
+    # dep:-references all of its optional deps, so the effective set is
+    # the [features] keys; a future unreferenced optional dep would
+    # correctly join the set.
+    referenced = {t for lst in manifest.get("features", {}).values()
+                  for t in lst if isinstance(t, str)}
+    suppressed = {n.removeprefix("dep:") for n in referenced if n.startswith("dep:")}
+    return feats | (opt - suppressed)
 
 
 def sdkconfig_paths_ok(sdkconfig: str) -> bool:
