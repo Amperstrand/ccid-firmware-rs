@@ -1,5 +1,24 @@
 ## [Unreleased]
 
+### Added — #261 tier (a): scripted vpcd table card (zero hardware)
+
+- `tests/hardware/nfc/vpicc_table.py` + `test_vpicc_table.py`: a
+  software PICC that connects to a vpcd listener and answers every
+  APDU from a fixed, self-marked table ('VPICC-TABLE' FCI marker,
+  A5/5A synthetic filler — the vcard doctrine). Bench-green 4/4
+  through pcscd: ATR shape, self-marked SELECT, synthetic CPLC,
+  unknown-AID 6A82.
+- Wire-protocol lessons baked into the daemon (cost us an evening):
+  OFF/ON controls get NO reply (an empty ack de-syncs the driver's
+  next ATR probe into 0-length = ICC-absent → permanent eject);
+  driver+card must agree on the SLOT (base port = reader "00 00",
+  +1 = "00 01"); a second reader.conf entry needs its OWN COPY of
+  the patched .so (pcscd loads one instance per LIBPATH — shared
+  global slot state otherwise); the patched driver re-polls absent
+  readers (#359) so the card may attach any time — the stock driver
+  does not.
+- Setup recipe in the test module docstring (reader.conf.d entry on
+  the dedicated 0x8C82 base + .so copy).
 ### Docs — ecosystem scan (fork/join/learn inventory)
 
 - `docs/ECOSYSTEM_SCAN.md`: three-agent verified scan of the smart-card
