@@ -18,7 +18,7 @@ its home repo's default-branch HEAD; the report lands in
 | crate | home | consumed by | consumer pin (2026-10-21) | notes |
 |---|---|---|---|---|
 | `pn7160-nci` (incl. `hal_i2c`) | ccid `crates/pn7160-nci` | bolty `crates/bolty-pn7160` | `ccid@0b8e33e` | PN7160 NCI frontend + shared `driver_ng` embedded-hal I2C adapter (Write-run coalescing, #321) |
-| `mfrc522-pcd` | bolty `crates/mfrc522-pcd` | ccid `firmware/esp32-ccid` (optional) | `bolty@519823c` (branch `chore/pin-iso14443-941131eb`) | MFRC522 PCD layer. **M2: migrates to ccid** (one-way kernel). 2026-10-21: bumped to iso14443@941131eb (limits API) for #376/#372 |
+| `mfrc522-pcd` | bolty `crates/mfrc522-pcd` | ccid `firmware/esp32-ccid` (optional) | `bolty@f9fb57b7` (branch `chore/pin-iso14443-0f7d9d70`) | MFRC522 PCD layer. **M2: migrates to ccid** (one-way kernel). 2026-10-21: bumped to iso14443@941131eb (limits API) for #376/#372 |
 | `pn532-transport` | bolty `crates/pn532-transport` | ccid `firmware/esp32-ccid` (optional) | `bolty@2a1afea` | PN532 transport. **M2: migrates to ccid** |
 
 ## Protocol layer
