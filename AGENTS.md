@@ -794,6 +794,42 @@ and large enough (≥ 12 KB; 16 KB is the recommended value).
 
 ## Known-Good Bench State (2026-10-09, re-verified 2026-10-12)
 
+**STATE 2026-10-20 (night) — the current tested surface.** The matrix
+below is historical context; this block is the live truth until the
+next stamp:
+
+- **#330 root-caused and fixed (both causes).** (1) T=1 endpoint
+  counters surviving host reconnects — fixed by resetting the endpoint
+  at SetParameters(T=1)-accept (PR #345, regression test, bench: 3×
+  consecutive connections against one long-lived pcscd all green where
+  unfixed firmware failed from connection 2). (2) Per-APDU pcscd
+  connections lose the applet selection through spec-correct
+  PowerDown-on-last-disconnect (MFRC522 honors it; the nucula keeping
+  state was the anomaly) — fixed in the lifecycle tool by holding ONE
+  connection across the probe phase (PR #341). Full-green m5stick run:
+  SELECT/GET DATA 6E (220 B)/VERIFY PW1/GET DATA 5E all 9000 through
+  pcscd, uninstall clean, baseline restored.
+- **Device scorecard**: nucula — full J3R180 lifecycle green (serial,
+  via broker). m5stick — full lifecycle green on PR-#345-code firmware
+  (flashed; re-stamp to merged main after #345 lands). STM32F469 —
+  proven lifecycle, currently UNPLUGGED (cable borrowed). ACR1252 —
+  oracle. Card placement: good card on m5stick coil (4-pkg baseline),
+  original on nucula, baseline card on ACR.
+- **Session lessons (both bit hard tonight):** (a) worktrees need
+  their OWN `CARGO_TARGET_DIR` — the shared one has a CMake cache
+  keyed to the main checkout's esp-idf path and fails with "source
+  does not match the source used to generate cache"; symlink
+  `.embuild`, separate target dir, cold build. (b) Decoding pcscd
+  strace output requires `strace -xx -s 4096` (hex escapes) — the
+  default octal/letter escapes silently mis-decode `\f`/`\n`/`\t`
+  control bytes inside binary payloads and produced two false
+  "corruption" findings before the discipline landed.
+- **Known host-side (not reader) issues**: scdaemon wedges on the
+  pcscd reader set (vpcd/modemifd IFDs) — pinned-reader + direct-APDU
+  workaround, hygiene task t_fe356d5c; transient empty `gp -l` after
+  heavy traffic (#332 item).
+
+
 The per-board verification matrix — run these probes after acquiring a
 place or whenever bench reality is in doubt. **A place you don't hold is
 a board you don't own**: the bench is shared with micronuts/bolty-rs,
@@ -1038,12 +1074,28 @@ merged PRs — 38 had never been addressed**, including real protocol
 bugs (CORE_SET_CONFIG status byte, PCB bit layout, ICC status decode)
 that host tests missed because the mocks modeled the wrong behavior.
 
-**The rules:**
+**The rules (rule 0 is a HARD MERGE GATE — owner directive 2026-10-20):**
+
+0. **NO PR MERGES BEFORE ITS CODEX REVIEW IS READ AND TRIAGED.**
+   The bot reviews the PR head within ~5–30 min of each push. A green
+   CI is NOT merge permission. Before merging:
+   - The Codex review for the **head commit** must exist
+     (`gh api repos/Amperstrand/ccid-firmware-rs/pulls/N/reviews`);
+     if it has not landed yet, WAIT for it. Never merge in the gap.
+   - Every finding is either FIXED on the PR or explicitly triaged in
+     a PR reply (wontfix rationale or a tracking-issue pointer). The
+     reply IS the audit trail — same-session, BEFORE merge.
+   - Origin: PRs #333 and earlier merged on green CI while reviews
+     were pending/unaddressed; the findings had to be swept into #332
+     after the fact. Post-merge cleanup is the failure mode this gate
+     exists to prevent. (First enforcement: #341/#345, both held open
+     until their reviews landed and were fixed+replied in 99cf263a /
+     03140058.)
 1. **Before opening a PR**: read the Codex feedback on the last 3-5
    merged PRs touching the same area — patterns repeat.
-2. **After a PR merges**: check its Codex comments within the same
-   session. Reply to each finding with what was done or why it was
-   skipped (commit hash or rationale) — the reply IS the audit trail.
+2. **After a PR merges**: re-check its Codex comments once more within
+   the same session (the bot can review the final merged state) and
+   reply to anything new the same way.
 3. **When picking up work in an area**: grep the tracking issues
    (#112/#113/#114 and successors) for backlog items in that area
    before writing new code — don't duplicate or contradict.
