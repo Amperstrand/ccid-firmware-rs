@@ -111,6 +111,13 @@ impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
         self.inner.session_active()
     }
 
+    fn presence_poll_detects_removal(&self) -> bool {
+        // PN7160's `is_card_present` drains the pending
+        // RF_DEACTIVATE_NTF, so a card removed mid-session IS observed
+        // on the next presence poll (bench-proven #326, 2026-10-21).
+        true
+    }
+
     fn wtx_counters(&self) -> Option<(u32, u32)> {
         Some(self.inner.wtx_counters())
     }

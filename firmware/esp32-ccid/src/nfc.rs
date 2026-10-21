@@ -63,6 +63,19 @@ pub trait NfcDriver {
         false
     }
 
+    /// #360 P1 (Codex 2026-10-21, merged-head follow-up): does
+    /// `is_card_present()` perform a REAL physical liveness check
+    /// during an active session? Backends that short-circuit to
+    /// `present: true` for any `ActiveSession` without touching
+    /// hardware (MFRC522's `poll_physical_card`) must keep the
+    /// default `false` — the vpcd cached-ATR fast path is only sound
+    /// when card removal is observable between APDUs. Such backends
+    /// keep the per-probe `power_on` behavior (reactivates the
+    /// frontend, eventually notices the missing card).
+    fn presence_poll_detects_removal(&self) -> bool {
+        false
+    }
+
     /// Issue #120 decomposition of the last `transmit_apdu`:
     /// `(blocks, wtx_replies, recoveries, max_transceive_us)` — surfaced
     /// through Escape 0xD2 words 4-8. `None` until an instrumented

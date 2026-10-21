@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Fixed — #360 merged-head follow-up (Codex P1)
+
+- vpcd cached-ATR fast path is now gated on
+  `NfcDriver::presence_poll_detects_removal()`: MFRC522's presence
+  poll short-circuits to `present` during an ActiveSession without a
+  physical check, so card removal would have been invisible to pcscd
+  between APDUs on that backend. MFRC522 keeps the per-probe
+  `power_on` behavior (which observes removal); PN7160 (link-loss NTF
+  drain, bench-proven) opts in. Regression: an MFRC522-class driver
+  must re-run power_on on every probe.
+
 ### Fixed — #332 (Codex P2s on #324): `esp32_flash.py` quiesce plumbing, wire boot-proof default, lock/marker edges
 
 - **The nucula flash flow now passes `--quiesce-unit nucula-ccid-broker`
