@@ -63,8 +63,9 @@ C3 silicon (USB-Serial/JTAG chip-resets on port-open, no disable bit —
 
 | Path | Metric | Value | When |
 |---|---|---|---|
-| m5stick serial GemPC ↔ J3R180 | APDU round-trip | ~16 ms end-to-end (≈5–6 ms wire @115200 8N2 + ≈10 ms firmware gap incl. MFRC522 I2C @100 kHz + card I/O); ACR1252 reference ~2 ms | issue #51 decomposition, 2026-08-30 |
-| m5stick serial | per-APDU (pcscd 12× SELECT) | 36.8–42.4 ms p50 class | #101 bench, 2026-10-12 |
+| m5stick serial GemPC ↔ J3R180 | APDU round-trip (empty SELECT, n=200, one connection) | **p50 42.0 ms / p95 47.0 ms / p99 47.1 ms**, connect 130.7 ms — measured @ dd948466 | 2026-10-21, `tests/hardware/perf/benchmark_readers.py -n 200` |
+| ACR1252 reference oracle ↔ J3R180 | same workload | p50 8.84 ms / p95 8.96 ms, connect 38.9 ms (the ~5× serial-path gap is the known FTDI+firmware budget) | 2026-10-21, same run |
+| m5stick serial | decomposition | ~16 ms class = ≈5–6 ms wire @115200 8N2 + ≈10 ms firmware gap (MFRC522 I2C @100 kHz + card I/O) | issue #51 decomposition, 2026-08-30 |
 | m5stick SPP | p50 per APDU | 48 ms, 30/30 soak | 2026-10-11 |
 | STM32F469 USB CCID | contact-card exchange p50 | 42.75 ms (n=60, post-DRY-phase-2) | 2026-10-11 |
 | nucula broker | GSS RTT overhead | 0.72 ms p50 over PTY (direct CDC floor 0.20 ms); ~300 ms/command CDC latency floor for raw probes | #117, 2026-10-11 |
