@@ -1589,6 +1589,33 @@ Firmware logs ride BLE GATT notifications (Nordic UART Service lookalike — ser
   no hardware needed. Hardware verification of the harness itself is
   the follow-up bench run.
 
+### Added — ACR1252 field recorder: NFC tcpdump-style JSONL evidence (t_b8b5e0a4)
+
+- `tests/hardware/nfc/field_recorder.py`: host-side evidence recorder
+  driving the bench ORACLE reader (ACS ACR1252, exact-name pin, never
+  index) as a passive-ish observer. Append-only JSONL via `--out`
+  (one event per line: `ts`/`kind`/`reader`/`data`), flushed per line
+  so killed runs keep their evidence. Kinds: `reader_list`,
+  `card_atr` (bounded-retry connect + ATR), `apdu_exchange`
+  (scripted `--apdu` set with response/SW/ms timing),
+  `poll_presence` (`--interval`/`--duration` bounded sampling —
+  SCardGetStatusChange 0-timeout snapshot, card NOT re-powered —
+  recording insert/remove transitions), framed by
+  `recorder_meta`/`recorder_stop` markers with per-kind counts.
+  `--max-events` safety cap with tcpdump -c semantics (clean stop).
+- Card-safety: the SC-class guard (INIT_UPDATE 80 50, EXT_AUTH 84 82,
+  GP GET DATA P1P2 00 E0, logical-channel-normalized) is copied from
+  the `gempc_t1` harness and enforced at BOTH the CLI parse and the
+  library send boundary — nothing can loop budget-bearing auth APDUs
+  through this tool (AGENTS.md / #127 ISD-lock doctrine).
+- `tests/hardware/nfc/test_field_recorder.py`: 40 unit tests with
+  duck-typed fakes (no pyscard, no hardware) — reader-pin loudness,
+  JSONL append/cap semantics, stage behaviors with injected clocks,
+  full-session event ordering, and an ast-walk tripwire locking the
+  lazy-import rule (hardware imports only inside functions). Evidence
+  format documented in the module docstring +
+  `tests/hardware/README.md`. Bench verification on the ACR1252 is
+  the parent follow-up (this PR touches no hardware).
 ### Changed — #332: `hal_i2c` production dispatch routes through the tested classifier (Codex review on #321)
 
 - The `#307` coalescing walk lived in the cfg(esp)-only `impl I2c for
