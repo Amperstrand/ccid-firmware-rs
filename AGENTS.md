@@ -182,7 +182,22 @@ ESP32 firmware lives in `firmware/esp32-ccid/` and has its own feature set:
 ## Reader-Role vs Standalone-Role T=1 Doctrine (owner directive 2026-10-12)
 
 **Two roles, deliberately different T=1/protocol ownership — never mix them
-on one wire path.**
+on one wire path.** "T=1" and "the secure channel" are two DIFFERENT
+layers that can be owned independently — the layer table that makes the
+doctrine precise:
+
+| Layer | Reader role (STM32 USB, TPDU) | GemPC serial emulation (ESP32 UART, m5stick/SPP) | Nucula CDC/broker | Standalone role (provisioning mains) |
+|---|---|---|---|---|
+| T=1 block transport (ISO 7816-3 §11: I/S/R blocks, chaining, WTX, EDC) | **host** — blocks relayed byte-transparent, never inspected/re-framed | **device** (`t1.rs` answers S-blocks, reassembles I-block INF — exactly what the real GemPC Twin does; what `libccidtwin` expects) | ISO-DEP handles blocks below us — device never sees T=1 blocks | device |
+| APDU / TPDU payload | host | host (APDUs reassembled from I-blocks, relayed) | **device relays APDUs only** (APDU-level relay) | device |
+| GP secure channel (SCP02/03) + card lifecycle | **host** — a host↔card SC must pass through byte-transparent | **host** — the SC rides the APDUs; the device never terminates it in this role | host | **device** (GP client logic lives here, in SEPARATE mains only) |
+
+The rule that falls out of the table: in EVERY reader-facing column the
+secure channel belongs to the host; the only thing the device may own
+is transport plumbing (and on the GemPC-emulation path only because the
+real hardware does). ccid-firmware-rs is the project where the
+host/pcscd owns the channel; device-owned SC work belongs to standalone
+mains (bolty-style provisioning), never inside a pcscd serving path.
 
 1. **Reader role (pcscd-facing CCID, STM32 USB)**: the HOST owns the T=1
    protocol and the secure channel; the reader is a transparent TPDU-level

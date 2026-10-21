@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — verification digest page + honest status chapters
+
+- `docs/TESTED_AND_WORKING.md`: the curated one-page "what works /
+  what doesn't" digest — firmware × hardware × transport matrix with
+  PASS/SKIP/NOT-TESTED per row, measured performance with stamps,
+  the unavailable-hardware list (F469/F746 currently off the bench
+  USB), and the ranked known-issues index. Derived page: every row
+  cites its evidence; the generated docs/STATUS.md (bench/status)
+  remains authoritative when they disagree.
+- README: the stale "Status" chapter now points at the digest + the
+  generated page; the "98%+ compliance" blanket claim is replaced by
+  per-command coverage + per-target hardware-verification pointers.
+- AGENTS.md: T=1 layer-ownership table in the Reader-vs-Standalone
+  doctrine (block transport vs APDU vs secure channel are separately
+  ownable layers; the host owns the SC in every reader-facing role).
+
+
 ### Fixed — #330: T=1 endpoint session reset
 
 - `ccid_handler`: reset the T=1 endpoint when SetParameters(T=1) is
