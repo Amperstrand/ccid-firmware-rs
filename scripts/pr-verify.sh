@@ -282,17 +282,27 @@ run_python_collect() {
         record python-collect FAIL "no ruff on PATH and pinned install failed" $((SECONDS - t))
         return
     fi
+    # Collection runs ISOLATED when uv exists — CI's python-collect job
+    # has ONLY pytest installed, and a host python that also sees
+    # pyserial/labgrid collects past module-scope hardware imports that
+    # would fail CI (the deferred Codex round on #317, now done).
+    local collect_cmd=(python3 -m pytest tests/hardware/ --collect-only -q)
+    local collect_env="non-isolated host python (no uv on PATH)"
+    if command -v uv >/dev/null 2>&1; then
+        collect_cmd=(uv run --no-project --with pytest python -m pytest tests/hardware/ --collect-only -q)
+        collect_env="uv-isolated, pytest only"
+    fi
     local collect_txt="$LOGDIR/pytest-collect.txt"
     if $RUFF check scripts tests/hardware host-tools >"$log" 2>&1 \
     && python3 scripts/test_gen_status.py >>"$log" 2>&1 \
     && python3 scripts/test_status_rollup.py >>"$log" 2>&1 \
     && python3 scripts/test_status_drift.py >>"$log" 2>&1 \
-    && python3 -m pytest tests/hardware/ --collect-only -q >"$collect_txt" 2>&1 \
+    && "${collect_cmd[@]}" >"$collect_txt" 2>&1 \
     && grep -q " tests collected" "$collect_txt"; then
-        record python-collect PASS "ruff F+E9 + scripts unit tests + pytest collect" $((SECONDS - t))
+        record python-collect PASS "ruff F+E9 + scripts unit tests + collect ($collect_env)" $((SECONDS - t))
     else
         [ -f "$collect_txt" ] && cat "$collect_txt" >>"$log"
-        record python-collect FAIL "see python-collect.log" $((SECONDS - t))
+        record python-collect FAIL "see python-collect.log ($collect_env)" $((SECONDS - t))
     fi
 }
 
