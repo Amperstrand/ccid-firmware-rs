@@ -407,6 +407,8 @@ class TestCodex347Followups:
 
         class FakeSess:
             verbose = False
+            settle = 0.0
+            XFR_SETTLE_FLOOR = 0.0  # bypass the floor for the fake
             def exchange(self, *a, **k):
                 return 1, wire  # seq of the frame the fake emits
 
