@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — wedge-prevention design doc (kanban t_6cafe4eb)
+
+- `docs/WEDGE-PREVENTION-DESIGN.md` (DRAFT, software-only): three
+  host-side components grounded in existing prior art —
+  (1) **monitor v4 persistent-open**: one safe-opened, never-closed
+  owner per serial CCID device (generalizing the #117 nucula PTY-broker
+  and bolty-rs B11 single-open patterns) that defeats the
+  re-enumeration churn resetting the FTDI `latency_timer` (#51) and the
+  pcscd-init races, with a health surface (last-seen frames, uptime
+  counters, re-enumeration ledger);
+  (2) **esp32_flash failure-diagnosis taxonomy**: the EXISTING recovery
+  ladder in `tests/hardware/labgrid/esp32_flash.py` (retry →
+  USBDEVFS_RESET → ftdi_sio rebind → replug verdict) consolidated into
+  a symptom-class → instrumented-verdict → recovery matrix (W1–W10) +
+  decision tree;
+  (3) **ser2net console tap**: TCP console capture that mirrors the
+  monitor's RX journal and NEVER opens or injects on the CCID wire
+  (clean-wire doctrine — stock ser2net is banned on GemPC/CDC paths).
+  All verification explicitly TODO (§7 of the doc).
+
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
 - `tests/hardware/nfc/J3R180-RUNBOOK.md` + `j3r180_gpg_lifecycle.py`:
