@@ -420,12 +420,8 @@ class TestCodex347Followups:
         # Codex P1 on #347: the LIBRARY boundary refuses SC-class APDUs
         # even when the CLI loop is bypassed; budgeted_sc is the only way
         # through, and it must be explicit.
-        from nfc.gempc_t1 import T1Error, T1Session
-        sess = T1Session.__new__(T1Session)
-        sess.ifsc = 254
-        called = []
-        sess.transceive.__self__ if False else None
         import nfc.gempc_t1 as g
+        from nfc.gempc_t1 import T1Error
         orig = g.T1Session.transceive
         # call the real method with a stub session: guard fires before
         # any port interaction
