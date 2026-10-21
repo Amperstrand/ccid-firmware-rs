@@ -75,7 +75,7 @@ impl<T: Transport> Pn7160NfcDriver<T> {
 
 impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
     fn poll_maintenance(&mut self, now_ms: u64) {
-        self.driver.poll_maintenance(now_ms);
+        self.inner.poll_maintenance(now_ms);
     }
     type Error = NfcError;
 
