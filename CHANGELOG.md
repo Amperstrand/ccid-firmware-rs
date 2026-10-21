@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+### Refactor — M2 step 1: mfrc522-pcd homed in ccid (one-way kernel)
+
+- `crates/mfrc522-pcd` migrated from bolty-rs (byte-identical source
+  at bolty@f9fb57b7, 719 lines, 10 tests green in the new home);
+  firmware/esp32-ccid consumes it as a path dep — the bolty git-pin
+  and its coupled-pin bump dance are gone for the ccid graph. Per the
+  owner-approved one-way-kernel decision (M2): the kernel homed where
+  the embedded platform lives; bolty flips to consuming via git pin in
+  a follow-up bolty PR (its in-repo copy stays until then).
+- The crate pins iso14443@0f7d9d70 itself; the rev-string must stay
+  byte-identical to firmware/esp32-ccid's (short-vs-full strings split
+  the graph — bench lesson 2026-10-21, documented in the crate's
+  Cargo.toml).
+
 ### Fixed — #378/#380: WTX grant interop + vpcd probe session-safety
 
 - **#378 resolved (wire-proven)**: the J3R180 population REJECTS the

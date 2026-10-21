@@ -1301,7 +1301,6 @@ dependencies = [
 [[package]]
 name = "mfrc522-pcd"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=f9fb57b7#f9fb57b7b9ff3ed391d08e48bac70c42a97eabd2"
 dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-sys",
