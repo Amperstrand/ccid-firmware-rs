@@ -69,6 +69,9 @@ impl<D: NfcDriver> RetryFrontend<D> {
 }
 
 impl<D: NfcDriver> NfcDriver for RetryFrontend<D> {
+    fn poll_maintenance(&mut self, now_ms: u64) {
+        self.inner.poll_maintenance(now_ms);
+    }
     type Error = D::Error;
 
     fn init(&mut self) -> Result<(), Self::Error> {
@@ -202,6 +205,12 @@ pub enum EitherFrontend<A: NfcDriver, B: NfcDriver<Error = A::Error>> {
 }
 
 impl<A: NfcDriver, B: NfcDriver<Error = A::Error>> NfcDriver for EitherFrontend<A, B> {
+    fn poll_maintenance(&mut self, now_ms: u64) {
+        match self {
+            Self::Primary(d) => d.poll_maintenance(now_ms),
+            Self::Fallback(d) => d.poll_maintenance(now_ms),
+        }
+    }
     type Error = A::Error;
 
     fn init(&mut self) -> Result<(), Self::Error> {
