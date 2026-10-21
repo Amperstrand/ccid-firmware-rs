@@ -196,7 +196,19 @@ def synth_power_off_response(host_frame: bytes) -> bytes:
 
 
 def split_frames(buf: bytes):
-    """Yield (start, end, type) for each complete GemPC frame in buf."""
+    """Yield (start, end, type) for each complete GemPC frame in buf.
+
+    #375: a truncated/garbage frame whose bytes land on the dwLength
+    field (e.g. the 4-byte cut header `03 06 65 01` + the next probe's
+    SYNC/CTRL) implies an insane length and used to `break` the scan
+    WITHOUT rescanning — the shim then buffered every subsequent host
+    frame forever and the reader looked dead (zero responses to any
+    probe; misattributed to firmware). The firmware caps payloads at
+    271 bytes, so any anchor implying more is garbage: skip ONE byte
+    past it and rescan. Only a SANE-but-incomplete anchor is a genuine
+    partial frame in flight worth waiting for.
+    """
+    SANE_MAX = 13 + 271  # SYNC+CTRL+10-byte header+LRC + GemPC payload cap
     i = 0
     while i + 13 <= len(buf):
         if buf[i] != SYNC:
@@ -204,8 +216,11 @@ def split_frames(buf: bytes):
             continue
         dlen = int.from_bytes(buf[i + 3:i + 7], "little")
         total = 13 + dlen
+        if total > SANE_MAX:
+            i += 1  # garbage anchor: resync past it (#375)
+            continue
         if total > len(buf) - i:
-            break
+            break  # sane partial frame in flight
         yield i, i + total, buf[i + 2]
         i += total
 
