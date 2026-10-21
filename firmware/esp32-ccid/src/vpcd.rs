@@ -352,10 +352,12 @@ mod tests {
             last_apdu: Vec::new(),
         };
         let (mut handler, mut rx_buf) = harness(driver);
+        let mut cached_atr = Vec::new();
         let resp = handle_message(
             &mut handler,
             &[0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
             &mut rx_buf,
+            &mut cached_atr,
         )
         .expect("response expected");
         assert_eq!(resp, vec![0x67, 0x00]);
@@ -377,8 +379,14 @@ mod tests {
             last_apdu: Vec::new(),
         };
         let (mut handler, mut rx_buf) = harness(driver);
-        let resp = handle_message(&mut handler, &[0xB0, 0xB0, 0x00, 0x00, 0x00], &mut rx_buf)
-            .expect("response expected");
+        let mut cached_atr = Vec::new();
+        let resp = handle_message(
+            &mut handler,
+            &[0xB0, 0xB0, 0x00, 0x00, 0x00],
+            &mut rx_buf,
+            &mut cached_atr,
+        )
+        .expect("response expected");
         assert_eq!(resp, vec![0x64, 0x00]);
     }
 
@@ -397,10 +405,12 @@ mod tests {
             last_apdu: Vec::new(),
         };
         let (mut handler, mut rx_buf) = harness(driver);
+        let mut cached_atr = Vec::new();
         let resp = handle_message(
             &mut handler,
             &[0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
             &mut rx_buf,
+            &mut cached_atr,
         )
         .expect("response expected");
         assert!(
