@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — HIL verification protocol (draft): card registry + test manifests + human-ops queue
+
+- `docs/HIL-VERIFICATION-PROTOCOL.md`: generalizes the PR #321
+  hardware-verification-recipe shape (the protocol pilot) into a standing
+  protocol with three artifacts. (1) **Card registry** — the J3R180 dev
+  JavaCards keyed by CPLC (ATR is per-reader-negotiated and never
+  identity), serial/batch ledger rows citing #127/#155/#327, and the
+  card-state invariants: baseline-or-applet (the 4-package resting
+  registry incl. ISD `A000000151000000`), never-speculative-auth
+  (SC-class budget rules), org keyset only to CPLC-ledgered cards (the
+  `J3R180_CPLC_ALLOWLIST` gate, PR #341). (2) **Per-claim test
+  manifests** — a format binding each bench claim to firmware rev,
+  board, exact pcscd reader name, card CPLC, commands, and expected
+  evidence tied to the lifecycle tool's `phase()` lines + the ACR1252
+  field recorder's JSONL events (PR #355) + escape-counter probes, with
+  PASS/GATED/SKIP-amber/FAIL verdicts. (3) **Human-ops queue** — the
+  card moves, cable replugs, physical inspections and power
+  interventions only a human can do, each with a kanban
+  request/ack/post-verify protocol where the machine-readable post-state
+  (not the photo, not the ack text) is the required evidence. Includes a
+  worked example manifest (HIL-M-0001) for the proven m5stick J3R180
+  card-management lifecycle (install 35 s → SELECT → uninstall → baseline
+  restore; applet data ops #330-gated amber). Status: draft — no CI
+  gates; adoption path and in-repo source index included; every
+  bench-result claim cites a real source.
+
 ### Added — J3R180 JavaCard known-good lifecycle (runbook + tool)
 
 - `tests/hardware/nfc/J3R180-RUNBOOK.md` + `j3r180_gpg_lifecycle.py`:
