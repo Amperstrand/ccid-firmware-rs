@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # gate exists exactly to catch collection-time hardware imports). Stub
 # the module when absent so importing the battery cannot fail there;
 # the bench keeps the real pyserial. (#361 review P1)
+_stubbed_serial = False
 try:
     import serial  # noqa: E402  (the battery imports it at module level)
 except ModuleNotFoundError:
@@ -32,9 +33,19 @@ except ModuleNotFoundError:
 
     _serial_stub.SerialException = _StubSerialException
     sys.modules["serial"] = _serial_stub
-    serial = _serial_stub
+    serial = _serial_stub  # local name for the fakes below
+    _stubbed_serial = True
 
 import conformance_battery  # noqa: E402
+
+if _stubbed_serial:
+    # Do NOT leak the stub into sys.modules: sibling modules probe for
+    # pyserial via importlib.util.find_spec("serial") and a bare
+    # ModuleType carries __spec__=None, which makes find_spec RAISE
+    # (ValueError) and breaks their collection. conformance_battery
+    # already bound the stub into its own namespace — that is all these
+    # unit tests need.
+    del sys.modules["serial"]
 
 
 class _FakePort:

@@ -76,6 +76,9 @@ pub struct Pn7160Driver<T: Transport> {
     /// discovery (its natural state), where an arriving tag
     /// auto-activates and raises its NTF without host cycling.
     discovery_parked: bool,
+    /// Time of the last re-arm WRITE (ms domain of poll_maintenance);
+    /// None while un-parked (the poll counter owns the cadence then).
+    last_rearm_ms: Option<u64>,
     /// Re-arm writes ACKed but never answered (semi-mute signal): a
     /// healthy NFCC answers RF_DEACTIVATE in milliseconds; three
     /// silent re-arms mean the chip wedged — only a VEN power cycle
@@ -106,6 +109,12 @@ const PRESENCE_REARM_POLLS: u32 = 8;
 /// the only poller) "parked forever" wedges presence at absent. Slow
 /// enough to stay far from the ~11-rapid-cycle chip-mute class (#125).
 const PARKED_REARM_POLLS: u32 = 32;
+
+/// #328/#332 (Codex P1): time-based parked re-arm — pcscd STOPS polling
+/// entirely once it marks a reader dead, so a poll-count cadence can
+/// never fire again. Equivalent of PARKED_REARM_POLLS at the ~400 ms
+/// host probe cadence.
+const PARKED_REARM_MS: u64 = 12_800;
 
 /// Consecutive empty re-arm cycles before presence clears — a discovery
 /// NTF can arrive one poll after the re-arm (TOTAL_DURATION latency) and
@@ -141,6 +150,7 @@ impl<T: Transport> Pn7160Driver<T> {
             rearm: None,
             probe_armed: false,
             discovery_parked: false,
+            last_rearm_ms: None,
             silent_rearms: 0,
             stall_hook: None,
             wtx_last: 0,
@@ -300,6 +310,15 @@ impl<T: Transport> Pn7160Driver<T> {
             self.polls_since_ntf = self.polls_since_ntf.saturating_add(1);
             if self.polls_since_ntf >= cadence {
                 self.polls_since_ntf = 0;
+                // Re-arm step 1 is ALWAYS the #105 one-command
+                // RF_DEACTIVATE(type=DISCOVERY): from a running
+                // discovery (the perpetual run_ladder path — the
+                // NORMAL parked state, Codex P1 on #349) it tears the
+                // interface down and returns to the discovery loop in
+                // one command. From a TRULY idle NFCC (explicit
+                // RF_DEACTIVATE(type=IDLE) earlier) it can be REFUSED —
+                // the AwaitRsp handler then escalates to RF_DISCOVER
+                // instead of retrying the refused command forever.
                 if self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
                     self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
                 }
@@ -308,6 +327,46 @@ impl<T: Transport> Pn7160Driver<T> {
             }
         }
         self.last_ntf.is_some()
+    }
+
+    /// #328/#332 (Codex P1): time-driven maintenance for host-silent
+    /// periods — pcscd stops polling once a reader is marked dead, so
+    /// the parked re-arm must advance by TIME, not poll count. Called
+    /// from the serve loop's idle wake (bounded, non-blocking: one
+    /// state-machine step + at most one write when the window elapses).
+    /// `now_ms` is the caller's monotonic clock (tests inject it
+    /// deterministically).
+    pub fn poll_maintenance(&mut self, now_ms: u64) {
+        // Advance any in-flight re-arm phase one bounded step (RSP/NTF
+        // collection) so the machine finishes even with no host polls.
+        self.step_rearm();
+        // #349 (Codex P1, 23:53): the AwaitNtf window absorbs queued tag
+        // NTFs HERE too — normally the is_card_present() caller drains
+        // via wait_for_event after step_rearm, but this host-silent path
+        // never runs that, so an arriving activation NTF was read as an
+        // empty window and the next maintenance re-arm could fire an RF
+        // command against an already-activated tag. One bounded drain,
+        // same shape as the poll path.
+        match reader::wait_for_event(&mut self.transport) {
+            Some(reader::TagEvent::Tag(n, ats)) => self.latch_tag(n, ats),
+            Some(reader::TagEvent::LinkLost) => {
+                // Only meaningful with a latched tag; mirror the poll
+                // path's clear.
+                self.clear_tag();
+            }
+            None => {}
+        }
+        if !self.discovery_parked || self.rearm.is_some() {
+            return;
+        }
+        let due = match self.last_rearm_ms {
+            Some(last) => now_ms.saturating_sub(last) >= PARKED_REARM_MS,
+            None => true, // parked but never re-armed by time — due now
+        };
+        if due && self.transport.send(&reader::RF_DEACTIVATE_DISCOVERY) {
+            self.last_rearm_ms = Some(now_ms);
+            self.rearm = Some(RearmPhase::AwaitRsp { polls: 0 });
+        }
     }
 
     /// Advance the split re-arm by one poll-bounded step (see
@@ -319,12 +378,30 @@ impl<T: Transport> Pn7160Driver<T> {
             RearmPhase::AwaitRsp { polls } => {
                 match self.transport.poll_frame() {
                     Some(f) if f.is_rsp_to(&reader::RF_DEACTIVATE_DISCOVERY) => {
-                        self.silent_rearms = 0;
+                        // #349 (Codex P1, 00:14): reset the silent streak
+                        // ONLY on a successful deactivate — a REFUSAL is
+                        // itself a failure signal (idle NFCC), and wiping
+                        // the streak on it capped the recurring
+                        // refused-then-silent escalation at 1, forever
+                        // below the wifi VEN-cycle threshold.
+                        if f.status() == Some(STATUS_OK) {
+                            self.silent_rearms = 0;
+                        }
                         self.rearm = if f.status() == Some(STATUS_OK) {
                             Some(RearmPhase::AwaitNtf { polls: 0 })
+                        } else if self.transport.send(&reader::RF_DISCOVER_PASSIVE_A) {
+                            // #349 (Codex): the deactivate was REFUSED —
+                            // the NFCC is IDLE (nothing to deactivate;
+                            // the perpetual-discovery parked state sends
+                            // OK instead). Restart discovery directly:
+                            // RF_DISCOVER, the #125 one-shot probe shape
+                            // (rapid-cycle mute stays out of reach —
+                            // this fires once per refused re-arm only).
+                            Some(RearmPhase::DiscoverProbeRsp { polls: 0 })
                         } else {
-                            // NFCC refused the re-arm: keep last known
-                            // presence, retry after a full cadence.
+                            // Refused AND the probe write failed (mute
+                            // link): keep last known presence, retry
+                            // after a full cadence.
                             None
                         };
                     }
@@ -388,6 +465,10 @@ impl<T: Transport> Pn7160Driver<T> {
 
     fn advance_probe_or_give_up(&mut self, polls: u8) {
         self.rearm = if polls + 1 >= REARM_RSP_POLLS {
+            // #349 (Codex): a probe whose RSP never arrives is a SILENT
+            // re-arm — count it so the wifi VEN-cycle recovery's
+            // silent-streak threshold can fire (matches AwaitRsp).
+            self.silent_rearms = self.silent_rearms.saturating_add(1);
             None
         } else {
             Some(RearmPhase::DiscoverProbeRsp { polls: polls + 1 })
@@ -1648,6 +1729,330 @@ mod tests {
     /// parked cadence — no fast cycling (the ~11-rapid-cycle chip-mute
     /// class), but never a permanent deaf state — and a tag NTF during
     /// the slow cycle must restore presence.
+    /// #349 (Codex P1, 00:14): a REFUSED deactivate is a failure signal
+    /// — the silent streak must survive it, so the recurring
+    /// refused-then-silent escalation actually reaches the VEN-cycle
+    /// threshold instead of resetting to 0 each round.
+    #[test]
+    fn refused_deactivations_preserve_silent_streak() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        let refused = [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, 0xA0];
+        // three rounds of: re-arm -> REFUSED deactivate -> escalated
+        // RF_DISCOVER that is never answered (silent) -> give-up.
+        for round in 0..3 {
+            let before = drv.silent_rearms;
+            drv.transport_mut().push_reply(&refused);
+            // maintenance drives the whole cycle (host silent)
+            for _ in 0..(PARKED_REARM_POLLS as usize + 4 * REARM_RSP_POLLS as usize + 16) {
+                // keep the clock past the window each round
+                drv.poll_maintenance(20_000 + round * 60_000);
+            }
+            assert!(
+                drv.silent_rearms > before,
+                "round {round}: silent streak must GROW on refused+silent"
+            );
+        }
+        assert!(
+            drv.silent_rearms >= 3,
+            "the streak must reach the VEN-cycle class, got {}",
+            drv.silent_rearms
+        );
+    }
+
+    /// #349 (Codex P1, 23:53): a tag NTF arriving during a host-silent
+    /// maintenance re-arm is DRAINED and latched — not read as an empty
+    /// window that re-arms against the now-active tag.
+    #[test]
+    fn maintenance_rearm_absorbs_tag_ntf() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // maintenance fires the re-arm; queue the RSP *and* a fresh tag
+        // NTF — the NTF must be latched by the maintenance drain.
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.transport_mut().push_notification(&discover_ntf());
+        for _ in 0..16 {
+            drv.poll_maintenance(1_000);
+        }
+        assert!(
+            drv.is_card_present(),
+            "maintenance drain must latch the tag"
+        );
+    }
+
+    /// #349 (Codex P1, 23:53) — the ANTI-WEDGE pin the simple regression
+    /// above cannot catch: `maintenance_rearm_absorbs_tag_ntf` also passes
+    /// WITHOUT the maintenance drain (its final `is_card_present()` drains
+    /// the NTF itself, and its frozen clock never makes a later tick due
+    /// again). Here the chip AUTO-ACTIVATES the tag after the parked
+    /// re-arm's deactivate, the activation NTF must be latched by
+    /// MAINTENANCE ticks alone (zero host polls), and no later RF write
+    /// may land on the already-active interface — repeatedly deactivating
+    /// an auto-activated tag is the PN7160 chip-wedge class (bench
+    /// 2026-10-10: I2C NACKs after ~10-11 cycles).
+    #[test]
+    fn maintenance_rearm_latches_auto_activation_and_stops_writes() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // First tick fires the parked re-arm (unknown last time = due);
+        // the deactivate RSP is scripted for the write.
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.poll_maintenance(1_000);
+        assert_eq!(
+            drv.rearm_phase(),
+            Some(RearmPhase::AwaitRsp { polls: 0 }),
+            "first maintenance tick wrote the parked deactivate"
+        );
+        // The restarted discovery AUTO-ACTIVATES the ISO-DEP tag while
+        // the host stays silent: activation NTF (ATS tail) queued.
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
+
+        // Next tick: the RSP is collected and the maintenance DRAIN
+        // absorbs the queued activation — latched with its ATS,
+        // un-parked, phase exited — with ZERO host polls.
+        drv.poll_maintenance(6_000);
+        assert_eq!(
+            drv.rearm_phase(),
+            None,
+            "the latched activation must exit the phase machine"
+        );
+        assert!(!drv.discovery_parked, "latch must un-park");
+        assert!(
+            drv.last_auto_ats.is_some(),
+            "the auto-activation ATS must be cached from the maintenance drain"
+        );
+
+        // Anti-wedge: maintenance ticks far past the 12.8 s window must
+        // NOT write RF commands against the auto-activated interface.
+        let writes = drv.transport_mut().sent.len();
+        for now_ms in [16_000u64, 26_000, 36_000, 46_000] {
+            drv.poll_maintenance(now_ms);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            writes,
+            "no RF write may hit the auto-activated tag after the latch"
+        );
+        assert!(drv.is_card_present(), "presence holds via the latch");
+    }
+
+    /// #349 (Codex P1, 23:53), purest form: the tag auto-activated during
+    /// a silent gap BEFORE a maintenance tick — the queued activation NTF
+    /// must be drained and latched BEFORE the due re-arm write fires, so
+    /// NO RF command is ever sent against the already-active interface.
+    #[test]
+    fn maintenance_drains_active_tag_before_rearm_write() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // Tag couples and auto-activates while the host is silent: the
+        // activation NTF sits queued when the next maintenance tick runs.
+        drv.transport_mut()
+            .push_notification(&auto_activation_ntf());
+        let writes_before = drv.transport_mut().sent.len();
+        // First tick is immediately due (unknown last time) — but the
+        // event drain runs FIRST, latches the activation, un-parks: the
+        // re-arm write must never fire, on this tick or any later one.
+        for now_ms in [1_000u64, 11_000, 21_000, 31_000] {
+            drv.poll_maintenance(now_ms);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            writes_before,
+            "the activation drain must precede any maintenance RF write"
+        );
+        assert!(drv.last_auto_ats.is_some(), "activation latched");
+        assert!(!drv.discovery_parked, "and un-parked");
+        assert!(drv.is_card_present());
+    }
+
+    /// #328/#332 (Codex P1): the parked re-arm fires by TIME when the
+    /// host stops polling entirely (pcscd marks the reader dead) — no
+    /// is_card_present call needed, only serve-loop maintenance ticks.
+    #[test]
+    fn parked_rearm_fires_by_time_without_host_polls() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        let writes0 = drv.transport_mut().sent.len();
+        // NO host polls — only maintenance ticks with an injected clock.
+        // The FIRST tick is immediately due (last_rearm_ms unknown — a
+        // parked driver gets one prompt time-re-arm, then the cadence).
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.poll_maintenance(1_000);
+        assert_eq!(
+            drv.transport_mut().sent[writes0].as_slice(),
+            reader::RF_DEACTIVATE_DISCOVERY.as_slice(),
+            "first maintenance tick fires the parked re-arm (unknown last time = due)"
+        );
+        // the phase machine completes on later ticks: deactivate RSP ->
+        // AwaitNtf expiry -> the latched #125 probe (RSP scripted too)
+        // -> None. Ticks are generous.
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        for _ in 0..16 {
+            drv.poll_maintenance(20_100);
+        }
+        assert_eq!(
+            drv.rearm, None,
+            "maintenance advances the machine through the NTF window and any latched probe"
+        );
+        // cadence: within 12.8 s of the last re-arm write, ticks stay
+        // silent; the next write comes only after the window.
+        let quiescent = drv.transport_mut().sent.len();
+        for _ in 0..8 {
+            drv.poll_maintenance(25_000);
+        }
+        assert_eq!(
+            drv.transport_mut().sent.len(),
+            quiescent,
+            "no re-arm write inside the 12.8 s window"
+        );
+        drv.transport_mut()
+            .push_reply(&deactivate_discovery_rsp_ok());
+        drv.poll_maintenance(35_000);
+        assert!(
+            drv.transport_mut().sent.len() > quiescent,
+            "re-arm fires again after the full window"
+        );
+    }
+
+    /// #349 (Codex P1): a REFUSED deactivate (NFCC truly idle) must
+    /// escalate to RF_DISCOVER — not retry the refused command forever.
+    #[test]
+    fn refused_deactivate_rearm_escalates_to_rf_discover() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // settle the #125 one-shot probe if armed
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        for _ in 0..16 {
+            let _ = drv.is_card_present();
+        }
+        // drain any stale queued frames so the scripted sequence below
+        // is consumed by the phases it was written for
+        for _ in 0..64 {
+            let _ = drv.is_card_present();
+        }
+        let settled = drv.transport_mut().sent.len();
+
+        // the parked re-arm: deactivate REFUSED (status != OK)
+        let refused = [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, 0xA0];
+        drv.transport_mut().push_reply(&refused);
+        // then the escalated RF_DISCOVER's RSP + a recovery NTF
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        drv.transport_mut().push_notification(&discover_ntf());
+
+        let mut escalated = false;
+        for _ in 0..(PARKED_REARM_POLLS as usize + 4 * REARM_RSP_POLLS as usize + 32) {
+            let _ = drv.is_card_present();
+            let sent = &drv.transport_mut().sent;
+            if sent.len() >= settled + 2 {
+                assert_eq!(
+                    sent[settled].as_slice(),
+                    reader::RF_DEACTIVATE_DISCOVERY.as_slice()
+                );
+                assert_eq!(
+                    sent[settled + 1].as_slice(),
+                    reader::RF_DISCOVER_PASSIVE_A.as_slice(),
+                    "refused deactivate must escalate to RF_DISCOVER"
+                );
+                escalated = true;
+                break;
+            }
+        }
+        assert!(escalated, "escalation never happened");
+        // and the NTF restores presence
+        for _ in 0..8 {
+            if drv.is_card_present() {
+                break;
+            }
+        }
+        assert!(drv.is_card_present(), "recovery NTF must restore presence");
+    }
+
+    /// #349 (Codex P1): a silent escalated probe counts as a silent
+    /// re-arm so the wifi VEN-cycle threshold can fire.
+    #[test]
+    fn silent_discover_probe_counts_as_silent_rearm() {
+        let mut t = MockTransport::new();
+        t.push_notification(&discover_ntf());
+        let mut drv = Pn7160Driver::new(t);
+        assert!(drv.is_card_present());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        run_rearm_cycle(&mut drv, &deactivate_discovery_rsp_ok());
+        assert!(drv.discovery_parked);
+
+        // settle the #125 one-shot probe if armed
+        drv.transport_mut()
+            .push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        for _ in 0..16 {
+            let _ = drv.is_card_present();
+        }
+
+        // parked re-arm with NO responses at all: deactivate written,
+        // its RSP never arrives -> give-up (silent +1)
+        let before = drv.silent_rearms;
+        for _ in 0..(PARKED_REARM_POLLS as usize + REARM_RSP_POLLS as usize + 8) {
+            let _ = drv.is_card_present();
+        }
+        assert!(drv.silent_rearms > before, "silent AwaitRsp must count");
+        assert_eq!(drv.rearm, None);
+
+        // now a re-arm whose deactivate is REFUSED and whose RF_DISCOVER
+        // RSP never arrives: the probe give-up must ALSO count.
+        let refused = [MT_RSP | GID_RF, OID_RF_DEACTIVATE, 0x01, 0xA0];
+        drv.transport_mut().push_reply(&refused);
+        let before2 = drv.silent_rearms;
+        for _ in 0..(PARKED_REARM_POLLS as usize + 2 * REARM_RSP_POLLS as usize + 8) {
+            let _ = drv.is_card_present();
+        }
+        assert!(
+            drv.silent_rearms > before2,
+            "silent escalated probe must count toward the VEN-cycle threshold"
+        );
+    }
+
     #[test]
     fn parked_driver_still_rearms_at_slow_cadence_and_recovers() {
         let mut t = MockTransport::new();
@@ -1687,13 +2092,22 @@ mod tests {
             "probe settle wrote more than the pair: {settled} vs {writes_before}"
         );
 
-        // the parked re-arm itself: a new write within the slow cadence
+        // the parked re-arm itself: a new write within the slow cadence.
+        // #349: step 1 is ALWAYS the #105 deactivate (perpetual-
+        // discovery parked state — the NORMAL case); its OK RSP is
+        // seeded here.
         drv.transport_mut()
             .push_reply(&deactivate_discovery_rsp_ok());
         let mut rearmed = false;
         for i in 0..(PARKED_REARM_POLLS as usize + 8) {
             let _ = drv.is_card_present();
             if drv.transport_mut().sent.len() > settled {
+                let w = &drv.transport_mut().sent[settled];
+                assert_eq!(
+                    w.as_slice(),
+                    reader::RF_DEACTIVATE_DISCOVERY.as_slice(),
+                    "parked re-arm step 1 is the #105 deactivate"
+                );
                 rearmed = true;
                 break;
             }
