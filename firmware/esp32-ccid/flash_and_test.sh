@@ -98,6 +98,9 @@ flash() {
     # --flash-mode dio (#309): esptool >=5 defaults the image header to
     # QIO — a silent boot-loop on every DIO board this repo ships. The
     # header guard fails loud on any future default change.
+    # Converter provenance in the log — see build.sh (#308 evidence:
+    # 5.2.0 ≡ 5.3.1 byte-identical images, so the log is for stamps/triage).
+    info "esptool: $(esptool version 2>/dev/null | head -1 || echo unknown)"
     esptool --chip esp32 elf2image --flash-mode dio -o "${app_bin}" \
         "${WORKSPACE_ROOT}/${FIRMWARE}" || {
             error "elf2image failed"; exit 1; }

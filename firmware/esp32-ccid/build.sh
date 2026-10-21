@@ -444,6 +444,11 @@ fi
 # header to QIO and a QIO-header app silently boot-loops every DIO board
 # this repo ships (all sdkconfigs mandate dio). The header guard below
 # fails loud if any future toolchain default changes.
+# Stamp the converter into the build log: image bytes are esptool-version-
+# invariant within the 5.x line for identical args (verified 5.2.0 ≡ 5.3.1
+# byte-identical, #308 evidence), but stamps and triage must know which
+# converter produced an image.
+info "esptool: $(esptool version 2>/dev/null | head -1 || echo unknown)"
 run esptool --chip "${CHIP}" elf2image --flash-mode dio -o "${IMAGE}" "${ELF}"
 if [ "${DRY_RUN}" -eq 0 ]; then
     img_mode="$(od -An -tx1 -j2 -N1 "${IMAGE}" | tr -d ' \n')"
