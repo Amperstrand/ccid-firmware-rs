@@ -105,7 +105,6 @@ fn serve_connection<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     rx_buf: &mut [u8],
 ) {
-<<<<<<< HEAD
     // #328/#332 (Codex P1): the idle wake doubles as the maintenance
     // tick — a 5 s read timeout keeps the wake cheap while giving the
     // parked re-arm a time base that does NOT depend on host polls
@@ -119,14 +118,12 @@ fn serve_connection<D: NfcDriver>(
     static CLOCK_ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let started = *CLOCK_ORIGIN.get_or_init(std::time::Instant::now);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-=======
     // #326: last successful ATR, cached so the 1.2 s presence probes
     // can answer WITHOUT re-running power_on (which re-activates and
     // thereby DESELECTS the card — the churn that made the first APDU
     // after connect take 1.6 s of T=1 resync and blow every host-side
     // response-pairing race).
     let mut cached_atr: Vec<u8> = Vec::new();
->>>>>>> origin/main
     loop {
         let payload = match read_message(stream) {
             Ok(Some(p)) => p,
