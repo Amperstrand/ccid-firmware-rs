@@ -40,6 +40,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — pcscd lane-instance design draft (kanban t_937eee48)
+
+- `docs/PCSD-LANE-INSTANCES-DESIGN.md`: DRAFT proposal, no bench
+  verification yet (8-item TODO checklist inside). Freeze the SYSTEM
+  pcscd to USB-only readers (serial/vpcd/modemifd entries leave
+  `/etc/reader.conf.d/`) and give each serial-DUT lane a PRIVATE
+  pcscd instance via systemd template units
+  (`pcscd-lane@<lane>.socket/.service`, socket-activated at
+  `/run/pcscd-lane-<lane>.comm`, own `--config` dir, USB readers
+  excluded by `PCSCLITE_FILTER_IGNORE_READER_NAMES`), lifecycle tied
+  to a per-lane flock extending the `esp32_flash.py` lock/marker/
+  recover pattern. Source-verified against installed pcscd 2.0.3 +
+  the in-repo 2.5.2 pin: clients select the instance with
+  `PCSCLITE_CSOCK_NAME` (full socket path — `PCSCLITE_CARDSOCKET`
+  does not exist); the daemon's socket path is compile-time only, so
+  coexistence requires socket activation. Payoff: serial-DUT flashes
+  stop blocking every other lane's USB reader work, and the
+  t_fe356d5c scdaemon-wedge class (vpcd/modemifd IFDs) loses its
+  host-wide reach.
 ### Added — HIL verification protocol (draft): card registry + test manifests + human-ops queue
 
 - `docs/HIL-VERIFICATION-PROTOCOL.md`: generalizes the PR #321
