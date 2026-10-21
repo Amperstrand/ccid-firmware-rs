@@ -59,6 +59,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   monitor's RX journal and NEVER opens or injects on the CCID wire
   (clean-wire doctrine — stock ser2net is banned on GemPC/CDC paths).
   All verification explicitly TODO (§7 of the doc).
+### Added — pcscd lane-instance design draft (kanban t_937eee48)
+
+- `docs/PCSD-LANE-INSTANCES-DESIGN.md`: DRAFT proposal, no bench
+  verification yet (8-item TODO checklist inside). Freeze the SYSTEM
+  pcscd to USB-only readers (serial/vpcd/modemifd entries leave
+  `/etc/reader.conf.d/`) and give each serial-DUT lane a PRIVATE
+  pcscd instance via systemd template units
+  (`pcscd-lane@<lane>.socket/.service`, socket-activated at
+  `/run/pcscd-lane-<lane>.comm`, own `--config` dir, USB readers
+  excluded by `PCSCLITE_FILTER_IGNORE_READER_NAMES`), lifecycle tied
+  to a per-lane flock extending the `esp32_flash.py` lock/marker/
+  recover pattern. Source-verified against installed pcscd 2.0.3 +
+  the in-repo 2.5.2 pin: clients select the instance with
+  `PCSCLITE_CSOCK_NAME` (full socket path — `PCSCLITE_CARDSOCKET`
+  does not exist); the daemon's socket path is compile-time only, so
+  coexistence requires socket activation. Payoff: serial-DUT flashes
+  stop blocking every other lane's USB reader work, and the
+  t_fe356d5c scdaemon-wedge class (vpcd/modemifd IFDs) loses its
+  host-wide reach.
 ### Added — HIL verification protocol (draft): card registry + test manifests + human-ops queue
 
 - `docs/HIL-VERIFICATION-PROTOCOL.md`: generalizes the PR #321
@@ -1608,6 +1627,33 @@ Firmware logs ride BLE GATT notifications (Nordic UART Service lookalike — ser
   no hardware needed. Hardware verification of the harness itself is
   the follow-up bench run.
 
+### Added — ACR1252 field recorder: NFC tcpdump-style JSONL evidence (t_b8b5e0a4)
+
+- `tests/hardware/nfc/field_recorder.py`: host-side evidence recorder
+  driving the bench ORACLE reader (ACS ACR1252, exact-name pin, never
+  index) as a passive-ish observer. Append-only JSONL via `--out`
+  (one event per line: `ts`/`kind`/`reader`/`data`), flushed per line
+  so killed runs keep their evidence. Kinds: `reader_list`,
+  `card_atr` (bounded-retry connect + ATR), `apdu_exchange`
+  (scripted `--apdu` set with response/SW/ms timing),
+  `poll_presence` (`--interval`/`--duration` bounded sampling —
+  SCardGetStatusChange 0-timeout snapshot, card NOT re-powered —
+  recording insert/remove transitions), framed by
+  `recorder_meta`/`recorder_stop` markers with per-kind counts.
+  `--max-events` safety cap with tcpdump -c semantics (clean stop).
+- Card-safety: the SC-class guard (INIT_UPDATE 80 50, EXT_AUTH 84 82,
+  GP GET DATA P1P2 00 E0, logical-channel-normalized) is copied from
+  the `gempc_t1` harness and enforced at BOTH the CLI parse and the
+  library send boundary — nothing can loop budget-bearing auth APDUs
+  through this tool (AGENTS.md / #127 ISD-lock doctrine).
+- `tests/hardware/nfc/test_field_recorder.py`: 40 unit tests with
+  duck-typed fakes (no pyscard, no hardware) — reader-pin loudness,
+  JSONL append/cap semantics, stage behaviors with injected clocks,
+  full-session event ordering, and an ast-walk tripwire locking the
+  lazy-import rule (hardware imports only inside functions). Evidence
+  format documented in the module docstring +
+  `tests/hardware/README.md`. Bench verification on the ACR1252 is
+  the parent follow-up (this PR touches no hardware).
 ### Changed — #332: `hal_i2c` production dispatch routes through the tested classifier (Codex review on #321)
 
 - The `#307` coalescing walk lived in the cfg(esp)-only `impl I2c for
