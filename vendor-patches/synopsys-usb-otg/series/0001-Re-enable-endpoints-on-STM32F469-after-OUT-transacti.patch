@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amperstrand <141745238+Amperstrand@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 22:44:42 +0200
+Subject: [PATCH 1/2] Re-enable endpoints on STM32F469 after OUT transactions
+
+The STM32F469's USB OTG core reports core_id 0x0000_1200 and needs the
+same F446-class workaround as the 0x0000_2000/0x0000_2100 cores:
+after an OUT transaction completes, the endpoint must be re-enabled or
+the core accepts no further OUT transfers.
+
+Without this, a STM32F469I-DISCO device answers EP0 and then goes
+silent after the first OUT transaction, so no interface endpoint ever
+delivers data to the host.
+
+Add 0x0000_1200 to the existing core_id condition (3 lines). Verified
+on an STM32F469I-DISCO bench build; tracked downstream as
+Amperstrand/ccid-firmware-rs#271.
+---
+ src/bus.rs | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/bus.rs b/src/bus.rs
+index c36bad7..6942e6b 100644
+--- a/src/bus.rs
++++ b/src/bus.rs
+@@ -737,8 +737,9 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
+                                     .fill_from_fifo(*regs, data_size as u16, is_setup)
+                                     .ok();
+ 
+-                                // Re-enable the endpoint, F446-like chips only
+-                                if core_id == 0x0000_2000
++                                // Re-enable the endpoint, F446-like chips and STM32F469
++                                if core_id == 0x0000_1200  // STM32F469 needs re-enablement
++                                    || core_id == 0x0000_2000
+                                     || core_id == 0x0000_2100
+                                     || core_id == 0x0000_2300
+                                     || core_id == 0x0000_3000
+-- 
+2.43.0
+
