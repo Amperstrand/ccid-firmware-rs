@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/mfrc522-pcd",
     "crates/ccid-protocol",
     "crates/card-interface",
     "crates/ccid-core",
