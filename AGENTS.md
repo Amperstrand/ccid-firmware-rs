@@ -1089,7 +1089,8 @@ merged PRs — 38 had never been addressed**, including real protocol
 bugs (CORE_SET_CONFIG status byte, PCB bit layout, ICC status decode)
 that host tests missed because the mocks modeled the wrong behavior.
 
-**The rules (rule 0 is a HARD MERGE GATE — owner directive 2026-10-20):**
+**The rules (rule 0 is a HARD MERGE GATE — owner directive 2026-10-20;
+AMENDED 2026-10-21 — see the self-review fallback in 0b):**
 
 0. **NO PR MERGES BEFORE ITS CODEX REVIEW IS READ AND TRIAGED.**
    The bot reviews the PR head within ~5–30 min of each push. A green
@@ -1106,6 +1107,16 @@ that host tests missed because the mocks modeled the wrong behavior.
      exists to prevent. (First enforcement: #341/#345, both held open
      until their reviews landed and were fixed+replied in 99cf263a /
      03140058.)
+   b. **Self-review fallback (owner amendment, 2026-10-21)**: when the
+     bot has produced NO review on the head after reasonable latency
+     (retrigger once with an `--allow-empty` commit, then ~45+ min
+     quiet), a substantive SELF-review satisfies the gate: read the
+     full diff (not the description), run the branch's test gates
+     locally, verify claimed-against-actual — then record one PR-reply
+     line "self-reviewed per 0b: <what was checked, which tests ran>"
+     and merge. UNADDRESSED BOT FINDINGS STILL BLOCK: if any bot
+     finding exists on any commit of the PR, fix or triage it first
+     (0b never overrides 0's triage requirement).
 1. **Before opening a PR**: read the Codex feedback on the last 3-5
    merged PRs touching the same area — patterns repeat.
 2. **After a PR merges**: re-check its Codex comments once more within

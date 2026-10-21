@@ -109,8 +109,20 @@ B115200; #54 tracks the upstream knob).
 5. **BLE C3 advertising 0x0c rejection** (#66): GATT chain completes,
    advertising blocked by controller; NimBLE evaluation pending.
 6. Review-debt backlog burning down: #332 umbrella (most P1s fixed in
-   #349/#350/#352/#361 wave), #335/#336/#337/#339/#340/#343 (PRs in
-   flight this wave).
+   #349/#350/#352/#361 wave), #335/#336/#337/#339/#340/#343 — FIXED by
+   PRs #361/#362 (merged 2026-10-21); #344 F746 diagnostics override
+   merged (#364) pending bench verification on re-attach.
+
+## Process state (2026-10-21)
+
+- **CI policy (#366/#367, owner decision)**: PR CI is OPT-IN via the
+  `ci-run` label; every merge verifies on the push-to-main leg;
+  schedule/dispatch unchanged. Branch protection no longer requires
+  per-PR ci-ok.
+- **Merge gate (owner amendment 2026-10-21)**: the Codex-bot head
+  review remains the norm; when the bot is silent after reasonable
+  latency, a substantive SELF-review (diff read + tests run) satisfies
+  the gate. Unaddressed bot findings still block.
 
 ## Card & bench safety (always current)
 
