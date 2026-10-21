@@ -18,14 +18,14 @@ its home repo's default-branch HEAD; the report lands in
 | crate | home | consumed by | consumer pin (2026-10-21) | notes |
 |---|---|---|---|---|
 | `pn7160-nci` (incl. `hal_i2c`) | ccid `crates/pn7160-nci` | bolty `crates/bolty-pn7160` | `ccid@0b8e33e` | PN7160 NCI frontend + shared `driver_ng` embedded-hal I2C adapter (Write-run coalescing, #321) |
-| `mfrc522-pcd` | bolty `crates/mfrc522-pcd` | ccid `firmware/esp32-ccid` (optional) | `bolty@2a1afea` | MFRC522 PCD layer. **M2: migrates to ccid** (one-way kernel) |
+| `mfrc522-pcd` | bolty `crates/mfrc522-pcd` | ccid `firmware/esp32-ccid` (optional) | `bolty@519823c` (branch `chore/pin-iso14443-941131eb`) | MFRC522 PCD layer. **M2: migrates to ccid** (one-way kernel). 2026-10-21: bumped to iso14443@941131eb (limits API) for #376/#372 |
 | `pn532-transport` | bolty `crates/pn532-transport` | ccid `firmware/esp32-ccid` (optional) | `bolty@2a1afea` | PN532 transport. **M2: migrates to ccid** |
 
 ## Protocol layer
 
 | crate | pins (2026-10-21) | notes |
 |---|---|---|
-| `iso14443` | ccid: `Amperstrand/iso14443-rs@73db6d4` (rebased fork) · bolty: `Foundation-Devices/iso14443-rs@216d1b9` (canonical upstream) | bolty's session API + WTX hook live consumer-side in `bolty/crates/iso14443-session`; re-pin history in #348. Split-pins are INTENTIONAL — the drift check reports them for awareness, not as failures |
+| `iso14443` | ccid: `Amperstrand/iso14443-rs@941131eb` (fork default branch `ai-experiments`; adds `PcdSession::limits/set_limits`, PR #11) · bolty: `Foundation-Devices/iso14443-rs@216d1b9` (canonical upstream) · bolty fork-pin branch: `941131eb` via `chore/pin-iso14443-941131eb` | bolty's session API + WTX hook live consumer-side in `bolty/crates/iso14443-session`; re-pin history in #348. Split-pins are INTENTIONAL — the drift check reports them for awareness, not as failures |
 | `ntag424` | bolty: `Amperstrand/ntag424@02f23f5` | bolty-only today; SDM + key diversification features |
 
 ## Vendor / driver forks (repo-scoped, not shared)

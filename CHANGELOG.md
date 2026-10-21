@@ -1,5 +1,26 @@
 ## [Unreleased]
 
+### Fixed — #372: sustained LOAD SW 6400 after iso14443 re-pin (WTX budget)
+
+- Root cause (hardware A/B + host wire-mock, see
+  `docs/ISO14443_PCB_CONFORMANCE.md`): the rewritten `iso14443`
+  session (73db6d4) bounds work per exchange with defaults tuned for
+  fast readers — 8 consecutive S(WTX) / 32 total. A flash-writing
+  GlobalPlatform ISD legitimately emits longer WTX runs per APDU
+  during package LOAD; at MFRC522-over-I2C speeds the default budget
+  aborted the exchange (`LimitExceeded(ConsecutiveWtx)` → SW 6400 on
+  the wire) while single APDUs stayed green.
+- Fix: `mfrc522_driver.rs` configures explicit session limits
+  (consecutive WTX 64, total 4096, frames 4096, retransmissions 5).
+  Pins stay at 73db6d4/2a1afea — no fork, no re-pin.
+- Regression tests (`pcd_sustained_load_tests.rs`, wire-level mock):
+  chaining INF integrity, R(ACK) echo semantics, 20-run WTX dance,
+  and the budget behavior (defaults abort; configured limits survive).
+- Standards analysis recorded in `docs/ISO14443_PCB_CONFORMANCE.md`,
+  including the old pin's non-toggling-PCD-chain conformance deviation
+  (worked only because real cards are lenient) and the upstream
+  follow-ups filed.
+
 ### Added — shared-crates manifest (kernel graph SSOT)
 
 - `docs/SHARED-CRATES.md`: the cross-repo kernel dependency graph (crate
