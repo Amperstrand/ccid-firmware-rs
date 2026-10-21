@@ -44,8 +44,15 @@ const VPCD_CTRL_ATR: u8 = 0x04;
 /// deterministically instead of racing one listener.
 pub fn spawn<D: NfcDriver + Send + 'static>(driver: D, host_ip: &str, port: u16) {
     let host = host_ip.to_string();
+    // #326 (core-dump 2026-10-21): 16 KiB is NOT enough for the APDU
+    // exchange path — the first transmit_apdu drove this thread to
+    // 16384/8 bytes used/free and the next interrupt landed on the
+    // smashed stack (panic in interrupt context, task 'pthread').
+    // The serial image runs the identical exchange on a task with
+    // ~31 KiB free, which is why only wifi-vpcd crashed. 32 KiB = 2x
+    // the observed high-water mark.
     let _ = std::thread::Builder::new()
-        .stack_size(16 * 1024)
+        .stack_size(32 * 1024)
         .name("vpcd".into())
         .spawn(move || client_loop(driver, &host, port));
 }
@@ -99,6 +106,12 @@ fn serve_connection<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     rx_buf: &mut [u8],
 ) {
+    // #326: last successful ATR, cached so the 1.2 s presence probes
+    // can answer WITHOUT re-running power_on (which re-activates and
+    // thereby DESELECTS the card — the churn that made the first APDU
+    // after connect take 1.6 s of T=1 resync and blow every host-side
+    // response-pairing race).
+    let mut cached_atr: Vec<u8> = Vec::new();
     loop {
         let payload = match read_message(stream) {
             Ok(Some(p)) => p,
@@ -121,8 +134,21 @@ fn serve_connection<D: NfcDriver>(
             }
             Err(_) => return, // hard I/O error — reconnect
         };
-        let response = handle_message(handler, &payload, rx_buf);
+        // #326 discriminator: log EVERY request kind and answer with a
+        // millisecond stamp so console and tcpdump correlate 1:1.
+        let t0 = std::time::Instant::now();
+        // #360 review (P1): the payload hex dump is GONE — a VERIFY
+        // (00 20 00 81 Lc…) puts PIN bytes inside the old first-8
+        // slice, and bench-net broadcasts WARN records over UDP.
+        let was_apdu = payload.len() != 1;
+        log::warn!("vpcd req: {}", request_log_line(&payload));
+        let response = handle_message(handler, &payload, rx_buf, &mut cached_atr);
         if let Some(resp) = response {
+            log::warn!(
+                "vpcd ans (+{}ms): {}",
+                t0.elapsed().as_millis(),
+                response_log_line(&resp, was_apdu)
+            );
             if send_message(stream, &resp).is_err() {
                 return;
             }
@@ -130,6 +156,7 @@ fn serve_connection<D: NfcDriver>(
     }
 }
 
+<<<<<<< HEAD
 /// What the absence gate decided to log for one absent ATR poll.
 /// Returned by [`note_absent_poll`] so tests observe the exact decision.
 #[derive(Debug, PartialEq, Eq)]
@@ -233,23 +260,63 @@ fn note_present_poll() {
         .note_present();
 }
 
+=======
+/// #360 review (P1): request log line. NEVER include APDU payload
+/// bytes — VERIFY (`00 20 00 81 Lc …`) carries PIN digits in the first
+/// eight, CHANGE REFERENCE DATA likewise, and bench-net broadcasts
+/// WARN records over UDP to the bench subnet. Direction + length only;
+/// control bytes are protocol state, not secrets, and stay logged.
+fn request_log_line(payload: &[u8]) -> String {
+    if payload.len() == 1 {
+        format!("ctrl 0x{:02x}", payload[0])
+    } else {
+        format!("APDU {}B [redacted]", payload.len())
+    }
+}
+
+/// #360 review (P1): response log line. Response DATA stays out for
+/// the same reason (GET RESPONSE / READ BINARY carry card content);
+/// the SW pair of an R-APDU is protocol status, not card data, so it
+/// is safe. Control responses (ATR probes, RESET) log length only.
+fn response_log_line(resp: &[u8], was_apdu: bool) -> String {
+    if was_apdu && resp.len() >= 2 {
+        let n = resp.len();
+        format!("{}B SW {:02x}{:02x}", n, resp[n - 2], resp[n - 1])
+    } else {
+        format!("{}B", resp.len())
+    }
+}
+
+>>>>>>> origin/main
 fn handle_message<D: NfcDriver>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     payload: &[u8],
     rx_buf: &mut [u8],
+    cached_atr: &mut Vec<u8>,
 ) -> Option<Vec<u8>> {
     if payload.len() == 1 {
         match payload[0] {
             VPCD_CTRL_ATR => {
+                // #326: with a LIVE session answer from the cache —
+                // power_on here would re-activate (and deselect) the
+                // card on every 1.2 s presence probe.
+                // #360 review (P1): poll presence BEFORE serving the
+                // cache. On the PN7160 path a card removed mid-session
+                // keeps session_active() true until is_card_present()
+                // drains the pending RF_DEACTIVATE_NTF; skipping the
+                // poll let the cache answer forever, so pcscd could
+                // not observe the removal until it sent an APDU. The
+                // check is non-blocking and does NOT reactivate.
+                let present = handler.driver_mut().is_card_present();
+                if present && handler.driver_mut().session_active() && !cached_atr.is_empty() {
+                    return Some(cached_atr.clone());
+                }
                 let d = handler.driver_mut();
-                let present = d.is_card_present();
                 if present {
                     let mut atr = [0u8; 64];
                     match d.power_on(&mut atr) {
                         Ok(len) => {
-                            // #326 observability: the ATR exchange is the
-                            // first thing that dies on this path — every
-                            // request and its verdict goes to the console.
+                            *cached_atr = atr[..len].to_vec();
                             log::warn!("vpcd: ATR req → present, power_on ok ({} B)", len);
                             note_present_poll();
                             Some(atr[..len].to_vec())
@@ -260,6 +327,7 @@ fn handle_message<D: NfcDriver>(
                         }
                     }
                 } else {
+<<<<<<< HEAD
                     // Codex P1 on #328 (tracked #332): pcscd probes ATR
                     // presence at ~400 ms with no card — logging EVERY
                     // absent answer spams the console indefinitely.
@@ -267,17 +335,33 @@ fn handle_message<D: NfcDriver>(
                     // after presence, or every ABSENCE_LOG_EVERY as a
                     // slow heartbeat).
                     note_absent_poll();
+=======
+                    // card gone (or never inserted): the cache no longer
+                    // describes what is in the field — drop it so a
+                    // later probe re-runs a fresh activation.
+                    *cached_atr = Vec::new();
+                    log::warn!("vpcd: ATR req → NOT present → empty (driver re-polls)");
+>>>>>>> origin/main
                     Some(Vec::new()) // no card → empty ATR (driver ejects + re-polls)
                 }
             }
             VPCD_CTRL_ON => {
+                // #360 review (P2): refresh the cache from the
+                // activation — ON after a card swap must not leave
+                // card A's ATR cached for card B's session.
                 let mut atr = [0u8; 64];
-                let _ = handler.driver_mut().power_on(&mut atr);
+                match handler.driver_mut().power_on(&mut atr) {
+                    Ok(len) => *cached_atr = atr[..len].to_vec(),
+                    Err(_) => cached_atr.clear(),
+                }
                 log::warn!("vpcd: ON ctrl");
                 None // fire-and-forget
             }
             VPCD_CTRL_OFF => {
                 handler.driver_mut().power_off();
+                // #360 review (P2): OFF must invalidate — the card can
+                // be swapped out before the next ON.
+                cached_atr.clear();
                 log::warn!("vpcd: OFF ctrl");
                 None // fire-and-forget
             }
@@ -286,10 +370,14 @@ fn handle_message<D: NfcDriver>(
                 let mut atr = [0u8; 64];
                 match handler.driver_mut().power_on(&mut atr) {
                     Ok(len) => {
+                        *cached_atr = atr[..len].to_vec();
                         log::warn!("vpcd: RESET ctrl → ATR ({} B)", len);
                         Some(atr[..len].to_vec())
                     }
                     Err(_) => {
+                        // #360 review (P2): failed re-activation
+                        // invalidates — never serve the pre-RESET ATR.
+                        cached_atr.clear();
                         log::warn!("vpcd: RESET ctrl → power_on FAILED → empty");
                         Some(Vec::new()) // reset failed → "no card"
                     }
@@ -360,11 +448,19 @@ mod tests {
     /// Scripted NfcDriver for #170: records the exact APDU bytes the
     /// relay forwards and replays a scripted response, failure, and
     /// session-liveness state.
+    /// #360 review: `atrs` scripts successive power_on activations
+    /// (each call pops the front; an empty list fails power_on — the
+    /// "activation failure" case), `present` scripts presence, and the
+    /// counters prove which driver entry points handle_message used.
     struct ScriptedDriver {
         response: Vec<u8>,
         fail: bool,
         session: bool,
         last_apdu: Vec<u8>,
+        present: bool,
+        atrs: Vec<Vec<u8>>,
+        presence_calls: usize,
+        power_on_calls: usize,
     }
 
     impl NfcDriver for ScriptedDriver {
@@ -374,10 +470,17 @@ mod tests {
             Ok(())
         }
         fn is_card_present(&mut self) -> bool {
-            true
+            self.presence_calls += 1;
+            self.present
         }
-        fn power_on(&mut self, _atr_buf: &mut [u8]) -> Result<usize, MockError> {
-            Ok(0)
+        fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, MockError> {
+            self.power_on_calls += 1;
+            let Some(atr) = self.atrs.first().cloned() else {
+                return Err(MockError::Failed);
+            };
+            self.atrs.remove(0);
+            atr_buf[..atr.len()].copy_from_slice(&atr);
+            Ok(atr.len())
         }
         fn power_off(&mut self) {}
         fn transmit_apdu(
@@ -415,12 +518,18 @@ mod tests {
             fail: false,
             session: true,
             last_apdu: Vec::new(),
+            present: true,
+            atrs: Vec::new(),
+            presence_calls: 0,
+            power_on_calls: 0,
         };
         let (mut handler, mut rx_buf) = harness(driver);
+        let mut cached_atr = Vec::new();
         let resp = handle_message(
             &mut handler,
             &[0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
             &mut rx_buf,
+            &mut cached_atr,
         )
         .expect("response expected");
         assert_eq!(resp, vec![0x67, 0x00]);
@@ -440,10 +549,20 @@ mod tests {
             fail: true,
             session: true,
             last_apdu: Vec::new(),
+            present: true,
+            atrs: Vec::new(),
+            presence_calls: 0,
+            power_on_calls: 0,
         };
         let (mut handler, mut rx_buf) = harness(driver);
-        let resp = handle_message(&mut handler, &[0xB0, 0xB0, 0x00, 0x00, 0x00], &mut rx_buf)
-            .expect("response expected");
+        let mut cached_atr = Vec::new();
+        let resp = handle_message(
+            &mut handler,
+            &[0xB0, 0xB0, 0x00, 0x00, 0x00],
+            &mut rx_buf,
+            &mut cached_atr,
+        )
+        .expect("response expected");
         assert_eq!(resp, vec![0x64, 0x00]);
     }
 
@@ -460,12 +579,18 @@ mod tests {
             fail: true,
             session: false,
             last_apdu: Vec::new(),
+            present: true,
+            atrs: Vec::new(),
+            presence_calls: 0,
+            power_on_calls: 0,
         };
         let (mut handler, mut rx_buf) = harness(driver);
+        let mut cached_atr = Vec::new();
         let resp = handle_message(
             &mut handler,
             &[0xB0, 0xB0, 0x00, 0x00, 0x00, 0x00],
             &mut rx_buf,
+            &mut cached_atr,
         )
         .expect("response expected");
         assert!(
@@ -474,6 +599,7 @@ mod tests {
         );
     }
 
+<<<<<<< HEAD
     /// #350 regression (Codex P1), part 1: N consecutive absent polls
     /// must produce exactly ONE announcement plus the slow heartbeat.
     /// The old swap-based gate saw `was_present == false` on every
@@ -560,5 +686,233 @@ mod tests {
             "a successful ATR must close and re-arm the SHARED gate"
         );
         assert_eq!(note_absent_poll(), None);
+=======
+    /// #360 review (P1) "poll for link loss before serving the cached
+    /// ATR": a live session + populated cache must still consult
+    /// presence — on the PN7160 path that check drains the pending
+    /// RF_DEACTIVATE_NTF after mid-session card removal. Without it the
+    /// cache answers forever and pcscd cannot see the removal. The poll
+    /// must also NOT reactivate (power_on) — that deselect-churn is what
+    /// the cache exists to avoid.
+    #[test]
+    fn atr_fast_path_polls_presence_and_never_reactivates() {
+        let driver = ScriptedDriver {
+            response: Vec::new(),
+            fail: false,
+            session: true,
+            last_apdu: Vec::new(),
+            present: true,
+            atrs: Vec::new(),
+            presence_calls: 0,
+            power_on_calls: 0,
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        let cached = vec![0x3b, 0x00]; // card A's ATR, session live
+        let mut cached_atr = cached.clone();
+
+        // card still present → cached ATR served, no activation
+        let resp = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx_buf, &mut cached_atr)
+            .expect("ATR probe must answer");
+        assert_eq!(resp, cached);
+        assert!(
+            handler.driver_mut().power_on_calls == 0,
+            "the presence poll must not reactivate the card"
+        );
+        assert!(
+            handler.driver_mut().presence_calls >= 1,
+            "the ATR fast path must consult presence"
+        );
+
+        // card removed mid-session (session_active() still true until the
+        // presence check drains the deactivate notification) → the probe
+        // must answer ICC-absent, not the stale cache
+        handler.driver_mut().present = false;
+        let resp = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx_buf, &mut cached_atr)
+            .expect("ATR probe must answer");
+        assert!(
+            resp.is_empty(),
+            "card loss must surface as ICC-absent on the very next probe, got {resp:?}"
+        );
+        assert!(cached_atr.is_empty(), "absence must drop the stale cache");
+        assert!(
+            handler.driver_mut().power_on_calls == 0,
+            "absence handling must not attempt an activation"
+        );
+    }
+
+    /// #360 review (P1) "redact APDU data from request logs": the old
+    /// line printed the first 8 payload bytes — for VERIFY
+    /// (`00 20 00 81 Lc …`) that is CLA INS P1 P2 Lc + the first three
+    /// PIN digits — and bench-net broadcasts WARN records over UDP.
+    /// The request log must carry direction + length only.
+    #[test]
+    fn apdu_request_log_redacts_payload_bytes() {
+        // VERIFY, PIN "12345678" — the exact command the review flagged
+        let verify = [
+            0x00, 0x20, 0x00, 0x81, 0x08, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+        ];
+        let line = request_log_line(&verify);
+        assert_eq!(line, "APDU 13B [redacted]");
+        for b in verify {
+            assert!(
+                !line.contains(&format!("{b:02x}")),
+                "payload byte {b:02x} leaked into the request log: {line}"
+            );
+        }
+        // control bytes are protocol state, not credentials — unchanged
+        assert_eq!(request_log_line(&[VPCD_CTRL_ATR]), "ctrl 0x04");
+        assert_eq!(request_log_line(&[VPCD_CTRL_ON]), "ctrl 0x01");
+    }
+
+    /// #360 review (P1), response side: R-APDU DATA (GET RESPONSE, READ
+    /// BINARY, …) must stay out of the log; the SW pair is protocol
+    /// status and may appear. Control responses (ATR probes) log length
+    /// only.
+    #[test]
+    fn apdu_response_log_shows_sw_only() {
+        let rapdu = [0x61, 0x02, 0x31, 0x32, 0x33, 0x34, 0x90, 0x00];
+        let line = response_log_line(&rapdu, true);
+        assert_eq!(line, "8B SW 9000");
+        assert!(
+            !line.contains("31323334") && !line.contains("6102"),
+            "response data leaked into the log: {line}"
+        );
+        assert_eq!(response_log_line(&[0x64, 0x00], true), "2B SW 6400");
+        assert_eq!(response_log_line(&[], true), "0B"); // ICC absent
+        assert_eq!(response_log_line(&[0x3b, 0x00], false), "2B"); // ATR: length only
+    }
+
+    /// #360 review (P2) "refresh the cached ATR after lifecycle
+    /// controls": ON card A → OFF → ON card B must make the next ATR
+    /// probe serve card B's ATR. Before the fix, ON/OFF left the cache
+    /// untouched, so card A's protocol bytes classified card B.
+    #[test]
+    fn on_off_on_card_swap_refreshes_cached_atr() {
+        let atr_a = vec![0x3b, 0x00];
+        let atr_b = vec![0x3b, 0x02, 0xff, 0x81];
+        let driver = ScriptedDriver {
+            response: Vec::new(),
+            fail: false,
+            session: true,
+            last_apdu: Vec::new(),
+            present: true,
+            atrs: vec![atr_a.clone(), atr_b.clone()],
+            presence_calls: 0,
+            power_on_calls: 0,
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        let mut cached_atr = Vec::new();
+
+        // ON with card A in the field primes the cache with A's ATR
+        assert!(
+            handle_message(&mut handler, &[VPCD_CTRL_ON], &mut rx_buf, &mut cached_atr).is_none()
+        );
+        assert_eq!(cached_atr, atr_a);
+
+        // OFF invalidates — the card may be swapped out before the next ON
+        assert!(
+            handle_message(&mut handler, &[VPCD_CTRL_OFF], &mut rx_buf, &mut cached_atr).is_none()
+        );
+        assert!(cached_atr.is_empty());
+
+        // ON again — the driver now returns card B's ATR
+        assert!(
+            handle_message(&mut handler, &[VPCD_CTRL_ON], &mut rx_buf, &mut cached_atr).is_none()
+        );
+        assert_eq!(cached_atr, atr_b);
+
+        // ATR probe on the live session serves card B's ATR, never the
+        // stale card-A one
+        let resp = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx_buf, &mut cached_atr)
+            .expect("ATR probe must answer");
+        assert_eq!(resp, atr_b, "card swap must not serve card A's stale ATR");
+    }
+
+    /// #360 review (P2), RESET half: a successful RESET re-activation
+    /// refreshes the cache; a failed one invalidates it instead of
+    /// leaving the pre-RESET ATR armed.
+    #[test]
+    fn reset_refreshes_or_invalidates_cached_atr() {
+        let atr_b = vec![0x3b, 0x02, 0xff];
+        let driver = ScriptedDriver {
+            response: Vec::new(),
+            fail: false,
+            session: false,
+            last_apdu: Vec::new(),
+            present: true,
+            atrs: vec![atr_b.clone()],
+            presence_calls: 0,
+            power_on_calls: 0,
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        // stale card-A cache, as left by an earlier session
+        let mut cached_atr = vec![0x3b, 0x00];
+
+        let resp = handle_message(
+            &mut handler,
+            &[VPCD_CTRL_RESET],
+            &mut rx_buf,
+            &mut cached_atr,
+        )
+        .expect("RESET must answer");
+        assert_eq!(resp, atr_b);
+        assert_eq!(cached_atr, atr_b, "successful RESET must refresh the cache");
+
+        // atrs now empty → the re-activation fails: ICC-absent + clear
+        let resp = handle_message(
+            &mut handler,
+            &[VPCD_CTRL_RESET],
+            &mut rx_buf,
+            &mut cached_atr,
+        )
+        .expect("RESET must answer");
+        assert!(resp.is_empty());
+        assert!(
+            cached_atr.is_empty(),
+            "failed RESET must invalidate the stale cache"
+        );
+    }
+
+    /// #360 review (P2), ON-failure half: a failed ON activation must
+    /// clear the cache so a later ATR probe re-runs activation instead
+    /// of serving card A's ATR for an empty field.
+    #[test]
+    fn failed_on_activation_invalidates_cached_atr() {
+        let driver = ScriptedDriver {
+            response: Vec::new(),
+            fail: false,
+            session: true,
+            last_apdu: Vec::new(),
+            present: true,
+            atrs: Vec::new(), // power_on fails immediately
+            presence_calls: 0,
+            power_on_calls: 0,
+        };
+        let (mut handler, mut rx_buf) = harness(driver);
+        // card A's ATR cached by an earlier successful session
+        let mut cached_atr = vec![0x3b, 0x00];
+
+        assert!(
+            handle_message(&mut handler, &[VPCD_CTRL_ON], &mut rx_buf, &mut cached_atr).is_none()
+        );
+        assert!(
+            cached_atr.is_empty(),
+            "failed ON must invalidate the stale cache"
+        );
+
+        // the next probe re-runs the (still failing) activation rather
+        // than answering from the stale cache
+        let resp = handle_message(&mut handler, &[VPCD_CTRL_ATR], &mut rx_buf, &mut cached_atr)
+            .expect("ATR probe must answer");
+        assert!(
+            resp.is_empty(),
+            "probe after failed activation must answer ICC-absent, got {resp:?}"
+        );
+        assert_eq!(
+            handler.driver_mut().power_on_calls,
+            2,
+            "probe must re-run activation (failed ON + probe)"
+        );
+>>>>>>> origin/main
     }
 }
