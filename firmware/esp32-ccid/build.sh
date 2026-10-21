@@ -429,7 +429,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
 fi
 
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
-    cargo build --target "${TRIPLE}" "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
+    cargo build --target "${TRIPLE}" --ignore-rust-version "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
 
 # Record the config only after a successful build. If cargo fails, leave the
 # stamp unchanged so the next attempt still invalidates caches whose

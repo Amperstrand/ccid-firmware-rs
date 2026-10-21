@@ -89,6 +89,7 @@ spp = []
 card-interface = { path = "../../crates/card-interface" }
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
+ccid-service = { path = "../../crates/ccid-service" }
 ccid-transport-serial = { path = "../../crates/ccid-transport-serial" }
 embedded-hal = "1.0"
 heapless = "0.9"

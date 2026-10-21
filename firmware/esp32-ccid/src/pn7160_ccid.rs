@@ -43,6 +43,7 @@ fn write_wire_cdc(bytes: &[u8]) {
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
+    crate::install_platform_clock();
     // Silence C-level ESP_LOGx IMMEDIATELY (before any PN7160 I2C
     // activity): the driver's persistent-retry NACK messages from
     // ESP-IDF's i2c.master bypass the Rust `log` crate and pollute

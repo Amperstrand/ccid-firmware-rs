@@ -398,6 +398,26 @@ and NO code change — the system instance keeps those readers.
 
 ## 9. Verification TODO (all bench-gated; none done)
 
+> **PILOT RESULT (2026-10-21, ad-hoc mechanism — not the template
+> units):** TODO-1/TODO-2 cores proven by the wifi-vpcd lane under fire.
+> Mechanism used: `systemd-socket-activate -l /run/pcscd-lanes/wifi67.sock
+> -- /usr/sbin/pcscd --foreground -c /etc/reader.conf.d-lanes/wifi-verify`
+> (socket activation = the §3 coexistence route; no unit files needed for
+> the pilot) + `PCSCLITE_CSOCK_NAME` on every client (pyscard AND gp/JNA
+> both honor it). Proven: the private instance served exactly
+> `Nucula VPCD wifi67 00 00/00 01`, carried the FULL J3R180 lifecycle
+> (gp auth, install, applet ops, uninstall, baseline restore) GREEN
+> while the SYSTEM instance was externally stopped/restarted TWICE by a
+> concurrent lane's flash windows — zero impact on the run (TODO-2's
+> isolation half; system-side reader service during the pilot not
+> asserted). `vpcd-nucula-35967` stayed in the lane dir, i.e. the §4.1
+> freeze is real for that one entry. Observed non-blocking caveats:
+> USB hotplug readers fail to add inside the private instance (system
+> owns them — the TODO-4 filter env would hide the noise); shared
+> `/run/pcscd/pcscd.pid` written by both (known §3 hazard). AGENTS.md
+> now carries the runnable recipe. Remaining for §7: TODO-3/TODO-4/
+> TODO-5 + migrating the other serial entries + the template units.
+
 - [ ] **TODO-1**: `systemctl start pcscd-lane@m5stick.socket` + one
   client connect with the env → instance serves exactly
   `M5stick GemPC (MFRC522) 00 00`, connect+ATR+SELECT round-trips

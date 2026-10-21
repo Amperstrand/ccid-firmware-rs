@@ -13,6 +13,42 @@
   byte-identical to firmware/esp32-ccid's (short-vs-full strings split
   the graph — bench lesson 2026-10-21, documented in the crate's
   Cargo.toml).
+### Added — ccid-service crate: the serving kernel moves behind a board-blind boundary (t_72e1e2ed, in flight)
+
+- New workspace member `crates/ccid-service` — the reader-mode serving
+  kernel. Moved from `firmware/esp32-ccid` (re-exported there under the
+  historical paths): `ccid_serial_server` (GemPC-Twin serial server),
+  `vpcd`, `spp_server`'s pure pump, `ccid_handler`, `t1`, `turnaround`,
+  `ccid_types`, `nfc` (the `NfcDriver` contract), `frontend`
+  (RetryFrontend/EitherFrontend policy).
+- The boundary is the point: the crate depends ONLY on card-interface,
+  ccid-core, ccid-protocol, ccid-transport-serial (+ std/heapless) —
+  it cannot see pins, peripherals or board drivers, so "works on any
+  board" is compiler-enforced. The firmware bin keeps the board table +
+  frontend constructor + service spawn (`wifi_vpcd` and `spp_shell`
+  already have exactly that shape).
+- Platform services cross the boundary as injected hooks: `t1::
+  install_clock` (esp-idf `esp_timer` installed by every serving main
+  via `esp32_ccid::install_platform_clock`) and the handler's
+  `install_card_presence_sink` (inversion of the old direct
+  `m5stick_lcd::set_card_present` call — the LCD main installs the
+  forwarder, host tests a counting sink; unset = inert as before).
+- Still firmware-side (tracked follow-up): the esp-idf SPP bring-up
+  shell (`spp_shell`, deliberately: transport bring-up is the bin's
+  duty).
+- `tcp_server` (the `wifi_ccid` TCP session loop, the last tracked
+  follow-up of this card) now lives in the kernel too, with the
+  mute-recovery ladder as the boundary seam: the loop calls an
+  injected on-tick hook (`&mut dyn FnMut(&mut D)`, once per serve
+  tick, in the exact position the inline ladder occupied) with the
+  live driver; the firmware main keeps the streak check
+  (`pn7160_i2c::i2c_send_failure_streak` + `silent_rearm_streak`),
+  VEN cycle and init-ladder replay — the kernel never sees
+  `pn7160_i2c`. #153 arrival-floor, answer-or-silence and idle-close
+  semantics carried over byte-identically, locked by five scripted-
+  duplex/real-socket host tests (`tcp_server::tests`, the vpcd-suite
+  pattern: `Read + Write` seam so a `ScriptedStream` drives the loop).
+
 ### Docs — evening stamp (2026-10-21)
 
 - TESTED_AND_WORKING matrix rows brought level with main @428e834d:
