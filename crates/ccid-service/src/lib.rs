@@ -28,6 +28,7 @@ pub mod ccid_serial_server;
 pub mod ccid_types;
 pub mod frontend;
 pub mod nfc;
+pub mod spp_server;
 pub mod t1;
 pub mod turnaround;
 pub mod vpcd;

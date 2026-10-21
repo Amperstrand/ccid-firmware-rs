@@ -152,10 +152,12 @@ pub mod led;
 /// Host-testable log ring shared by the BLE debug logger shells.
 pub mod ble_log_queue;
 
-/// pcscd-over-Bluetooth-SPP transport: pure serving glue (host-tested,
-/// always compiled — `ble_log_queue` pattern) + a target shell gated on
-/// the `spp` feature inside the module.
-pub mod spp_server;
+/// pcscd-over-Bluetooth-SPP transport (t_72e1e2ed): the pure,
+/// host-tested serving pump lives in the kernel crate; this firmware
+/// shell (bring-up + RFCOMM event loop) is gated on the `spp` feature.
+pub use ccid_service::spp_server;
+#[cfg(all(feature = "spp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod spp_shell;
 
 pub mod ble_addr;
 

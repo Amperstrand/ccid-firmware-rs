@@ -770,11 +770,11 @@ fn main() {
     };
 
     // Transport split: `spp` builds serve the same CcidHandler over the
-    // BT-Classic SPP byte pipe (spp_server::shell::serve_spp — same
+    // BT-Classic SPP byte pipe (spp_shell::serve_spp — same
     // echo/response/poll cadence as serve_uart, REFERENCE
     // esp-idf-svc bt_spp_acceptor.rs); everything else stays on UART0.
     #[cfg(feature = "spp")]
-    esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
+    esp32_ccid::spp_shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
     #[cfg(not(feature = "spp"))]
     {
         // #163: ble builds pump the NUS log queue at every read-idle —
