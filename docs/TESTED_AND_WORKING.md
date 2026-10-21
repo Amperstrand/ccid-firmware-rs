@@ -27,12 +27,12 @@ that axis; **FAIL** = verified broken.
 |---|---|---|---|---|---|
 | STM32F469-DISCO (Cherry ST-2xxx profile) | contact slot, USART2 smartcard mode | USB CCID (TPDU level) | T=1 contact card (ComSign eID): ATR, APDU relay, T=0/T=1 | **PASS** @ e9173657 (2026-10-20, three-device stamp closing #308); labgrid HIL 7/7 @ 67bcfbc (2026-10-12) | #308 stamp; `pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` |
 | STM32F746-DISCO (Cherry profile, bit-bang) | contact slot, GPIO bit-bang | USB CCID | bench-distinct iSerial `ST2XXX-F746` landed; release build cached; **USB plug never re-attached since bring-up prep** | **NOT TESTED** (hardware off bench USB — see "Unavailable hardware") | 0af0fb0 prep; #302 deferred legs |
-| ESP32 M5StickC + MFRC522 (serial CCID, `build.sh m5stick`) | NFC (ISO 14443-4 / ISO-DEP) | GemPC Twin serial over FTDI, 115200 8N2, pcscd via libccidtwin | J3R180 (P71D321) contactless: ATR, T=1 endpoint (S-blocks, IFS, WTX, chaining), full GP lifecycle incl. applet data ops; reconnect stability | **PASS** @ dd948466 (2026-10-21: flash + wire boot proof, T=1 wire session, 5/5 pcscd reconnect cycles) | PR #347 harness probe; #330 closure evidence; this file's session log below |
+| ESP32 M5StickC + MFRC522 (serial CCID, `build.sh m5stick`) | NFC (ISO 14443-4 / ISO-DEP) | GemPC Twin serial over FTDI, 115200 8N2, pcscd via libccidtwin | J3R180 (P71D321) contactless: ATR, T=1 endpoint (S-blocks, IFS, WTX, chaining), full GP lifecycle incl. applet data ops; reconnect stability | **PASS** @ **f2efdb97 (current main)** (2026-10-21: flash + wire boot proof, T=1 wire session, 5/5 pcscd reconnect cycles; battery/fuzz/soak at dd948466 same day) | PR #347 harness probe; #330 closure evidence; this file's session log below |
 | ESP32 M5StickC + MFRC522, SPP variant | NFC | Bluetooth Classic SPP → `/dev/rfcomm0`, pcscd | card-level verified, 30/30 soak, p50 48 ms/APDU | **PASS** @ m5stick-spp bench conf (2026-10-11) | firmware/esp32-ccid/README.md recipe |
 | ESP32 M5StickC, wifi-vpcd variant | NFC | WiFi VPCD (libifdvpcd) | card-present + ATR + first APDU round-trip proven with the patched host lib; APDU pairing wrinkle open | **PARTIAL** (2026-10-21; fw half merged in #360, host patch PR #359) | #326 trail |
 | ESP32 M5Atom + MFRC522 (default backend) | NFC | serial | builds green in CI; on-device bring-up pending | **NOT TESTED** on hardware | `esp32-build-secondary` |
 | ESP32 + PN532 (SPI) | NFC | serial | builds green; hardware verification pending | **NOT TESTED** on hardware | #249 bench card placements |
-| ESP32-C3 nucula + PN7160 (`build.sh c3-ccid` + PTY broker) | NFC | USB-CDC → `nucula-ccid-broker` PTY → pcscd | J3R180: ATR, APDU relay, **full GP lifecycle green** (install/SELECT/data ops/uninstall/baseline) | **PASS** @ e9173657-era image (2026-10-20/21); wire-silence, Escape 0xD1 coredump round-trip, broker stability >5.5 min | #308/#327 evidence; `tests/hardware/nucula/` |
+| ESP32-C3 nucula + PN7160 (`build.sh c3-ccid` + PTY broker) | NFC | USB-CDC → `nucula-ccid-broker` PTY → pcscd | J3R180: ATR, APDU relay, **full GP lifecycle green** (install/SELECT/data ops/uninstall/baseline) | **PASS** @ **f2efdb97 (current main)** (2026-10-21: c3-ccid image flashed, boot-proven, broker reader serving — 3/3 sessions ATR+ISD SELECT 9000+CPLC 9000); earlier full-lifecycle + wire-silence + coredump evidence at e9173657-era | #308/#327 evidence; `tests/hardware/nucula/` |
 | ESP32-C3 nucula bring-up image (`build.sh c3`) | PN7160 ladder | console | NCI init ladder + PN7160 alive, FWID self-stamp | **PASS** @ 0b8e33e (2026-10-20) | #312 (closed) |
 
 Direct pcscd/libccidtwin enumeration of the nucula CDC is impossible on
@@ -155,3 +155,27 @@ are tracked on #127.
 - Conformance battery (framing fuzz / GetSlotStatus soak / pcscd
   restart resilience): see the generated STATUS.md for the latest
   stamp; results from this session's run are recorded on PR #347.
+
+## Session verification log (2026-10-21, second pass — current main @ f2efdb97)
+
+- **m5stick serial CCID**: image built from main@f2efdb97 (sha256
+  `3261e0c8…9fe6ec7`), flashed (PT@0x8000 + app@0x40000 + otadata
+  erase), `--boot-check wire` PASSED; gempc_smoke green (GetSlotStatus
+  bmICCStatus=1, ATR `3B 85 81 31 FE 45…`, uptime advancing, card
+  coupled); T=1 wire session green (SetParameters → S(IFS) IFSC=254 →
+  SELECT `6A82` correct-at-baseline → CPLC `9000` + 42-byte 9F7F);
+  pcscd 5/5 reconnect cycles each ATR + ISD SELECT `9000` + CPLC `9000`.
+- **nucula-c3 c3-ccid**: image built from main@f2efdb97 (sha256
+  `6afce78d…5715e5`), flashed with broker quiesce (RTS ladder, boot
+  check PASSED, broker restarted); broker reader `Nucula CCID via
+  broker 01 00` serving — 3/3 sessions ATR + ISD SELECT `9000` + CPLC
+  `9000` (card 5086…1320 on coil).
+- **Cross-frontend differential at current main**: both boards return
+  the byte-identical ATR `3B 85 81 31 FE 45 80 73 C8 21 10 84` for
+  their J3R180s (MFRC522 vs PN7160) and clean CPLC values.
+- **Bench end state**: both boards run current-main product images
+  (m5stick serial GemPC reader + nucula c3-ccid broker reader in
+  pcscd). The wifi-vpcd experimental image remains cached
+  (sha256 `48936445…04ace739`) + full-4MB m5stick backup
+  (sha256 `7fb8b178…91728b037`) for the #326 lane.
+- Post-merge Codex sweep: 0 late findings across all 20 merged PRs.
