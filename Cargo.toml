@@ -4,6 +4,7 @@ members = [
     "crates/card-interface",
     "crates/ccid-core",
     "crates/ccid-transport-serial",
+    "crates/ccid-service",
     "crates/pn7160-nci",
     "crates/ccid-pcsc-host",
     "firmware/ccid-firmware",

@@ -13,6 +13,7 @@
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    crate::install_platform_clock();
 
     crate::netlog::init();
 

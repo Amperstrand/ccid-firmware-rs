@@ -902,6 +902,12 @@ jobs:
       - name: Clippy (never-linted trio, zero warnings)
         run: cargo clippy -p pn7160-nci -p ccid-pcsc-host -p ccid-host-tools --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 
+      # t_72e1e2ed: the serving-kernel crate carries its own lint gate so
+      # the board-blind dependency boundary stays warning-clean (it is in
+      # no other clippy'd graph as a standalone crate).
+      - name: Clippy (ccid-service serving kernel, zero warnings)
+        run: cargo clippy -p ccid-service --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
   ci-ok:
     # Required-check aggregator for branch protection: tier-gated legs skip
     # as SUCCESS (job-level if), so this one stable job name — not the

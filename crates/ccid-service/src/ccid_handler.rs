@@ -18,6 +18,33 @@ use ccid_core::handler::CcidHandlerCore;
 use ccid_core::response::{write_message, write_slot_status};
 use ccid_core::Diagnostics;
 
+/// Optional card-presence sink installed by the firmware bin (the
+/// t_72e1e2ed boundary inversion of the old direct
+/// `m5stick_lcd::set_card_present` call): the handler pushes the
+/// card-present line on every presence poll. The M5StickC-Plus LCD main
+/// installs a forwarder to its screen (#275 defect 3 — the setter had
+/// zero production callers, so the screen rendered `card: ---` all
+/// session); host tests install a counter to keep the wiring
+/// regression-covered. Unset = inert, exactly the old non-lcd stub.
+static CARD_PRESENCE_SINK: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Install the firmware-side card-presence observer (e.g. an LCD status
+/// screen). Call before serving; `sink` must be thread-safe (called from
+/// the serve loop).
+pub fn install_card_presence_sink(sink: fn(bool)) {
+    CARD_PRESENCE_SINK.store(sink as usize, core::sync::atomic::Ordering::SeqCst);
+}
+
+fn push_card_presence(present: bool) {
+    let raw = CARD_PRESENCE_SINK.load(core::sync::atomic::Ordering::SeqCst);
+    if raw != 0 {
+        // Sound: stored by `install_card_presence_sink` from a `fn(bool)`.
+        let sink: fn(bool) = unsafe { core::mem::transmute(raw) };
+        sink(present);
+    }
+}
+
 // GEMPC: idVendor: 0x08E6 iManufacturer: Gemplus idProduct: 0x3437 iProduct: USB SmartCard Reader
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
@@ -79,13 +106,15 @@ impl<D: NfcDriver> CcidHandler<D> {
 
     /// Presence poll — the one seam every serve path uses (serial
     /// server, SPP pump, classic mains). Also pushes current presence
-    /// to the M5StickC-Plus status screen (#275: `set_card_present`
-    /// had zero production callers, so the screen rendered
-    /// `card: ---` for the whole session). Inert on non-lcd builds;
-    /// the display can never feed back into serving.
+    /// to the installed card-presence sink (t_72e1e2ed boundary
+    /// inversion of the old direct `m5stick_lcd::set_card_present`
+    /// call, #275 defect 3: the screen had zero production callers, so
+    /// it rendered `card: ---` for the whole session). Inert until the
+    /// firmware bin installs a sink; the display can never feed back
+    /// into serving.
     pub fn check_card_change(&mut self) -> Option<bool> {
         let changed = self.core.check_card_change();
-        crate::m5stick_lcd::set_card_present(self.core.diagnostics().card_present);
+        push_card_presence(self.core.diagnostics().card_present);
         changed
     }
 
@@ -813,29 +842,37 @@ mod tests {
         assert_eq!(handler.slot_state(), SlotState::Absent);
     }
 
-    /// #275 defect 3 regression: the presence poll must DRIVE the status
-    /// screen — `m5stick_lcd::set_card_present` had zero production
-    /// callers (screen showed `card: ---` all session). Asserted via the
-    /// stub's call COUNT (race-tolerant lower bound: parallel tests'
-    /// own `check_card_change` polls only add calls — a value latch
-    /// raced them, Codex P2 on #281); lcd/target builds exercise the
-    /// real screen on the bench.
-    #[cfg(not(all(target_arch = "xtensa", feature = "board-m5stick", feature = "lcd")))]
+    /// #275 defect 3 regression: the presence poll must DRIVE the
+    /// installed presence sink — the old direct
+    /// `m5stick_lcd::set_card_present` had zero production callers
+    /// (screen showed `card: ---` all session). Asserted via a call
+    /// COUNT (race-tolerant lower bound: parallel tests' own
+    /// `check_card_change` polls only add calls — a value latch raced
+    /// them, Codex P2 on #281); lcd/target builds exercise the real
+    /// screen on the bench through the same installed sink.
     #[test]
     fn test_check_card_change_wires_display_presence() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static SINK_CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn counting_sink(_present: bool) {
+            SINK_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+        install_card_presence_sink(counting_sink);
+
         let mut handler = new_handler(false);
         handler.driver_mut().set_card_present(true);
 
-        let before = crate::m5stick_lcd::set_card_present_calls();
+        let before = SINK_CALLS.load(Ordering::Relaxed);
         assert!(handler.check_card_change().is_some());
         handler.check_card_change();
         handler.driver_mut().set_card_present(false);
         assert!(handler.check_card_change().is_some());
 
-        let calls = crate::m5stick_lcd::set_card_present_calls();
+        let calls = SINK_CALLS.load(Ordering::Relaxed);
         assert!(
             calls >= before + 3,
-            "every presence poll must push to the display: {calls} vs >= {}",
+            "every presence poll must push to the sink: {calls} vs >= {}",
             before + 3
         );
     }
@@ -1369,7 +1406,7 @@ mod tests {
         let mut resp = [0u8; 512];
 
         let apdu: Vec<u8> = std::iter::once(0x80)
-            .chain(std::iter::repeat(0x5A).take(298))
+            .chain(std::iter::repeat_n(0x5A, 298))
             .chain([0x90, 0x00].iter().copied())
             .collect();
         assert_eq!(apdu.len(), 301);
@@ -1377,7 +1414,7 @@ mod tests {
         let chunks: Vec<&[u8]> = apdu.chunks(32).collect();
         for (i, chunk) in chunks.iter().enumerate() {
             let more = i < chunks.len() - 1;
-            let pcb = (0u8 << 6) | ((more as u8) << 5);
+            let pcb = (more as u8) << 5; // I-block: PCB bit 6 clear (§11.3)
             let mut blk = vec![0x00u8, pcb, chunk.len() as u8];
             blk.extend_from_slice(chunk);
             blk.push(blk.iter().fold(0u8, |a, b| a ^ b));
@@ -1423,7 +1460,7 @@ mod tests {
         // A 64-byte INF piece exceeds DEFAULT_HOST_IFSD (32) but fits
         // the negotiated 254 — must be chain-ACKed, not bad_block'ed.
         let piece = [0x5Au8; 64];
-        let pcb = (0u8 << 6) | (1u8 << 5);
+        let pcb = 1u8 << 5; // I-block (bit 6 clear) + more-bit set (§11.3)
         let mut blk = vec![0x00u8, pcb, piece.len() as u8];
         blk.extend_from_slice(&piece);
         blk.push(blk.iter().fold(0u8, |a, b| a ^ b));

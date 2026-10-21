@@ -12,22 +12,37 @@
 
 #[cfg(test)]
 pub mod ccid_fuzz;
-pub mod ccid_handler;
-pub mod ccid_serial_server;
-pub mod ccid_types;
-pub mod frontend;
+// Serving-kernel modules extracted to crates/ccid-service (t_72e1e2ed):
+// re-exported under their historical paths so mains, drivers and tests
+// keep compiling unchanged. The crate boundary (ccid-service sees only
+// card-interface + ccid-core/protocol/transport-serial) is what makes
+// "works on any board" compiler-enforced.
+pub use ccid_service::ccid_handler;
+pub use ccid_service::ccid_serial_server;
+pub use ccid_service::ccid_types;
+pub use ccid_service::frontend;
+pub use ccid_service::nfc;
+pub use ccid_service::t1;
+pub use ccid_service::turnaround;
+
+/// Hand the kernel the platform monotonic clock (t_72e1e2ed): the
+/// serving kernel injects time (`ccid_service::t1::install_clock`) and
+/// carries no ESP-IDF dependency. Every target main that serves CCID
+/// calls this before constructing the handler — before it, the kernel
+/// clock reads 0 (the historical host-build behavior).
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub fn install_platform_clock() {
+    ccid_service::t1::install_clock(|| unsafe { esp_idf_sys::esp_timer_get_time() });
+}
+
 pub mod m5stick_lcd;
-pub mod nfc;
 pub mod ota_header;
 #[cfg(all(test, feature = "backend-mfrc522"))]
 mod pcd_sustained_load_tests;
 pub mod pn532_driver;
 pub mod serial_framing;
-pub mod t1;
 #[cfg(test)]
 pub mod t1_fuzz;
-
-pub mod turnaround;
 
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;
@@ -111,7 +126,8 @@ pub mod netlog;
 ))]
 pub mod ota;
 
-// x86_64: pure std, always host-tested. Targets: wifi-vpcd builds only.
+// x86_64: pure std, always host-tested in ccid-service. Targets:
+// re-exported for wifi-vpcd builds only (kernel compiles it always).
 #[cfg(any(
     target_arch = "x86_64",
     all(
@@ -119,7 +135,7 @@ pub mod ota;
         any(target_arch = "xtensa", target_arch = "riscv32")
     )
 ))]
-pub mod vpcd;
+pub use ccid_service::vpcd;
 
 #[cfg(all(
     any(
@@ -138,10 +154,12 @@ pub mod led;
 /// Host-testable log ring shared by the BLE debug logger shells.
 pub mod ble_log_queue;
 
-/// pcscd-over-Bluetooth-SPP transport: pure serving glue (host-tested,
-/// always compiled — `ble_log_queue` pattern) + a target shell gated on
-/// the `spp` feature inside the module.
-pub mod spp_server;
+/// pcscd-over-Bluetooth-SPP transport (t_72e1e2ed): the pure,
+/// host-tested serving pump lives in the kernel crate; this firmware
+/// shell (bring-up + RFCOMM event loop) is gated on the `spp` feature.
+pub use ccid_service::spp_server;
+#[cfg(all(feature = "spp", any(target_arch = "xtensa", target_arch = "riscv32")))]
+pub mod spp_shell;
 
 pub mod ble_addr;
 

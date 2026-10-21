@@ -425,6 +425,7 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    esp32_ccid::install_platform_clock();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge).
@@ -521,6 +522,7 @@ fn main() {
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    esp32_ccid::install_platform_clock();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge). In
@@ -702,6 +704,12 @@ fn main() {
         } else {
             esp32_ccid::m5stick_lcd::spawn_ticker();
         }
+        // t_72e1e2ed: the handler kernel pushes presence through an
+        // installed sink (crate boundary — it cannot see m5stick_lcd).
+        // Same #275 defect-3 wiring as the old in-handler call.
+        esp32_ccid::ccid_handler::install_card_presence_sink(
+            esp32_ccid::m5stick_lcd::set_card_present,
+        );
     }
 
     #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
@@ -762,11 +770,11 @@ fn main() {
     };
 
     // Transport split: `spp` builds serve the same CcidHandler over the
-    // BT-Classic SPP byte pipe (spp_server::shell::serve_spp — same
+    // BT-Classic SPP byte pipe (spp_shell::serve_spp — same
     // echo/response/poll cadence as serve_uart, REFERENCE
     // esp-idf-svc bt_spp_acceptor.rs); everything else stays on UART0.
     #[cfg(feature = "spp")]
-    esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
+    esp32_ccid::spp_shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
     #[cfg(not(feature = "spp"))]
     {
         // #163: ble builds pump the NUS log queue at every read-idle —
