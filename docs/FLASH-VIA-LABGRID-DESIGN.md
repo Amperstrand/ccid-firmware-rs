@@ -6,7 +6,9 @@
 > exporter configs, bench discipline files; no hardware touched). Companion
 > bench artifacts, not tracked here: `ROOT-REFLASH-RUNBOOK-20261020.md`,
 > `TAKEOVER-NOTE-20261020.md` (ai-legion `/root/src/worktrees/`). The M0
-> inventory seed this design calls for lives at `docs/device-inventory.json`.
+> inventory seed this design calls for lives at `docs/device-inventory.json`
+> — a seed **payload for the conwrt-lab registry** (§4.6), not a live
+> source of truth.
 
 Status: proposal (research 2026-10-20, bench host ai-legion/.208)
 Scope: ESP32 (esptool) + STM32 (st-flash/DFU/OpenOCD) flash, boot-verify,
@@ -134,7 +136,8 @@ Client side (`labgrid-client`, `remote/client.py`):
 `build.sh` flashes `0x8000=<OTA PT>` + `0x40000=<app>` and erases
 `0x30000` ("otadata") — but under the micronuts factory table the runbook
 proved the board ran, **0x30000 IS the factory app**, and the OTA app
-slot is elsewhere. Meanwhile no bootloader (0x0) is ever written, so an
+slot is elsewhere. Meanwhile the bootloader is never written at all
+(its offset is chip-family-dependent — §4.4 check 7), so an
 old prebuilt v5.5.1 bootloader survived under v5.5.5 images. Three
 independent provenances (bootloader on flash, PT+app from build A,
 erases tuned for table B) with **no machine-checkable statement of what
@@ -151,8 +154,10 @@ gaps are fixable with data, not hardware.
 2. **Bundle-or-nothing**: the flashable unit is a *bundle directory*
    with a manifest; mixed-family sets are refused structurally, not by
    operator care.
-3. **Inventory is written by the tool**: what's on each device is
-   recorded on every successful flash and reconciled before the next.
+3. **Inventory resolves through the registry**: hardware state belongs
+   to the canonical lab registry (conwrt-lab `lab.yaml`, §4.6); the tool
+   records every successful flash there and reconciles against it before
+   the next.
 4. **labgrid coordinates, scripts operate**: labgrid owns identity,
    exclusivity, power, and console *enrollment*; the flash logic stays
    in the repo Python (portable, testable, already disciplined).
@@ -328,7 +333,7 @@ builders later) emits, next to the app image:
 ```
 <bundles-root>/<board>/<bundle_id>/
   manifest.json
-  bootloader.bin        # if the family flashes one
+  bootloader.bin        # ESP32: ALWAYS present (§4.4 check 6)
   partition-table.bin
   app.bin
 ```
@@ -366,7 +371,8 @@ same lifecycle as images today).
     "app_slot": "ota_0"
   },
   "targets": {                         // what gets written, in ONE esptool invocation
-    "bootloader":      {"offset": "0x0",    "path": "bootloader.bin", "sha256": "…", "bytes": 26560},
+    "bootloader":      {"offset": "0x1000", "path": "bootloader.bin", "sha256": "…", "bytes": 26560},
+                       // offset DERIVED from chip family: esp32 (xtensa) → 0x1000; C3/S3/C2 → 0x0 (§4.4 check 7)
     "partition_table": {"offset": "0x8000", "path": "partition-table.bin", "sha256": "…", "bytes": 3072},
     "app":             {"offset": "0x40000","path": "app.bin", "sha256": "…", "bytes": 3367392}
   },
@@ -387,15 +393,16 @@ STM32 bundle: same schema with `targets: {"app": {"offset": "0x08000000", …}}`
 ### 4.3 bundle_id
 
 `sha256` over the canonical JSON of the manifest **with `bundle_id`
-(2026-10-21 review note: `built_at` and any other volatile
-metadata are ALSO excluded — two builds of the same revision must
-hash identically or the same-ID app-only reflash path cannot
-recognize a rebuilt artifact. Canonical digest = images, offsets,
-family, layout, revision, toolchain; `built_at` stays in the
-manifest for humans only.)
-removed**, keys sorted, no whitespace. Files referenced by the manifest
-are content-hashed into `targets[].sha256`, so a rebuilt-dirty-tree
-bundle never aliases a clean one (`git_dirty` is also recorded).
+and all volatile metadata removed** — keys sorted, no whitespace.
+Digest input is the content-identity of the bundle only: `targets`
+(images, offsets, bytes), `family`, `layout`, `git_rev`/`git_dirty`,
+`project`/`board`/`chip`, toolchain. **`built_at` is excluded**
+(2026-10-21 review note: two builds of the same revision must hash
+identically, or the same-ID app-only reflash path of §4.5 cannot
+recognize a rebuilt artifact); it stays in the manifest for humans
+only. Files referenced by the manifest are content-hashed into
+`targets[].sha256`, so a rebuilt-dirty-tree bundle never aliases a
+clean one (`git_dirty` is also recorded).
 
 ### 4.4 Self-consistency checks (producer AND flasher re-verify)
 
@@ -410,6 +417,19 @@ bundle never aliases a clean one (`git_dirty` is also recorded).
 4. ESP32 app image header byte 2 == `0x02` (DIO, issue #309) — the
    existing build.sh guard, moved into the bundle check.
 5. `family.esp_idf_version` present whenever `bootloader` is a target.
+6. **Every ESP32 bundle carries a bootloader target** — `targets.bootloader`
+   is mandatory, never optional (§4.1). A producer that "doesn't build a
+   bootloader" cannot emit a reprovision set: keeping whatever
+   bootloader happens to be installed, justified only by a declared
+   version, recreates the mixed-bootloader incident (v5.5.1-under-v5.5.5)
+   this design exists to prevent.
+7. **`targets.bootloader.offset` is derived from `chip`, never
+   hardcoded** — classic ESP32 (xtensa): **`0x1000`**; ESP32-C3/S3/C2:
+   **`0x0`**. The producer derives it from the chip family; the flasher
+   re-derives it and REFUSES on mismatch. This is the 2026-10-08 m5stick
+   incident made structurally impossible (AGENTS.md failure mode 5: a
+   bootloader written to `0x0` — the C3 offset — boot-looped the classic
+   ESP32 with `flash read err, 1000`).
 
 ### 4.5 Refusal matrix (the flash tool's policy)
 
@@ -419,24 +439,52 @@ bundle never aliases a clean one (`git_dirty` is also recorded).
 | app-only, same `bundle_id` | same id | **flash** (idempotent reflash; otadata preserved) |
 | app-only, same family+layout, newer rev | family+layout match | **flash**; otadata per policy |
 | app-only | family OR layout mismatch | **REFUSE** — “device carries <id/family/layout>; full bundle or `--reprovision`” |
-| any flash | inventory unknown/stale (>1 flash-less family change) | **REFUSE** unless `--allow-unknown-inventory` (first adoption uses `--seed-inventory`). PRECEDENCE: the FULL-bundle row above WINS — a full bundle on unknown inventory is exactly the first-adoption/`--seed-inventory` path and flashes (the flash itself seeds the inventory); the refuse-unless-override rule applies to app-only/PT-only shapes |
+| app-only flash | inventory unknown/stale (>1 flash-less family change) | **REFUSE** unless `--allow-unknown-inventory` |
 | erase otadata at offset X | X ∉ bundle layout `otadata` | **REFUSE** — this is the 0x30000-is-the-factory-app trap, structurally impossible now |
 | PT-only or bootloader-only | anything | **REFUSE** — never split the structural pair from the app |
 
-`--reprovision` = shorthand that re-issues as full bundle (same
-manifest must contain bl+PT+app; producers that don't build a
-bootloader declare `family.esp_idf_version` of the on-device one and
-the tool still requires PT+app together).
+Precedence (2026-10-21 review note): rows match top-down and the
+full-bundle row WINS over the unknown-inventory row — a full bundle on
+unknown inventory is exactly the first-adoption path (`--seed-inventory`
+is its explicit spelling) and flashes, the flash itself seeding the
+inventory; the refuse-unless-override rule therefore applies only to
+app-only shapes, which can never bootstrap a device.
+
+`--reprovision` = shorthand that re-issues as full bundle. The manifest
+MUST contain bl+PT+app built from one `family` — a real bootloader
+target is mandatory in every ESP32 reprovision bundle (§4.4 check 6);
+there is no "declare the on-device bootloader's
+`family.esp_idf_version` and keep it" escape. A producer that cannot
+build a bootloader cannot reprovision — use a full bundle from a
+producer that can.
 
 ### 4.6 Device inventory — where it lives
 
-Two layers, one writer (the flash tool, under the bench flock):
+One authority, two derived views (2026-10-21 review note: an earlier
+draft of this section made a bench-local file the source of truth with
+the flash tool as its sole writer — that forks hardware state out of
+the canonical registry; corrected here).
 
-1. **Source of truth — bench-local generated file**:
-   `/var/lib/amperstrand-bench/device-inventory.json` (host-level,
-   survives repo/worktree churn, shared by all projects on the bench —
-   same reasoning as the flock path; created by the tool, format
-   versioned like the manifest):
+1. **Source of truth — the lab hardware registry** (private repo
+   `Amperstrand/conwrt-lab`, `lab.yaml`): per AGENTS.md "Lab hardware:
+   one single source of truth (2026-09-28)", ALL lab hardware state —
+   including what firmware each device carries — belongs to that
+   registry, and this project does NOT own it. The flash tool resolves
+   each device through the registry (labgrid place → registry row via
+   the registry tooling) and every successful flash ends as a
+   **registry commit** (device id → `bundle_id`, family, layout, rev,
+   flashed_at/by). No second hardware-state database is created.
+
+2. **Bench-local cache — `/var/lib/amperstrand-bench/device-inventory.json`**:
+   a generated cache of the registry rows the reconcile step needs
+   while holding the flock (the flash path must not require a
+   conwrt-lab checkout at decision time). Written by the tool after
+   each successful flash and refreshed from the registry on any
+   mismatch. The cache is NEVER authoritative and never hand-edited —
+   a cache/registry disagreement resolves **in favor of the registry**
+   and is reported like any other red flag. Shape as originally
+   proposed (format versioned like the manifest), keyed by the stable
+   device identity (the by-id serial stem), not by port path:
 
    ```json
    {
@@ -454,24 +502,25 @@ Two layers, one writer (the flash tool, under the bench flock):
    }
    ```
 
-   Keyed by the stable device identity (the by-id serial stem), not by
-   port path. Appends also go to the existing
-   `results/history.jsonl` ledger (`bench.ledger`), which stays the
-   append-only audit trail.
+   Appends also go to the existing `results/history.jsonl` ledger
+   (`bench.ledger`), which stays the append-only audit trail.
 
-2. **Broadcast view — labgrid place tags**: after each successful
+3. **Broadcast view — labgrid place tags**: after each successful
    flash the tool runs `labgrid-client -p <place> set-tags
    bundle=<bundle_id[:12]> family=esp-idf-v5.5.5 layout=ota:v1
    rev=5a6948e`. Tags are visible in `labgrid-client places`/`show`
    (e.g. `nucula-c3` already carries `board=… class=… transport=…`),
    so *any* session on any host sees what's on the device without
-   reading the file. Tags are advisory (coordinator state); the file is
-   authoritative — a mismatch is itself a red flag the tool reports.
+   reading anything. Tags are advisory (coordinator state); the
+   **registry** is authoritative — a tag/cache/registry mismatch is
+   itself a red flag the tool reports.
 
 Seed data exists: the runbook already established the m5stick's
 contents by forensics (`mn-app4.bin` sha256, factory:v1 layout,
-micronuts-nfc @5a6948e) — first migration step turns that archaeology
-into an inventory row.
+micronuts-nfc @5a6948e), and this PR's `docs/device-inventory.json`
+collects the seed rows — the first migration step imports them into the
+registry as a conwrt-lab commit; the bench-local cache materializes
+from the registry afterwards.
 
 ---
 
@@ -570,12 +619,14 @@ package's own design plus in-house precedent:
 ## 7. Migration steps (smallest first)
 
 **M0 — inventory seed (no behavior change).**
-Create `/var/lib/amperstrand-bench/device-inventory.json` from the
-runbook's forensic facts (m5stick = micronuts-nfc @5a6948e,
-factory:v1, mn-app4 sha256; nucula/F469/F746 = current known state).
-Tag the places once. Acceptance: `labgrid-client show m5stick` displays
-family/layout; inventory file committed to the bench state dir with
-0600.
+Import the seed rows (`docs/device-inventory.json`: m5stick =
+micronuts-nfc @5a6948e, factory:v1, mn-app4 sha256; nucula/F469/F746 =
+current known state) into the canonical registry as a conwrt-lab
+commit, then materialize the bench-local cache
+`/var/lib/amperstrand-bench/device-inventory.json` from the registry
+(§4.6). Tag the places once. Acceptance: `labgrid-client show m5stick`
+displays family/layout; the registry carries the rows; the cache is
+derived, 0600.
 
 **M1 — manifest producer.**
 `build.sh`/`flash_and_test.sh` emit `manifest.json` + bundle dir
@@ -589,11 +640,15 @@ identical `bundle_id`; a dirty tree changes it.
 `esp32_flash.py` gains `--bundle <dir>` (+ `--targets app` for the
 app-only path) implementing §4.4–4.5: sha256 verify, refusal matrix,
 otadata offset from the bundle layout (delete the hardcoded
-`0x30000`), boot signature from the manifest, inventory+tags+ledger
-write on success. `build.sh --flash` switches to `--bundle`.
+`0x30000`), boot signature from the manifest, registry commit +
+cache/tags/ledger write on success (§4.6). `build.sh --flash` switches
+to `--bundle`.
 Acceptance: (a) app-only flash with mismatched family refused;
 (b) otadata erase targeting a factory-layout device refused;
-(c) successful full flash updates `show` tags within seconds.
+(c) successful full flash updates `show` tags within seconds;
+(d) a classic-ESP32 (xtensa) bundle flashes its bootloader at
+`0x1000`, and a bundle whose bootloader offset contradicts its `chip`
+family is refused (§4.4 check 7).
 
 **M3 — explicit console + docs.**
 Create `<dut>-console` places matching the enrollment USBSerialPort
@@ -641,18 +696,21 @@ monitor. Gated on the §3.4 empirical check.
    whether the m5stick seat needs a battery-disconnect mod for true
    cold boots.
 3. **Inventory write rights**: the flash tool (often run via sudo for
-   pcscd control) must write `/var/lib/amperstrand-bench/` and call
-   `set-tags` on the coordinator — pick the owning user/group now to
-   avoid a root-only inventory.
-4. **Bootloader policy for c3**: bundles that build their own
+   pcscd control) must write the bench-local cache dir
+   (`/var/lib/amperstrand-bench/`), call `set-tags` on the coordinator,
+   and land its state change as a conwrt-lab registry commit (§4.6) —
+   pick the owning user/group now to avoid a root-only cache or a
+   registry commit bottleneck.
+4. **Bootloader policy**: bundles that build their own
    bootloader (esp-idf-sys does) vs boards carrying Espressif
-   prebuilts — should full bundles always write 0x0 (safest, ends the
-   v5.5.1-under-v5.5.5 class) even though it lengthens flash time?
-   Proposal: yes, always.
+   prebuilts — should full bundles always write the bootloader at its
+   **family-derived offset** (classic ESP32 `0x1000`, C3/S3/C2 `0x0` —
+   §4.4 check 7), even though it lengthens flash time? Proposal: yes,
+   always — it ends the v5.5.1-under-v5.5.5 class.
 5. **Foreign-project adoption order**: bolty-rs/micronuts currently
    flash ad-hoc; until they adopt the bundler, their flashes will
    make inventory stale — the tool treats “inventory older than the
-   last flash window on the bench flock” as unknown (§4.5 row 4).
+   last flash window on the bench flock” as unknown (§4.5, unknown-inventory row).
    Is `--allow-unknown-inventory` enough, or should the flock ledger
    (`history.jsonl`) grow a foreign-flash event type?
 6. **CYD / tollgate atoms**: they live on other exporters but share
