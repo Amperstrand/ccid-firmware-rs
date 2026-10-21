@@ -178,16 +178,46 @@ class Reader:
         Clean-wire enforcement (issues #131/#133): post-handshake, the
         GemPC wires must deliver zero bytes until the host speaks. The
         m5stick twin of the nucula's test_wire_silence_after_banner.
+
+        #339 (mirrors the fixed nucula twin, Codex #145 P2): silence can
+        never be PROVEN on a dropped port. A failed reopen RAISES — a
+        dead reader is a bench hardware fault, not a quiet wire (the
+        old `break` returned b"" collected-so-far and PASSed the check
+        on a dead reader). A successful reopen restarts the FULL quiet
+        window so the post-reconnect observation is as long as the
+        original, not whatever the reconnect left over.
         """
         got = bytearray()
-        t0 = time.time()
+        deadline = time.time() + window_s
+        # #361 review P2: a flapping port (drop → reopen ok → drop …)
+        # must not extend the quiet window forever — the bench
+        # launchers' `timeout` kill bypasses cleanup while labgrid
+        # places are held and pcscd is stopped. Bounded reopens only
+        # (no wall-clock multiple: a legitimately slow reopen cycle is
+        # not a fault).
+        reopens = 0
+        MAX_QUIET_REOPENS = 3
         self.s.timeout = 0.1
-        while time.time() - t0 < window_s:
+        while time.time() < deadline:
             try:
                 chunk = self.s.read(8192)
             except serial.SerialException:
                 if not self.reopen():
-                    break
+                    raise AssertionError(
+                        f"{self.name}: serial port dropped during the "
+                        "quiet window and reopen failed — bench hardware "
+                        "fault, not wire silence (#339)"
+                    ) from None
+                reopens += 1
+                if reopens > MAX_QUIET_REOPENS:
+                    raise AssertionError(
+                        f"{self.name}: {reopens - 1} reopens inside one "
+                        "quiet window — flapping port, bench hardware "
+                        "fault (#361 review P2)"
+                    )
+                # Codex #145 P2 twin: a successful reconnect restarts
+                # the FULL quiet window.
+                deadline = time.time() + window_s
                 continue
             if chunk:
                 got.extend(chunk)
