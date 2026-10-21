@@ -1,0 +1,81 @@
+{
+  "devices": [
+    {
+      "id": "nucula-c3",
+      "board": "ESP32-C3 (nucula) + PN7160 NFC frontend",
+      "role": "DUT — serial CCID: c3-ccid serving image -> CDC -> nucula-ccid-broker (PTY/systemd) -> pcscd; labgrid place nucula-c3",
+      "port": "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00 @115200",
+      "firmware_known_good": "c3-ccid SERVING image (NOT build.sh c3 bringup, which ladders the card and serves no CCID); full J3R180 lifecycle EXIT=0 @ e9173657 (== main 6382509c content), 2026-10-20",
+      "notes": "The fully-proven reader leg (install 65s, GET DATA 6E 220B, PW1 verify, uninstall, baseline restore). Direct CDC opens chip-reset the board (DTR hazard) — pcscd reaches it only through the broker (/dev/nucula-ccid, systemctl nucula-ccid-broker; reader.conf 'nucula-broker', disable when idle). WiFi OTA seat ccid-nucula at 192.168.13.230:3232.",
+      "sources": [
+        "tests/hardware/nfc/J3R180-RUNBOOK.md — reader matrix + STATE OF THE WORLD + Results (2026-10-20)",
+        "tests/hardware/labgrid/exporter-ai-legion-nfc.yaml — nucula-c3 SerialPort",
+        "AGENTS.md — Known-Good Bench State (nucula row), bench state delta 2026-10-14 (OTA seat, coordinator)"
+      ]
+    },
+    {
+      "id": "m5stick",
+      "board": "M5Stack ESP32 (Hades2001 USB bridge) + MFRC522 over I2C",
+      "role": "DUT — GemPC-Twin serial CCID via libccidtwin (reader.conf m5stick-gempc, by-id port); labgrid place m5stick; board SHARED with micronuts (re-flashed by them mid-session before)",
+      "port": "/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0 @115200 (baud cap: Hades FTDI flakes at 460800)",
+      "firmware_known_good": "per 2026-10-20 forensics the board carries micronuts-nfc @5a6948e (mn-app4.bin, sha256 21acb0fd51c4f18d60b3d4bc802967a6d9c2e20754629b0f3349d03686e7aba5, 3367392 B, built 2026-10-16) on the factory layout nvs@0x9000/128K + phy_init@0x29000/4K + factory@0x30000/3904K; earlier the same day the ccid GemPC image @e9173657 was lifecycle-proven on it (GP SCP03 auth, install 35s, uninstall, baseline)",
+      "notes": "Console-silent/wedged at forensics time (pre-crash logs show NVS proof-store degradation; ROOT-REFLASH-RUNBOOK-20261020.md prepared, NOT executed). ccid path blocked on #330 (XFR corruption in ccid_serial_server/serial-parse layer, NOT RF — bolty carried NTAG424 traffic on the same hardware). Reset strap: DTR inert, RTS=EN. WiFi OTA seat ccid-m5stick at 192.168.13.234:3232.",
+      "sources": [
+        "/root/src/worktrees/ROOT-REFLASH-RUNBOOK-20261020.md — image identification (mn-app4/mn-pt forensics)",
+        "tests/hardware/nfc/J3R180-RUNBOOK.md — m5stick reader-matrix row + STATE OF THE WORLD (#330) + Results",
+        "tests/hardware/labgrid/exporter-ai-legion-nfc.yaml — m5stick-usb SerialPort",
+        "AGENTS.md — Known-Good Bench State (m5stick row, micronuts reflash recovery), bench delta 2026-10-14 (OTA seat)"
+      ]
+    },
+    {
+      "id": "stm32f469",
+      "board": "STM32F469I-DISCO (on-board ST-LINK V2.1; USART2 smartcard contact slot)",
+      "role": "DUT — native USB CCID, Cherry ST-2xxx emulation (default build target); labgrid place stm32-ccid; flashed via SWD",
+      "port": "ST-LINK CDC /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066FFF515786534867184152-if02 @115200; USB CCID identity 046a:003e iSerial ST2XXX-001",
+      "firmware_known_good": "full J3R180 lifecycle EXIT=0 (install 46s) + 100/100 stability rounds @e9173657 (2026-10-20); prior verified state: display image main@6526f93 + display feature, sha256 2766424…, flashed 2026-10-17 via stm32_flash.flash_f469",
+      "notes": "ST-LINK REATTACHED 2026-10-17 (the 2026-10-14 'detached' note is stale); board currently unplugged by owner (cable borrowed) per the 2026-10-20 runbook. HIL 7/7. ComSign eID lives in the contact slot (not a J3R180). Always flash through stm32_flash.flash_f469 (connect-under-reset, ELF guard, adapter-serial pinning).",
+      "sources": [
+        "tests/hardware/nfc/J3R180-RUNBOOK.md — STATE OF THE WORLD (F469 row) + reader matrix + Results",
+        "tests/hardware/labgrid/exporter-ai-legion-nfc.yaml — stm32f469-stlink + stm32f469-ccid",
+        "AGENTS.md — bench state deltas 2026-10-14 (detach) and 2026-10-17 (re-attach, display image), Known-Good Bench State row"
+      ]
+    },
+    {
+      "id": "stm32f746",
+      "board": "STM32F746-DISCO (on-board ST-LINK; GPIO bitbang smartcard path)",
+      "role": "DUT — second STM32, bench-distinct iSerial ST2XXX-F746 (commit 0af0fb0); ST-LINK/SWD only so far",
+      "port": "ST-LINK CDC /dev/serial/by-id/usb-STMicroelectronics_STM32_STLink_066EFF3837334D4E43123327-if02 @115200; USB identity 046a:003e / iSerial ST2XXX-F746 (user USB still unplugged)",
+      "firmware_known_good": "restored to the current-main image 2026-10-14 (written + verified) after the bare local st-flash incident that wrote an F469 image onto it",
+      "notes": "User USB never plugged: no 046a enumeration possible yet as of the 2026-10-14 delta (no newer statement found). That incident is why conftest pins the ST-LINK adapter serial (board-crossing guard).",
+      "sources": [
+        "tests/hardware/labgrid/exporter-ai-legion-nfc.yaml — stm32f746-stlink + stm32f746-ccid",
+        "AGENTS.md — bench state delta 2026-10-14 (wired, restore-to-main), Known-Good Bench State (F746 row: prep + plug next steps)"
+      ]
+    },
+    {
+      "id": "ref-acr1252",
+      "board": "ACS ACR1252U (commercial reference NFC reader, PICC + SAM slots)",
+      "role": "reference oracle for differential/battery suites — never a DUT; labgrid place ref-acr1252",
+      "port": "USB 072f:223b, serial-less: bound to physical port pci-0000:00:14.0-usb-0:4",
+      "firmware_known_good": "factory ACS firmware (version not stated in sources) — commercial oracle, never flashed by us",
+      "notes": "P71/SmartPGP cards activate fine; the J3R180 reference leg (install 16s). Was physically off the bench at the 2026-10-17 03:29 nightly (replugged by morning) — absent reference readers are an amber-skip per #183 doctrine, not suite red.",
+      "sources": [
+        "tests/hardware/labgrid/exporter-ai-legion-nfc.yaml — ref-acr1252 USBDevice",
+        "tests/hardware/nfc/J3R180-RUNBOOK.md — reader matrix + Results (oracle row)",
+        "AGENTS.md — bench state delta 2026-10-17 (nightly absence), Known-Good Bench State (ACR1252 ref row)"
+      ]
+    },
+    {
+      "id": "ref-cardman",
+      "board": "OmniKey CardMan 3121 (commercial reference contact reader)",
+      "role": "reference perf baseline — never a DUT; labgrid place ref-cardman",
+      "port": "USB 076b:3021, serial-less: bound to physical port pci-0000:00:14.0-usb-0:11",
+      "firmware_known_good": "factory firmware (version not stated in sources) — commercial oracle, never flashed by us",
+      "notes": "On the bus as 076b:3021 (OmniKey VID — grepping for 0b97 finds nothing; bench_inventory keys on the right IDs only on the bench host).",
+      "sources": [
+        "tests/hardware/labgrid/exporter-ai-legion-nfc.yaml — ref-cardman USBDevice",
+        "AGENTS.md — bench state delta 2026-10-14 (CardMan on bus as 076b:3021), Testing through labgrid (place table)"
+      ]
+    }
+  ]
+}
