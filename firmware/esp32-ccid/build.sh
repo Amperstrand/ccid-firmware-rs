@@ -42,6 +42,18 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 usage() {
     cat <<EOF
 Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+       $0 product=<name> [board=<name>] [--flash <port>] [--dry-run]
+
+Products (M3 presets, t_0492b7c6 — products.toml is the SSOT):
+  product=<name> [board=<name>]
+               resolve the named preset (reader-min, provisioner-min,
+               connected, nucula-all-in-one) to a base board case +
+               feature delta and build it; the image is named after the
+               preset artifact (esp32-ccid-<artifact>.bin). board= may be
+               omitted when the product lists exactly one board.
+               List/inspect: python3 tools/products.py list|check|--format table
+               (stm32-f469 is a cargo product — this script refuses it
+               and prints the equivalent cargo command)
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
@@ -96,13 +108,46 @@ DRY_RUN=0
 FLASH_PORT=""
 FLASH_CONSOLE_NONE=0
 
+# M3 product presets (t_0492b7c6): `product=<X> [board=<Y>]` resolves the
+# named preset from products.toml (the SSOT) via tools/products.py and
+# rides the per-board machinery below unchanged — the case table stays
+# the bench authority; the preset picks a base variant + feature delta
+# and renames the image after the preset artifact.
+PRODUCT_NAME=""
 BOARD="${1:-}"
 if [ -z "${BOARD}" ] || [ "${BOARD}" = "-h" ] || [ "${BOARD}" = "--help" ]; then
     usage
     [ -n "${BOARD}" ] && exit 0
     exit 1
 fi
-shift
+if [ "${BOARD#product=}" != "${BOARD}" ]; then
+    PRODUCT_NAME="${BOARD#product=}"
+    shift  # drop product=<X>
+    # optional second positional: board=<Y>
+    if [ $# -gt 0 ] && [ "${1#board=}" != "${1}" ]; then
+        BOARD="${1#board=}"
+        shift  # drop board=<Y>
+    else
+        BOARD=""
+    fi
+    RESOLVE_ARGS=(resolve --product "${PRODUCT_NAME}")
+    [ -n "${BOARD}" ] && RESOLVE_ARGS+=(--board "${BOARD}")
+    RESOLVED="$(python3 "${SCRIPT_DIR}/../../tools/products.py" "${RESOLVE_ARGS[@]}" 2>&1)" || {
+        echo "error: product preset resolution failed:" >&2
+        echo "${RESOLVED}" >&2
+        exit 1
+    }
+    eval "${RESOLVED}"
+    if [ "${PD_DISPATCHER}" != "build.sh" ]; then
+        echo "error: product '${PRODUCT_NAME}' does not build through this script" >&2
+        echo "       (dispatcher: ${PD_DISPATCHER}). Equivalent command:" >&2
+        echo "       ${PD_HINT:-python3 tools/products.py --format commands}" >&2
+        exit 1
+    fi
+    BOARD="${PD_BASE_VARIANT}"
+else
+    shift  # drop the board positional (original flow)
+fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -289,8 +334,26 @@ case "${BOARD}" in
         ;;
 esac
 
+# Product-preset overlay (t_0492b7c6): replace the base variant's feature
+# list with the resolved preset composition (products.toml via
+# tools/products.py — the case table above supplied target/sdkconfig/
+# profile unchanged) and name the image after the preset artifact.
+if [ -n "${PRODUCT_NAME}" ]; then
+    if [ "${PD_NO_DEFAULT_FEATURES}" = "1" ]; then
+        FEATURE_ARGS=(--no-default-features --features "${PD_FEATURES}")
+    elif [ -n "${PD_FEATURES}" ]; then
+        FEATURE_ARGS=(--features "${PD_FEATURES}")
+    else
+        FEATURE_ARGS=()
+    fi
+fi
+
 ELF="${TARGET_DIR}/${TRIPLE}/${PROFILE}/esp32-ccid"
-IMAGE="${TARGET_DIR}/esp32-ccid-${BOARD}.bin"
+if [ -n "${PRODUCT_NAME}" ]; then
+    IMAGE="${TARGET_DIR}/esp32-ccid-${PD_ARTIFACT}.bin"
+else
+    IMAGE="${TARGET_DIR}/esp32-ccid-${BOARD}.bin"
+fi
 
 # Print a command; execute it unless --dry-run.
 run() {
@@ -299,6 +362,9 @@ run() {
     "$@"
 }
 
+if [ -n "${PRODUCT_NAME}" ]; then
+    info "product=${PRODUCT_NAME} board=${PD_BOARD} artifact=${PD_ARTIFACT} (base variant: ${PD_BASE_VARIANT})"
+fi
 info "board=${BOARD} target=${TRIPLE} profile=${PROFILE} chip=${CHIP}"
 info "CARGO_TARGET_DIR=${TARGET_DIR}"
 if [ -n "${NUCULA_WIFI_SSID:-}" ]; then

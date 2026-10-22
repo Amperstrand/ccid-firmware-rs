@@ -97,3 +97,7 @@ host-tools/ifd-nucula/nucula-selftest
 # Worktree-local build dirs (t_72e1e2ed session)
 /.cargo-target/
 /.embuild
+target-host/
+target-host/
+target-esp/
+target/
