@@ -39,7 +39,6 @@ fi
 # Locate the outputs exactly the way build.sh does (its glob is
 # fingerprint-dependent; replicate the newest-match logic).
 TARGET_DIR=/target
-TRIPLE="$(rustc --print sysroot --print cfg 2>/dev/null | grep -m1 'target="' | cut -d'"' -f2 || true)"
 IMAGE="${TARGET_DIR}/esp32-ccid-${BOARD}.bin"
 PART_TABLE="$(ls -t "${TARGET_DIR}"/*/debug/build/esp-idf-sys*/out/build/partition_table/partition-table.bin \
                     "${TARGET_DIR}"/*/debug/build/partition-table.bin 2>/dev/null | head -1 || true)"
