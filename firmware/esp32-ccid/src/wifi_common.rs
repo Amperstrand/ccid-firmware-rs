@@ -92,29 +92,14 @@ pub fn pn7160_bring_up<I2C, SDA, SCL, IRQ, VEN>(
     let transport =
         EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
             .expect("peripheral init");
-    let mut transport = Some(transport);
-    let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
-    for attempt in 1..=INIT_ATTEMPTS {
-        let mut d = Pn7160NfcDriver::new(transport.take().expect("transport"));
-        match d.init() {
-            Ok(()) => {
-                log::warn!("bring-up: PN7160 initialized (attempt {})", attempt);
-                driver = Some(d);
-                break;
-            }
-            Err(e) => {
-                log::warn!("bring-up: init attempt {} failed ({:?})", attempt, e);
-                let mut t = d.into_transport();
-                t.ven_cycle();
-                let _ = t.probe();
-                transport = Some(t);
-            }
-        }
-    }
-    driver.unwrap_or_else(|| {
-        log::warn!("bring-up: PN7160 unresponsive — card-absent mode");
-        Pn7160NfcDriver::new(transport.take().expect("transport"))
-    })
+    // t_4864e74e: the VEN-cycle retry ladder is the driver's own
+    // constructor now — this wrapper only supplies the esp recovery
+    // hook (VEN cycle + bus probe between attempts).
+    let (driver, _ok) = Pn7160NfcDriver::bring_up(transport, INIT_ATTEMPTS, |t| {
+        t.ven_cycle();
+        let _ = t.probe();
+    });
+    driver
 }
 
 /// Reader-present or card-absent stand-in. When the NFC frontend never
