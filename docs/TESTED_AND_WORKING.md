@@ -39,6 +39,21 @@ Direct pcscd/libccidtwin enumeration of the nucula CDC is impossible on
 C3 silicon (USB-Serial/JTAG chip-resets on port-open, no disable bit —
 #117): the PTY broker is the supported pcscd path for that board.
 
+## Virtual reader stack (zero hardware — #261 ladder)
+
+| Tier | Stack | Verified behavior | Status @ commit | Evidence |
+|---|---|---|---|---|
+| (a) scripted table card | pcscd → patched libifdvpcd → `vpicc_table.py` | ATR shape, self-marked SELECT FCI, synthetic CPLC, unknown-AID 6A82; 4/4 | PASS @ 4ac08bc6 (2026-10-21) | #391; `tests/hardware/nfc/test_vpicc_table.py` |
+| (b) real JavaCard | pcscd → patched libifdvpcd → jcardsim 2.2.2 bridge (`vjavacard`) | J3R180-shape ATR, self-marked FCI, EXECUTED echo applet, 6A82, no-SELECT 6D00; 7P+2S both modes | PASS @ b6f59520 (2026-10-22) | #403; `tests/hardware/host/test_vjavacard.py` |
+| (b+) real applet | same, `--applet` SmartPGP v1.23.0 from the pinned CAP + JC3 crypto shims | REAL SmartPGP code: GET DATA 004F/006E/007A/00C4 9000, wrong-PW1 VERIFY 6982; 7P+2S | PASS @ 76e3defb (2026-10-22) | #407; handoff `vjavacard-gp-lifecycle-2026-10-22.md` |
+| (b) CI leg | same stack built from scratch on a stock GitHub runner | 5 passed, 4 skipped, 1.61 s — dispatch/schedule-only, zero PR cost | PASS @ cba238c7, run 39850345070 (2026-10-22) | #409–#413; `tests/hardware/host/VIRTUAL_CARD_CI.md` |
+
+Structural limit (pinned as tests): jcardsim 2.2.2 has NO GlobalPlatform
+card manager / secure channel — every gp operation walls at the ISD
+SELECT (6A82/6D00). The `loadApplet` path is the simulator's substitute
+for INSTALL-for-load. SCP02 keys, GP registry, CPLC truth, and RF remain
+physical-only.
+
 ## pcscd-facing feature status (per capability, best-verified target)
 
 | Capability | Status | Notes |
