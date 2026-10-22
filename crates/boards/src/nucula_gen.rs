@@ -121,11 +121,8 @@ mod tests {
     fn nucula_matches_the_historical_bench_constants() {
         let bus = NUCULA.bus(BusRole::NfcFrontend).i2c();
         assert_eq!((bus.port, bus.sda, bus.scl), (0, 4, 5));
-        assert_eq!(
-            (NUCULA.pin("nfc_irq"), NUCULA.pin("nfc_ven")),
-            (6, 7)
-        );
-        assert_eq!(NUCULA.nfc.unwrap().i2c_addr, 40);
+        assert_eq!((NUCULA.pin("nfc_irq"), NUCULA.pin("nfc_ven")), (6, 7));
+        assert_eq!(NUCULA.nfc.unwrap().i2c_addr, 0x28);
         // Shared-bus rule: the PCF8574T caps the bus at 100 kHz.
         assert_eq!(bus.hz_run, 100_000);
     }

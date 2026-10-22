@@ -717,7 +717,8 @@ fn main() {
         .add_hal_device(nfc_i2c_addr, nfc_hz_run)
         .expect("MFRC522 device add failed");
     let mfrc522_result = mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(
-        i2c_dev, nfc_i2c_addr,
+        i2c_dev,
+        nfc_i2c_addr,
     ))
     .init();
     log::info!(

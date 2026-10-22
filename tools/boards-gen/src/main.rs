@@ -102,7 +102,9 @@ fn parse_nets(text: &str) -> Vec<Net> {
     let mut rest = text;
     while let Some(open) = rest.find("<net ") {
         let after = &rest[open..];
-        let Some(close) = after.find("</net>") else { break };
+        let Some(close) = after.find("</net>") else {
+            break;
+        };
         let block = &after[..close];
         // Tag header runs to the first '>' (the net element carries its
         // attributes inline).
@@ -112,7 +114,9 @@ fn parse_nets(text: &str) -> Vec<Net> {
         let mut node_rest = block;
         while let Some(n_open) = node_rest.find("<node ") {
             let n_after = &node_rest[n_open..];
-            let Some(n_end) = n_after.find("/>") else { break };
+            let Some(n_end) = n_after.find("/>") else {
+                break;
+            };
             let n_tag = &n_after[..n_end];
             nodes.push(Node {
                 ref_: attr(n_tag, "ref").unwrap_or_default().to_string(),
@@ -369,11 +373,8 @@ mod tests {{
     fn nucula_matches_the_historical_bench_constants() {{
         let bus = NUCULA.bus(BusRole::NfcFrontend).i2c();
         assert_eq!((bus.port, bus.sda, bus.scl), (0, {sda}, {scl}));
-        assert_eq!(
-            (NUCULA.pin("nfc_irq"), NUCULA.pin("nfc_ven")),
-            ({irq}, {ven})
-        );
-        assert_eq!(NUCULA.nfc.unwrap().i2c_addr, {addr});
+        assert_eq!((NUCULA.pin("nfc_irq"), NUCULA.pin("nfc_ven")), ({irq}, {ven}));
+        assert_eq!(NUCULA.nfc.unwrap().i2c_addr, {addr:#x});
         // Shared-bus rule: the PCF8574T caps the bus at 100 kHz.
         assert_eq!(bus.hz_run, 100_000);
     }}
@@ -464,8 +465,8 @@ fn main() {
 
     let sidecar_text = std::fs::read_to_string(&sidecar_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", sidecar_path.display()));
-    let sidecar: Sidecar =
-        toml::from_str(&sidecar_text).unwrap_or_else(|e| panic!("parse {}: {e}", sidecar_path.display()));
+    let sidecar: Sidecar = toml::from_str(&sidecar_text)
+        .unwrap_or_else(|e| panic!("parse {}: {e}", sidecar_path.display()));
 
     let bytes = match fetch_netlist(&sidecar, netlist.as_deref()) {
         Ok(b) => b,
@@ -494,15 +495,18 @@ fn main() {
             );
             std::process::exit(1);
         };
-        gpio_pins[slot] =
-            match anchor_gpio(net, &sidecar.anchors.nfc_ref, &sidecar.anchors.mcu_ref, &anchor.pin)
-            {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("boards-gen: {label}: {e}");
-                    std::process::exit(1);
-                }
-            };
+        gpio_pins[slot] = match anchor_gpio(
+            net,
+            &sidecar.anchors.nfc_ref,
+            &sidecar.anchors.mcu_ref,
+            &anchor.pin,
+        ) {
+            Ok(g) => g,
+            Err(e) => {
+                eprintln!("boards-gen: {label}: {e}");
+                std::process::exit(1);
+            }
+        };
     }
     println!(
         "boards-gen: nucula sda={} scl={} irq={} ven={} addr={:#04x} (from {}@{})",
@@ -603,8 +607,8 @@ mod tests {
     /// extraction). Skipped when the fixture file is absent.
     #[test]
     fn real_netlist_extraction_when_present() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/nucula-netlist.xml");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/nucula-netlist.xml");
         let Ok(text) = std::fs::read_to_string(&path) else {
             eprintln!("skipping: {} absent", path.display());
             return;
