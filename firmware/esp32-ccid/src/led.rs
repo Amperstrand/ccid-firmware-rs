@@ -47,6 +47,15 @@ pub struct LedStatus {
     current_state: LedState,
 }
 
+// boards-as-data step 3 (design §4): the LED call site asserts its typed
+// token (gpio27 in `new` below) against the boards table at COMPILE time —
+// the Atom matrix pin is data in `crates/boards`, and drift fails the
+// build, not the bench. (On m5stick non-lcd builds this driver instead
+// pulses GPIO27 = the stick's backlight — the exclusivity the m5stick
+// table's `caps.led: Cap::None` already encodes; behavior unchanged here.)
+#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
+const _: () = assert!(boards::M5ATOM.pin_const("led_matrix") == 27);
+
 #[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
 impl LedStatus {
     pub fn new() -> Self {

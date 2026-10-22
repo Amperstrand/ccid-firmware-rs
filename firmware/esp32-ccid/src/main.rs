@@ -636,23 +636,40 @@ fn main() {
     // numbers only: driver_ng claims the controller by port, so neither
     // the `Peripherals::i2c0` token nor typed pin drivers are consumed
     // (the #149 P3 shared adapter owns the bus).
-    // boards-as-data step 2 (design §4): board-m5atom reads the
-    // `crates/boards` table too — the pin numbers live THERE, asserted
-    // by its host tests; only board-nucula migrates in a later slice.
+    // boards-as-data step 3 (design §4): every cfg arm reads its
+    // `crates/boards` table — pins, NFC addr AND the run speed (the
+    // probe/run facts leave the shared literals; the probe call below
+    // stays table-driven too). board-nucula keeps literals until its
+    // generated-table slice.
     #[cfg(feature = "board-m5atom")]
-    let (sda_gpio_no, scl_gpio_no) = {
-        let grove = boards::M5ATOM.bus(boards::BusRole::NfcFrontend).i2c();
-        (grove.sda, grove.scl)
+    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
+        let b = &boards::M5ATOM;
+        let grove = b.bus(boards::BusRole::NfcFrontend).i2c();
+        let nfc = b.nfc.expect("m5atom table: NFC frontend");
+        (
+            grove.sda as i32,
+            grove.scl as i32,
+            nfc.i2c_addr,
+            grove.hz_run,
+        )
     };
     #[cfg(feature = "board-m5stick")]
-    let (sda_gpio_no, scl_gpio_no) = {
-        let grove = boards::M5STICK.bus(boards::BusRole::NfcFrontend).i2c();
-        (grove.sda, grove.scl)
+    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
+        let b = &boards::M5STICK;
+        let grove = b.bus(boards::BusRole::NfcFrontend).i2c();
+        let nfc = b.nfc.expect("m5stick table: NFC frontend");
+        (
+            grove.sda as i32,
+            grove.scl as i32,
+            nfc.i2c_addr,
+            grove.hz_run,
+        )
     };
     // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
-    // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase.)
+    // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase;
+    // these literals move to the generated NUCULA table in its slice.)
     #[cfg(feature = "board-nucula")]
-    let (sda_gpio_no, scl_gpio_no) = (4, 5);
+    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = (4, 5, 0x28, 400_000);
 
     #[cfg(target_arch = "xtensa")]
     recover_i2c_bus(scl_gpio_no, sda_gpio_no);
@@ -670,17 +687,23 @@ fn main() {
         .expect("I2C0 init failed");
     log::warn!("bring-up: I2C0 ok (driver_ng)");
 
-    let probe_found = i2c_bus.probe(0x28, 100).is_ok();
+    // boards-as-data step 3 (design §4): the probe/run facts are the
+    // per-board bindings above — address AND run speed read from the
+    // same table as the pins (the 100 here is the probe timeout in ms,
+    // not a bus speed: driver_ng probes at bus level, so `hz_probe`
+    // stays table data with no call-site consumer yet).
+    let probe_found = i2c_bus.probe(nfc_i2c_addr, 100).is_ok();
     log::info!(
-        "i2c probe @0x28: {}",
+        "i2c probe @{:#04x}: {}",
+        nfc_i2c_addr,
         if probe_found { "ack" } else { "no-ack" }
     );
 
     let i2c_dev = i2c_bus
-        .add_hal_device(0x28, 400_000)
+        .add_hal_device(nfc_i2c_addr, nfc_hz_run)
         .expect("MFRC522 device add failed");
     let mfrc522_result = mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(
-        i2c_dev, 0x28,
+        i2c_dev, nfc_i2c_addr,
     ))
     .init();
     log::info!(
@@ -693,20 +716,50 @@ fn main() {
     // LedStatus (Atom LED matrix on GPIO27) must stay OFF on lcd builds
     // or its RMT pulses fight the backlight. The display takes over the
     // status-signalling role; CCID serving never depends on it.
+    //
+    // boards-as-data step 3 (design §4): the LCD call site reads the
+    // table — the typed `GpioN` tokens stay (a const table cannot hand
+    // out HAL tokens, §1.3), but they sit behind a number→token match
+    // keyed on the boards table, and the const-time assert proves the
+    // matched arm is THE table arm: a drifted pin fails the BUILD, not
+    // the bench. Drop the assert and the match still panics at boot.
     #[cfg(all(feature = "board-m5stick", feature = "lcd", target_arch = "xtensa"))]
     {
-        let result = unsafe {
-            esp32_ccid::m5stick_lcd::init(
-                peripherals.spi2,
-                peripherals.pins.gpio13,
-                peripherals.pins.gpio15,
-                peripherals.pins.gpio5,
-                peripherals.pins.gpio23,
-                peripherals.pins.gpio18,
-                peripherals.pins.gpio27,
-                env!("FW_GIT_REV"),
-                "GemPC serial",
-            )
+        const _: () = {
+            assert!(boards::M5STICK.pin_const("lcd_sclk") == 13);
+            assert!(boards::M5STICK.pin_const("lcd_mosi") == 15);
+            assert!(boards::M5STICK.pin_const("lcd_cs") == 5);
+            assert!(boards::M5STICK.pin_const("lcd_dc") == 23);
+            assert!(boards::M5STICK.pin_const("lcd_rst") == 18);
+            assert!(boards::M5STICK.pin_const("lcd_bl") == 27);
+        };
+        let result = match (
+            boards::M5STICK.pin("lcd_sclk"),
+            boards::M5STICK.pin("lcd_mosi"),
+            boards::M5STICK.pin("lcd_cs"),
+            boards::M5STICK.pin("lcd_dc"),
+            boards::M5STICK.pin("lcd_rst"),
+            boards::M5STICK.pin("lcd_bl"),
+        ) {
+            // number→token: the ONLY arm — provably taken (const block
+            // above); the tokens below are the m5stick_lcd::init types.
+            (13, 15, 5, 23, 18, 27) => unsafe {
+                esp32_ccid::m5stick_lcd::init(
+                    peripherals.spi2,
+                    peripherals.pins.gpio13,
+                    peripherals.pins.gpio15,
+                    peripherals.pins.gpio5,
+                    peripherals.pins.gpio23,
+                    peripherals.pins.gpio18,
+                    peripherals.pins.gpio27,
+                    env!("FW_GIT_REV"),
+                    "GemPC serial",
+                )
+            },
+            (sclk, mosi, cs, dc, rst, bl) => panic!(
+                "m5stick LCD pins drifted from boards::M5STICK: \
+                 sclk={sclk} mosi={mosi} cs={cs} dc={dc} rst={rst} bl={bl}"
+            ),
         };
         if let Err(e) = result {
             log::error!("Display init failed: {e} — continuing headless");

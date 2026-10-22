@@ -214,4 +214,35 @@ impl BoardDesc {
             .unwrap_or_else(|| panic!("board {}: no pin for role {}", self.name, role))
             .gpio
     }
+
+    /// Const-callable [`pin`](Self::pin) — a byte-wise role compare,
+    /// because `str ==` is not const-callable. Lets firmware assert a
+    /// typed-token call site against the table at COMPILE time (design
+    /// §4 step 1: a drifted pin fails the build, not the bench).
+    pub const fn pin_const(&self, role: &str) -> u8 {
+        let mut i = 0;
+        while i < self.pins.len() {
+            if role_bytes_eq(self.pins[i].role, role) {
+                return self.pins[i].gpio;
+            }
+            i += 1;
+        }
+        panic!("board table: no pin for role (const lookup)")
+    }
+}
+
+const fn role_bytes_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
