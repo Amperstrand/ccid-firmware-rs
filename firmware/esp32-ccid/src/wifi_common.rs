@@ -89,9 +89,12 @@ pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
 pub fn pn7160_bring_up<I2C, SDA, SCL, IRQ, VEN>(
     bus: BusPins<I2C, SDA, SCL, IRQ, VEN>,
 ) -> Pn7160NfcDriver<EspPn7160Transport> {
-    let transport =
-        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
-            .expect("peripheral init");
+    // boards-as-data seam (t_4864e74e §3): the pin/address facts come
+    // from the BoardDesc table (host-tested lock: the nucula row equals
+    // the crate's NUCULA reference geometry), not a second hand-typed
+    // copy of the same numbers.
+    let pins = crate::board_ctor::pn7160::binding_from_board(&boards::NUCULA);
+    let transport = EspPn7160Transport::bringup_config_order(pins, bus).expect("peripheral init");
     // t_4864e74e: the VEN-cycle retry ladder is the driver's own
     // constructor now — this wrapper only supplies the esp recovery
     // hook (VEN cycle + bus probe between attempts).

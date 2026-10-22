@@ -31,6 +31,10 @@ pub mod esp_transport;
 /// mapping/validation surface and its tests compile everywhere; the
 /// FFI-touching device wrapper is esp-target-only.
 pub mod hal_i2c;
+/// Pure embedded-hal 1.0 transport + bring-up constructor
+/// (t_4864e74e): bus/IRQ/VEN/delay handles only — no board facts, no
+/// esp bindings. Compiles and tests everywhere embedded-hal does.
+pub mod hal_transport;
 
 use heapless::Vec;
 

@@ -111,7 +111,9 @@ mod tests {
 
     #[test]
     fn contact_only() {
-        assert!(F469.caps.wired_contact);
+        const {
+            assert!(F469.caps.wired_contact);
+        };
         assert_eq!(F469.nfc, None);
         assert!(F469.buses.is_empty());
         assert_eq!(F469.caps.lcd, Cap::Feature("display"));

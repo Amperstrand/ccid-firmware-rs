@@ -44,7 +44,7 @@ pub mod serial_framing;
 #[cfg(test)]
 pub mod t1_fuzz;
 
-#[cfg(feature = "backend-mfrc522")]
+#[cfg(any(feature = "backend-mfrc522", feature = "backend-pn7160"))]
 pub mod board_ctor;
 #[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;

@@ -663,11 +663,8 @@ mod tests {
         }
 
         assert_eq!(events.len(), 4);
-        for i in 0..3 {
-            assert!(matches!(
-                events[i],
-                FrameEvent::Error(FrameError::InvalidLrc)
-            ));
+        for e in events.iter().take(3) {
+            assert!(matches!(e, FrameEvent::Error(FrameError::InvalidLrc)));
         }
         assert!(matches!(events[3], FrameEvent::Command { .. }));
     }

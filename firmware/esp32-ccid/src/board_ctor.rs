@@ -180,6 +180,47 @@ pub mod mfrc522 {
     }
 }
 
+/// PN7160 construction seam (t_4864e74e pattern-setter): resolve the
+/// [`pn7160_nci::board::BoardPins`] facts — the pure numbers the
+/// crate's constructors consume (pure embedded-hal handles + these
+/// numbers, zero other board knowledge) — from a `boards::BoardDesc`
+/// table. The NFC controller class in the row must actually be PN7160
+/// (a mismatch is feature/table drift and fails loudly), and a
+/// wired-contact-only table (no NFC frontend) refuses rather than
+/// fabricating a reader.
+#[cfg(feature = "backend-pn7160")]
+pub mod pn7160 {
+    use super::*;
+    use boards::NfcController;
+    pub use pn7160_nci::board::BoardPins;
+
+    /// Resolve the PN7160 binding from a board table: bus pins
+    /// (`BusRole::NfcFrontend`), controller address (`nfc`), IRQ/VEN
+    /// pin roles (`nfc_irq` / `nfc_ven`).
+    pub fn binding_from_board(b: &BoardDesc) -> BoardPins {
+        let nfc = b.nfc.unwrap_or_else(|| {
+            panic!(
+                "board {}: no NFC frontend — cannot construct a PN7160 frontend",
+                b.name
+            )
+        });
+        assert_eq!(
+            nfc.controller,
+            NfcController::Pn7160,
+            "board {}: NFC controller is not a PN7160 — feature/table drift",
+            b.name
+        );
+        let bus = b.bus(BusRole::NfcFrontend).i2c();
+        BoardPins {
+            addr: nfc.i2c_addr,
+            sda: bus.sda as i32,
+            scl: bus.scl as i32,
+            irq: b.pin("nfc_irq") as i32,
+            ven: b.pin("nfc_ven") as i32,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +270,32 @@ mod tests {
     #[should_panic(expected = "no bus for role NfcFrontend")]
     fn wired_contact_table_fails_loudly() {
         let _ = NfcBusBinding::from_board(&boards::F469);
+    }
+
+    // ---- t_4864e74e pn7160 seam (pattern-setter milestone) ----
+
+    /// The nucula row resolves to EXACTLY the crate's reference
+    /// geometry (`pn7160_nci::board::NUCULA`) — the boards-as-data lock
+    /// (design §2.1/§4): table and crate reference can never drift,
+    /// asserted at the construction seam.
+    #[cfg(feature = "backend-pn7160")]
+    #[test]
+    fn nucula_pn7160_binding_equals_the_crate_reference_geometry() {
+        let binding = pn7160::binding_from_board(&NUCULA);
+        assert_eq!(binding, pn7160_nci::board::NUCULA);
+        assert_eq!(binding.addr, 0x28);
+        assert_eq!(
+            (binding.sda, binding.scl, binding.irq, binding.ven),
+            (4, 5, 6, 7)
+        );
+    }
+
+    /// A wired-contact-only table (STM32 row: no NFC frontend) fails
+    /// LOUDLY at the pn7160 seam too — refuse, never fabricate a reader.
+    #[cfg(feature = "backend-pn7160")]
+    #[test]
+    #[should_panic(expected = "no NFC frontend")]
+    fn wired_contact_table_fails_loudly_at_the_pn7160_seam() {
+        let _ = pn7160::binding_from_board(&boards::F469);
     }
 }

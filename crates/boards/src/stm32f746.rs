@@ -106,7 +106,9 @@ mod tests {
 
     #[test]
     fn contact_only() {
-        assert!(F746.caps.wired_contact);
+        const {
+            assert!(F746.caps.wired_contact);
+        };
         assert_eq!(F746.nfc, None);
         assert!(F746.buses.is_empty());
         assert_eq!(F746.caps.lcd, Cap::None);

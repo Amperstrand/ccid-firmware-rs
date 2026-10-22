@@ -20,8 +20,8 @@
 //! payload), IRQ-gated non-blocking polls, and the ONE shared
 //! non-NTF-first reply decision ([`crate::is_transact_reply`]).
 
-use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::delay::DelayNs;
+use embedded_hal::digital::{InputPin, OutputPin};
 use embedded_hal::i2c::I2c;
 use heapless::Deque;
 
@@ -129,7 +129,7 @@ where
         self.i2c.write(self.addr, &[]).is_ok()
     }
 
-    fn irq_raised(&self) -> bool {
+    fn irq_raised(&mut self) -> bool {
         self.irq.is_high().unwrap_or(false)
     }
 
@@ -143,10 +143,8 @@ where
         let plen = hdr[2] as usize;
         let mut pkt = [0u8; 3 + 255];
         pkt[..3].copy_from_slice(&hdr);
-        if plen > 0 {
-            if self.i2c.read(self.addr, &mut pkt[3..3 + plen]).is_err() {
-                return None;
-            }
+        if plen > 0 && self.i2c.read(self.addr, &mut pkt[3..3 + plen]).is_err() {
+            return None;
         }
         Frame::decode(&pkt[..3 + plen])
     }
@@ -264,24 +262,34 @@ mod tests {
         }
     }
 
-    impl I2c for MockI2c {
+    impl embedded_hal::i2c::ErrorType for MockI2c {
         type Error = MockI2cErr;
+    }
 
-        fn write(&mut self, addr: u8, output: &[u8]) -> Result<(), Self::Error> {
-            self.writes.push((addr, output.to_vec()));
-            if self.alive.contains(&addr) {
-                Ok(())
-            } else {
-                Err(MockI2cErr::Nak)
-            }
-        }
-
-        fn read(&mut self, addr: u8, buffer: &mut [u8]) -> Result<(), Self::Error> {
-            if !self.alive.contains(&addr) {
-                return Err(MockI2cErr::Nak);
-            }
-            for b in buffer.iter_mut() {
-                *b = self.rx.pop_front().unwrap_or(0);
+    impl I2c for MockI2c {
+        fn transaction(
+            &mut self,
+            addr: u8,
+            operations: &mut [embedded_hal::i2c::Operation<'_>],
+        ) -> Result<(), Self::Error> {
+            use embedded_hal::i2c::Operation;
+            for op in operations {
+                match op {
+                    Operation::Write(buf) => {
+                        self.writes.push((addr, buf.to_vec()));
+                        if !self.alive.contains(&addr) {
+                            return Err(MockI2cErr::Nak);
+                        }
+                    }
+                    Operation::Read(buffer) => {
+                        if !self.alive.contains(&addr) {
+                            return Err(MockI2cErr::Nak);
+                        }
+                        for b in buffer.iter_mut() {
+                            *b = self.rx.pop_front().unwrap_or(0);
+                        }
+                    }
+                }
             }
             Ok(())
         }
@@ -289,12 +297,15 @@ mod tests {
 
     struct MockIrq(core::cell::Cell<bool>);
 
-    impl InputPin for MockIrq {
+    impl embedded_hal::digital::ErrorType for MockIrq {
         type Error = core::convert::Infallible;
-        fn is_high(&self) -> Result<bool, Self::Error> {
+    }
+
+    impl InputPin for MockIrq {
+        fn is_high(&mut self) -> Result<bool, Self::Error> {
             Ok(self.0.get())
         }
-        fn is_low(&self) -> Result<bool, Self::Error> {
+        fn is_low(&mut self) -> Result<bool, Self::Error> {
             Ok(!self.0.get())
         }
     }
@@ -305,8 +316,11 @@ mod tests {
         log: std::vec::Vec<u8>,
     }
 
-    impl OutputPin for MockVen {
+    impl embedded_hal::digital::ErrorType for MockVen {
         type Error = core::convert::Infallible;
+    }
+
+    impl OutputPin for MockVen {
         fn set_low(&mut self) -> Result<(), Self::Error> {
             self.log.push(0);
             Ok(())
@@ -412,7 +426,11 @@ mod tests {
         let (mut i2c, irq, ven, delay) = mocks();
         // An NTF lands before the RSP on the wire.
         script_frame(&mut i2c, &irq, &[MT_NTF, OID_CORE_RESET, 0x01, 0x00]);
-        script_frame(&mut i2c, &irq, &[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
+        script_frame(
+            &mut i2c,
+            &irq,
+            &[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK],
+        );
         let mut t = HalPn7160Transport::new(i2c, irq, ven, delay, 0x28);
         let f = t
             .transact(&[0x20, 0x00, 0x00])
@@ -443,11 +461,27 @@ mod tests {
         let (mut i2c, irq, ven, delay) = mocks();
         // The NCI bring-up ladder's replies, in wire order (same
         // script as the crate driver's MockTransport ladder test).
-        script_frame(&mut i2c, &irq, &[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK]);
+        script_frame(
+            &mut i2c,
+            &irq,
+            &[MT_RSP | GID_CORE, OID_CORE_RESET, 0x01, STATUS_OK],
+        );
         script_frame(&mut i2c, &irq, &[MT_NTF, OID_CORE_RESET, 0x01, 0x00]);
-        script_frame(&mut i2c, &irq, &[MT_RSP | GID_CORE, OID_CORE_INIT, 0x01, STATUS_OK]);
-        script_frame(&mut i2c, &irq, &[MT_RSP | GID_RF, OID_RF_DISCOVER_MAP, 0x01, STATUS_OK]);
-        script_frame(&mut i2c, &irq, &[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+        script_frame(
+            &mut i2c,
+            &irq,
+            &[MT_RSP | GID_CORE, OID_CORE_INIT, 0x01, STATUS_OK],
+        );
+        script_frame(
+            &mut i2c,
+            &irq,
+            &[MT_RSP | GID_RF, OID_RF_DISCOVER_MAP, 0x01, STATUS_OK],
+        );
+        script_frame(
+            &mut i2c,
+            &irq,
+            &[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK],
+        );
 
         let t = HalPn7160Transport::bring_up(i2c, irq, ven, delay, 0x28)
             .expect("controller answers the window probe");
