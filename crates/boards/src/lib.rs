@@ -21,13 +21,16 @@
 //! carrying pin data inline.
 #![cfg_attr(not(test), no_std)]
 
+pub mod m5stick;
 pub mod schema;
 
 pub use schema::*;
+
+pub use m5stick::M5STICK;
 
 /// Every registered board (design §5: registry ↔ module files ↔ bin
 /// features cross-checked by `tools/union_matrix.py check`'s boards leg).
 /// A board's substantive content is one module `src/<board>.rs`; the
 /// registry line + `pub mod` are the two mechanical one-liners the design
 /// admits (§4 "adding a board touches one file").
-pub const ALL_BOARDS: &[&BoardDesc] = &[];
+pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK];
