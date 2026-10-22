@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amperstrand <141745238+Amperstrand@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 22:44:42 +0200
+Subject: [PATCH 2/2] Suppress warnings from generated RAL code
+
+The register access layer is generated (ral-registers) and emits three
+warning classes in every downstream build:
+
+- unexpected_cfgs for the `nosync` and `rtfm` cfg switches the
+  generator emits,
+- unused_imports and dead_code in the per-peripheral modules.
+
+Add crate-level allows so downstream `-D warnings` builds stay clean.
+
+Independent of the F469 fix; if targeted #[allow]s (or generator-side
+fixes) are preferred, this patch can be dropped from the series.
+---
+ src/lib.rs | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index e2b9a06..6b44ce0 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,6 +1,11 @@
+ //! USB peripheral driver for Synopsys USB OTG peripherals.
+ 
+ #![no_std]
++// Suppress warnings for cfg features (nosync, rtfm) used in generated RAL code
++#![allow(unexpected_cfgs)]
++// Suppress warnings for unused imports and dead code in generated RAL code
++#![allow(unused_imports)]
++#![allow(dead_code)]
+ 
+ #[cfg(all(feature = "fs", feature = "hs"))]
+ compile_error!("choose only one USB mode");
+-- 
+2.43.0
+

@@ -40,6 +40,21 @@
   validated in the `matrix` job; `union-ok` aggregates the new leg.
   Path filter extended with products.toml + tools/products.py.
 
+
+### Docs — boards-as-data design (t_2f868bc4, lane L)
+
+- `docs/BOARDS-AS-DATA-DESIGN.md`: design for the boards-as-data layer —
+  per-board pin/bus/capability/OTA-family const tables in a new
+  `crates/boards` kernel crate homed here (pn7160-nci precedent), bolty
+  consumes rev-pinned. Schema as a worked m5stick example with real pin
+  data from today's wiring; per-family sources of truth (nucula
+  GENERATED from `zeugmaster/nucula-board` netlist, COTS Grove maps
+  citing bolty B2, F469/F746 wired-contact minimal tables);
+  consumption via frontend constructors + M3 presets without touching
+  the #383 ccid-service board-blind boundary; smallest-first migration
+  (m5stick pilot); boards axis for the #390 union-matrix CI; OTA-family
+  column tied to `amperstrand.flash-bundle/1`. Design only —
+  implementation is a later card.
 ### Added — #261 tier (a): scripted vpcd table card (zero hardware)
 
 - `tests/hardware/nfc/vpicc_table.py` + `test_vpicc_table.py`: a

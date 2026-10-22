@@ -13,6 +13,7 @@ on:
       - "**/Cargo.toml"
       - "deny.toml"
       - "vendor/**" # patch-content changes must re-run the gate (#294 fold-in)
+      - "vendor-patches/**" # lifecycle artifacts (series/SHA256SUMS) — tripwires re-run (#271)
       - ".github/workflows/deny.yml"
   pull_request:
     paths:
@@ -20,6 +21,7 @@ on:
       - "**/Cargo.toml"
       - "deny.toml"
       - "vendor/**" # patch-content changes must re-run the gate (#294 fold-in)
+      - "vendor-patches/**" # lifecycle artifacts (series/SHA256SUMS) — tripwires re-run (#271)
       - ".github/workflows/deny.yml"
   schedule:
     # weekly: the advisory DB moves even when manifests don't
@@ -43,3 +45,12 @@ jobs:
 
       - name: cargo-deny (advisories, licenses, bans, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
+
+      - name: vendor-patches lifecycle verify (#271)
+        # Mechanical half of the retirement triggers documented in
+        # docs/vendor-patches.md: (a) the synopsys series must still apply
+        # onto the recorded upstream base and reproduce the fork tree —
+        # failure means upstream moved (rebase before the owner pastes);
+        # (b) the sole-provider BSP snapshot must match its SHA256SUMS —
+        # failure means the frozen vendor tree was edited undocumented.
+        run: ./vendor-patches/verify.sh
