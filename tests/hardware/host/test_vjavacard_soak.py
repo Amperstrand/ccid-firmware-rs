@@ -21,17 +21,33 @@ import time
 
 import pytest
 
-from smartcard.Exceptions import (
-    CardConnectionException,
-    ListReadersException,
-    NoCardException,
-)
-
 from test_vjavacard import ECHO_AID, SMARTPGP_AID, _bridge_ready, _connect
 
-pytestmark = pytest.mark.skipif(
-    not _bridge_ready(), reason="vjavacard bridge not built/running (host setup)"
-)
+# Collection-safe import (#403 follow-up pattern — the soak file rode in
+# with #416 without it and broke the python-collect gate's minimal env
+# (pytest + stdlib, no pyscard) on every lint-filtered run; the tests
+# themselves only ever run on the bench host where pyscard is installed).
+try:
+    from smartcard.Exceptions import (
+        CardConnectionException,
+        ListReadersException,
+        NoCardException,
+    )
+
+    _HAS_SMARTCARD = True
+except ImportError:  # pragma: no cover — CI runners
+    _HAS_SMARTCARD = False
+    CardConnectionException = ListReadersException = NoCardException = None
+
+pytestmark = [
+    pytest.mark.skipif(
+        not _HAS_SMARTCARD,
+        reason="pyscard not installed — vjavacard soak drives pcscd (bench only)",
+    ),
+    pytest.mark.skipif(
+        not _bridge_ready(), reason="vjavacard bridge not built/running (host setup)"
+    ),
+]
 
 SOAK_N = int(os.environ.get("VJC_SOAK_N", "300"))
 
