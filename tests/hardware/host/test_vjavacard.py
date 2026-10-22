@@ -110,8 +110,14 @@ def _bridge_ready() -> bool:
     return False
 
 
+# Evaluated ONCE per pytest session (module import) and shared with
+# test_vjavacard_soak — a second independent probe at collection time
+# can exhaust its own retry budget during pcscd churn and falsely skip
+# the soak while the suite's gate had just succeeded (run 39864504834).
+BRIDGE_READY = _bridge_ready()
+
 pytestmark = pytest.mark.skipif(
-    not _bridge_ready(), reason="vjavacard bridge not built/running (host setup)"
+    not BRIDGE_READY, reason="vjavacard bridge not built/running (host setup)"
 )
 
 
