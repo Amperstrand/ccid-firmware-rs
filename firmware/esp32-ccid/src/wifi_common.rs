@@ -189,7 +189,7 @@ impl<D: crate::nfc::NfcDriver + card_interface::FrontendDiagnostics>
 pub fn mfrc522_bring_up(
     scl_gpio_no: i32,
     sda_gpio_no: i32,
-) -> impl crate::nfc::NfcDriver + Send + 'static {
+) -> impl crate::nfc::NfcDriver + card_interface::FrontendDiagnostics + Send + 'static {
     // I2C bus recovery (xtensa only — the riscv32 crash-probe path skips
     // the settle delay, mirroring the CDC main).
     #[cfg(target_arch = "xtensa")]
