@@ -21,9 +21,10 @@ default = ["backend-mfrc522", "board-m5atom"]
 # the vendored-hal `legacy-i2c` opt-in are retired with this wiring.
 backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "dep:pn7160-nci", "pn7160-nci/esp"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
-# Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
-#   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
-#   board-m5stick: SDA=GPIO32, SCL=GPIO33  (StickC / StickC-Plus Port)
+# Grove I2C pinout — pin data lives in `crates/boards` (boards-as-data,
+# design §4 step 1): do not add pin numbers here. board-m5stick reads
+# `boards::M5STICK`; board-m5atom / board-nucula migrate in later slices
+# (bolty-rs docs/lessons-learned.md B2 remains the provenance citation).
 board-m5atom = []
 board-m5stick = []
 # ESP32-C3 nucula board: PN7160 NFC @ I2C addr 0x28, SDA=GPIO4 SCL=GPIO5 IRQ=GPIO6 VEN=GPIO7.
@@ -96,6 +97,9 @@ provisioner = []
 
 [dependencies]
 card-interface = { path = "../../crates/card-interface" }
+# Board tables as const data (boards-as-data pilot): the board-m5stick
+# wiring reads `boards::M5STICK` — never inline pin numbers.
+boards = { path = "../../crates/boards" }
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
 ccid-service = { path = "../../crates/ccid-service" }

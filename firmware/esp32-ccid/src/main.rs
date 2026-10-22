@@ -23,7 +23,7 @@ compile_error!("feature board-nucula is mutually exclusive with board-m5atom/boa
         feature = "board-nucula"
     ))
 ))]
-compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
+compile_error!("select a board feature: board-m5atom, board-m5stick, or board-nucula — board pin data lives in crates/boards (boards-as-data)");
 #[cfg(all(feature = "ble", feature = "spp"))]
 compile_error!(
     "features ble and spp are mutually exclusive (both claim the single Bluetooth modem)"
@@ -636,10 +636,16 @@ fn main() {
     // numbers only: driver_ng claims the controller by port, so neither
     // the `Peripherals::i2c0` token nor typed pin drivers are consumed
     // (the #149 P3 shared adapter owns the bus).
+    // boards-as-data step 1 (design §4): board-m5stick reads the
+    // `crates/boards` table — the pin numbers live THERE, asserted by its
+    // host tests; m5atom/nucula migrate in later slices.
     #[cfg(feature = "board-m5atom")]
     let (sda_gpio_no, scl_gpio_no) = (26, 32);
     #[cfg(feature = "board-m5stick")]
-    let (sda_gpio_no, scl_gpio_no) = (32, 33);
+    let (sda_gpio_no, scl_gpio_no) = {
+        let grove = boards::M5STICK.bus(boards::BusRole::NfcFrontend).i2c();
+        (grove.sda, grove.scl)
+    };
     // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
     // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase.)
     #[cfg(feature = "board-nucula")]

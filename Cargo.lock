@@ -877,6 +877,7 @@ dependencies = [
 name = "esp32-ccid"
 version = "0.1.0"
 dependencies = [
+ "boards",
  "card-interface",
  "ccid-core",
  "ccid-protocol",
