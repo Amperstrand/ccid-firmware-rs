@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+### Added — virtual-stack soak + bridge hardening notes
+
+- `test_vjavacard_soak.py`: reliability number for the virtual reader
+  stack (bench doctrine: m5stick 1000/1000). Mode-aware — SmartPGP
+  mode (GET DATA reads) on the bench, echo mode on the CI runner
+  (CAP artifact is bench storage); asserts N/N with per-failure
+  diagnostics. Runs in the virtual-card CI leg at VJC_SOAK_N=100.
+- Bridge: opt-in header-only exchange logging (-Dvjc.debug) — CLA/INS/
+  P1-P2/Lc and SW only, never payloads. jcardsim 2.2.2 finding encoded
+  as a code note: do NOT sim.reset() on power-off — reset() leaves the
+  runtime so subsequent selectApplet()+transmitCommand throws the
+  no-current-applet SystemException (every post-reset SELECT 6F00);
+  flag-only power-off semantics match observed behavior.
+
 ### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
 
 - First dispatch (run 39846808036) exposed a FALSE green: the suite's
