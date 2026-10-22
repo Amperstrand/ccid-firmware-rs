@@ -168,6 +168,30 @@ impl<D: crate::nfc::NfcDriver> crate::nfc::NfcDriver for OrNull<D> {
     }
 }
 
+impl<D: crate::nfc::NfcDriver + card_interface::FrontendDiagnostics>
+    card_interface::FrontendDiagnostics for OrNull<D>
+{
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        match self {
+            // t_4864e74e: the Null arm IS the unavailable class — the
+            // controller never answered at bring-up.
+            OrNull::Live(d) => d.frontend_status(),
+            OrNull::Null => card_interface::FrontendStatus {
+                health: card_interface::FrontendHealth::Unavailable,
+                last_error: card_interface::FrontendErrorKind::Bus,
+                ..card_interface::FrontendStatus::ok()
+            },
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        match self {
+            OrNull::Live(d) => d.frontend_self_test(),
+            OrNull::Null => Err(card_interface::FrontendErrorKind::Bus),
+        }
+    }
+}
+
 /// MFRC522 ladder (m5atom/m5stick, Grove I2C @0x28): bus recovery,
 /// 400 kHz I2C, then `init_with_recovery` retries — the stock m5stick
 /// CDC main sequence, minus the UART/LED CCID plumbing. Bus + device

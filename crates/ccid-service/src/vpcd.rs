@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::nfc::NfcDriver;
+use card_interface::FrontendDiagnostics;
 
 /// VPCDPORT from vsmartcard/src/vpcd/vpcd.h — the host-side driver listens here
 pub const HOST_VPCD_PORT: u16 = 35963;
@@ -42,7 +43,11 @@ const VPCD_CTRL_ATR: u8 = 0x04;
 /// :35963 (slot 00 00) and :35964 (slot 00 01) — give each board its
 /// own port so a multi-board bench maps boards to readers
 /// deterministically instead of racing one listener.
-pub fn spawn<D: NfcDriver + Send + 'static>(driver: D, host_ip: &str, port: u16) {
+pub fn spawn<D: NfcDriver + FrontendDiagnostics + Send + 'static>(
+    driver: D,
+    host_ip: &str,
+    port: u16,
+) {
     let host = host_ip.to_string();
     // #326 (core-dump 2026-10-21): 16 KiB is NOT enough for the APDU
     // exchange path — the first transmit_apdu drove this thread to
@@ -57,7 +62,11 @@ pub fn spawn<D: NfcDriver + Send + 'static>(driver: D, host_ip: &str, port: u16)
         .spawn(move || client_loop(driver, &host, port));
 }
 
-fn client_loop<D: NfcDriver + Send + 'static>(driver: D, host: &str, port: u16) {
+fn client_loop<D: NfcDriver + FrontendDiagnostics + Send + 'static>(
+    driver: D,
+    host: &str,
+    port: u16,
+) {
     let mut handler = crate::ccid_handler::CcidHandler::new(driver);
     let mut rx_buf = [0u8; 1024];
 
@@ -101,7 +110,7 @@ fn client_loop<D: NfcDriver + Send + 'static>(driver: D, host: &str, port: u16) 
     }
 }
 
-fn serve_connection<D: NfcDriver>(
+fn serve_connection<D: NfcDriver + FrontendDiagnostics>(
     stream: &mut TcpStream,
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     rx_buf: &mut [u8],
@@ -305,7 +314,7 @@ fn response_log_line(resp: &[u8], was_apdu: bool) -> String {
     }
 }
 
-fn handle_message<D: NfcDriver>(
+fn handle_message<D: NfcDriver + FrontendDiagnostics>(
     handler: &mut crate::ccid_handler::CcidHandler<D>,
     payload: &[u8],
     rx_buf: &mut [u8],
@@ -488,6 +497,17 @@ mod tests {
         atrs: Vec<Vec<u8>>,
         presence_calls: usize,
         power_on_calls: usize,
+    }
+
+    impl card_interface::FrontendDiagnostics for ScriptedDriver {
+        fn frontend_status(&self) -> card_interface::FrontendStatus {
+            // t_4864e74e: synthetic driver — healthy, zero counters.
+            card_interface::FrontendStatus::ok()
+        }
+
+        fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+            Ok(())
+        }
     }
 
     impl NfcDriver for ScriptedDriver {
@@ -787,6 +807,17 @@ mod tests {
         struct MfrLike {
             power_on_calls: usize,
         }
+        impl card_interface::FrontendDiagnostics for MfrLike {
+            fn frontend_status(&self) -> card_interface::FrontendStatus {
+                // t_4864e74e: synthetic driver — healthy, zero counters.
+                card_interface::FrontendStatus::ok()
+            }
+
+            fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+                Ok(())
+            }
+        }
+
         impl NfcDriver for MfrLike {
             type Error = MockError;
             fn init(&mut self) -> Result<(), Self::Error> {
@@ -852,6 +883,17 @@ mod tests {
         struct IdleMfr {
             power_on_calls: usize,
         }
+        impl card_interface::FrontendDiagnostics for IdleMfr {
+            fn frontend_status(&self) -> card_interface::FrontendStatus {
+                // t_4864e74e: synthetic driver — healthy, zero counters.
+                card_interface::FrontendStatus::ok()
+            }
+
+            fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+                Ok(())
+            }
+        }
+
         impl NfcDriver for IdleMfr {
             type Error = MockError;
             fn init(&mut self) -> Result<(), Self::Error> {

@@ -2,7 +2,23 @@
 
 use crate::turnaround::TurnaroundStats;
 pub use card_interface::PresenceState;
-use card_interface::{CardBackend, NfcCardExt};
+use card_interface::{
+    CardBackend, FrontendDiagnostics, FrontendErrorKind, FrontendHealth, FrontendStatus, NfcCardExt,
+};
+
+/// Maps the shared NFC driver error vocabulary onto the board-free
+/// frontend diagnostics classification (t_4864e74e).
+impl From<NfcError> for FrontendErrorKind {
+    fn from(e: NfcError) -> Self {
+        match e {
+            NfcError::NotInitialized => FrontendErrorKind::NotInitialized,
+            NfcError::NoCard => FrontendErrorKind::NoCard,
+            NfcError::CommunicationError => FrontendErrorKind::Bus,
+            NfcError::Timeout => FrontendErrorKind::Timeout,
+            NfcError::BufferOverflow => FrontendErrorKind::BufferOverflow,
+        }
+    }
+}
 
 /// NFC driver error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +224,16 @@ impl<D: NfcDriver> NfcCardExt for CardDriverAdapter<D> {
     }
 }
 
+impl<D: NfcDriver + FrontendDiagnostics> FrontendDiagnostics for CardDriverAdapter<D> {
+    fn frontend_status(&self) -> FrontendStatus {
+        self.0.frontend_status()
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        self.0.frontend_self_test()
+    }
+}
+
 /// Mock NFC driver for testing
 ///
 /// This mock driver simulates an NFC controller for host-side testing.
@@ -236,6 +262,12 @@ pub struct MockNfcDriver {
     /// a nominal stall elapsed (issue #156 B) — models the PN7160
     /// driver's stall hook firing from inside a blocking exchange.
     stall_probe: Option<fn(u32)>,
+    /// Test instrumentation (t_4864e74e): status served by
+    /// `frontend_status()` — lets host tests drive the health-transition
+    /// logging path exactly like a real degraded frontend would.
+    frontend_status: FrontendStatus,
+    /// Test instrumentation: outcome served by `frontend_self_test()`.
+    self_test_result: Result<(), FrontendErrorKind>,
 }
 
 impl MockNfcDriver {
@@ -257,6 +289,11 @@ impl MockNfcDriver {
             last_apdu: Vec::new(),
             wtx: None,
             stall_probe: None,
+            frontend_status: FrontendStatus {
+                health: FrontendHealth::Healthy,
+                ..FrontendStatus::ok()
+            },
+            self_test_result: Ok(()),
         }
     }
 
@@ -282,6 +319,17 @@ impl MockNfcDriver {
     /// Test instrumentation: stall probe invoked inside transmit_apdu.
     pub fn set_stall_probe(&mut self, probe: Option<fn(u32)>) {
         self.stall_probe = probe;
+    }
+
+    /// Test instrumentation (t_4864e74e): status served by
+    /// `frontend_status()` (presence polls stay counted live).
+    pub fn set_frontend_status(&mut self, status: FrontendStatus) {
+        self.frontend_status = status;
+    }
+
+    /// Test instrumentation: outcome served by `frontend_self_test()`.
+    pub fn set_self_test_result(&mut self, result: Result<(), FrontendErrorKind>) {
+        self.self_test_result = result;
     }
 
     // Cross-crate test instrumentation (t_72e1e2ed): esp32-ccid's and
@@ -368,6 +416,21 @@ impl NfcDriver for MockNfcDriver {
 
     fn wtx_counters(&self) -> Option<(u32, u32)> {
         self.wtx
+    }
+}
+
+impl FrontendDiagnostics for MockNfcDriver {
+    fn frontend_status(&self) -> FrontendStatus {
+        // Presence polls are served live (the real counter the 0xD0
+        // path cares about); the rest is the scripted snapshot.
+        FrontendStatus {
+            presence_polls: self.poll_count,
+            ..self.frontend_status
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        self.self_test_result
     }
 }
 

@@ -451,6 +451,15 @@ pub trait Transport {
     /// Collect-wait hook (#125): no-op in host mocks; the ESP32 I2C
     /// transport delays for real between power_on activation waits.
     fn wait_ms(&mut self, _ms: u64) {}
+    /// Stateless link liveness probe (t_4864e74e diagnostics): a
+    /// zero-length, reply-less bus write — safe while a session is
+    /// active (never a state-machine-touching NCI transact). Default
+    /// `false` (link type without a probe primitive); the ESP32 I2C
+    /// transport overrides with its `i2c_master_write_to_device(0)`
+    /// probe, host mocks report their scripted state.
+    fn link_probe(&mut self) -> bool {
+        false
+    }
 }
 
 /// NCI DATA packet framing — NCI §5.4.1: octet 0 = PBF(bit 4) | CONN_ID(bits
@@ -1312,6 +1321,9 @@ pub mod mock {
         /// AFTER the caller's drain burst found the link empty (#170:
         /// the settle-drain contract).
         pub late_on_wait: VecDeque<StdVec<u8>>,
+        /// Scripted link liveness for `link_probe` (t_4864e74e) —
+        /// defaults to alive; tests flip it to model a dead bus.
+        pub link_alive: bool,
     }
 
     impl MockTransport {
@@ -1326,6 +1338,7 @@ pub mod mock {
                 transacts: 0,
                 waited_ms: 0,
                 late_on_wait: VecDeque::new(),
+                link_alive: true,
             }
         }
 
@@ -1350,6 +1363,10 @@ pub mod mock {
     }
 
     impl Transport for MockTransport {
+        fn link_probe(&mut self) -> bool {
+            self.link_alive
+        }
+
         fn send(&mut self, cmd: &[u8]) -> bool {
             self.sent.push(cmd.to_vec());
             if let Some(raw) = self.replies.pop_front() {

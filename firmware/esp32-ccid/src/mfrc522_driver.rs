@@ -60,6 +60,22 @@ const FIELD_ON_SETTLE_MS: u32 = 5;
 pub struct Mfrc522NfcDriver;
 
 #[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
+impl card_interface::FrontendDiagnostics for Mfrc522NfcDriver {
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        // Host compile stub: the real frontend exists only on target.
+        card_interface::FrontendStatus {
+            health: card_interface::FrontendHealth::Unavailable,
+            last_error: card_interface::FrontendErrorKind::NotInitialized,
+            ..card_interface::FrontendStatus::ok()
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        Err(card_interface::FrontendErrorKind::NotInitialized)
+    }
+}
+
+#[cfg(not(any(target_arch = "xtensa", target_arch = "riscv32")))]
 impl NfcDriver for Mfrc522NfcDriver {
     type Error = NfcError;
 
@@ -213,6 +229,13 @@ pub struct Mfrc522NfcDriver<I2C: I2c> {
     cached_uid_len: usize,
     last_exchange: Option<(u32, u32, u32, u32)>,
     configured_fwt_ms: u32,
+    // Frontend diagnostics counters (t_4864e74e): the trait surface's
+    // data — init attempts, presence polls served, bus failures seen,
+    // and the last error classification.
+    diag_init_attempts: u32,
+    diag_presence_polls: u32,
+    diag_bus_errors: u32,
+    diag_last_error: Option<crate::nfc::NfcError>,
 }
 
 #[cfg(all(
@@ -236,6 +259,10 @@ where
             cached_uid_len: 0,
             last_exchange: None,
             configured_fwt_ms: 0,
+            diag_init_attempts: 0,
+            diag_presence_polls: 0,
+            diag_bus_errors: 0,
+            diag_last_error: None,
         }
     }
 
@@ -296,12 +323,16 @@ where
     }
 
     pub fn init_with_recovery(&mut self) -> Result<(), NfcError> {
+        self.diag_init_attempts = self.diag_init_attempts.saturating_add(1);
         match self.init() {
             Ok(()) => {
                 self.init_tracker.record_success();
+                self.diag_last_error = None;
                 Ok(())
             }
             Err(e) => {
+                self.diag_last_error = Some(e);
+                self.diag_bus_errors = self.diag_bus_errors.saturating_add(1);
                 if self.init_tracker.record_failure() {
                     log::warn!(
                         "MFRC522 init failed {} consecutive times, performing full re-init",
@@ -483,6 +514,7 @@ where
     }
 
     fn poll_card_presence(&mut self) -> PresenceState {
+        self.diag_presence_polls = self.diag_presence_polls.saturating_add(1);
         self.poll_physical_card()
     }
 
@@ -783,6 +815,51 @@ where
             resp_slice
         );
         Ok(resp_slice.len())
+    }
+}
+
+/// Uniform diagnostics surface (t_4864e74e): health from the driver's
+/// own lifecycle (initialized ⇒ Healthy; an init-failing frontend is
+/// classified Degraded by the `RetryFrontend` wrapper), counters from
+/// the instrumented init/presence paths above. Self-test is the
+/// stateless VersionReg read (0x91/0x92 — the same probe `init` uses).
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
+impl<I2C> card_interface::FrontendDiagnostics for Mfrc522NfcDriver<I2C>
+where
+    I2C: I2c,
+{
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        card_interface::FrontendStatus {
+            health: if self.is_initialized {
+                card_interface::FrontendHealth::Healthy
+            } else {
+                card_interface::FrontendHealth::Degraded
+            },
+            last_error: self
+                .diag_last_error
+                .map(card_interface::FrontendErrorKind::from)
+                .unwrap_or(card_interface::FrontendErrorKind::None),
+            init_attempts: self.diag_init_attempts,
+            reinit_count: self.init_tracker.reinit_count(),
+            bus_errors: self.diag_bus_errors,
+            presence_polls: self.diag_presence_polls,
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        let version = self
+            .transceiver
+            .raw()
+            .version()
+            .map_err(|_| card_interface::FrontendErrorKind::Bus)?;
+        if version == 0x91 || version == 0x92 {
+            Ok(())
+        } else {
+            Err(card_interface::FrontendErrorKind::Protocol)
+        }
     }
 }
 

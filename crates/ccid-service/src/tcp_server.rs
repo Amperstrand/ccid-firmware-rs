@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use crate::ccid_serial_server::{CcidSerialServer, ServeAction};
 use crate::nfc::NfcDriver;
+use card_interface::FrontendDiagnostics;
 
 /// One read tick: 250 ms read timeout makes every loop iteration a
 /// tick (bench hardening 2026-10-12), so RF presence polling runs on
@@ -123,7 +124,7 @@ pub fn serve_session<S, D>(
 ) -> SessionEnd
 where
     S: Read + Write,
-    D: NfcDriver,
+    D: NfcDriver + FrontendDiagnostics,
 {
     let SessionParams { cfg, log_tag, peer } = *params;
     let mut burst_buf = [0u8; BURST_BUF_LEN];
@@ -218,7 +219,7 @@ where
 /// the rejection listener nonblocking — both idempotent if, like the
 /// wifi-ccid main, the caller already configured them) and enters
 /// [`serve_session`].
-pub fn serve_tcp_session<D: NfcDriver>(
+pub fn serve_tcp_session<D: NfcDriver + FrontendDiagnostics>(
     stream: &mut TcpStream,
     listener: &TcpListener,
     server: &mut CcidSerialServer<D>,

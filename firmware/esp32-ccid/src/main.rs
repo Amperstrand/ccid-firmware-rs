@@ -221,7 +221,7 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
+fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
     server: &mut esp32_ccid::ccid_serial_server::CcidSerialServer<D>,
     byte: u8,
@@ -302,7 +302,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
+fn serve_uart<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
     handler: esp32_ccid::ccid_handler::CcidHandler<D>,
     mut on_read_idle_extra: impl FnMut(),
@@ -485,17 +485,11 @@ fn main() {
     )
     .expect("SPI2 init failed");
 
-    let mut pn532_driver =
-        Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).expect("PN532 driver init failed");
-
-    let pn532_ok = (0..5).any(|_| {
-        if pn532_driver.init().is_ok() {
-            true
-        } else {
-            FreeRtos::delay_ms(1000);
-            false
-        }
-    });
+    // t_4864e74e: the bring-up ladder lives in the constructor — the
+    // main reduces to bus handles + constructor + service spawn.
+    let (mut pn532_driver, pn532_ok) =
+        Pn532NfcDriver::bring_up(spi_device, irq_pin, rst_pin, 5, &mut FreeRtos)
+            .expect("PN532 driver init failed");
 
     // Frontend fault isolation (#218 — supersedes the bolty-rs B5 halt
     // loop this replaced): a failed boot init no longer halts the CCID

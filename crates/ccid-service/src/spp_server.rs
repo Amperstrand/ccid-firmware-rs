@@ -48,6 +48,7 @@
 use crate::ccid_handler::CcidHandler;
 use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows, ServeConfig};
 use crate::nfc::NfcDriver;
+use card_interface::FrontendDiagnostics;
 
 /// One received byte plus the tick it arrived at. The tick rides with the
 /// byte so the serving core's inter-byte stall guard
@@ -374,7 +375,7 @@ impl PumpOutcome {
 /// - after delivery: `record_turnaround` → `poll_if_due` → snapshot
 ///   check → `poll_if_due_after_response` (shell side, same order as
 ///   `serve_uart`'s Respond arm).
-pub struct SppPump<D: NfcDriver> {
+pub struct SppPump<D: NfcDriver + FrontendDiagnostics> {
     server: CcidSerialServer<D>,
     tx: [u8; SPP_TX_BUF_SIZE],
     tx_len: usize,
@@ -386,7 +387,7 @@ pub struct SppPump<D: NfcDriver> {
     dropped_responses: u32,
 }
 
-impl<D: NfcDriver> SppPump<D> {
+impl<D: NfcDriver + FrontendDiagnostics> SppPump<D> {
     /// m5stick UART-main profile, mirroring `serve_uart` in `main.rs`:
     /// NAK on malformed frames, NotifySlotChange on transitions, no
     /// inline polls (#89 — a physical poll must never delay a pending
@@ -588,7 +589,7 @@ mod tests {
         ring.push(bytes, tick);
     }
 
-    fn drain_and_pump<D: NfcDriver>(
+    fn drain_and_pump<D: NfcDriver + FrontendDiagnostics>(
         ring: &mut SppRxRing,
         pump: &mut SppPump<D>,
         now: u32,

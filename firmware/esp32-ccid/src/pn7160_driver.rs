@@ -7,6 +7,7 @@
 //! binding (I2C transport + VEN) as the only verdict-dependent piece.
 
 use crate::nfc::{NfcDriver, PresenceState};
+use card_interface::{FrontendDiagnostics, FrontendErrorKind, FrontendHealth, FrontendStatus};
 use pn7160_nci::driver::{Error as CoreError, Pn7160Driver};
 use pn7160_nci::Transport;
 
@@ -57,6 +58,36 @@ impl<T: Transport> Pn7160NfcDriver<T> {
     /// mid-session health probe) so probing can continue.
     pub fn into_transport(self) -> T {
         self.inner.into_transport()
+    }
+
+    /// Constructor + bring-up ladder (t_4864e74e): the VEN-cycle retry
+    /// loop moved out of `wifi_common::pn7160_bring_up` into the
+    /// driver. Takes any constructed transport (pure `Transport`
+    /// trait — no board knowledge); `recover` runs between failed
+    /// attempts on the recovered transport (the esp transport's VEN
+    /// cycle + probe). Returns the driver and whether init succeeded —
+    /// callers wrap with `RetryFrontend::healthy/degraded`.
+    pub fn bring_up<F>(mut transport: T, attempts: u32, mut recover: F) -> (Self, bool)
+    where
+        F: FnMut(&mut T),
+    {
+        for attempt in 1..=attempts.max(1) {
+            let mut d = Self::new(transport);
+            match d.init() {
+                Ok(()) => {
+                    log::warn!("bring-up: frontend initialized (attempt {attempt})");
+                    return (d, true);
+                }
+                Err(e) => {
+                    log::warn!("bring-up: init attempt {attempt} failed ({e:?})");
+                    let mut t = d.into_transport();
+                    recover(&mut t);
+                    transport = t;
+                }
+            }
+        }
+        log::warn!("bring-up: frontend unresponsive — card-absent mode");
+        (Self::new(transport), false)
     }
 
     /// Semi-mute streak (ACKed but unanswered re-arm writes) for the
@@ -123,6 +154,29 @@ impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
     }
 }
 
+/// Uniform diagnostics surface (t_4864e74e). The constructed driver is
+/// Healthy by definition (an unconstructible frontend never reaches
+/// this type — the mains serve the `UnavailableNfcDriver` stand-in);
+/// deeper counters stay in the crate until it exposes them.
+impl<T: Transport> FrontendDiagnostics for Pn7160NfcDriver<T> {
+    fn frontend_status(&self) -> FrontendStatus {
+        FrontendStatus {
+            health: FrontendHealth::Healthy,
+            ..FrontendStatus::ok()
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        // Stateless link probe only (never an NCI transact — that
+        // would desync the driver state machine mid-session).
+        if self.inner.transport_mut().link_probe() {
+            Ok(())
+        } else {
+            Err(FrontendErrorKind::Bus)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,4 +201,27 @@ mod tests {
         recovered.transact(&[0x20, 0x00, 0x00]);
         assert_eq!(recovered.sent.len(), 2);
     }
+}
+
+#[test]
+fn frontend_self_test_rides_the_link_probe() {
+    let mut driver = Pn7160NfcDriver::new(MockTransport::new());
+    assert!(driver.frontend_self_test().is_ok());
+    driver.transport_mut().link_alive = false;
+    assert_eq!(driver.frontend_self_test(), Err(FrontendErrorKind::Bus));
+}
+
+#[test]
+fn bring_up_ladder_reports_failure_and_runs_the_recover_hook() {
+    // Empty mock: no scripted CORE_RESET reply, so init fails on every
+    // attempt — the transport must come back out for the recover hook
+    // (VEN cycle class), and health reports not-initialized.
+    let mock = MockTransport::new();
+    let mut recover_calls = 0;
+    let (_d, ok) = Pn7160NfcDriver::bring_up(mock, 1, |_| recover_calls += 1);
+    assert!(!ok, "unscripted transport cannot initialize");
+    assert_eq!(
+        recover_calls, 1,
+        "recover hook runs once per failed attempt"
+    );
 }

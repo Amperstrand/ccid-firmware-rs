@@ -14,6 +14,7 @@ use crate::ccid_types::{
 use crate::nfc::{CardDriverAdapter, NfcDriver, PresenceState};
 use crate::t1::{self, elapsed_ms_since, now_us, FeedResult, T1Endpoint, MAX_RELAY};
 use crate::turnaround::TurnaroundStats;
+use card_interface::{FrontendDiagnostics, FrontendErrorKind, FrontendHealth, FrontendStatus};
 use ccid_core::handler::CcidHandlerCore;
 use ccid_core::response::{write_message, write_slot_status};
 use ccid_core::Diagnostics;
@@ -54,18 +55,23 @@ const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 /// the T=1 INF synthesis and the vpcd APDU arm (Codex #203 P1).
 pub const CARD_TIMEOUT_SW: [u8; 2] = [0x64, 0x00];
 
-pub struct CcidHandler<D: NfcDriver> {
+pub struct CcidHandler<D: NfcDriver + FrontendDiagnostics> {
     core: CcidHandlerCore<CardDriverAdapter<D>>,
     t1: T1Endpoint,
     t1_armed: bool,
+    /// Last frontend health seen by the serve-loop diagnostics refresh —
+    /// the transition detector's memory (t_4864e74e: health changes are
+    /// LOGGED once per transition, never per poll).
+    last_frontend_health: Option<FrontendHealth>,
 }
 
-impl<D: NfcDriver> CcidHandler<D> {
+impl<D: NfcDriver + FrontendDiagnostics> CcidHandler<D> {
     pub fn new(nfc: D) -> Self {
         Self {
             core: CcidHandlerCore::new(CardDriverAdapter::new(nfc), FIRMWARE_VERSION),
             t1: T1Endpoint::new(),
             t1_armed: false,
+            last_frontend_health: None,
         }
     }
 
@@ -85,7 +91,44 @@ impl<D: NfcDriver> CcidHandler<D> {
     }
 
     pub fn refresh_diagnostics(&mut self, uptime_ticks: u32) {
-        self.core.refresh_diagnostics(uptime_ticks)
+        self.core.refresh_diagnostics(uptime_ticks);
+        // Frontend health logging (t_4864e74e): the uniform diagnostics
+        // trait wired into the serve loop's existing refresh cadence.
+        // Pull-not-push doctrine: a `log` facade line, never wire bytes
+        // — on strict-wire builds the ceiling is Off, so this surfaces
+        // only on diagnostic surfaces (ble/netlog/vpcd builds, host
+        // tests). One line per TRANSITION, none per poll.
+        let status = self.frontend_status();
+        if self.last_frontend_health != Some(status.health) {
+            log::warn!(
+                "frontend health: {:?} -> {:?} (last_error={:?}, init_attempts={}, reinits={}, bus_errors={}, presence_polls={})",
+                self.last_frontend_health.map(|h| format!("{h:?}")).unwrap_or_else(|| "unknown".into()),
+                status.health,
+                status.last_error,
+                status.init_attempts,
+                status.reinit_count,
+                status.bus_errors,
+                status.presence_polls,
+            );
+            self.last_frontend_health = Some(status.health);
+        }
+    }
+
+    /// Pull the frontend diagnostics snapshot through the uniform
+    /// trait surface (t_4864e74e) — the same data the transition logger
+    /// and bench probes read.
+    pub fn frontend_status(&self) -> FrontendStatus {
+        self.core.driver().0.frontend_status()
+    }
+
+    /// Bring-up/stateless self-test through the uniform trait surface.
+    pub fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        self.core.driver_mut().0.frontend_self_test()
+    }
+
+    /// Last health the transition logger observed (test/bench probe).
+    pub fn last_frontend_health(&self) -> Option<FrontendHealth> {
+        self.last_frontend_health
     }
 
     pub fn diagnostics(&self) -> &Diagnostics {
@@ -434,6 +477,85 @@ mod tests {
 
     const ATR: [u8; 5] = [0x3B, 0x80, 0x80, 0x01, 0x01];
     const APDU_RESPONSE: [u8; 2] = [0x90, 0x00];
+
+    // ---- t_4864e74e: frontend diagnostics trait wired into the
+    // ---- serve-loop refresh (logging) path.
+
+    fn diag_driver() -> MockNfcDriver {
+        MockNfcDriver::new(false, &ATR, &APDU_RESPONSE)
+    }
+
+    #[test]
+    fn frontend_status_pulls_counters_through_the_trait() {
+        use card_interface::{FrontendErrorKind, FrontendHealth};
+        let mut driver = diag_driver();
+        driver.set_frontend_status(card_interface::FrontendStatus {
+            health: FrontendHealth::Degraded,
+            last_error: FrontendErrorKind::Bus,
+            init_attempts: 4,
+            reinit_count: 2,
+            bus_errors: 11,
+            presence_polls: 0, // served live from the mock's poll count
+        });
+        let handler = CcidHandler::new(driver);
+        let status = handler.frontend_status();
+        assert_eq!(status.health, FrontendHealth::Degraded);
+        assert_eq!(status.last_error, FrontendErrorKind::Bus);
+        assert_eq!(status.init_attempts, 4);
+        assert_eq!(status.reinit_count, 2);
+        assert_eq!(status.bus_errors, 11);
+        // presence_polls is the live counter, not the scripted value.
+        assert_eq!(status.presence_polls, 0);
+    }
+
+    #[test]
+    fn frontend_self_test_rides_the_trait_surface() {
+        let mut driver = diag_driver();
+        driver.set_self_test_result(Err(card_interface::FrontendErrorKind::Timeout));
+        let mut handler = CcidHandler::new(driver);
+        assert_eq!(
+            handler.frontend_self_test(),
+            Err(card_interface::FrontendErrorKind::Timeout)
+        );
+    }
+
+    #[test]
+    fn refresh_diagnostics_tracks_health_transitions_once_per_change() {
+        use card_interface::{FrontendHealth, FrontendStatus};
+        let mut driver = diag_driver();
+        driver.set_frontend_status(FrontendStatus {
+            health: FrontendHealth::Healthy,
+            ..FrontendStatus::ok()
+        });
+        let mut handler = CcidHandler::new(driver);
+        assert_eq!(handler.last_frontend_health(), None);
+
+        // First refresh observes and latches the initial health.
+        handler.refresh_diagnostics(100);
+        assert_eq!(
+            handler.last_frontend_health(),
+            Some(FrontendHealth::Healthy)
+        );
+
+        // Degradation: the transition fires and latches Degraded.
+        handler.driver_mut().set_frontend_status(FrontendStatus {
+            health: FrontendHealth::Degraded,
+            ..FrontendStatus::ok()
+        });
+        handler.refresh_diagnostics(200);
+        assert_eq!(
+            handler.last_frontend_health(),
+            Some(FrontendHealth::Degraded)
+        );
+
+        // Same health again: no transition — the latched value is
+        // stable (one log line per CHANGE, never per poll).
+        handler.refresh_diagnostics(300);
+        assert_eq!(
+            handler.last_frontend_health(),
+            Some(FrontendHealth::Degraded)
+        );
+    }
 
     fn build_ccid_cmd(msg_type: u8, slot: u8, seq: u8, payload: &[u8]) -> Vec<u8> {
         let mut msg = Vec::new();
