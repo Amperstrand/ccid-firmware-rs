@@ -33,12 +33,30 @@ from pathlib import Path
 
 import pytest
 
-from smartcard.Exceptions import (
-    CardConnectionException,
-    ListReadersException,
-    NoCardException,
+# Collection-safe import (#403 follow-up): CI runners do not carry pyscard
+# — module-level `from smartcard...` broke pytest collection on main
+# (Interrupted: 1 error during collection). Guard + skipif keeps the
+# collect gate green everywhere; the tests themselves only ever run on
+# the bench host where pyscard is installed.
+try:
+    from smartcard.Exceptions import (
+        CardConnectionException,
+        ListReadersException,
+        NoCardException,
+    )
+    from smartcard.System import readers
+
+    _HAS_SMARTCARD = True
+except ImportError:  # pragma: no cover — CI runners
+    _HAS_SMARTCARD = False
+    CardConnectionException = ListReadersException = NoCardException = (
+        readers
+    ) = None
+
+pytestmark = pytest.mark.skipif(
+    not _HAS_SMARTCARD,
+    reason="pyscard not installed — vjavacard tests drive pcscd (bench host only)",
 )
-from smartcard.System import readers
 
 BRIDGE_JAR = Path(__file__).parent / "vjavacard" / "target" / "vjavacard-0.1.0.jar"
 READER_SUBSTR = "vJavaCard sim 00 00"
