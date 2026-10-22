@@ -302,3 +302,19 @@ this sweep's verification runs; fixed in #393. Flagged on #391 for the audit tra
 
 Mechanics note: thread-reply REST endpoints 404 for these PRs' threads — lane triage replies
 live in the PR conversation comments (issues API), not thread replies; sweeps must check both.
+
+---
+
+# Codex Review Sweep — Addendum: gap range #285–#319 (2026-10-21, same window)
+
+Closes the record gap between the prior sweep's end and the #321–#391 section above.
+34 findings across 10 PRs — **34/34 ADDRESSED**:
+
+- #300 ×5, #310 ×2, #315 ×1, #317 ×1, #318 ×1 — the local-gate lane's own PRs, each
+  fixed+replied in its round (#311, #316, #318, #319 and PR-conversation replies).
+- #287 ×2 (`af7ece9a`), #295 ×2 (retire-264 follow-ups), #297 ×3 (`0d3d293e` + merge),
+  #299 ×15 (bench rounds through `fix(#313)`/`fix(#314)`) — citing-commit evidence.
+- #289 ×2 (defer LCD redraws / transition updates) — no citing commit, verified by
+  mechanism at main: `m5stick_lcd.rs` lines 18 + 596–603 (dirty-flag lazy redraw,
+  `try_lock`-only presence re-push every poll — landed via `e72ccd0e`/`af7ece9a`
+  for the same-class #287/#281 findings).
