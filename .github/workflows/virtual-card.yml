@@ -1,0 +1,76 @@
+name: virtual-card
+
+# #261 ladder regression on a stock runner: pcscd + patched libifdvpcd
+# + jcardsim bridge — no boards, no cards. Dispatch/schedule only; PRs
+# stay opt-in per #367. Recipe notes: tests/hardware/host/VIRTUAL_CARD_CI.md
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1" # weekly, Monday 05:00 UTC
+
+jobs:
+  vjavacard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host stack (pcscd, PCSC headers, JDK, Maven, pyscard)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pcscd libpcsclite-dev libpcsclite1 openjdk-21-jdk maven \
+            zip python3-pip python3-dev build-essential
+          python3 -m pip install --quiet pyscard pytest pytest-timeout
+
+      - name: Build patched libifdvpcd (pinned upstream + #326/#359 patch)
+        run: |
+          cd tests/hardware/host
+          ./build_libifdvpcd_amperstrand.sh build
+          test -f libifdvpcd-amperstrand.so
+
+      - name: Install dedicated vJavaCard reader slot (own .so copy)
+        run: |
+          sudo mkdir -p /usr/local/lib/pcsc/drivers/serial
+          sudo install -m 644 tests/hardware/host/libifdvpcd-amperstrand.so \
+            /usr/local/lib/pcsc/drivers/serial/libifdvpcd-amperstrand-vjc.so
+          printf 'FRIENDLYNAME "vJavaCard sim"\nDEVICENAME /dev/null:0x8C85\nLIBPATH /usr/local/lib/pcsc/drivers/serial/libifdvpcd-amperstrand-vjc.so\nCHANNELID 0x8C85\n' \
+            | sudo tee /etc/reader.conf.d/vjavacard >/dev/null
+          sudo systemctl restart pcscd
+          sleep 3
+
+      - name: Build bridge + prepare unsigned jcardsim copy
+        run: |
+          cd tests/hardware/host/vjavacard
+          mvn -q package -DskipTests
+          JC=$(find ~/.m2 -name "jcardsim-2.2.2.jar" | head -1)
+          cp "$JC" "${JC%.jar}-unsigned.jar"
+          zip -q -d "${JC%.jar}-unsigned.jar" 'META-INF/*.SF' 'META-INF/*.RSA' || true
+          echo "JC_SIM=${JC%.jar}-unsigned.jar" >> "$GITHUB_ENV"
+
+      - name: Start echo-mode bridge
+        run: |
+          cd tests/hardware/host/vjavacard
+          nohup java -cp target/classes:"$JC_SIM" \
+            org.amperstrand.VpcdBridge 127.0.0.1 35973 > /tmp/vjavacard-bridge.log 2>&1 &
+          echo $! > /tmp/vjavacard-bridge.pid
+          for i in $(seq 1 30); do
+            grep -q "connected to" /tmp/vjavacard-bridge.log && break
+            sleep 1
+          done
+          grep -q "connected to" /tmp/vjavacard-bridge.log \
+            || { echo "bridge never connected"; cat /tmp/vjavacard-bridge.log; exit 1; }
+
+      - name: Run the virtual-card suite (post-restart empty-window absorbed)
+        run: |
+          sleep 60   # pcscd-restart window: ATR answers now, C-APDUs may not
+          cd tests/hardware/host
+          python3 -m pytest test_vjavacard.py -v --timeout=300
+
+      - name: Bridge log on failure
+        if: failure()
+        run: cat /tmp/vjavacard-bridge.log || true
+
+      - name: pcscd readers on failure
+        if: failure()
+        run: python3 -c "from smartcard.System import readers; [print(str(r)) for r in readers()]"

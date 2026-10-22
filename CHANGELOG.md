@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
+
+- `.github/workflows/virtual-card.yml`: weekly + on-demand run of the
+  #261 virtual-card ladder on a stock GitHub runner — builds the
+  patched libifdvpcd from the pinned upstream, installs the dedicated
+  0x8C85 reader slot, builds the jcardsim bridge, runs the
+  test_vjavacard suite against a REAL pcscd with no boards and no
+  cards. Never runs on PRs (#367 opt-in policy). Runner-side recipe:
+  `tests/hardware/host/VIRTUAL_CARD_CI.md` (bench-side recipe stays
+  in the test module docstring). SmartPGP `--applet` mode stays
+  bench-gated (CAP artifact is bench storage, sha-pinned in the
+  J3R180-RUNBOOK).
+
 ### Fixed — lock refresh: stm32f469i-disc dead-branch pin (t_2679e18a)
 
 - `firmware/ccid-firmware/Cargo.toml`: the optional git dep pointed at
