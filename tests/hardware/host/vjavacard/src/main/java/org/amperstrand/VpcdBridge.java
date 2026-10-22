@@ -3,6 +3,7 @@ package org.amperstrand;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.Arrays;
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
@@ -219,7 +220,22 @@ public final class VpcdBridge {
     static int readFully(InputStream in, byte[] buf) throws Exception {
         int off = 0;
         while (off < buf.length) {
-            int r = in.read(buf, off, buf.length - off);
+            int r;
+            try {
+                r = in.read(buf, off, buf.length - off);
+            } catch (SocketTimeoutException e) {
+                // Transmit-dead-window mitigation (see TRANSMIT_DEAD_WINDOW.md):
+                // a quiet socket is NOT a dead VICC. The old behavior let the
+                // 5 s SO_TIMEOUT abort serve(), close the connection and
+                // reconnect every idle period — the bridge churned
+                // connect/probe/timeout/reconnect for the whole ~2 min
+                // post-pcscd-restart window, giving the single-client vpcd
+                // listener a moving target and re-triggering the driver's
+                // VICC-arrival logic on every cycle. A real card stays
+                // attached while silent; so do we — only a real EOF/error
+                // ends the session.
+                continue;
+            }
             if (r < 0) return off;
             off += r;
         }

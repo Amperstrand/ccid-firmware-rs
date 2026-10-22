@@ -33,7 +33,9 @@ Host setup (one-time, bench host only — no board, no physical card):
 
     OPERATIONAL: after any pcscd restart the vpcd slot answers the ATR probe
     immediately but C-APDU transmits can stay empty for ~2 minutes — do not
-    fail-fast on a freshly restarted pcscd.
+    fail-fast on a freshly restarted pcscd. Root cause + bridge-side
+    mitigation: vjavacard/TRANSMIT_DEAD_WINDOW.md (also: the 0x8C85 slot is
+    single-client — never TCP-probe the vpcd port while a bridge owns it).
 
 Wire facts (same as the firmware client and the tier-a table card):
 2-byte big-endian length + payload; OFF/ON controls get NO reply (an
