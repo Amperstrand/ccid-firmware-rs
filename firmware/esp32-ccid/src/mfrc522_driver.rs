@@ -111,6 +111,10 @@ use esp_idf_hal::delay::FreeRtos;
     feature = "backend-mfrc522"
 ))]
 use iso14443::type_a::limits::Limits;
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-mfrc522"
+))]
 use iso14443::type_a::{activation, Ats, Cid, Fsdi, PcdSession, Tc};
 
 #[cfg(all(
