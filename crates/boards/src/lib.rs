@@ -21,11 +21,13 @@
 //! carrying pin data inline.
 #![cfg_attr(not(test), no_std)]
 
+pub mod m5atom;
 pub mod m5stick;
 pub mod schema;
 
 pub use schema::*;
 
+pub use m5atom::M5ATOM;
 pub use m5stick::M5STICK;
 
 /// Every registered board (design §5: registry ↔ module files ↔ bin
@@ -33,4 +35,4 @@ pub use m5stick::M5STICK;
 /// A board's substantive content is one module `src/<board>.rs`; the
 /// registry line + `pub mod` are the two mechanical one-liners the design
 /// admits (§4 "adding a board touches one file").
-pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK];
+pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK, &M5ATOM];

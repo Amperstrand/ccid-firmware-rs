@@ -189,7 +189,11 @@ mod tests {
         // partitions-ota.csv: ota_0 @ 0x40000 (build.sh FLASH_OFFSET);
         // esp32/xtensa bootloader @ 0x1000 (flash-bundle §4.4 check 7).
         match M5STICK.ota_partition_family {
-            OtaFamily::EspIdfOta { csv, app_slot_offset, bootloader_offset } => {
+            OtaFamily::EspIdfOta {
+                csv,
+                app_slot_offset,
+                bootloader_offset,
+            } => {
                 assert_eq!(csv, "firmware/esp32-ccid/partitions-ota.csv");
                 assert_eq!(app_slot_offset, 0x40000);
                 assert_eq!(bootloader_offset, 0x1000);

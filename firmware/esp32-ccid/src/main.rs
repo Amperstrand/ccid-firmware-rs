@@ -636,11 +636,14 @@ fn main() {
     // numbers only: driver_ng claims the controller by port, so neither
     // the `Peripherals::i2c0` token nor typed pin drivers are consumed
     // (the #149 P3 shared adapter owns the bus).
-    // boards-as-data step 1 (design §4): board-m5stick reads the
-    // `crates/boards` table — the pin numbers live THERE, asserted by its
-    // host tests; m5atom/nucula migrate in later slices.
+    // boards-as-data step 2 (design §4): board-m5atom reads the
+    // `crates/boards` table too — the pin numbers live THERE, asserted
+    // by its host tests; only board-nucula migrates in a later slice.
     #[cfg(feature = "board-m5atom")]
-    let (sda_gpio_no, scl_gpio_no) = (26, 32);
+    let (sda_gpio_no, scl_gpio_no) = {
+        let grove = boards::M5ATOM.bus(boards::BusRole::NfcFrontend).i2c();
+        (grove.sda, grove.scl)
+    };
     #[cfg(feature = "board-m5stick")]
     let (sda_gpio_no, scl_gpio_no) = {
         let grove = boards::M5STICK.bus(boards::BusRole::NfcFrontend).i2c();

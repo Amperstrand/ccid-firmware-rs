@@ -9,6 +9,13 @@
   in this landing; the m5stick pilot consumption follows as the design's
   migration step 1. Design open decisions O-1/O-2/O-3 recorded as
   D-10/D-11/D-12 in `docs/DECISION_REGISTER.md`.
+- m5atom table (`crates/boards/src/m5atom.rs`, design §4 step 2): the
+  Atom rides the same schema/constructor path as the m5stick with ONLY
+  the Grove pins differing (26/32 per bolty B2, incl. B2's
+  finds-nothing-on-this-rig caveat as `variant_note`). `main.rs`
+  board-m5atom cfg tuple now reads `boards::M5ATOM`; the acceptance
+  property held — the m5atom slice added ZERO pin data outside the
+  table module.
 
 ### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
 

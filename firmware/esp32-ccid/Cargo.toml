@@ -22,9 +22,9 @@ default = ["backend-mfrc522", "board-m5atom"]
 backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "dep:pn7160-nci", "pn7160-nci/esp"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 # Grove I2C pinout — pin data lives in `crates/boards` (boards-as-data,
-# design §4 step 1): do not add pin numbers here. board-m5stick reads
-# `boards::M5STICK`; board-m5atom / board-nucula migrate in later slices
-# (bolty-rs docs/lessons-learned.md B2 remains the provenance citation).
+# design §4): do not add pin numbers here. board-m5stick / board-m5atom
+# read `boards::M5STICK` / `boards::M5ATOM`; board-nucula migrates in a
+# later slice (bolty-rs docs/lessons-learned.md B2 remains the citation).
 board-m5atom = []
 board-m5stick = []
 # ESP32-C3 nucula board: PN7160 NFC @ I2C addr 0x28, SDA=GPIO4 SCL=GPIO5 IRQ=GPIO6 VEN=GPIO7.
