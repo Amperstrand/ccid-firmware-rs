@@ -21,7 +21,7 @@ import time
 
 import pytest
 
-from test_vjavacard import ECHO_AID, SMARTPGP_AID, _bridge_ready, _connect
+from test_vjavacard import ECHO_AID, SMARTPGP_AID, BRIDGE_READY, _connect
 
 # Collection-safe import (#403 follow-up pattern — the soak file rode in
 # with #416 without it and broke the python-collect gate's minimal env
@@ -45,7 +45,7 @@ pytestmark = [
         reason="pyscard not installed — vjavacard soak drives pcscd (bench only)",
     ),
     pytest.mark.skipif(
-        not _bridge_ready(), reason="vjavacard bridge not built/running (host setup)"
+        not BRIDGE_READY, reason="vjavacard bridge not built/running (host setup)"
     ),
 ]
 
