@@ -44,6 +44,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_SH = REPO_ROOT / "firmware" / "esp32-ccid" / "build.sh"
 FW_DIR = REPO_ROOT / "firmware" / "esp32-ccid"
 FW_MANIFEST = FW_DIR / "Cargo.toml"
+CCID_FW_MANIFEST = REPO_ROOT / "firmware" / "ccid-firmware" / "Cargo.toml"
+BOARDS_CRATE = REPO_ROOT / "crates" / "boards"
+BOARDS_SIDECAR = BOARDS_CRATE / "gen" / "nucula-nets.toml"
+BOARDS_NUCULA_GEN = BOARDS_CRATE / "src" / "nucula_gen.rs"
+
+# chip enum (crates/boards/src/schema.rs Chip) → esp-idf target triple
+# (None = bare-metal STM32 legs, no espidf target).
+CHIP_TARGETS = {
+    "Esp32": "xtensa-esp32-espidf",
+    "Esp32c3": "riscv32imc-esp-espidf",
+    "Stm32f469": None,
+    "Stm32f746": None,
+}
 
 # Combos that exist ONLY in CI (no build.sh case). Provenance recorded per
 # entry — extend this table, never ci.yml inline, so the manifest stays the
@@ -178,6 +191,167 @@ def sdkconfig_paths_ok(sdkconfig: str) -> bool:
     return (FW_DIR / sdkconfig.split(";")[0]).exists()
 
 
+# ---------------------------------------------------------------------------
+# boards-as-data registry (design §5 item 1): the boards crate is a second,
+# equal manifest — parsed from source the same way build.sh is.
+# ---------------------------------------------------------------------------
+
+def load_boards_registry() -> tuple[list[dict], list[str]]:
+    """Parse crates/boards: lib.rs modules + ALL_BOARDS line, then each
+    module's table (name/chip/ota-csv/feature). Returns (tables, errors);
+    on errors the caller skips the boards assertions."""
+    errors: list[str] = []
+    try:
+        lib = (BOARDS_CRATE / "src" / "lib.rs").read_text()
+    except OSError as e:
+        return [], [f"boards: lib.rs unreadable: {e}"]
+    mods = [m for m in re.findall(r"^pub mod (\w+);", lib, re.M) if m != "schema"]
+    registry = re.search(r"ALL_BOARDS[^=]*=\s*&\[(.*?)\]", lib, re.S)
+    if not registry:
+        return [], ["boards: ALL_BOARDS registry line not found in lib.rs"]
+    registered = re.findall(r"&(\w+)", registry.group(1))
+
+    tables: list[dict] = []
+    for mod in mods:
+        path = BOARDS_CRATE / "src" / f"{mod}.rs"
+        try:
+            src = path.read_text()
+        except OSError as e:
+            errors.append(f"boards: module {mod!r} unreadable: {e}")
+            continue
+        name = re.search(r'^\s*name: "([^"]+)"', src, re.M)
+        chip = re.search(r"^\s*chip: Chip::(\w+)", src, re.M)
+        feat = re.search(r'pub const FEATURE: &str = "([^"]+)"', src)
+        const = re.search(r"pub const (\w+): BoardDesc", src)
+        csv = re.search(r'^\s*csv: "([^"]+)"', src, re.M)
+        missing = [lbl for lbl, rx in
+                   (("name", name), ("chip", chip), ("FEATURE", feat), ("table const", const))
+                   if rx is None]
+        if missing:
+            errors.append(f"boards: {mod}.rs missing field(s): {', '.join(missing)}")
+            continue
+        assert name and chip and feat and const  # for the type checker
+        tables.append({
+            "module": mod,
+            "const": const.group(1),
+            "name": name.group(1),
+            "chip": chip.group(1),
+            "csv": csv.group(1) if csv else None,
+            "feature": feat.group(1),
+        })
+
+    # registry line ↔ module files, both directions (the "two mechanical
+    # one-liners" the design admits — this is where drift gets loud).
+    consts = {t["const"] for t in tables}
+    for c in registered:
+        if c not in consts:
+            errors.append(f"boards: ALL_BOARDS lists &{c} but no module defines it")
+    for t in tables:
+        if t["const"] not in registered:
+            errors.append(f"boards: {t['module']}.rs defines {t['const']} but ALL_BOARDS does not list it")
+    by_name = {t["name"]: t for t in tables}
+    if len(by_name) != len(tables):
+        errors.append("boards: duplicate table name fields across modules")
+    return tables, errors
+
+
+def combo_board_feature(combo: dict) -> str | None:
+    """The board-* feature a combo compiles for (None if undeterminable).
+    Mirrors dims(): pn7160-* variant features imply board-nucula via the
+    manifest's feature deps; a defaults build rides board-m5atom."""
+    f = set(filter(None, combo["features"].split(",")))
+    if any(x.startswith("pn7160-") for x in f):
+        f |= {"board-nucula"}
+    bf = next((x for x in f if x.startswith("board-")), None)
+    if bf is None and not combo.get("no_default_features", False):
+        bf = "board-m5atom"  # esp32-ccid default board feature
+    return bf
+
+
+def boards_check(combos: list[dict], known_features: set[str]) -> list[str]:
+    """The boards axis assertions (design §5 item 1)."""
+    errors: list[str] = []
+    tables, parse_errors = load_boards_registry()
+    errors.extend(parse_errors)
+    if parse_errors or not tables:
+        return errors
+    by_feature = {t["feature"]: t for t in tables}
+
+    # every board-* feature in the esp manifest resolves to a registry
+    # entry with the right chip/target family
+    for feat in sorted(f for f in known_features if f.startswith("board-")):
+        if feat not in by_feature:
+            errors.append(f"boards: esp32-ccid feature {feat!r} has no boards::ALL_BOARDS entry")
+
+    # every registry entry has a selecting feature in the manifest of the
+    # firmware that builds it (esp bins ↔ board-*; STM32 ↔ stm32f*)
+    try:
+        with open(CCID_FW_MANIFEST, "rb") as f:
+            ccid_feats = set(tomllib.load(f).get("features", {}).keys())
+    except OSError as e:
+        ccid_feats = set()
+        errors.append(f"boards: ccid-firmware manifest unreadable: {e}")
+    for t in tables:
+        target_manifest = "esp32-ccid" if t["chip"] in ("Esp32", "Esp32c3") else "ccid-firmware"
+        pool = known_features if target_manifest == "esp32-ccid" else ccid_feats
+        if t["feature"] not in pool:
+            errors.append(f"boards: {t['name']} table feature {t['feature']!r} missing from {target_manifest} [features]")
+
+    # chip ↔ target agreement on every combo leg (esp + CI-only + host)
+    for c in combos + CI_ONLY_COMBOS + HOST_COMBOS:
+        bf = combo_board_feature(c)
+        if not bf or bf not in by_feature:
+            continue
+        t = by_feature[bf]
+        want = CHIP_TARGETS.get(t["chip"], "??")
+        if "target" in c and c["target"] != want:
+            errors.append(
+                f"{c['name']}: target {c['target']} disagrees with board {t['name']} chip {t['chip']} ({want})")
+        if t["chip"] not in CHIP_TARGETS:
+            errors.append(f"boards: {t['name']} chip {t['chip']} not in CHIP_TARGETS — update union_matrix.py")
+
+    # every esp-idf OTA family's partition CSV exists (sdkconfig pattern)
+    for t in tables:
+        if t["csv"] and not (REPO_ROOT / t["csv"]).exists():
+            errors.append(f"boards: {t['name']} ota csv {t['csv']!r} does not exist")
+
+    # nucula: the generated file header matches the sidecar pin (no
+    # network — full regeneration is boards-gen's --check job)
+    try:
+        gen = BOARDS_NUCULA_GEN.read_text()
+        with open(BOARDS_SIDECAR, "rb") as f:
+            side = tomllib.load(f)["source"]
+        hm = re.search(r"@generated from (\S+)@(\w+) (\S+) \(netlist sha256 ([0-9a-f]{64})\)", gen)
+        if not hm:
+            errors.append("boards: nucula_gen.rs provenance header missing/malformed")
+        elif (hm.group(1), hm.group(2), hm.group(3), hm.group(4)) != (
+                side["repo"], side["rev"], side["netlist_path"], side["netlist_sha256"]):
+            errors.append("boards: nucula_gen.rs header disagrees with gen/nucula-nets.toml pin — regenerate")
+    except OSError as e:
+        errors.append(f"boards: nucula generated-table check unreadable: {e}")
+    return errors
+
+
+def annotate_boards(combos: list[dict]) -> list[dict]:
+    """Design §5 item 2 — the explicit board axis on matrix output: each
+    combo leg carries its table's name/chip/ota-family, so a new board
+    appears in the matrix the moment it appears in the registry."""
+    tables, _ = load_boards_registry()
+    by_feature = {t["feature"]: t for t in tables}
+    for c in combos:
+        bf = combo_board_feature(c)
+        t = by_feature.get(bf) if bf else None
+        if t:
+            c["board"] = t["name"]
+            c["board_chip"] = t["chip"]
+            c["board_ota"] = f"espidf-ota:{t['csv']}" if t["csv"] else "bare-metal"
+        else:
+            c["board"] = None
+            c["board_chip"] = None
+            c["board_ota"] = None
+    return combos
+
+
 def check() -> list[str]:
     """Full validation; returns a list of error strings (empty == healthy)."""
     errors: list[str] = []
@@ -224,6 +398,10 @@ def check() -> list[str]:
             errors.append(f"ccid-service grew deps outside the boundary allowlist: {sorted(stray)}")
     except OSError as e:
         errors.append(f"ccid-service manifest unreadable: {e}")
+
+    # boards-as-data axis (design §5): registry ↔ bin features ↔ combo
+    # chip/targets ↔ ota CSVs ↔ generated-table provenance.
+    errors.extend(boards_check(combos, known_features))
 
     errors.extend(selftest(quiet=True))
     return errors
@@ -359,9 +537,9 @@ def main() -> int:
     combos = select(combos, variant, filt)
 
     if fmt == "matrix":
-        print(json.dumps(combos, separators=(",", ":")))
+        print(json.dumps(annotate_boards(combos), separators=(",", ":")))
     elif fmt == "host-matrix":
-        print(json.dumps(HOST_COMBOS, separators=(",", ":")))
+        print(json.dumps(annotate_boards(HOST_COMBOS), separators=(",", ":")))
     elif fmt == "table":
         print(f"{'variant':<22} {'target':<24} {'dims'}")
         for c in combos:

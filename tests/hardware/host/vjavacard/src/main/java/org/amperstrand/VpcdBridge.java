@@ -164,11 +164,22 @@ public final class VpcdBridge {
                     // power-off deselects — real-card semantics; the next
                     // session must SELECT again before applet commands.
                     appletSelected = false;
+                    // NOTE: do NOT call sim.reset() here — jcardsim 2.2.2's
+                    // reset() leaves the runtime so a subsequent
+                    // selectApplet()+transmitCommand throws the
+                    // no-current-applet SystemException (bench-verified
+                    // 2026-10-22: every post-reset SELECT 6F00). Flag-only
+                    // matches observed 2.2.2 power-cycle behavior.
                 }
                 // OFF/ON: no reply (see class doc)
                 continue;
             }
             CommandAPDU capdu = new CommandAPDU(msg);
+            if (Boolean.getBoolean("vjc.debug")) {
+                System.out.println("vjc: >> " + Integer.toHexString(capdu.getCLA()) + " "
+                        + Integer.toHexString(capdu.getINS()) + " " + capdu.getP1()
+                        + " " + capdu.getP2() + " lc=" + capdu.getData().length);
+            }
             try {
                 // jcardsim 2.2.2 does not auto-dispatch SELECT: the card
                 // runtime needs the applet selected before transmit.
@@ -207,6 +218,9 @@ public final class VpcdBridge {
                     // wallets) see a sane answer. Applets that DO answer
                     // their own SELECT (EchoApplet) keep their response.
                     resp = selectFci(selectedAid);
+                }
+                if (Boolean.getBoolean("vjc.debug")) {
+                    System.out.println("vjc: << " + Integer.toHexString(rapdu.getSW()));
                 }
                 send(out, resp);
             } catch (Throwable t) {

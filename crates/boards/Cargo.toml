@@ -1,0 +1,22 @@
+[package]
+name = "boards"
+version = "0.1.0"
+edition = "2021"
+description = "Board tables as const data — one home for pin/bus maps, NFC peripheral facts, capabilities, and OTA-partition family (docs/BOARDS-AS-DATA-DESIGN.md)"
+license = "GPL-2.0-or-later"
+
+# Layer A of the boards-as-data design: pure, core-only const data.
+# No HAL deps, no build-dep, no alloc — must compile on the host (CI
+# host-union-check legs), xtensa/riscv espidf, and cortex-m alike.
+# Consumed by the firmware bins (esp32-ccid, ccid-firmware) and by
+# tooling/CI — NEVER by ccid-service (the #383 board-blind boundary;
+# adding a dep here would fail tools/union_matrix.py check).
+[dependencies]
+
+# Host-test-only cross-check (design §2.1 landing gate): the generated
+# nucula table must EQUAL the historical bench constants in
+# pn7160-nci::board::NUCULA — drift is impossible, not merely
+# discouraged. Default features only (pure data, no esp deps); this
+# never leaks into any dependent's normal build.
+[dev-dependencies]
+pn7160-nci = { path = "../pn7160-nci" }

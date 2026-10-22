@@ -11,7 +11,7 @@ on:
 jobs:
   vjavacard:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -73,11 +73,15 @@ jobs:
           sleep 60   # pcscd-restart window: ATR answers now, C-APDUs may not
           python3 -c "from smartcard.System import readers; readers()" || true
           cd tests/hardware/host
+          # N=50: each cold-runner connect cycle costs seconds; the full
+          # 300-cycle soak is a bench-side number (fast warm cycles there)
           # run as root: socket-activated pcscd respawns recreate a root-only
           # pcscd.comm faster than any chmod can follow (run 39849460207);
           # PYTHONPATH keeps the runner-user pip site-packages visible.
           sudo env PYTHONPATH="$HOME/.local/lib/python$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages" \
-            python3 -m pytest test_vjavacard.py -v -rs --timeout=300 | tee /tmp/pytest.log
+            VJC_SOAK_N=50 \
+            python3 -m pytest test_vjavacard.py test_vjavacard_soak.py -v -rs --timeout=600 \
+            | tee /tmp/pytest.log
           # an all-skip run is a FALSE green: the suite's readiness gate
           # silently skipping everything would still exit 0.
           grep -qE "[1-9][0-9]* passed" /tmp/pytest.log \
