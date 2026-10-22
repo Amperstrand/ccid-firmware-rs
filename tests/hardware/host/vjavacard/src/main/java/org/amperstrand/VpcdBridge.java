@@ -35,6 +35,34 @@ public final class VpcdBridge {
     static final byte[] SELF_MARK = hex("564A41564143415244"); // "VJAVACARD"
 
     /**
+     * The FCI a JCRE answers a successful applet SELECT with:
+     * {@code 6F [ 84 <aid> 90 <self-mark> ]} + SW 9000. EchoApplet returns
+     * exactly these bytes from its own process(); the bridge re-uses the
+     * builder to answer the SELECT on behalf of applets that do not
+     * implement INS=A4 themselves (JCRE semantics — e.g. a physical
+     * J3R180 answers SmartPGP's SELECT with an FCI + 9000 while the
+     * applet itself never sees the INS).
+     */
+    static byte[] selectFci(byte[] aid) {
+        int body = (2 + aid.length) + (2 + SELF_MARK.length);
+        byte[] out = new byte[2 + body + 2];
+        int p = 0;
+        out[p++] = (byte) 0x6F;
+        out[p++] = (byte) body;
+        out[p++] = (byte) 0x84; // DF name
+        out[p++] = (byte) aid.length;
+        System.arraycopy(aid, 0, out, p, aid.length);
+        p += aid.length;
+        out[p++] = (byte) 0x90; // proprietary tag: the marker
+        out[p++] = (byte) SELF_MARK.length;
+        System.arraycopy(SELF_MARK, 0, out, p, SELF_MARK.length);
+        p += SELF_MARK.length;
+        out[p++] = (byte) 0x90; // SW 9000
+        out[p] = 0x00;
+        return out;
+    }
+
+    /**
      * A self-marking echo applet: SELECT answers a FCI carrying the
      * VJAVACARD marker; any other INS echoes the INF back with SW 9000
      * (never card data — everything it returns is either the marker,
@@ -56,22 +84,8 @@ public final class VpcdBridge {
                     if (!Arrays.equals(aid, AID_BYTES)) {
                         ISOException.throwIt(ISO7816.SW_FILE_NOT_FOUND);
                     }
-                    // FCI: 6F [ 84 <aid> 90 <marker> ]  (self-marked)
-                    short p = 0;
-                    byte[] fci = new byte[64];
-                    fci[p++] = (byte) 0x6F;
-                    fci[p++] = (byte) ((2 + AID_BYTES.length) + (2 + SELF_MARK.length));
-                    fci[p++] = (byte) 0x84;
-                    fci[p++] = (byte) AID_BYTES.length;
-                    p = (short) Util.arrayCopyNonAtomic(AID_BYTES, (short) 0, fci, p,
-                            (short) AID_BYTES.length);
-                    fci[p++] = (byte) 0x90; // proprietary tag: the marker
-                    fci[p++] = (byte) SELF_MARK.length;
-                    p = (short) Util.arrayCopyNonAtomic(SELF_MARK, (short) 0, fci, p,
-                            (short) SELF_MARK.length);
-                    byte[] resp = Arrays.copyOf(fci, p + 2);
-                    resp[p] = (byte) 0x90;
-                    resp[p + 1] = 0x00;
+                    // FCI: 6F [ 84 <aid> 90 <marker> ] + 9000 (self-marked)
+                    byte[] resp = selectFci(AID_BYTES);
                     System.arraycopy(resp, 0, buf, 0, resp.length);
                     apdu.setOutgoingAndSend((short) 0, (short) resp.length);
                     return;
@@ -157,6 +171,7 @@ public final class VpcdBridge {
             try {
                 // jcardsim 2.2.2 does not auto-dispatch SELECT: the card
                 // runtime needs the applet selected before transmit.
+                byte[] selectedAid = null;
                 if (capdu.getINS() == 0xA4 && capdu.getP1() == 0x04
                         && capdu.getData().length > 0) {
                     byte[] aidBytes = capdu.getData();
@@ -171,6 +186,7 @@ public final class VpcdBridge {
                         send(out, new byte[]{(byte) 0x6A, (byte) 0x82});
                         continue;
                     }
+                    selectedAid = aidBytes;
                 } else if (capdu.getINS() != 0xA4 && !appletSelected) {
                     // no SELECT yet this session — mirror a card with no
                     // current applet
@@ -178,7 +194,20 @@ public final class VpcdBridge {
                     continue;
                 }
                 ResponseAPDU rapdu = sim.transmitCommand(capdu);
-                send(out, rapdu.getBytes());
+                byte[] resp = rapdu.getBytes();
+                if (selectedAid != null && resp.length >= 2
+                        && resp[resp.length - 2] == (byte) 0x6D
+                        && resp[resp.length - 1] == 0x00) {
+                    // JCRE-style SELECT answering: the applet was selected
+                    // but declines the re-delivered SELECT INS (6D00 — e.g.
+                    // SmartPGP does not implement INS=A4). A real JCRE
+                    // (physical J3R180) answers the SELECT itself with the
+                    // applet's FCI + 9000, so FCI-checking clients (gp -c,
+                    // wallets) see a sane answer. Applets that DO answer
+                    // their own SELECT (EchoApplet) keep their response.
+                    resp = selectFci(selectedAid);
+                }
+                send(out, resp);
             } catch (Throwable t) {
                 System.out.println("vjavacard: applet threw: " + t);
                 t.printStackTrace();
