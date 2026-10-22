@@ -1,5 +1,22 @@
 ## [Unreleased]
 
+### Added — #261 tier (b): vjavacard — a REAL virtual JavaCard behind vpcd
+
+- `tests/hardware/host/vjavacard/`: a Java/Maven bridge (jcardsim
+  2.2.2, Maven Central) that EXECUTES real applet code behind a vpcd
+  listener — pcscd sees a reader whose card runs Java: AID dispatch,
+  applet process() logic, 6A82 for unknown AIDs. Bench-green 5/5
+  (`tests/hardware/host/test_vjavacard.py`): J3R180-shape ATR,
+  self-marked SELECT FCI ("VJAVACARD"), executed echo applet,
+  unknown-AID 6A82, no-SELECT 6D00. Zero hardware.
+- jcardsim 2.2.2 findings baked in: transmitCommand does NOT
+  auto-dispatch SELECT (the bridge calls selectApplet(AID) itself);
+  power-OFF resets the selected-applet state (real-card semantics);
+  the vpcd driver folds the status word into the response buffer.
+- Same slot rules as the tier-a table card: dedicated reader.conf
+  entry (0x8C85) + its own .so copy; setup recipe in the test module
+  docstring.
+
 ### Docs — boards-as-data design (t_2f868bc4, lane L)
 
 - `docs/BOARDS-AS-DATA-DESIGN.md`: design for the boards-as-data layer —
