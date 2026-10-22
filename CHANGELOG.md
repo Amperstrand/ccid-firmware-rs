@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Added — SmartPGP-mode turnkey: setup_smartpgp.sh
+
+- `tests/hardware/host/vjavacard/setup_smartpgp.sh`: verifies the
+  pinned CAP sha (RUNBOOK pin), extracts APPLET-INF/classes to a
+  classpath-root dir, and prints (or execs with --run) the exact
+  bridge launch line. Removes the ad-hoc /opt/bench/vjavacard/
+  dependency the GP lifecycle lane left behind — SmartPGP mode is now
+  reproducible from the repo + the pinned artifact alone (extraction
+  verified byte-identical to the GP lane's set).
+
 ### Added — vjavacard follow-ups (card t_57a0ffe2: JCRE SELECT FCI, transmit-dead window)
 
 - JCRE-style SELECT answering in the vjavacard bridge: when a SELECT-by-AID
