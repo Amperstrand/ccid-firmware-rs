@@ -1,5 +1,48 @@
 ## [Unreleased]
 
+### Added — boards-as-data pilot: `crates/boards` (t_099ed2af, design #396)
+
+- New kernel crate `crates/boards` — Layer A of
+  `docs/BOARDS-AS-DATA-DESIGN.md`: board wiring (pin/bus map, NFC
+  peripheral + bus address, capability set, OTA-partition family) as
+  pure `no_std` const data, one home in this repo. Design open decisions
+  O-1/O-2/O-3 recorded as D-10/D-11/D-12 in `docs/DECISION_REGISTER.md`.
+- m5atom table (`crates/boards/src/m5atom.rs`, design §4 step 2): the
+  Atom rides the same schema/constructor path as the m5stick with ONLY
+  the Grove pins differing (26/32 per bolty B2, incl. B2's
+  finds-nothing-on-this-rig caveat as `variant_note`). `main.rs`
+  board-m5atom cfg tuple now reads `boards::M5ATOM`; the acceptance
+  property held — the m5atom slice added ZERO pin data outside the
+  table module.
+- Call sites read the tables (design §4 step 1 completion): the
+  probe/run facts (I2C addr + run speed) are per-board bindings from
+  `boards::` — the shared `0x28`/`400_000` literals are gone from
+  `main.rs`; the m5stick LCD call keeps its typed GpioN tokens but sits
+  behind a number→token match + a const-time assert (drift fails the
+  BUILD, not the bench); `led.rs` gpio27 carries the same assert
+  against the m5atom `led_matrix` row.
+- nucula GENERATED table (design §2.1/§4 step 3): `tools/boards-gen`
+  (explicit command, never build.rs) fetches
+  `zeugmaster/nucula-board@78e5891` `docs/netlist.xml`, verifies the
+  sidecar-pinned sha256, and emits `crates/boards/src/nucula_gen.rs`
+  from the sidecar net-map (`gen/nucula-nets.toml` — an upstream net
+  rename changes one sidecar line). Netlist confirms the bench:
+  SDA=IO4/SCL=IO5/IRQ=IO6/VEN=IO7; the boards host test asserts
+  EQUALITY with `pn7160-nci::board::NUCULA`. The `main.rs` board-nucula
+  arm now reads the table — carrying one deliberate fix: hz_run
+  400 kHz→100 kHz (the shared-bus PCF8574T limit the old literal
+  violated).
+- STM32 minimal tables (design §2.3/§4 step 4): F469/F746 Layer-A rows
+  (pins by name, port*16+pin encoding asserted against the
+  board_config.rs typed pins; `wired_contact`, `OtaFamily::BareMetal`)
+  + the one registry line in ccid-firmware (`board_registry.rs`,
+  FWID/board-name only). Schema gains `ConsoleKind::DebugProbe` and
+  `Wire::UsbCcid` for the bare-metal rows.
+- union-matrix boards axis (design §5, #390): `union_matrix.py check`
+  cross-validates registry ↔ module files ↔ bin features ↔ combo
+  chip/targets ↔ OTA CSV existence ↔ nucula generated-header vs sidecar
+  pin; `--format matrix` legs carry `board`/`board_chip`/`board_ota`.
+
 ### Added — virtual-stack soak + bridge hardening notes
 
 - `test_vjavacard_soak.py`: reliability number for the virtual reader
@@ -13,7 +56,6 @@
   runtime so subsequent selectApplet()+transmitCommand throws the
   no-current-applet SystemException (every post-reset SELECT 6F00);
   flag-only power-off semantics match observed behavior.
-
 ### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
 
 - First dispatch (run 39846808036) exposed a FALSE green: the suite's

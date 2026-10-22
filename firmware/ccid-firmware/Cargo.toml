@@ -40,6 +40,10 @@ path = "../../tests/replay_seedkeeper.rs"
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
 card-interface = { path = "../../crates/card-interface" }
+# boards-as-data (design §4 step 4): the registry LINE only —
+# board_registry.rs ties a build to its Layer-A table row; wiring stays
+# in board_config.rs (Layer B). Pure no_std const data, no HAL deps.
+boards = { path = "../../crates/boards" }
 
 [target.'cfg(not(all(target_arch = "arm", target_os = "none")))'.dependencies]
 log = "0.4"
