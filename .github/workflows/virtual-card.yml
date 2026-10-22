@@ -11,7 +11,7 @@ on:
 jobs:
   vjavacard:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
