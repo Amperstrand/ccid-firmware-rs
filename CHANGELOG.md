@@ -1,5 +1,18 @@
 ## [Unreleased]
 
+### Fixed — lock refresh: stm32f469i-disc dead-branch pin (t_2679e18a)
+
+- `firmware/ccid-firmware/Cargo.toml`: the optional git dep pointed at
+  `branch = "sdio-support"`, which no longer exists on the fork remote —
+  `cargo update` failed with RC=101 "cannot locate remote-tracking branch"
+  (builds kept working only via the lockfile + the `[patch]` vendor overlay).
+  Re-pinned to the immutable sha of the deleted branch tip,
+  `rev = fa6dc86c…` (the provenance base recorded in
+  `vendor-patches/stm32f469i-disc/SNAPSHOT.md`). `cargo update --dry-run`
+  now exits 0; the lockfile is unaffected (the dep resolves through the
+  in-repo `vendor/` copy), and `cargo check -p ccid-firmware-rs --target
+  thumbv7em-none-eabihf` stays green.
+
 ### Added — M3 product presets: named build compositions (t_0492b7c6)
 
 - `products.toml` — the single source of truth for the product tier:
