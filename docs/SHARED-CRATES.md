@@ -26,7 +26,7 @@ consuming one via a git dep, it joins the Kernel crates table with its pin.
 |---|---|---|---|---|
 | `boards` (board tables incl. generated nucula) | ccid `crates/boards` | bolty `apps/bolty-esp32` | `ccid@354cc118` | BoardDesc const tables (design: docs/BOARDS-AS-DATA-DESIGN.md; impl #418, bolty flip #173). nucula table GENERATED from zeugmaster/nucula-board netlist — regenerate via `cargo run -p boards-gen`; equality vs `pn7160-nci::board::NUCULA` is test-enforced |
 | `pn7160-nci` (incl. `hal_i2c`) | ccid `crates/pn7160-nci` | bolty `crates/bolty-pn7160` | `ccid@0b8e33e` | PN7160 NCI frontend + shared `driver_ng` embedded-hal I2C adapter (Write-run coalescing, #321) |
-| `mfrc522-pcd` | **ccid `crates/mfrc522-pcd` (M2 DONE 2026-10-21: migrated from bolty, byte-identical source at f9fb57b7)** | ccid `firmware/esp32-ccid` (path dep); bolty consumes via git until its flip PR | ccid path dep (no rev) | MFRC522 PCD layer — kernel homed in ccid (one-way kernel M2 step 1). iso14443 rev-string inside the crate MUST match firmware/esp32-ccid's pin byte-for-byte |
+| `mfrc522-pcd` | **ccid `crates/mfrc522-pcd` (M2 DONE 2026-10-21: migrated from bolty, byte-identical source at f9fb57b7)** | ccid `firmware/esp32-ccid` (path dep); bolty still builds its OWN local copy (crates/mfrc522-pcd, path-consumed — no cross-repo pin exists in either direction; delete + flip to a ccid rev-pin to finish M2) | ccid path dep (no rev) | MFRC522 PCD layer — kernel homed in ccid (one-way kernel M2 step 1). iso14443 rev-string inside the crate MUST match firmware/esp32-ccid's pin byte-for-byte |
 | `pn532-transport` | bolty `crates/pn532-transport` | ccid `firmware/esp32-ccid` (optional) | `bolty@2a1afea` | PN532 transport. **M2: migrates to ccid** |
 
 ## Protocol layer
