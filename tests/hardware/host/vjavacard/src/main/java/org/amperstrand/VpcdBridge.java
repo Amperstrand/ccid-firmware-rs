@@ -94,10 +94,30 @@ public final class VpcdBridge {
         int port = args.length > 1 ? Integer.parseInt(args[1]) : 35972;
 
         JavaxSmartCardInterface sim = new JavaxSmartCardInterface();
-        AID aid = new AID(EchoApplet.AID_BYTES, (short) 0, (byte) EchoApplet.AID_BYTES.length);
-        sim.installApplet(aid, EchoApplet.class);
-        System.out.println("vjavacard: echo applet installed, AID="
-                + hexStr(EchoApplet.AID_BYTES));
+        if (args.length >= 5 && "--applet".equals(args[2])) {
+            // --applet <fqcn> <aidHex>: load a REAL applet class through the
+            // jcardsim loadApplet path (installApplet = load + create +
+            // register). For SmartPGP the classes ship inside the CAP
+            // artifact (APPLET-INF/classes in the ant-javacard JAR); install
+            // params follow the Java Card convention [aidLen][aid] and the
+            // applet registers itself under that AID.
+            String fqcn = args[3];
+            byte[] aidBytes = hex(args[4]);
+            AID aid = new AID(aidBytes, (short) 0, (byte) aidBytes.length);
+            byte[] params = new byte[1 + aidBytes.length];
+            params[0] = (byte) aidBytes.length;
+            System.arraycopy(aidBytes, 0, params, 1, aidBytes.length);
+            sim.installApplet(aid, Class.forName(fqcn), params, (short) 0,
+                    (byte) params.length);
+            System.out.println("vjavacard: applet " + fqcn + " installed, AID="
+                    + hexStr(aidBytes));
+        } else {
+            AID aid = new AID(EchoApplet.AID_BYTES, (short) 0,
+                    (byte) EchoApplet.AID_BYTES.length);
+            sim.installApplet(aid, EchoApplet.class);
+            System.out.println("vjavacard: echo applet installed, AID="
+                    + hexStr(EchoApplet.AID_BYTES));
+        }
 
         while (true) {
             try (Socket sock = new Socket(host, port)) {

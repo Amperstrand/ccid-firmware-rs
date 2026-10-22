@@ -16,8 +16,24 @@ Host setup (one-time, bench host only — no board, no physical card):
     systemctl restart pcscd.socket pcscd
 
     cd tests/hardware/host/vjavacard && mvn -q package -DskipTests
-    java -cp target/vjavacard-0.1.0.jar:~/.m2/.../jcardsim-2.2.2.jar \\
+    # unsigned copy: the shipped jar is signed, which rejects the shadow
+    # javacard.security classes compiled into target/classes
+    cp ~/.m2/repository/com/licel/jcardsim/2.2.2/jcardsim-2.2.2.jar \
+       ~/.m2/repository/com/licel/jcardsim/2.2.2/jcardsim-2.2.2-unsigned.jar
+    zip -d ~/.m2/.../jcardsim-2.2.2-unsigned.jar 'META-INF/*.SF' 'META-INF/*.RSA'
+    # target/classes FIRST (shadows), then the unsigned jar
+    java -cp target/classes:~/.m2/.../jcardsim-2.2.2-unsigned.jar \
         org.amperstrand.VpcdBridge 127.0.0.1 35973
+    # real-applet mode (SmartPGP from the pinned CAP artifact; the .cap is an
+    # ant-javacard JAR — APPLET-INF/classes holds the compiled applet):
+    unzip -o <SmartPGP.cap> 'APPLET-INF/classes/*' -d smartpgp-classes/
+    java -cp target/classes:...-unsigned.jar:smartpgp-classes \
+        org.amperstrand.VpcdBridge 127.0.0.1 35973 \
+        --applet fr.anssi.smartpgp.SmartPGPApplet D276000124010304AFAF000000000000
+
+    OPERATIONAL: after any pcscd restart the vpcd slot answers the ATR probe
+    immediately but C-APDU transmits can stay empty for ~2 minutes — do not
+    fail-fast on a freshly restarted pcscd.
 
 Wire facts (same as the firmware client and the tier-a table card):
 2-byte big-endian length + payload; OFF/ON controls get NO reply (an
@@ -105,6 +121,8 @@ def test_atr_is_j3r180_shape():
 
 
 def test_select_returns_self_marked_fci():
+    if _select_sw(ECHO_AID) == (0x6A, 0x82):
+        pytest.skip("bridge not in echo mode (launched with --applet)")
     conn = _connect()
     try:
         aid = bytes.fromhex(ECHO_AID)
@@ -118,6 +136,8 @@ def test_select_returns_self_marked_fci():
 
 
 def test_applet_code_executes_echo():
+    if _select_sw(ECHO_AID) == (0x6A, 0x82):
+        pytest.skip("bridge not in echo mode (launched with --applet)")
     conn = _connect()
     try:
         aid = bytes.fromhex(ECHO_AID)
@@ -150,3 +170,103 @@ def test_no_select_yet_is_6d00():
 
 # keep flake quiet about the import we intentionally re-export for callers
 _ = shutil.which("java")
+
+
+# ---------------------------------------------------------------------------
+# GP-surface semantics (2026-10-22 lane): jcardsim executes applets but has
+# NO GlobalPlatform card manager / secure channel, so every gp operation that
+# needs an ISD fails on SELECT. These tests PIN that contract so a future
+# harness change that alters it is caught.
+# ---------------------------------------------------------------------------
+
+SMARTPGP_AID = "D276000124010304AFAF000000000000"
+
+
+def _run_gp(*args):
+    return subprocess.run(
+        ["gp", "-r", READER_SUBSTR, *args], capture_output=True, text=True, timeout=60
+    )
+
+
+def _select_sw(aid_hex):
+    """SELECT aid on a fresh connection, return (sw1, sw2)."""
+    conn = _connect()
+    try:
+        aid = bytes.fromhex(aid_hex)
+        _, s1, s2 = conn.transmit([0x00, 0xA4, 0x04, 0x00, len(aid)] + list(aid))
+        return s1, s2
+    finally:
+        conn.disconnect()
+
+
+def test_gp_list_fails_isd_select_no_card_manager():
+    """gp --list: jcardsim has no GP card manager — the ISD SELECT cannot succeed.
+
+    The exact SW of the first (empty-AID) SELECT probe is mode-dependent:
+    6A82 with nothing selected (echo mode), 6D00 when an applet is currently
+    selected (real-applet mode) — what is pinned is that gp cannot establish
+    an ISD and aborts.
+    """
+    if shutil.which("gp") is None:
+        pytest.skip("gp (GlobalPlatformPro) not installed")
+    p = _run_gp("-l", "-v", "-d")
+    assert p.returncode != 0
+    assert "Could not SELECT" in p.stdout + p.stderr
+
+
+def test_gp_install_fails_no_secure_channel():
+    """gp --install of a CAP: same wall — no ISD to INSTALL for load against."""
+    if shutil.which("gp") is None:
+        pytest.skip("gp (GlobalPlatformPro) not installed")
+    p = _run_gp("--install", "whatever.cap", "--bs", "200", "-v", "-d")
+    assert p.returncode != 0
+    assert "Could not SELECT" in p.stdout + p.stderr
+
+
+# ---------------------------------------------------------------------------
+# SmartPGP real-applet mode (--applet fr.anssi.smartpgp.SmartPGPApplet): the
+# pinned CAP artifact is an ant-javacard JAR whose APPLET-INF/classes carry
+# the compiled applet; the bridge loads it via the jcardsim loadApplet path.
+# Only runs when the bridge was launched in SmartPGP mode (see handoff).
+# ---------------------------------------------------------------------------
+
+
+def _smartpgp_mode() -> bool:
+    try:
+        return _select_sw(SMARTPGP_AID) != (0x6A, 0x82)
+    except Exception:
+        return False
+
+
+def test_smartpgp_get_data_answers():
+    """REAL SmartPGP code executing behind the vpcd slot: OpenPGP GET DATA."""
+    if not _smartpgp_mode():
+        pytest.skip("bridge not in SmartPGP mode (launch with --applet)")
+    conn = _connect()
+    try:
+        aid = bytes.fromhex(SMARTPGP_AID)
+        conn.transmit([0x00, 0xA4, 0x04, 0x00, len(aid)] + list(aid))
+        data, s1, s2 = conn.transmit([0x00, 0xCA, 0x00, 0x4F])  # AID DO
+        assert (s1, s2) == (0x90, 0x00)
+        assert bytes(data).hex().upper().startswith("D27600012401")
+        data, s1, s2 = conn.transmit([0x00, 0xCA, 0x00, 0x6E])  # AppRelatedData
+        assert (s1, s2) == (0x90, 0x00)
+        assert len(data) > 100
+    finally:
+        conn.disconnect()
+
+
+def test_smartpgp_wrong_pin_6982():
+    """Applet-level security logic: VERIFY PW1 without prior status -> 6982."""
+    if not _smartpgp_mode():
+        pytest.skip("bridge not in SmartPGP mode (launch with --applet)")
+    conn = _connect()
+    try:
+        aid = bytes.fromhex(SMARTPGP_AID)
+        conn.transmit([0x00, 0xA4, 0x04, 0x00, len(aid)] + list(aid))
+        data, s1, s2 = conn.transmit(
+            [0x00, 0x20, 0x00, 0x82, 0x08] + [0x30] * 8
+        )
+        assert (s1, s2) == (0x69, 0x82)
+    finally:
+        conn.disconnect()

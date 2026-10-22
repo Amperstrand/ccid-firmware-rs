@@ -58,6 +58,38 @@
   entry (0x8C85) + its own .so copy; setup recipe in the test module
   docstring.
 
+### Added — vjavacard: real-applet mode (SmartPGP) + JC3 crypto shims
+
+- `VpcdBridge --applet <fqcn> <aidHex>`: loads a REAL applet class
+  through the jcardsim loadApplet path instead of the echo applet.
+  Proven with the pinned SmartPGP v1.23.0 (jc3.0.4) CAP artifact: the
+  `.cap` is an ant-javacard JAR whose `APPLET-INF/classes` carry the
+  compiled applet — loaded via `installApplet(AID, Class)` it installs
+  in ~17 ms and serves OpenPGP traffic through the 0x8C85 slot (GET
+  DATA 004F/006E/007A/00C4 all 9000, wrong-PW1 VERIFY 6982) — real
+  applet code, zero hardware.
+- jcardsim 2.2.2 gap, fixed by classpath-shadow classes compiled into
+  the bridge (`javacard/security/Signature.java`,
+  `javacard/security/KeyAgreement.java` + `org.amperstrand.sim.*`):
+  the 2.2.2 getInstance switches only cover JC 2.2.2 algorithm
+  constants (Signature 1..30, KeyAgreement 1/2) and REJECT the JC3
+  ECDSA-SHA2 family (33/34/37/38) and ALG_EC_SVDP_DH_PLAIN(3) that
+  SmartPGP's constructor needs. Shadows replicate jcardsim's routing
+  byte-for-byte for the old range and add the new algorithms on the
+  same bundled BouncyCastle (SHA-224 bridged through the host JDK —
+  the bundled BC subset has no SHA224Digest). Runtime requires the
+  UNSIGNED jcardsim copy (the shipped jar is signed and rejects
+  same-package shadow classes) — recipe in the test docstring.
+- GP-surface semantics pinned as tests: jcardsim has NO GlobalPlatform
+  card manager / secure channel, so `gp --list`/`gp --install` fail on
+  the ISD SELECT ("Could not SELECT", SW 6A82/6D00 mode-dependent) —
+  the loadApplet path is the simulator's substitute for
+  INSTALL-for-load. Suite is mode-aware: echo tests skip in --applet
+  mode and vice versa (7 passed + 2 mode-skips in each mode).
+- Operational finding: after a pcscd restart the vpcd slot answers
+  the ATR probe immediately but C-APDU transmits can return empty for
+  ~2 minutes — do not fail-fast on a freshly restarted pcscd.
+
 ### Docs — boards-as-data design (t_2f868bc4, lane L)
 
 - `docs/BOARDS-AS-DATA-DESIGN.md`: design for the boards-as-data layer —
