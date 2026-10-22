@@ -89,32 +89,20 @@ pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
 pub fn pn7160_bring_up<I2C, SDA, SCL, IRQ, VEN>(
     bus: BusPins<I2C, SDA, SCL, IRQ, VEN>,
 ) -> Pn7160NfcDriver<EspPn7160Transport> {
-    let transport =
-        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
-            .expect("peripheral init");
-    let mut transport = Some(transport);
-    let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
-    for attempt in 1..=INIT_ATTEMPTS {
-        let mut d = Pn7160NfcDriver::new(transport.take().expect("transport"));
-        match d.init() {
-            Ok(()) => {
-                log::warn!("bring-up: PN7160 initialized (attempt {})", attempt);
-                driver = Some(d);
-                break;
-            }
-            Err(e) => {
-                log::warn!("bring-up: init attempt {} failed ({:?})", attempt, e);
-                let mut t = d.into_transport();
-                t.ven_cycle();
-                let _ = t.probe();
-                transport = Some(t);
-            }
-        }
-    }
-    driver.unwrap_or_else(|| {
-        log::warn!("bring-up: PN7160 unresponsive — card-absent mode");
-        Pn7160NfcDriver::new(transport.take().expect("transport"))
-    })
+    // boards-as-data seam (t_4864e74e §3): the pin/address facts come
+    // from the BoardDesc table (host-tested lock: the nucula row equals
+    // the crate's NUCULA reference geometry), not a second hand-typed
+    // copy of the same numbers.
+    let pins = crate::board_ctor::pn7160::binding_from_board(&boards::NUCULA);
+    let transport = EspPn7160Transport::bringup_config_order(pins, bus).expect("peripheral init");
+    // t_4864e74e: the VEN-cycle retry ladder is the driver's own
+    // constructor now — this wrapper only supplies the esp recovery
+    // hook (VEN cycle + bus probe between attempts).
+    let (driver, _ok) = Pn7160NfcDriver::bring_up(transport, INIT_ATTEMPTS, |t| {
+        t.ven_cycle();
+        let _ = t.probe();
+    });
+    driver
 }
 
 /// Reader-present or card-absent stand-in. When the NFC frontend never
@@ -164,6 +152,30 @@ impl<D: crate::nfc::NfcDriver> crate::nfc::NfcDriver for OrNull<D> {
         match self {
             OrNull::Live(d) => d.transmit_apdu(command, response),
             OrNull::Null => Ok(0),
+        }
+    }
+}
+
+impl<D: crate::nfc::NfcDriver + card_interface::FrontendDiagnostics>
+    card_interface::FrontendDiagnostics for OrNull<D>
+{
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        match self {
+            // t_4864e74e: the Null arm IS the unavailable class — the
+            // controller never answered at bring-up.
+            OrNull::Live(d) => d.frontend_status(),
+            OrNull::Null => card_interface::FrontendStatus {
+                health: card_interface::FrontendHealth::Unavailable,
+                last_error: card_interface::FrontendErrorKind::Bus,
+                ..card_interface::FrontendStatus::ok()
+            },
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        match self {
+            OrNull::Live(d) => d.frontend_self_test(),
+            OrNull::Null => Err(card_interface::FrontendErrorKind::Bus),
         }
     }
 }

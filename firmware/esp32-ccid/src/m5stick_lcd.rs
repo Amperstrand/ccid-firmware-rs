@@ -828,7 +828,7 @@ mod tests {
         assert_eq!(REG_CHARGE_STATUS, 0x01);
         assert!(usb_powered_from_reg00(1 << 5));
         assert!(!usb_powered_from_reg00(0));
-        assert!(!usb_powered_from_reg00(!(1 << 5) & 0xFF));
+        assert!(!usb_powered_from_reg00(!(1 << 5)));
         // The defect shape: a battery-present bit (reg 0x01 bit5) fed to
         // the VBUS decoder read as USB power — reg 0x00 bit5 is the only
         // VBUS source.

@@ -20,6 +20,22 @@ use crate::nfc::{NfcDriver, NfcError, PresenceState};
 pub struct Pn532NfcDriver;
 
 #[cfg(not(target_arch = "xtensa"))]
+impl card_interface::FrontendDiagnostics for Pn532NfcDriver {
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        // Host compile stub: the real frontend exists only on target.
+        card_interface::FrontendStatus {
+            health: card_interface::FrontendHealth::Unavailable,
+            last_error: card_interface::FrontendErrorKind::NotInitialized,
+            ..card_interface::FrontendStatus::ok()
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        Err(card_interface::FrontendErrorKind::NotInitialized)
+    }
+}
+
+#[cfg(not(target_arch = "xtensa"))]
 impl NfcDriver for Pn532NfcDriver {
     type Error = NfcError;
 
@@ -129,6 +145,11 @@ where
 {
     device: Pn532Device<Pn532<SPIInterfaceWithIrq<SPI, IRQ>, EspDelayTimer, PN532_BUF_SIZE>, RST>,
     session_active: bool,
+    // Frontend diagnostics counters (t_4864e74e).
+    diag_init_attempts: u32,
+    diag_presence_polls: u32,
+    diag_bus_errors: u32,
+    diag_last_error: Option<NfcError>,
 }
 
 #[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
@@ -147,7 +168,36 @@ where
         Ok(Self {
             device,
             session_active: false,
+            diag_init_attempts: 0,
+            diag_presence_polls: 0,
+            diag_bus_errors: 0,
+            diag_last_error: None,
         })
+    }
+
+    /// Constructor + bring-up ladder over pure embedded-hal SPI/IRQ/RST
+    /// (t_4864e74e): the init-attempt loop moved out of the firmware
+    /// main — takes the bus handles, runs `attempts` inits with
+    /// `retry_delay` between failures (a scheduler-yielding DelayNs on
+    /// hardware). Returns the driver and whether init succeeded;
+    /// callers wrap with `RetryFrontend::healthy/degraded`.
+    pub fn bring_up<D: embedded_hal::delay::DelayNs>(
+        spi: SPI,
+        irq: IRQ,
+        rst: RST,
+        attempts: u32,
+        retry_delay: &mut D,
+    ) -> Result<(Self, bool), NfcError> {
+        let mut driver = Self::new(spi, irq, rst)?;
+        let ok = (0..attempts).any(|_| {
+            if driver.init().is_ok() {
+                true
+            } else {
+                retry_delay.delay_ms(1000);
+                false
+            }
+        });
+        Ok((driver, ok))
     }
 }
 
@@ -162,7 +212,12 @@ where
 
     /// Init: hardware reset → GetFirmwareVersion → SAMConfiguration(Normal).
     fn init(&mut self) -> Result<(), NfcError> {
-        self.device.init().map_err(map_transport_error)
+        self.diag_init_attempts = self.diag_init_attempts.saturating_add(1);
+        self.device.init().map_err(|e| {
+            self.diag_last_error = Some(map_transport_error(e));
+            self.diag_bus_errors = self.diag_bus_errors.saturating_add(1);
+            map_transport_error(e)
+        })
     }
 
     /// InListPassiveTarget for ISO 14443-A; stores target_num on success.
@@ -171,6 +226,7 @@ where
     }
 
     fn poll_card_presence(&mut self) -> PresenceState {
+        self.diag_presence_polls = self.diag_presence_polls.saturating_add(1);
         let present = self.device.detect_card();
         if !present {
             self.session_active = false;
@@ -224,5 +280,41 @@ where
         }
         response[..result.len()].copy_from_slice(&result);
         Ok(result.len())
+    }
+}
+
+/// Uniform diagnostics surface (t_4864e74e). Self-test is the
+/// stateless GetFirmwareVersion exchange (the same probe `init` uses).
+#[cfg(all(target_arch = "xtensa", feature = "backend-pn532"))]
+impl<SPI, IRQ, RST> card_interface::FrontendDiagnostics for Pn532NfcDriver<SPI, IRQ, RST>
+where
+    SPI: embedded_hal::spi::SpiDevice,
+    IRQ: embedded_hal::digital::InputPin<Error = Infallible>,
+    RST: embedded_hal::digital::OutputPin,
+{
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        card_interface::FrontendStatus {
+            health: if self.device.is_initialized() {
+                card_interface::FrontendHealth::Healthy
+            } else {
+                card_interface::FrontendHealth::Degraded
+            },
+            last_error: self
+                .diag_last_error
+                .map(card_interface::FrontendErrorKind::from)
+                .unwrap_or(card_interface::FrontendErrorKind::None),
+            init_attempts: self.diag_init_attempts,
+            reinit_count: 0,
+            bus_errors: self.diag_bus_errors,
+            presence_polls: self.diag_presence_polls,
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        self.device
+            .raw_pn532_mut()
+            .get_firmware_version()
+            .map(|_| ())
+            .map_err(|_| card_interface::FrontendErrorKind::Bus)
     }
 }

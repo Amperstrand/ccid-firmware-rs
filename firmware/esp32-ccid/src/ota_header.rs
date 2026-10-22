@@ -161,13 +161,15 @@ mod tests {
         // Lock the deadline policy (#223): long enough that a slow bench
         // push never false-fails on chunk gaps, short enough that a dead
         // client cannot pin the OTA thread for long.
-        assert!(
-            OTA_IO_TIMEOUT_MS >= 5_000,
-            "too tight — slow pushes false-fail"
-        );
-        assert!(
-            OTA_IO_TIMEOUT_MS <= 60_000,
-            "too loose — a wedged client pins the thread"
-        );
+        const {
+            assert!(
+                OTA_IO_TIMEOUT_MS >= 5_000,
+                "too tight — slow pushes false-fail"
+            );
+            assert!(
+                OTA_IO_TIMEOUT_MS <= 60_000,
+                "too loose — a wedged client pins the thread"
+            );
+        }
     }
 }

@@ -166,6 +166,34 @@ impl<T: Transport> Pn7160Driver<T> {
         self.transport
     }
 
+    /// Constructor + init ladder (kanban t_4864e74e): the retry loop
+    /// the firmware mains used to hand-write (`wifi_common::pn7160_bring_up`
+    /// shape), moved into the crate so every consumer brings the chip up
+    /// the same way. Takes any constructed transport (pure `Transport`
+    /// trait — zero board knowledge); `recover` runs on the recovered
+    /// transport between failed attempts (the VEN-cycle + probe class).
+    /// Returns the driver and whether init succeeded — callers wrap
+    /// degraded/healthy per their fault-isolation policy and own the
+    /// logging (the crate core stays log-free; `log` is an opt-in esp
+    /// dependency).
+    pub fn bring_up<F>(mut transport: T, attempts: u32, mut recover: F) -> (Self, bool)
+    where
+        F: FnMut(&mut T),
+    {
+        for _attempt in 1..=attempts.max(1) {
+            let mut d = Self::new(transport);
+            match d.init() {
+                Ok(()) => return (d, true),
+                Err(_e) => {
+                    let mut t = d.into_transport();
+                    recover(&mut t);
+                    transport = t;
+                }
+            }
+        }
+        (Self::new(transport), false)
+    }
+
     /// In-flight split re-arm step, for diagnostics and tests.
     pub fn rearm_phase(&self) -> Option<RearmPhase> {
         self.rearm
@@ -808,6 +836,53 @@ mod tests {
         t.push_reply(&[MT_RSP | GID_CORE, OID_CORE_INIT, 0x01, STATUS_OK]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER_MAP, 0x01, STATUS_OK]);
         t.push_reply(&[MT_RSP | GID_RF, OID_RF_DISCOVER, 0x01, STATUS_OK]);
+    }
+
+    // ---- t_4864e74e: the crate-level constructor ladder ----
+
+    #[test]
+    fn bring_up_returns_a_live_driver_on_first_attempt() {
+        let mut t = MockTransport::new();
+        script_ladder(&mut t);
+        let mut recover_calls = 0;
+        let (d, ok) = Pn7160Driver::bring_up(t, 3, |_| recover_calls += 1);
+        assert!(ok);
+        assert_eq!(recover_calls, 0, "healthy link never runs the recover hook");
+        // The returned driver is live: its transport carries the
+        // ladder's command history.
+        let t = d.into_transport();
+        assert!(!t.sent.is_empty());
+    }
+
+    #[test]
+    fn bring_up_retries_with_the_recover_hook_and_reports_failure() {
+        // Empty mock: no scripted CORE_RESET reply, so every init
+        // attempt fails — the recover hook must run once per attempt
+        // and health reports the failure.
+        let t = MockTransport::new();
+        let mut recover_calls = 0;
+        let (_d, ok) = Pn7160Driver::bring_up(t, 2, |_| recover_calls += 1);
+        assert!(!ok);
+        assert_eq!(recover_calls, 2, "one recover per failed attempt");
+    }
+
+    #[test]
+    fn bring_up_succeeds_on_a_later_attempt() {
+        // Dead link at handover: the first attempt times out on the
+        // very first transact (empty link), the recover hook repairs
+        // it (here: scripts the answers a recovered controller would
+        // give), and the SECOND attempt's driver is the one returned.
+        let t = MockTransport::new();
+        let mut recover_calls = 0;
+        let (_d, ok) = Pn7160Driver::bring_up(t, 3, |t: &mut MockTransport| {
+            recover_calls += 1;
+            script_ladder(t);
+        });
+        assert!(ok);
+        assert_eq!(
+            recover_calls, 1,
+            "exactly one failed attempt before success"
+        );
     }
 
     fn script_discover_select_activate(t: &mut MockTransport) {

@@ -155,7 +155,9 @@ mod tests {
         assert_eq!(M5ATOM.caps.ble, Cap::None);
         assert_eq!(M5ATOM.caps.spp, Cap::None);
         assert_eq!(M5ATOM.caps.wifi_vpcd, Cap::Feature("wifi-vpcd"));
-        assert!(!M5ATOM.caps.wired_contact); // NFC only, no contact pads
+        const {
+            assert!(!M5ATOM.caps.wired_contact);
+        }; // NFC only, no contact pads
     }
 
     #[test]

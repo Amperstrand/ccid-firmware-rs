@@ -21,6 +21,36 @@ pub use mfrc522::Error as Mfrc522Error;
 
 pub const DEFAULT_I2C_ADDRESS: u8 = 0x28;
 
+/// BoardDesc-derived NFC-frontend bus binding (t_4864e74e): the pure
+/// numbers a frontend constructor needs, resolved from a
+/// `boards::BoardDesc` by the firmware bin (`BusRole::NfcFrontend` +
+/// `nfc`) — this crate stays board-blind by design
+/// (BOARDS-AS-DATA-DESIGN §3.1: data table × constructor layering).
+///
+/// `i2c_addr` + `bus_hz` are the controller facts; `bus_hz` is the
+/// run speed the BUS impl must be configured for (consumed by the
+/// caller when it constructs its embedded-hal bus — e.g.
+/// `add_hal_device(addr, hz)` on the shared driver_ng adapter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrontendI2cBinding {
+    /// NFC controller I2C address (7-bit).
+    pub i2c_addr: u8,
+    /// Frontend bus run speed in Hz (probe speed is a bus-level fact).
+    pub bus_hz: u32,
+}
+
+impl FrontendI2cBinding {
+    /// The bench-default binding (MFRC522 @ 0x28, 400 kHz — issue #59
+    /// re-attempt with measured RTT table + 100-transaction soak).
+    pub const fn new(i2c_addr: u8, bus_hz: u32) -> Self {
+        Self { i2c_addr, bus_hz }
+    }
+}
+
+/// MFRC522 VersionReg values a healthy MFRC522 answers with
+/// (datasheet table 19; both observed on the bench).
+pub const VERSION_REG_EXPECTED: [u8; 2] = [0x91, 0x92];
+
 /// Field-off dwell for the antenna cycle in
 /// [`Mfrc522Transceiver::prepare_for_activation_with_delays`].
 ///
@@ -123,6 +153,44 @@ impl<I2C: I2c> Mfrc522Transceiver<I2C> {
         let mut mfrc522 = Mfrc522::new(interface).init()?;
         mfrc522.set_antenna_gain(RxGain::DB33)?;
         Ok(Self::new(mfrc522))
+    }
+
+    /// Constructor over pure embedded-hal + BoardDesc-derived binding
+    /// (t_4864e74e): init, antenna gain, then the VersionReg
+    /// self-test — the bring-up sequence moved out of the firmware
+    /// mains into the frontend crate. Returns the transceiver and the
+    /// version the controller answered with (bench logs stamp it).
+    ///
+    /// The bus impl arrives already configured for
+    /// `binding.bus_hz` — the constructor itself only needs the
+    /// address (the run speed is a bus-construction fact, kept in the
+    /// binding so one derived struct covers the seam).
+    pub fn bring_up(
+        i2c: I2C,
+        binding: FrontendI2cBinding,
+    ) -> Result<(Self, u8), Mfrc522Error<I2C::Error>> {
+        let interface = I2cInterface::new(i2c, binding.i2c_addr);
+        let mut mfrc522 = Mfrc522::new(interface).init()?;
+        mfrc522.set_antenna_gain(RxGain::DB33)?;
+        let version = mfrc522.version()?;
+        if !VERSION_REG_EXPECTED.contains(&version) {
+            // Release the bus back so the caller can probe/retry —
+            // same escape hatch as `release()`.
+            let _ = mfrc522.release().release();
+            return Err(Mfrc522Error::Nak);
+        }
+        Ok((Self::new(mfrc522), version))
+    }
+
+    /// Stateless self-test: the controller answers VersionReg with a
+    /// known part number (the same probe `bring_up` gates on).
+    pub fn self_test(&mut self) -> Result<u8, Mfrc522Error<I2C::Error>> {
+        let version = self.mfrc522.version()?;
+        if VERSION_REG_EXPECTED.contains(&version) {
+            Ok(version)
+        } else {
+            Err(Mfrc522Error::Nak)
+        }
     }
 
     pub fn release(self) -> I2C {
@@ -566,6 +634,60 @@ mod tests {
         let i2c = t.release();
         assert_eq!(i2c.last_write_to(T_RELOAD_HIGH_REG), 0xFF);
         assert_eq!(i2c.last_write_to(T_RELOAD_LOW_REG), 0xFF);
+    }
+
+    // ---- t_4864e74e: constructor over pure embedded-hal + the
+    // ---- BoardDesc-derived binding, with the VersionReg self-test.
+
+    const VERSION_REG: u8 = 0x37;
+
+    fn healthy_mock() -> MockI2c {
+        let mut mock = MockI2c::default();
+        // A healthy MFRC522 answers VersionReg with 0x92 (both 0x91
+        // and 0x92 are expected parts — datasheet table 19).
+        mock.regs[reg_index(VERSION_REG)] = 0x92;
+        mock
+    }
+
+    #[test]
+    fn binding_carries_the_board_derived_numbers() {
+        let b = FrontendI2cBinding::new(0x28, 400_000);
+        assert_eq!(b.i2c_addr, DEFAULT_I2C_ADDRESS);
+        assert_eq!(b.bus_hz, 400_000);
+    }
+
+    #[test]
+    fn bring_up_initializes_and_gates_on_the_version_self_test() {
+        let (mut t, version) =
+            Mfrc522Transceiver::bring_up(healthy_mock(), FrontendI2cBinding::new(0x28, 400_000))
+                .unwrap();
+        assert_eq!(version, 0x92);
+        // Constructed healthy: the same probe passes again.
+        assert_eq!(t.self_test().unwrap(), 0x92);
+    }
+
+    #[test]
+    fn bring_up_rejects_an_unexpected_version() {
+        // Default mock regs: VersionReg reads 0x00 — no controller
+        // (or wrong part) answers. The constructor must fail loudly.
+        let err = Mfrc522Transceiver::bring_up(
+            MockI2c::default(),
+            FrontendI2cBinding::new(0x28, 400_000),
+        )
+        .err()
+        .expect("unexpected version must fail bring_up");
+        assert!(matches!(err, Mfrc522Error::Nak));
+    }
+
+    #[test]
+    fn self_test_flags_a_drifted_version() {
+        let mut mock = healthy_mock();
+        let mut t = Mfrc522Transceiver::from_i2c(mock, DEFAULT_I2C_ADDRESS).unwrap();
+        assert_eq!(t.self_test().unwrap(), 0x92);
+        mock = t.release();
+        mock.regs[reg_index(VERSION_REG)] = 0x00;
+        let mut t = Mfrc522Transceiver::from_i2c(mock, DEFAULT_I2C_ADDRESS).unwrap();
+        assert!(matches!(t.self_test().unwrap_err(), Mfrc522Error::Nak));
     }
 
     #[test]

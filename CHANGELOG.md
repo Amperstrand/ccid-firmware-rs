@@ -1,5 +1,43 @@
 ## [Unreleased]
 
+### Added — frontend constructors over pure embedded-hal + diagnostics trait (t_4864e74e)
+
+- `card-interface::FrontendDiagnostics` (home justified in the module
+  docs): a no_std, board-blind trait surface for frontend health
+  (`FrontendHealth` Healthy/Degraded/Unavailable), last-error
+  classification, and the 0xD0-class counters (init attempts, reinits,
+  bus errors, presence polls) plus a stateless bring-up `self_test` —
+  one uniform shape so HIL drives MFRC522/PN532/PN7160 identically.
+  Homed in the zero-dep trait crate both the serving kernel (frozen
+  dep set, boards-blind per #383) and the no_std frontend crates
+  already see; `boards` stays pure data.
+- `CcidHandler<D>` now requires `FrontendDiagnostics` — a frontend
+  without the diagnostics surface fails to compile into the service
+  (the card's "compiles or fails loudly at the construction seam").
+  `refresh_diagnostics` logs health TRANSITIONS once per change through
+  the log facade (pull-not-push: strict-wire builds keep the ceiling
+  Off; surfaces on ble/netlog/vpcd diagnostics builds), and
+  `frontend_status()`/`frontend_self_test()` expose the same data to
+  bench probes. MockNfcDriver, RetryFrontend, EitherFrontend,
+  UnavailableNfcDriver and OrNull implement/compose the trait.
+- Frontend constructors: `mfrc522-pcd::Mfrc522Transceiver::bring_up`
+  (init + antenna gain + VersionReg self-test over any embedded-hal
+  I2C + the BoardDesc-derived `FrontendI2cBinding`),
+  `Pn532NfcDriver::bring_up` (the init ladder moved out of the pn532
+  main; GetFirmwareVersion self-test), and `Pn7160NfcDriver::bring_up`
+  (the VEN-cycle ladder moved out of `wifi_common::pn7160_bring_up`;
+  stateless `Transport::link_probe` self-test hook, esp I2C + host
+  mock overrides). All three bins' drivers carry diagnostics counters.
+- m5stick pilot end-to-end: `esp32-ccid::board_ctor` (Layer B,
+  BOARDS-AS-DATA-DESIGN §3.1) — `NfcBusBinding::from_board` resolves
+  the NFC bus facts from a `boards::BoardDesc` (host-tested against
+  the M5STICK/M5ATOM/NUCULA tables; wired-contact tables fail loudly),
+  and `board_ctor::mfrc522::bring_up` owns bus recovery, the driver_ng
+  bus + probe, the crate constructor + self-test, the init ladder and
+  the fault-isolation wrap. The classic mfrc522 main reduces to board
+  table + constructor + service spawn (#383 shape); m5atom/nucula ride
+  the same constructor path.
+
 ### Added — SmartPGP-mode turnkey: setup_smartpgp.sh
 
 - `tests/hardware/host/vjavacard/setup_smartpgp.sh`: verifies the

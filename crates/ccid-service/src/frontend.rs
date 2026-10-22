@@ -28,6 +28,7 @@
 //! not-initialized guards fail them cleanly. All host-testable.
 
 use crate::nfc::{NfcDriver, NfcError, PresenceState};
+use card_interface::{FrontendDiagnostics, FrontendErrorKind, FrontendHealth, FrontendStatus};
 
 /// Degradable wrapper around one NFC frontend.
 ///
@@ -159,6 +160,32 @@ impl<D: NfcDriver> NfcDriver for RetryFrontend<D> {
     }
 }
 
+/// Health surface (t_4864e74e): the wrapper owns the degraded bit, so
+/// it classifies — the counters stay the inner frontend's own.
+impl<D: NfcDriver + FrontendDiagnostics> FrontendDiagnostics for RetryFrontend<D> {
+    fn frontend_status(&self) -> FrontendStatus {
+        let mut status = self.inner.frontend_status();
+        // Classification rules: the inner frontend is authoritative
+        // about Unavailable (it could not be constructed — no amount of
+        // init retrying changes that class). Otherwise the wrapper owns
+        // the degraded bit: it downgrades a Healthy snapshot while
+        // init is failing and upgrades a stale Degraded snapshot once
+        // a retry succeeded.
+        if status.health != FrontendHealth::Unavailable {
+            status.health = if self.degraded {
+                FrontendHealth::Degraded
+            } else {
+                FrontendHealth::Healthy
+            };
+        }
+        status
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        self.inner.frontend_self_test()
+    }
+}
+
 /// Stand-in driver when the NFC controller cannot even be constructed:
 /// the CCID service stays up — GetSlotStatus answers card-absent,
 /// diagnostics counters respond — while power-on/APDU fail cleanly.
@@ -194,6 +221,22 @@ impl NfcDriver for UnavailableNfcDriver {
         _response: &mut [u8],
     ) -> Result<usize, Self::Error> {
         Err(NfcError::NotInitialized)
+    }
+}
+
+/// Never constructed ⇒ permanently [`FrontendHealth::Unavailable`]
+/// (t_4864e74e). The self-test cannot pass by construction.
+impl FrontendDiagnostics for UnavailableNfcDriver {
+    fn frontend_status(&self) -> FrontendStatus {
+        FrontendStatus {
+            health: FrontendHealth::Unavailable,
+            last_error: FrontendErrorKind::NotInitialized,
+            ..FrontendStatus::ok()
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        Err(FrontendErrorKind::NotInitialized)
     }
 }
 
@@ -319,6 +362,28 @@ impl<A: NfcDriver, B: NfcDriver<Error = A::Error>> NfcDriver for EitherFrontend<
     }
 }
 
+/// Diagnostics ride the live arm (t_4864e74e): the fallback arm IS the
+/// unavailable classification, so plain delegation suffices.
+impl<A, B> FrontendDiagnostics for EitherFrontend<A, B>
+where
+    A: NfcDriver + FrontendDiagnostics,
+    B: NfcDriver<Error = A::Error> + FrontendDiagnostics,
+{
+    fn frontend_status(&self) -> FrontendStatus {
+        match self {
+            Self::Primary(d) => d.frontend_status(),
+            Self::Fallback(d) => d.frontend_status(),
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+        match self {
+            Self::Primary(d) => d.frontend_self_test(),
+            Self::Fallback(d) => d.frontend_self_test(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +403,22 @@ mod tests {
                 present: true,
                 session: false,
             }
+        }
+    }
+
+    impl FrontendDiagnostics for FlakyDriver {
+        fn frontend_status(&self) -> FrontendStatus {
+            // t_4864e74e: the inner view — the wrapper test below
+            // proves the WRAPPER classification wins when degraded.
+            FrontendStatus {
+                health: FrontendHealth::Healthy,
+                reinit_count: 7,
+                ..FrontendStatus::ok()
+            }
+        }
+
+        fn frontend_self_test(&mut self) -> Result<(), FrontendErrorKind> {
+            Ok(())
         }
     }
 
@@ -515,6 +596,40 @@ mod tests {
         // card appears — a plain-init retry loop would stay absent.
         assert!(frontend.poll_card_presence().present);
         assert!(!frontend.is_degraded());
+    }
+
+    #[test]
+    fn wrapper_classifies_health_over_the_inner_snapshot() {
+        // t_4864e74e: the wrapper owns the degraded bit, so a degraded
+        // wrapper reports Degraded even while the inner snapshot says
+        // Healthy; a healthy wrapper passes the inner view through.
+        let mut degraded = RetryFrontend::degraded(FlakyDriver::failing(1));
+        assert_eq!(degraded.frontend_status().health, FrontendHealth::Degraded);
+        // Recovery flips the wrapper's classification to Healthy.
+        let _ = degraded.poll_card_presence(); // consumes one failure
+        let _ = degraded.poll_card_presence(); // recovers
+        assert_eq!(degraded.frontend_status().health, FrontendHealth::Healthy);
+        assert_eq!(degraded.frontend_status().reinit_count, 7);
+
+        let healthy = RetryFrontend::healthy(FlakyDriver::failing(0));
+        assert_eq!(healthy.frontend_status().health, FrontendHealth::Healthy);
+    }
+
+    #[test]
+    fn unavailable_and_either_surface_unavailable_health() {
+        use crate::nfc::MockNfcDriver;
+        let mut fallback = EitherFrontend::<
+            RetryFrontend<MockNfcDriver>,
+            RetryFrontend<UnavailableNfcDriver>,
+        >::Fallback(RetryFrontend::degraded(UnavailableNfcDriver));
+        assert_eq!(
+            fallback.frontend_status().health,
+            FrontendHealth::Unavailable
+        );
+        assert_eq!(
+            fallback.frontend_self_test(),
+            Err(FrontendErrorKind::NotInitialized)
+        );
     }
 
     #[test]

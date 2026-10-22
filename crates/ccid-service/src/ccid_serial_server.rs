@@ -24,6 +24,7 @@
 
 use crate::ccid_handler::CcidHandler;
 use crate::nfc::NfcDriver;
+use card_interface::FrontendDiagnostics;
 use ccid_protocol::types::{
     PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_XFR_BLOCK,
 };
@@ -435,7 +436,7 @@ impl Default for ServeConfig {
     }
 }
 
-pub struct CcidSerialServer<D: NfcDriver> {
+pub struct CcidSerialServer<D: NfcDriver + FrontendDiagnostics> {
     handler: CcidHandler<D>,
     parser: FrameParser,
     config: ServeConfig,
@@ -464,7 +465,7 @@ pub struct CcidSerialServer<D: NfcDriver> {
     late_drop_count: u32,
 }
 
-impl<D: NfcDriver> CcidSerialServer<D> {
+impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
     /// Escape 0xD1 passthrough: true once, after the ack response was
     /// consumed — the caller panics then, so the flash coredump is written
     /// with the ack already on the wire (AGENTS.md "Crash dumps & snapshots").
@@ -878,7 +879,7 @@ mod tests {
         frame
     }
 
-    fn feed_frame<D: NfcDriver>(
+    fn feed_frame<D: NfcDriver + FrontendDiagnostics>(
         server: &mut CcidSerialServer<D>,
         frame: &[u8],
         now_ticks: u32,
@@ -1080,6 +1081,17 @@ mod tests {
                 response: &mut [u8],
             ) -> Result<usize, Self::Error> {
                 self.inner.transmit_apdu(command, response)
+            }
+        }
+
+        impl card_interface::FrontendDiagnostics for FlakyInitDriver {
+            fn frontend_status(&self) -> card_interface::FrontendStatus {
+                // t_4864e74e: delegate to the mock (scripted status).
+                self.inner.frontend_status()
+            }
+
+            fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+                self.inner.frontend_self_test()
             }
         }
 

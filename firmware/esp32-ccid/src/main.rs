@@ -98,8 +98,6 @@ use esp_idf_hal::{
     not(feature = "backend-mfrc522")
 ))]
 use esp_idf_sys::EspError;
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-use mfrc522_pcd::recover_i2c_bus;
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -221,7 +219,7 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
+fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
     server: &mut esp32_ccid::ccid_serial_server::CcidSerialServer<D>,
     byte: u8,
@@ -302,7 +300,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
+fn serve_uart<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
     handler: esp32_ccid::ccid_handler::CcidHandler<D>,
     mut on_read_idle_extra: impl FnMut(),
@@ -485,17 +483,11 @@ fn main() {
     )
     .expect("SPI2 init failed");
 
-    let mut pn532_driver =
-        Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).expect("PN532 driver init failed");
-
-    let pn532_ok = (0..5).any(|_| {
-        if pn532_driver.init().is_ok() {
-            true
-        } else {
-            FreeRtos::delay_ms(1000);
-            false
-        }
-    });
+    // t_4864e74e: the bring-up ladder lives in the constructor — the
+    // main reduces to bus handles + constructor + service spawn.
+    let (mut pn532_driver, pn532_ok) =
+        Pn532NfcDriver::bring_up(spi_device, irq_pin, rst_pin, 5, &mut FreeRtos)
+            .expect("PN532 driver init failed");
 
     // Frontend fault isolation (#218 — supersedes the bolty-rs B5 halt
     // loop this replaced): a failed boot init no longer halts the CCID
@@ -632,99 +624,24 @@ fn main() {
     #[cfg(target_arch = "riscv32")]
     log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
-    // I2C pinout per board variant — see Cargo.toml [features]. Raw GPIO
-    // numbers only: driver_ng claims the controller by port, so neither
-    // the `Peripherals::i2c0` token nor typed pin drivers are consumed
-    // (the #149 P3 shared adapter owns the bus).
-    // boards-as-data (design §4): every cfg arm reads its `crates/boards`
-    // table — pins, NFC addr AND the run speed (the probe/run facts leave
-    // the shared literals; the probe call below stays table-driven too).
-    // nucula reads the GENERATED table (§2.1).
+    // Frontend construction seam (t_4864e74e, boards-as-data §3.1):
+    // the main reduces to board table + constructor + service spawn.
+    // The table resolves the NFC bus binding; board_ctor owns bus
+    // recovery, the driver_ng bus, the probe, the mfrc522-pcd
+    // constructor + VersionReg self-test, the init ladder and the
+    // fault-isolation wrap. nucula reads the GENERATED table (§2.1).
     #[cfg(feature = "board-m5atom")]
-    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
-        let b = &boards::M5ATOM;
-        let grove = b.bus(boards::BusRole::NfcFrontend).i2c();
-        let nfc = b.nfc.expect("m5atom table: NFC frontend");
-        (
-            grove.sda as i32,
-            grove.scl as i32,
-            nfc.i2c_addr,
-            grove.hz_run,
-        )
-    };
+    let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::M5ATOM);
     #[cfg(feature = "board-m5stick")]
-    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
-        let b = &boards::M5STICK;
-        let grove = b.bus(boards::BusRole::NfcFrontend).i2c();
-        let nfc = b.nfc.expect("m5stick table: NFC frontend");
-        (
-            grove.sda as i32,
-            grove.scl as i32,
-            nfc.i2c_addr,
-            grove.hz_run,
-        )
-    };
-    // ESP32-C3 nucula: PN7160 NFC on the Grove-free header — now read
-    // from the GENERATED table (design §2.1: crates/boards/src/nucula_gen.rs,
-    // from zeugmaster/nucula-board@<rev> docs/netlist.xml; equality with
-    // pn7160-nci::board::NUCULA is asserted by the boards host tests).
-    // BEHAVIOR FIX riding the migration: hz_run is now the table's
-    // 100 kHz (the shared-bus PCF8574T limit, pn7160-nci board.rs rule)
-    // — the old inline 400_000 literal violated it. PN7160 IRQ=GPIO6 /
-    // VEN=GPIO7 stay table data (wired for the PN7160 backend phase).
+    let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::M5STICK);
     #[cfg(feature = "board-nucula")]
-    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
-        let b = &boards::NUCULA;
-        let nfc_bus = b.bus(boards::BusRole::NfcFrontend).i2c();
-        let nfc = b.nfc.expect("nucula table: NFC frontend");
-        (
-            nfc_bus.sda as i32,
-            nfc_bus.scl as i32,
-            nfc.i2c_addr,
-            nfc_bus.hz_run,
-        )
-    };
+    let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::NUCULA);
 
-    #[cfg(target_arch = "xtensa")]
-    recover_i2c_bus(scl_gpio_no, sda_gpio_no);
-    // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
-    // after recovery, then a bus probe before the first MFRC522 register
-    // access. 400 kHz (was 100 kHz): this board was marginal at 400 kHz in
-    // early bring-up (worked intermittently, then hung the first
-    // transaction) — re-attempted per #59 with a measured RTT table
-    // and a 100-transaction soak before landing.
-    log::warn!("bring-up: skipping vTaskDelay on riscv32 (crash probe)");
-    #[cfg(target_arch = "xtensa")]
-    FreeRtos::delay_ms(50);
-    log::warn!("bring-up: driver_ng i2c_new_master_bus");
-    let mut i2c_bus = pn7160_nci::hal_i2c::I2cMasterBus::new(0, sda_gpio_no, scl_gpio_no)
-        .expect("I2C0 init failed");
-    log::warn!("bring-up: I2C0 ok (driver_ng)");
+    #[cfg(target_arch = "riscv32")]
+    log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
-    // boards-as-data step 3 (design §4): the probe/run facts are the
-    // per-board bindings above — address AND run speed read from the
-    // same table as the pins (the 100 here is the probe timeout in ms,
-    // not a bus speed: driver_ng probes at bus level, so `hz_probe`
-    // stays table data with no call-site consumer yet).
-    let probe_found = i2c_bus.probe(nfc_i2c_addr, 100).is_ok();
-    log::info!(
-        "i2c probe @{:#04x}: {}",
-        nfc_i2c_addr,
-        if probe_found { "ack" } else { "no-ack" }
-    );
-
-    let i2c_dev = i2c_bus
-        .add_hal_device(nfc_i2c_addr, nfc_hz_run)
-        .expect("MFRC522 device add failed");
-    let mfrc522_result = mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(
-        i2c_dev,
-        nfc_i2c_addr,
-    ))
-    .init();
-    log::info!(
-        "MFRC522 init: {:?}",
-        mfrc522_result.as_ref().err().map(|e| format!("{e:?}"))
-    );
+    let (mfrc522_frontend, mfrc522_boot_ok) =
+        esp32_ccid::board_ctor::mfrc522::bring_up(nfc_binding);
 
     // M5StickC LCD status screen (bolty-rs display.rs port): claims I2C1
     // (AXP192), SPI2 + the LCD pins. GPIO27 is the StickC backlight —
@@ -802,49 +719,17 @@ fn main() {
     // needs a reboot (same as the old halt loop, minus the dead
     // reader). LED Error is held until reboot; recovery is
     // host-visible via GetSlotStatus flipping present.
-    let frontend = match mfrc522_result {
-        Ok(hw) => {
-            let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(hw);
-            let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
-
-            let init_ok = (0..5).any(|_| {
-                // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
-                // P1): plain init() never reaches the failure tracker, so repeated
-                // startup failures could not trigger the self-healing full re-init.
-                if mfrc522_driver.init_with_recovery().is_ok() {
-                    true
-                } else {
-                    FreeRtos::delay_ms(1000);
-                    false
-                }
-            });
-
-            if init_ok {
-                #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-                led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
-                esp32_ccid::frontend::EitherFrontend::Primary(
-                    esp32_ccid::frontend::RetryFrontend::healthy(mfrc522_driver),
-                )
-            } else {
-                #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-                led.set_state(esp32_ccid::led::LedState::Error);
-                log::error!("MFRC522 init failed — serving degraded (card absent), init retried on every presence poll");
-                esp32_ccid::frontend::EitherFrontend::Primary(
-                    esp32_ccid::frontend::RetryFrontend::degraded(mfrc522_driver),
-                )
-            }
-        }
-        Err(e) => {
-            #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-            led.set_state(esp32_ccid::led::LedState::Error);
-            log::error!("MFRC522 hw init failed ({e:?}) — no frontend; CCID stays up card-absent");
-            esp32_ccid::frontend::EitherFrontend::Fallback(
-                esp32_ccid::frontend::RetryFrontend::degraded(
-                    esp32_ccid::frontend::UnavailableNfcDriver,
-                ),
-            )
-        }
-    };
+    // Boot outcome drives the LED (the LCD main replaces it); the
+    // frontend + its health already classify themselves through the
+    // diagnostics surface (RetryFrontend/UnavailableNfcDriver).
+    let frontend = mfrc522_frontend;
+    if mfrc522_boot_ok {
+        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
+        led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
+    } else {
+        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
+        led.set_state(esp32_ccid::led::LedState::Error);
+    }
 
     // Transport split: `spp` builds serve the same CcidHandler over the
     // BT-Classic SPP byte pipe (spp_shell::serve_spp — same
