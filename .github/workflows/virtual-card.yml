@@ -63,7 +63,11 @@ jobs:
 
       - name: Run the virtual-card suite (post-restart empty-window absorbed)
         run: |
+          # keep pcscd alive through the restart window: pcscd auto-exits
+          # after ~60s with no IPC client, which closes the vpcd listener
+          python3 -c "from smartcard.System import readers; readers()"
           sleep 60   # pcscd-restart window: ATR answers now, C-APDUs may not
+          python3 -c "from smartcard.System import readers; readers()"
           cd tests/hardware/host
           python3 -m pytest test_vjavacard.py -v -rs --timeout=300 | tee /tmp/pytest.log
           # an all-skip run is a FALSE green: the suite's readiness gate
