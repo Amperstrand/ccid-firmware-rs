@@ -45,6 +45,8 @@ pub mod serial_framing;
 pub mod t1_fuzz;
 
 #[cfg(feature = "backend-mfrc522")]
+pub mod board_ctor;
+#[cfg(feature = "backend-mfrc522")]
 pub mod mfrc522_driver;
 
 #[cfg(feature = "backend-pn7160")]
