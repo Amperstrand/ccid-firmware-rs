@@ -86,7 +86,10 @@ fn tick() -> u32 {
 /// echo → notify → response, NAK on malformed frames, interval-gated
 /// presence polls, post-response polls (Codex PR 98), read-idle parser
 /// reset, Escape 0xD1 dump-and-retrieve.
-pub fn serve_spp<D: NfcDriver>(mut modem: Modem<'static>, handler: CcidHandler<D>) -> ! {
+pub fn serve_spp<D: NfcDriver + card_interface::FrontendDiagnostics>(
+    mut modem: Modem<'static>,
+    handler: CcidHandler<D>,
+) -> ! {
     crate::install_platform_clock();
     // --- Bring-up (reference: bt_spp_acceptor.rs `main`) ---
     // `reduce_bt_memory`'s parameter is a zero-cost ownership marker;

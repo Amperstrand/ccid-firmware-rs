@@ -214,9 +214,10 @@ where
     fn init(&mut self) -> Result<(), NfcError> {
         self.diag_init_attempts = self.diag_init_attempts.saturating_add(1);
         self.device.init().map_err(|e| {
-            self.diag_last_error = Some(map_transport_error(e));
+            let mapped = map_transport_error(e);
+            self.diag_last_error = Some(mapped);
             self.diag_bus_errors = self.diag_bus_errors.saturating_add(1);
-            map_transport_error(e)
+            mapped
         })
     }
 
@@ -311,10 +312,15 @@ where
     }
 
     fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
-        self.device
-            .raw_pn532_mut()
-            .get_firmware_version()
-            .map(|_| ())
-            .map_err(|_| card_interface::FrontendErrorKind::Bus)
+        // Pn532Device (pn532-transport) exposes no raw firmware-version
+        // accessor; its `init` IS the stateless probe by construction
+        // (hardware reset → GetFirmwareVersion → SAMConfiguration), so the
+        // self-test runs it and re-syncs the diagnostics counters.
+        self.diag_init_attempts = self.diag_init_attempts.saturating_add(1);
+        self.device.init().map_err(|e| {
+            self.diag_last_error = Some(map_transport_error(e));
+            self.diag_bus_errors = self.diag_bus_errors.saturating_add(1);
+            card_interface::FrontendErrorKind::Bus
+        })
     }
 }
