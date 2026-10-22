@@ -38,6 +38,9 @@ jobs:
             | sudo tee /etc/reader.conf.d/vjavacard >/dev/null
           sudo systemctl restart pcscd
           sleep 3
+          # runner pcscd creates a root-only IPC socket: without this the
+          # runner-user pytest gets SCARD_E_ACCESS_DENIED (run 39848532388)
+          sudo chmod 666 /run/pcscd/pcscd.comm || true
 
       - name: Build bridge + prepare unsigned jcardsim copy
         run: |
@@ -63,9 +66,22 @@ jobs:
 
       - name: Run the virtual-card suite (post-restart empty-window absorbed)
         run: |
+          # keep pcscd alive through the restart window: pcscd auto-exits
+          # after ~60s with no IPC client, which closes the vpcd listener
+          # (pokes non-fatal — a failed poke must not kill the step)
+          python3 -c "from smartcard.System import readers; readers()" || true
           sleep 60   # pcscd-restart window: ATR answers now, C-APDUs may not
+          python3 -c "from smartcard.System import readers; readers()" || true
           cd tests/hardware/host
-          python3 -m pytest test_vjavacard.py -v --timeout=300
+          # run as root: socket-activated pcscd respawns recreate a root-only
+          # pcscd.comm faster than any chmod can follow (run 39849460207);
+          # PYTHONPATH keeps the runner-user pip site-packages visible.
+          sudo env PYTHONPATH="$HOME/.local/lib/python$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages" \
+            python3 -m pytest test_vjavacard.py -v -rs --timeout=300 | tee /tmp/pytest.log
+          # an all-skip run is a FALSE green: the suite's readiness gate
+          # silently skipping everything would still exit 0.
+          grep -qE "[1-9][0-9]* passed" /tmp/pytest.log \
+            || { echo "FAIL: no tests actually ran (all skipped)"; exit 1; }
 
       - name: Bridge log on failure
         if: failure()
