@@ -81,15 +81,21 @@ ECHO_AID = "A00000015145434F01"
 
 
 def _bridge_ready() -> bool:
+    """Bridge built AND the vpcd slot actually accepting connections.
+
+    Pure-python TCP probe — no `ss` (absent in some minimal runner
+    images) and no listener-table parsing; connects to the exact thing
+    the tests need.
+    """
+    import socket
+
     if not BRIDGE_JAR.exists():
         return False
     try:
-        out = subprocess.run(
-            ["ss", "-tln"], capture_output=True, text=True, timeout=5
-        ).stdout
+        with socket.create_connection(("127.0.0.1", BRIDGE_PORT), timeout=2):
+            return True
     except OSError:
         return False
-    return f":{BRIDGE_PORT}" in out
 
 
 pytestmark = pytest.mark.skipif(

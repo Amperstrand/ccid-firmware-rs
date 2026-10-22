@@ -2,6 +2,11 @@
 
 ### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
 
+- First dispatch (run 39846808036) exposed a FALSE green: the suite's
+  `ss`-based readiness probe failed on the runner image (all 9 tests
+  skipped, job still green). Probe replaced with a pure-python TCP
+  connect to the vpcd slot, and the workflow now FAILS if zero tests
+  actually ran (all-skip = false green guard).
 - `.github/workflows/virtual-card.yml`: weekly + on-demand run of the
   #261 virtual-card ladder on a stock GitHub runner — builds the
   patched libifdvpcd from the pinned upstream, installs the dedicated
