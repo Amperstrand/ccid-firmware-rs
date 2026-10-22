@@ -33,7 +33,9 @@ Host setup (one-time, bench host only — no board, no physical card):
 
     OPERATIONAL: after any pcscd restart the vpcd slot answers the ATR probe
     immediately but C-APDU transmits can stay empty for ~2 minutes — do not
-    fail-fast on a freshly restarted pcscd.
+    fail-fast on a freshly restarted pcscd. Root cause + bridge-side
+    mitigation: vjavacard/TRANSMIT_DEAD_WINDOW.md (also: the 0x8C85 slot is
+    single-client — never TCP-probe the vpcd port while a bridge owns it).
 
 Wire facts (same as the firmware client and the tier-a table card):
 2-byte big-endian length + payload; OFF/ON controls get NO reply (an
@@ -190,6 +192,41 @@ def test_no_select_yet_is_6d00():
         assert (s1, s2) == (0x6D, 0x00)
     finally:
         conn.disconnect()
+
+
+def test_select_answers_fci_template_jcre_style():
+    """JCRE-style SELECT answering (2026-10-22 follow-up): a SELECT of an
+    INSTALLED applet always answers 9000 + an FCI template (6F ... with the
+    selected AID in TLV 84), regardless of whether the applet itself
+    implements the SELECT INS.
+
+    Echo mode: the applet answers its self-marked FCI. Real-applet mode:
+    SmartPGP answers 6D00 to the re-delivered SELECT INS — the bridge then
+    answers for it like a JCRE would (a physical J3R180 returns FCI + 9000),
+    which is what `gp -c` and FCI-checking wallet clients expect. The GP ISD
+    wall is NOT affected: unknown/unregistered AIDs (incl. the ISD AID)
+    still answer 6A82 — see the GP-surface contract tests below.
+    """
+    answered = 0
+    for aid_hex in (ECHO_AID, SMARTPGP_AID):
+        conn = _connect()
+        try:
+            aid = bytes.fromhex(aid_hex)
+            data, s1, s2 = conn.transmit(
+                [0x00, 0xA4, 0x04, 0x00, len(aid)] + list(aid)
+            )
+            if (s1, s2) == (0x6A, 0x82):
+                continue  # this AID's applet is not installed in this bridge mode
+            assert (s1, s2) == (0x90, 0x00)
+            raw = bytes(data)  # vpcd driver folds the SW into the buffer
+            assert raw[0] == 0x6F, raw.hex()  # FCI template
+            assert raw[2] == 0x84, raw.hex()  # DF name TLV
+            assert raw[3] == len(aid), raw.hex()
+            assert raw[4 : 4 + len(aid)] == aid, raw.hex()
+            answered += 1
+        finally:
+            conn.disconnect()
+    assert answered >= 1, "no installed applet answered its SELECT"
 
 
 # keep flake quiet about the import we intentionally re-export for callers
