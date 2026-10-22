@@ -144,6 +144,9 @@ pub enum ConsoleKind {
     Uart0GemPc,
     /// ROM USB-Serial/JTAG CDC (nucula: GPIO18/19, no UART bridge).
     UsbCdc,
+    /// defmt/RTT over a debug probe (STM32 bare-metal legs — no serial
+    /// console contract; `baud`/`stopbits` are unused placeholders).
+    DebugProbe,
 }
 
 /// The wire protocol the firmware serves.
@@ -151,6 +154,9 @@ pub enum ConsoleKind {
 pub enum Wire {
     /// GemPC Twin serial emulation over the console.
     GemPcSerial,
+    /// Raw CCID over USB (STM32 usb_fs legs — the pcscd contact path;
+    /// design §2.3 minimal tables).
+    UsbCcid,
 }
 
 /// OTA-partition family — the board-side half of the

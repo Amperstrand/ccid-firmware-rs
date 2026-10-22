@@ -251,6 +251,7 @@ dependencies = [
 name = "ccid-firmware-rs"
 version = "0.0.8"
 dependencies = [
+ "boards",
  "card-interface",
  "ccid-core",
  "ccid-protocol",

@@ -25,12 +25,16 @@ pub mod m5atom;
 pub mod m5stick;
 pub mod nucula_gen;
 pub mod schema;
+pub mod stm32f469;
+pub mod stm32f746;
 
 pub use schema::*;
 
 pub use m5atom::M5ATOM;
 pub use m5stick::M5STICK;
 pub use nucula_gen::NUCULA;
+pub use stm32f469::F469;
+pub use stm32f746::F746;
 
 /// Every registered board (design §5: registry ↔ module files ↔ bin
 /// features cross-checked by `tools/union_matrix.py check`'s boards leg).
@@ -39,4 +43,4 @@ pub use nucula_gen::NUCULA;
 /// admits (§4 "adding a board touches one file"). nucula's module is
 /// GENERATED (§2.1) — regenerate with
 /// `cargo run -p boards-gen -- --board nucula`.
-pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK, &M5ATOM, &NUCULA];
+pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK, &M5ATOM, &NUCULA, &F469, &F746];
