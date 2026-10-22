@@ -46,7 +46,7 @@ C3 silicon (USB-Serial/JTAG chip-resets on port-open, no disable bit —
 | (a) scripted table card | pcscd → patched libifdvpcd → `vpicc_table.py` | ATR shape, self-marked SELECT FCI, synthetic CPLC, unknown-AID 6A82; 4/4 | PASS @ 4ac08bc6 (2026-10-21) | #391; `tests/hardware/nfc/test_vpicc_table.py` |
 | (b) real JavaCard | pcscd → patched libifdvpcd → jcardsim 2.2.2 bridge (`vjavacard`) | J3R180-shape ATR, self-marked FCI, EXECUTED echo applet, 6A82, no-SELECT 6D00; 7P+2S both modes | PASS @ b6f59520 (2026-10-22) | #403; `tests/hardware/host/test_vjavacard.py` |
 | (b+) real applet | same, `--applet` SmartPGP v1.23.0 from the pinned CAP + JC3 crypto shims | REAL SmartPGP code: GET DATA 004F/006E/007A/00C4 9000, wrong-PW1 VERIFY 6982; 7P+2S | PASS @ 76e3defb (2026-10-22) | #407; handoff `vjavacard-gp-lifecycle-2026-10-22.md` |
-| (b) CI leg | same stack built from scratch on a stock GitHub runner | 5 passed, 4 skipped, 1.61 s — dispatch/schedule-only, zero PR cost | PASS @ cba238c7, run 39850345070 (2026-10-22) | #409–#413; `tests/hardware/host/VIRTUAL_CARD_CI.md` |
+| (b) CI leg | same stack built from scratch on a stock GitHub runner | 6 passed, 4 skipped, 13.69 s incl. 50/50 soak — dispatch/schedule-only, zero PR cost | PASS @ 7c8ae6b3, run 39865166099 (2026-10-22) | #409–#413, #416–#421; `tests/hardware/host/VIRTUAL_CARD_CI.md` |
 
 Structural limit (pinned as tests): jcardsim 2.2.2 has NO GlobalPlatform
 card manager / secure channel — every gp operation walls at the ISD
