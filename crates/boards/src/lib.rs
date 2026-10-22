@@ -23,16 +23,20 @@
 
 pub mod m5atom;
 pub mod m5stick;
+pub mod nucula_gen;
 pub mod schema;
 
 pub use schema::*;
 
 pub use m5atom::M5ATOM;
 pub use m5stick::M5STICK;
+pub use nucula_gen::NUCULA;
 
 /// Every registered board (design §5: registry ↔ module files ↔ bin
 /// features cross-checked by `tools/union_matrix.py check`'s boards leg).
 /// A board's substantive content is one module `src/<board>.rs`; the
 /// registry line + `pub mod` are the two mechanical one-liners the design
-/// admits (§4 "adding a board touches one file").
-pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK, &M5ATOM];
+/// admits (§4 "adding a board touches one file"). nucula's module is
+/// GENERATED (§2.1) — regenerate with
+/// `cargo run -p boards-gen -- --board nucula`.
+pub const ALL_BOARDS: &[&BoardDesc] = &[&M5STICK, &M5ATOM, &NUCULA];

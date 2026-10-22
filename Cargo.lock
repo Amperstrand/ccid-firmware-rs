@@ -118,6 +118,17 @@ checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 [[package]]
 name = "boards"
 version = "0.1.0"
+dependencies = [
+ "pn7160-nci",
+]
+
+[[package]]
+name = "boards-gen"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
 
 [[package]]
 name = "bounded-integer"

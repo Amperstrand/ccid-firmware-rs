@@ -636,11 +636,10 @@ fn main() {
     // numbers only: driver_ng claims the controller by port, so neither
     // the `Peripherals::i2c0` token nor typed pin drivers are consumed
     // (the #149 P3 shared adapter owns the bus).
-    // boards-as-data step 3 (design §4): every cfg arm reads its
-    // `crates/boards` table — pins, NFC addr AND the run speed (the
-    // probe/run facts leave the shared literals; the probe call below
-    // stays table-driven too). board-nucula keeps literals until its
-    // generated-table slice.
+    // boards-as-data (design §4): every cfg arm reads its `crates/boards`
+    // table — pins, NFC addr AND the run speed (the probe/run facts leave
+    // the shared literals; the probe call below stays table-driven too).
+    // nucula reads the GENERATED table (§2.1).
     #[cfg(feature = "board-m5atom")]
     let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
         let b = &boards::M5ATOM;
@@ -665,11 +664,26 @@ fn main() {
             grove.hz_run,
         )
     };
-    // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
-    // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase;
-    // these literals move to the generated NUCULA table in its slice.)
+    // ESP32-C3 nucula: PN7160 NFC on the Grove-free header — now read
+    // from the GENERATED table (design §2.1: crates/boards/src/nucula_gen.rs,
+    // from zeugmaster/nucula-board@<rev> docs/netlist.xml; equality with
+    // pn7160-nci::board::NUCULA is asserted by the boards host tests).
+    // BEHAVIOR FIX riding the migration: hz_run is now the table's
+    // 100 kHz (the shared-bus PCF8574T limit, pn7160-nci board.rs rule)
+    // — the old inline 400_000 literal violated it. PN7160 IRQ=GPIO6 /
+    // VEN=GPIO7 stay table data (wired for the PN7160 backend phase).
     #[cfg(feature = "board-nucula")]
-    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = (4, 5, 0x28, 400_000);
+    let (sda_gpio_no, scl_gpio_no, nfc_i2c_addr, nfc_hz_run) = {
+        let b = &boards::NUCULA;
+        let nfc_bus = b.bus(boards::BusRole::NfcFrontend).i2c();
+        let nfc = b.nfc.expect("nucula table: NFC frontend");
+        (
+            nfc_bus.sda as i32,
+            nfc_bus.scl as i32,
+            nfc.i2c_addr,
+            nfc_bus.hz_run,
+        )
+    };
 
     #[cfg(target_arch = "xtensa")]
     recover_i2c_bus(scl_gpio_no, sda_gpio_no);

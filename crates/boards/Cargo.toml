@@ -12,3 +12,11 @@ license = "GPL-2.0-or-later"
 # tooling/CI — NEVER by ccid-service (the #383 board-blind boundary;
 # adding a dep here would fail tools/union_matrix.py check).
 [dependencies]
+
+# Host-test-only cross-check (design §2.1 landing gate): the generated
+# nucula table must EQUAL the historical bench constants in
+# pn7160-nci::board::NUCULA — drift is impossible, not merely
+# discouraged. Default features only (pure data, no esp deps); this
+# never leaks into any dependent's normal build.
+[dev-dependencies]
+pn7160-nci = { path = "../pn7160-nci" }

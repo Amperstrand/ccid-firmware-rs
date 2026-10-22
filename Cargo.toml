@@ -11,6 +11,7 @@ members = [
     "crates/boards",
     "firmware/ccid-firmware",
     "firmware/esp32-ccid",
+    "tools/boards-gen",
     "host-tools",
 ]
 default-members = ["firmware/ccid-firmware"]
