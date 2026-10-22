@@ -1,5 +1,15 @@
 ## [Unreleased]
 
+### Added — boards-as-data pilot: `crates/boards` (t_099ed2af, design #396)
+
+- New kernel crate `crates/boards` — Layer A of
+  `docs/BOARDS-AS-DATA-DESIGN.md`: board wiring (pin/bus map, NFC
+  peripheral + bus address, capability set, OTA-partition family) as
+  pure `no_std` const data, one home in this repo. No consumers changed
+  in this landing; the m5stick pilot consumption follows as the design's
+  migration step 1. Design open decisions O-1/O-2/O-3 recorded as
+  D-10/D-11/D-12 in `docs/DECISION_REGISTER.md`.
+
 ### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
 
 - `.github/workflows/virtual-card.yml`: weekly + on-demand run of the
