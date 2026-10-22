@@ -1,5 +1,33 @@
 ## [Unreleased]
 
+### Added — vjavacard follow-ups (card t_57a0ffe2: JCRE SELECT FCI, transmit-dead window)
+
+- JCRE-style SELECT answering in the vjavacard bridge: when a SELECT-by-AID
+  succeeds but the applet answers 6D00 to the re-delivered SELECT INS
+  (SmartPGP does not implement INS=A4), the bridge answers with the FCI
+  template + 9000 like a physical J3R180 would — `gp -c` and FCI-checking
+  wallets now get past selection. Unknown/unregistered AIDs (incl. the ISD)
+  still answer 6A82, so the pinned GP-surface contracts (`gp --list` /
+  `--install` fail "Could not SELECT") are untouched; `gp -c <applet AID>`
+  now dies at INITIALIZE UPDATE instead of at SELECT. Pinned by
+  `test_select_answers_fci_template_jcre_style` (mode-aware, runs in both
+  bridge modes).
+- `tests/hardware/host/vjavacard/TRANSMIT_DEAD_WINDOW.md`: root cause of the
+  ~2 min post-pcscd-restart empty-transmit window, split into the
+  pcscd/libifdvpcd-side stall (probes + ATR flow both directions while
+  C-APDUs are never delivered to the vpcd socket — handed to the
+  pcscd-host-stack lane with a reproduction recipe) and a bridge-side
+  aggravator that is now fixed: the 5 s idle SO_TIMEOUT no longer aborts
+  the serve session, so the bridge stops churn-reconnecting (~20 reconnects
+  per window) and stays attached like a real card. Operational rules for
+  the single-client 0x8C85 slot documented (one bridge at a time; never
+  TCP-probe the vpcd port while a bridge owns it — backlog-1 accept queue
+  poisoning false-skips the suite; bridge restart is the cure).
+- `EcdsaSha2Signature.getLength()` 141 → 144 with the explicit P-521 DER
+  worst-case derivation in a comment (#407 review nit: 141 was shy of the
+  absolute worst case; over-estimating only over-allocates, under-estimating
+  truncates real signatures).
+
 ### Added — virtual-card CI leg (dispatch/schedule-only, zero PR cost)
 
 - First dispatch (run 39846808036) exposed a FALSE green: the suite's
