@@ -91,11 +91,23 @@ def _bridge_ready() -> bool:
 
     if not BRIDGE_JAR.exists():
         return False
-    try:
-        with socket.create_connection(("127.0.0.1", BRIDGE_PORT), timeout=2):
-            return True
-    except OSError:
-        return False
+    # pcscd auto-exits (~60 s) with no IPC client; a first failed probe
+    # can be a freshly-dead pcscd — any smartcard IPC touch makes
+    # systemd respawn it (socket activation), the driver re-opens the
+    # vpcd listener and the bridge (reconnect loop) re-attaches. Retry.
+    import time
+
+    for _ in range(15):
+        try:
+            with socket.create_connection(("127.0.0.1", BRIDGE_PORT), timeout=2):
+                return True
+        except OSError:
+            try:
+                readers()  # IPC poke: wakes pcscd via systemd activation
+            except Exception:
+                pass
+            time.sleep(1)
+    return False
 
 
 pytestmark = pytest.mark.skipif(
