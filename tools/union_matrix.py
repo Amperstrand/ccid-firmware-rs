@@ -147,7 +147,27 @@ def parse_build_sh(text: str) -> list[dict]:
 def load_manifest_features() -> set[str]:
     with open(FW_MANIFEST, "rb") as f:
         manifest = tomllib.load(f)
-    return set(manifest.get("features", {}).keys())
+    feats = set(manifest.get("features", {}).keys())
+
+    def optional_deps(deps: dict) -> set[str]:
+        return {name for name, spec in deps.items()
+                if isinstance(spec, dict) and spec.get("optional")}
+
+    opt: set[str] = optional_deps(manifest.get("dependencies", {}))
+    for cfg in (manifest.get("target") or {}).values():
+        opt |= optional_deps(cfg.get("dependencies", {}))
+
+    # Cargo's dep: suppression rule (#402 review): an optional dependency
+    # gets an implicit same-name feature ONLY while no feature references
+    # it as dep:<name> — once referenced, the implicit feature is
+    # suppressed and --features <dep-name> is INVALID. This manifest
+    # dep:-references all of its optional deps, so the effective set is
+    # the [features] keys; a future unreferenced optional dep would
+    # correctly join the set.
+    referenced = {t for lst in manifest.get("features", {}).values()
+                  for t in lst if isinstance(t, str)}
+    suppressed = {n.removeprefix("dep:") for n in referenced if n.startswith("dep:")}
+    return feats | (opt - suppressed)
 
 
 def sdkconfig_paths_ok(sdkconfig: str) -> bool:
@@ -253,6 +273,15 @@ def selftest(quiet: bool = False) -> list[str]:
     got = {c["name"]: (c["features"], c["no_default_features"], c["target"], c["sdkconfig"]) for c in cases}
     if got != expect:
         errors.append(f"selftest: parser output drifted: {got!r}")
+    # #394: a non-matching --filter must exit (vacuous-green guard); a
+    # matching one keeps exactly the hits.
+    try:
+        select(cases, None, "no-such-combo")
+        errors.append("selftest: non-matching --filter did not exit")
+    except SystemExit:
+        pass
+    if [c["name"] for c in select(cases, None, "lph")] != ["alpha"]:
+        errors.append("selftest: --filter substring match drifted")
     if not quiet:
         print("selftest: OK" if not errors else f"selftest: FAILED {errors}")
     return errors
@@ -287,6 +316,11 @@ def select(combos: list[dict], variant: str | None, filt: str | None) -> list[di
             sys.exit(f"error: unknown variant {variant!r} (see --format table)")
     if filt:
         out = [c for c in out if filt in c["name"]]
+        # #394: an empty filtered set must be LOUD (exit contract, line 32).
+        # In the workflow a silent [] skips the whole matrix job — a typo'd
+        # dispatch filter would produce a vacuous green run.
+        if not out:
+            sys.exit(f"error: --filter {filt!r} matched no variants (see --format table)")
     return out
 
 

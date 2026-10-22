@@ -85,6 +85,10 @@ jobs:
         run: python3 tools/union_matrix.py check
       - name: Generate matrices
         id: gen
+        # #394: the dispatch filter rides an env var — never interpolate
+        # workflow inputs into the shell command line (quoting/injection).
+        env:
+          COMBO_FILTER: ${{ inputs.combo-filter }}
         run: |
           ESP_RUNS=true
           if [ "${{ github.event_name }}" = "push" ] && [ "${{ steps.filter.outputs.esp }}" != "true" ]; then
@@ -92,8 +96,14 @@ jobs:
           fi
           {
             if [ "$ESP_RUNS" = "true" ]; then
-              echo "esp=$(python3 tools/union_matrix.py --format matrix --filter "${{ inputs.combo-filter }}")"
-              echo "esp-count=$(python3 tools/union_matrix.py --format matrix --filter "${{ inputs.combo-filter }}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+              # Capture before echoing (#402 review): inside echo "…$(…)"
+              # the shell sees echo's rc, not the tool's — the empty-filter
+              # exit would be masked and downstream fromJSON would choke
+              # on malformed output instead of the real filter error.
+              esp="$(python3 tools/union_matrix.py --format matrix --filter "$COMBO_FILTER")" || exit 1
+              esp_count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$esp")"
+              echo "esp=$esp"
+              echo "esp-count=$esp_count"
             else
               echo "esp=[]"
               echo "esp-count=0"
@@ -101,9 +111,11 @@ jobs:
             echo "host=$(python3 tools/union_matrix.py --format host-matrix)"
           } >> "$GITHUB_OUTPUT"
       - name: Matrix summary
+        env:
+          COMBO_FILTER: ${{ inputs.combo-filter }}
         run: |
           echo "### union-matrix: ${{ steps.gen.outputs.esp-count }} esp combos" >> "$GITHUB_STEP_SUMMARY"
-          python3 tools/union_matrix.py --format table --filter "${{ inputs.combo-filter }}" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 tools/union_matrix.py --format table --filter "$COMBO_FILTER" >> "$GITHUB_STEP_SUMMARY" || true
 
   esp32-check:
     # The target-side union: cargo check per variant (xtensa + riscv32).
