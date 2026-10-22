@@ -139,8 +139,17 @@ public final class EcdsaSha2Signature extends Signature {
 
     @Override
     public short getLength() throws CryptoException {
-        // DER{r,s} worst case for a 521-bit curve ~ 2*66 + 10 header bytes
-        return (short) 141;
+        // DER SEQUENCE{r,s} upper bound for the largest supported curve
+        // (P-521), from the #407 review nit (141 was shy of worst case).
+        // Derivation: a 521-bit magnitude is <= 66 bytes; a maximally
+        // padded DER INTEGER is 2 header + 1 sign pad + 66 = 69 bytes,
+        // so both INTEGERs take 138 bytes; the SEQUENCE header needs its
+        // long form (138 > 127) = 3 bytes -> 141 absolute worst case.
+        // Canonical r,s < n(P-521) (n's top byte is 0x01, so the sign pad
+        // never fires) actually fit in 139 — we return 144 anyway: an
+        // over-estimate only makes callers over-allocate, an
+        // under-estimate truncates real signatures.
+        return (short) 144;
     }
 
     @Override
