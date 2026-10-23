@@ -1,6 +1,9 @@
 //! Shared bring-up for the network firmware paths (wifi-ccid legacy,
 //! wifi-vpcd primary). `station_bring_up` is backend-agnostic (WiFi,
-//! netlog, OTA, rollback mark); each NFC backend gets its own ladder so
+//! netlog, OTA, rollback mark); NFC construction flows through
+//! `board_ctor` (boards-as-data, t_a0ebcf54): pin/bus facts come from
+//! the board tables — the typed gpio4/5/6/7 this module used to
+//! hand-type are gone. Each NFC backend gets its own ladder so
 //! `wifi-vpcd` composes with any board/backend feature pair:
 //!
 //!   nucula:  `--features wifi-vpcd,backend-pn7160,board-nucula`
@@ -10,11 +13,9 @@
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 
 #[cfg(feature = "backend-pn7160")]
-use crate::nfc::NfcDriver;
-#[cfg(feature = "backend-pn7160")]
 use crate::pn7160_driver::Pn7160NfcDriver;
 #[cfg(feature = "backend-pn7160")]
-use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
+use crate::pn7160_i2c::EspPn7160Transport;
 #[cfg(feature = "backend-pn7160")]
 use esp_idf_hal::peripherals::Peripherals;
 
@@ -68,41 +69,18 @@ pub fn station_bring_up(
 
 /// Convenience: full bring-up including `Peripherals::take()` when only
 /// the PN7160/nucula composition is needed (the legacy wifi-ccid shape).
+/// t_a0ebcf54 (boards-as-data): the typed gpio4/5/6/7 this used to
+/// hand-type are gone — NFC construction flows through the GENERATED
+/// `boards::NUCULA` table via `board_ctor`.
 #[cfg(feature = "backend-pn7160")]
 pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
     let peripherals = Peripherals::take().expect("peripherals already taken");
     let nvs = EspDefaultNvsPartition::take().expect("nvs partition");
     let ip = station_bring_up(peripherals.modem, nvs);
-    let bus = BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    };
-    (ip, pn7160_bring_up(bus))
-}
-
-/// PN7160 ladder (nucula): the ACK-window bring-up with VEN-cycle
-/// retries, verbatim from the CDC main.
-#[cfg(feature = "backend-pn7160")]
-pub fn pn7160_bring_up<I2C, SDA, SCL, IRQ, VEN>(
-    bus: BusPins<I2C, SDA, SCL, IRQ, VEN>,
-) -> Pn7160NfcDriver<EspPn7160Transport> {
-    // boards-as-data seam (t_4864e74e §3): the pin/address facts come
-    // from the BoardDesc table (host-tested lock: the nucula row equals
-    // the crate's NUCULA reference geometry), not a second hand-typed
-    // copy of the same numbers.
-    let pins = crate::board_ctor::pn7160::binding_from_board(&boards::NUCULA);
-    let transport = EspPn7160Transport::bringup_config_order(pins, bus).expect("peripheral init");
-    // t_4864e74e: the VEN-cycle retry ladder is the driver's own
-    // constructor now — this wrapper only supplies the esp recovery
-    // hook (VEN cycle + bus probe between attempts).
-    let (driver, _ok) = Pn7160NfcDriver::bring_up(transport, INIT_ATTEMPTS, |t| {
-        t.ven_cycle();
-        let _ = t.probe();
-    });
-    driver
+    let (driver, _ok) = crate::board_ctor::pn7160::bring_up(
+        crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins),
+    );
+    (ip, driver)
 }
 
 /// Reader-present or card-absent stand-in. When the NFC frontend never

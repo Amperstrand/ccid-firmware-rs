@@ -235,6 +235,36 @@ impl BoardDesc {
         }
         panic!("board table: no pin for role (const lookup)")
     }
+
+    /// Const-callable I2C pin facts `(sda, scl)` of the bus serving
+    /// `role` — the bus-side twin of [`pin_const`](Self::pin_const):
+    /// pins a Layer-B constructor's number→token match arm to the
+    /// table at COMPILE time (same §4 step 1 rule: a drifted pin
+    /// fails the build, not the bench).
+    pub const fn bus_i2c_pins_const(&self, role: BusRole) -> (u8, u8) {
+        let mut i = 0;
+        while i < self.buses.len() {
+            if bus_role_eq(self.buses[i].role, role) {
+                // `BusKind` has a single I2c variant today, so this is
+                // a one-arm match (clippy rejects an irrefutable
+                // `if let`); a second bus kind turns the arm refutable
+                // and the build fails HERE — the loud failure this
+                // schema wants.
+                match self.buses[i].kind {
+                    BusKind::I2c(bus) => return (bus.sda, bus.scl),
+                }
+            }
+            i += 1;
+        }
+        panic!("board table: no bus for role (const lookup)")
+    }
+}
+
+/// Const-callable BusRole equality (derived `PartialEq` is not const;
+/// a byte-wise-style compare on the discriminant, same trick as
+/// [`role_bytes_eq`]).
+const fn bus_role_eq(a: BusRole, b: BusRole) -> bool {
+    matches!(a, BusRole::NfcFrontend) == matches!(b, BusRole::NfcFrontend)
 }
 
 const fn role_bytes_eq(a: &str, b: &str) -> bool {
@@ -251,4 +281,23 @@ const fn role_bytes_eq(a: &str, b: &str) -> bool {
         i += 1;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{M5STICK, NUCULA};
+
+    /// The const bus accessor agrees with the runtime `bus().i2c()`
+    /// lookup on real tables — the compile-time pinning source for
+    /// Layer-B number→token match arms (boards-as-data §4 step 1).
+    #[test]
+    fn bus_i2c_pins_const_agrees_with_the_runtime_lookup() {
+        assert_eq!(NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend), {
+            let b = NUCULA.bus(BusRole::NfcFrontend).i2c();
+            (b.sda, b.scl)
+        });
+        assert_eq!(NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend), (4, 5));
+        assert_eq!(M5STICK.bus_i2c_pins_const(BusRole::NfcFrontend), (32, 33));
+    }
 }

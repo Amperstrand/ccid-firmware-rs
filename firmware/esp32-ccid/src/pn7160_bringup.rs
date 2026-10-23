@@ -22,7 +22,7 @@ use crate::pn7160_driver::NfcError;
 
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
-use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
+use crate::pn7160_i2c::EspPn7160Transport;
 
 #[cfg(feature = "pn7160-verdict-a")]
 const VERDICT: &str = "A/pad-hold-clear";
@@ -105,24 +105,25 @@ pub fn run() -> ! {
         _ => log::warn!("wifi: no NUCULA_WIFI_SSID/PASS baked in - serial only"),
     }
 
-    let bus = BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    };
+    // boards-as-data seam (t_a0ebcf54): the typed gpio4/5/6/7 are
+    // gone — the token bundle and the raw pin/address facts both
+    // resolve from the GENERATED boards::NUCULA row (board_ctor). The
+    // verdict-selected transport variant stays HERE: this main exists
+    // to A/B the electrical bring-up hypotheses, which is not board
+    // data.
+    let pins = crate::board_ctor::pn7160::binding_from_board(&boards::NUCULA);
+    let bus = crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins);
 
     let transport = {
         #[cfg(feature = "pn7160-verdict-a")]
-        let t = EspPn7160Transport::bringup_pad_hold_clear(pn7160_nci::esp_transport::NUCULA, bus);
+        let t = EspPn7160Transport::bringup_pad_hold_clear(pins, bus);
         #[cfg(all(feature = "pn7160-verdict-b", not(feature = "pn7160-verdict-a")))]
-        let t = EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus);
+        let t = EspPn7160Transport::bringup_config_order(pins, bus);
         #[cfg(all(
             feature = "pn7160-verdict-c",
             not(any(feature = "pn7160-verdict-a", feature = "pn7160-verdict-b"))
         ))]
-        let t = EspPn7160Transport::bringup_ven_timing(pn7160_nci::esp_transport::NUCULA, bus);
+        let t = EspPn7160Transport::bringup_ven_timing(pins, bus);
         t
     };
 

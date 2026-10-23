@@ -219,7 +219,119 @@ pub mod pn7160 {
             ven: b.pin("nfc_ven") as i32,
         }
     }
+
+    /// nucula typed-token bundle (t_a0ebcf54, boards-as-data §1.1
+    /// number→token step): the esp-idf-hal `Gpio4/5/6/7` types appear
+    /// HERE and nowhere else — pinned to the GENERATED
+    /// `boards::NUCULA` row by the const block (a drifted table fails
+    /// the BUILD) and by the match's panic arm (a drifted runtime
+    /// read fails boot loudly). The tokens prove ownership only: the
+    /// transport drives the raw gpio numbers from [`binding_from_board`]
+    /// (the crate's `BusPins` contract, #230).
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    pub fn nucula_bus_pins(
+        i2c0: esp_idf_hal::i2c::I2C0<'static>,
+        pins: esp_idf_hal::gpio::Pins,
+    ) -> crate::pn7160_i2c::BusPins {
+        nucula_bus_pins_with_console(i2c0, pins).0
+    }
+
+    /// Whole-`gpio::Pins` split for mains that share the pins bank
+    /// with the USB-CDC console wire (the c3-ccid main): type-state
+    /// forbids re-moving the bank after either claim, so BOTH splits
+    /// happen here, once — the NFC `BusPins` plus the GPIO18/19
+    /// console tokens `UsbSerialDriver::new` demands (ownership
+    /// tokens only; the ROM console pins are an sdkconfig fact, not
+    /// board-table data). Same pinning rule as
+    /// [`nucula_bus_pins`]: the NFC tokens can never drift from the
+    /// GENERATED table.
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    pub fn nucula_bus_pins_with_console(
+        i2c0: esp_idf_hal::i2c::I2C0<'static>,
+        pins: esp_idf_hal::gpio::Pins,
+    ) -> (
+        crate::pn7160_i2c::BusPins,
+        esp_idf_hal::gpio::Gpio18<'static>,
+        esp_idf_hal::gpio::Gpio19<'static>,
+    ) {
+        const _: () = {
+            let (sda, scl) = boards::NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend);
+            // Integer-only compares: composite `==` in const context is
+            // not stable on the pinned esp fork's rustc (1.98.1.0).
+            assert!(sda == 4 && scl == 5, "boards::NUCULA NFC bus drifted");
+            assert!(
+                boards::NUCULA.pin_const("nfc_irq") == 6,
+                "boards::NUCULA nfc_irq drifted"
+            );
+            assert!(
+                boards::NUCULA.pin_const("nfc_ven") == 7,
+                "boards::NUCULA nfc_ven drifted"
+            );
+        };
+        let console_d_m = pins.gpio18;
+        let console_d_p = pins.gpio19;
+        match (
+            binding_from_board(&boards::NUCULA).sda,
+            binding_from_board(&boards::NUCULA).scl,
+            boards::NUCULA.pin("nfc_irq") as i32,
+            boards::NUCULA.pin("nfc_ven") as i32,
+        ) {
+            // number→token: the ONLY arm — provably taken (const block
+            // above); the typed tokens are the transport's BusPins types.
+            (4, 5, 6, 7) => (
+                crate::pn7160_i2c::BusPins {
+                    i2c0,
+                    sda: pins.gpio4,
+                    scl: pins.gpio5,
+                    irq: pins.gpio6,
+                    ven: pins.gpio7,
+                },
+                console_d_m,
+                console_d_p,
+            ),
+            (sda, scl, irq, ven) => panic!(
+                "nucula NFC pins drifted from boards::NUCULA: \
+                 sda={sda} scl={scl} irq={irq} ven={ven}"
+            ),
+        }
+    }
+
+    /// PN7160/nucula construction, table-driven end to end (the #426
+    /// constructor path): the transport's ACK-window bring-up
+    /// (`bringup_config_order`: VEN cycle + immediate in-window probe)
+    /// at the GENERATED table's address/pins, then the driver's
+    /// [`Pn7160NfcDriver::bring_up`] init ladder with the VEN re-cycle
+    /// + immediate `link_probe` recovery between attempts. Returns the
+    /// driver and whether init succeeded — callers that serve CCID wrap
+    /// per their fault-isolation policy (the serving mains keep
+    /// card-absent mode either way).
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    pub fn bring_up(
+        bus: crate::pn7160_i2c::BusPins,
+    ) -> (crate::pn7160_i2c::EspPn7160NfcDriver, bool) {
+        // boards-as-data seam: address + raw pin facts from the
+        // GENERATED row (host-tested lock: equals the crate's NUCULA
+        // reference geometry), not a hand-typed copy.
+        let pins = binding_from_board(&boards::NUCULA);
+        let transport = crate::pn7160_i2c::EspPn7160Transport::bringup_config_order(pins, bus)
+            .expect("peripheral init");
+        // t_4864e74e: the VEN-cycle retry ladder is the driver's own
+        // constructor — this wrapper only supplies the esp recovery
+        // hook (VEN cycle + bus probe between attempts).
+        crate::pn7160_driver::Pn7160NfcDriver::bring_up(transport, INIT_ATTEMPTS, |t| {
+            t.ven_cycle();
+            let _ = t.probe();
+        })
+    }
 }
+
+/// PN7160 init-ladder attempts (the historical mains' `INIT_ATTEMPTS`
+/// — 5 everywhere: wifi_common, pn7160_ccid, wifi_ccid).
+#[cfg(all(
+    feature = "backend-pn7160",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
+const INIT_ATTEMPTS: u32 = 5;
 
 #[cfg(test)]
 mod tests {

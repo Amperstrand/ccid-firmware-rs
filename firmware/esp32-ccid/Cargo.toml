@@ -23,14 +23,14 @@ backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "dep:pn7160
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
 # Grove I2C pinout — pin data lives in `crates/boards` (boards-as-data,
 # design §4): do not add pin numbers here. board-m5stick / board-m5atom
-# read `boards::M5STICK` / `boards::M5ATOM`; board-nucula migrates in a
-# later slice (bolty-rs docs/lessons-learned.md B2 remains the citation).
+# read `boards::M5STICK` / `boards::M5ATOM`; board-nucula reads the
+# GENERATED `boards::NUCULA` row via `board_ctor::pn7160` (t_a0ebcf54).
 board-m5atom = []
 board-m5stick = []
-# ESP32-C3 nucula board: PN7160 NFC @ I2C addr 0x28, SDA=GPIO4 SCL=GPIO5 IRQ=GPIO6 VEN=GPIO7.
-# Console is the ROM USB-Serial/JTAG CDC (GPIO18/19); there is no UART bridge.
-# NOTE: the PN7160 backend driver is a later phase; this feature only selects the
-# board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
+# ESP32-C3 nucula board (zeugmaster hardware repo). Pin/bus facts live
+# ONLY in the GENERATED `crates/boards/src/nucula_gen.rs` (netlist sha-
+# pinned; never hand-typed). Console is the ROM USB-Serial/JTAG CDC;
+# there is no UART bridge.
 board-nucula = []
 backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp"]
 pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
