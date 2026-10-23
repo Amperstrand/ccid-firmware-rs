@@ -231,11 +231,34 @@ pub mod pn7160 {
     #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     pub fn nucula_bus_pins(
         i2c0: esp_idf_hal::i2c::I2C0<'static>,
-        pins: esp_idf_hal::peripherals::Pins<'static>,
+        pins: esp_idf_hal::gpio::Pins,
     ) -> crate::pn7160_i2c::BusPins {
+        nucula_bus_pins_with_console(i2c0, pins).0
+    }
+
+    /// Whole-`gpio::Pins` split for mains that share the pins bank
+    /// with the USB-CDC console wire (the c3-ccid main): type-state
+    /// forbids re-moving the bank after either claim, so BOTH splits
+    /// happen here, once — the NFC `BusPins` plus the GPIO18/19
+    /// console tokens `UsbSerialDriver::new` demands (ownership
+    /// tokens only; the ROM console pins are an sdkconfig fact, not
+    /// board-table data). Same pinning rule as
+    /// [`nucula_bus_pins`]: the NFC tokens can never drift from the
+    /// GENERATED table.
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+    pub fn nucula_bus_pins_with_console(
+        i2c0: esp_idf_hal::i2c::I2C0<'static>,
+        pins: esp_idf_hal::gpio::Pins,
+    ) -> (
+        crate::pn7160_i2c::BusPins,
+        esp_idf_hal::gpio::Gpio18<'static>,
+        esp_idf_hal::gpio::Gpio19<'static>,
+    ) {
         const _: () = {
             let (sda, scl) = boards::NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend);
-            assert!((sda, scl) == (4, 5), "boards::NUCULA NFC bus drifted");
+            // Integer-only compares: composite `==` in const context is
+            // not stable on the pinned esp fork's rustc (1.98.1.0).
+            assert!(sda == 4 && scl == 5, "boards::NUCULA NFC bus drifted");
             assert!(
                 boards::NUCULA.pin_const("nfc_irq") == 6,
                 "boards::NUCULA nfc_irq drifted"
@@ -245,6 +268,8 @@ pub mod pn7160 {
                 "boards::NUCULA nfc_ven drifted"
             );
         };
+        let console_d_m = pins.gpio18;
+        let console_d_p = pins.gpio19;
         match (
             binding_from_board(&boards::NUCULA).sda,
             binding_from_board(&boards::NUCULA).scl,
@@ -253,13 +278,17 @@ pub mod pn7160 {
         ) {
             // number→token: the ONLY arm — provably taken (const block
             // above); the typed tokens are the transport's BusPins types.
-            (4, 5, 6, 7) => crate::pn7160_i2c::BusPins {
-                i2c0,
-                sda: pins.gpio4,
-                scl: pins.gpio5,
-                irq: pins.gpio6,
-                ven: pins.gpio7,
-            },
+            (4, 5, 6, 7) => (
+                crate::pn7160_i2c::BusPins {
+                    i2c0,
+                    sda: pins.gpio4,
+                    scl: pins.gpio5,
+                    irq: pins.gpio6,
+                    ven: pins.gpio7,
+                },
+                console_d_m,
+                console_d_p,
+            ),
             (sda, scl, irq, ven) => panic!(
                 "nucula NFC pins drifted from boards::NUCULA: \
                  sda={sda} scl={scl} irq={irq} ven={ven}"

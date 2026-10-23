@@ -104,10 +104,18 @@ pub fn run() -> ! {
     // USB-CDC: CCID serial transport. In non-ble builds the console
     // shares this port too (frame parser ignores logs); in ble builds
     // it is CCID-only by construction.
+    //
+    // boards-as-data split (t_a0ebcf54): this main shares the pins
+    // bank with the console wire, so NFC BusPins and the GPIO18/19
+    // console tokens come out of ONE board_ctor split — the typed
+    // gpio4/5/6/7 live only there, pinned to the GENERATED
+    // boards::NUCULA row.
+    let (nfc_bus, console_d_m, console_d_p) =
+        crate::board_ctor::pn7160::nucula_bus_pins_with_console(peripherals.i2c0, peripherals.pins);
     let usb = UsbSerialDriver::new(
         peripherals.usb_serial,
-        peripherals.pins.gpio18,
-        peripherals.pins.gpio19,
+        console_d_m,
+        console_d_p,
         &UsbConfig::new().rx_buffer_size(1024).tx_buffer_size(1024),
     )
     .expect("USB-CDC init failed");
@@ -125,9 +133,7 @@ pub fn run() -> ! {
     // VEN-cycle + in-window probe, then the init ladder with VEN
     // re-cycle + immediate link_probe between attempts), reading the
     // GENERATED boards::NUCULA row.
-    let (mut driver, _pn7160_ok) = crate::board_ctor::pn7160::bring_up(
-        crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins),
-    );
+    let (mut driver, _pn7160_ok) = crate::board_ctor::pn7160::bring_up(nfc_bus);
     // Issue #156 B: interim CCID time-extension frames during a
     // stalling (WTX) exchange — hook + raw writer registration.
     crate::ccid_serial_server::time_extension::register_writer(write_wire_cdc);
