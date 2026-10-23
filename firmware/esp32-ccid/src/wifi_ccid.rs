@@ -19,7 +19,7 @@ use crate::ccid_handler::CcidHandler;
 use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows};
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
-use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
+use crate::pn7160_i2c::EspPn7160Transport;
 use crate::wifi::WifiManager;
 
 use std::io::{ErrorKind, Write};
@@ -28,7 +28,6 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 const CARD_POLL_INTERVAL_MS: u32 = 500;
-const INIT_ATTEMPTS: u32 = 5;
 const TCP_PORT: u16 = 29443;
 /// Consecutive NAKed I2C writes that mean the PN7160 wedged (mute):
 /// below this the driver's retry cadence absorbs transient bus errors.
@@ -116,47 +115,13 @@ pub fn run() -> ! {
     let listener = TcpListener::bind(("0.0.0.0", TCP_PORT)).expect("tcp bind");
     log::warn!("wifi-ccid: listening on 0.0.0.0:{}", TCP_PORT);
 
-    // PN7160 bring-up — the ACK-window ladder, verbatim from the CDC main.
-    let bus = BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    };
-    let transport =
-        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
-            .expect("peripheral init");
-    let mut transport = Some(transport);
-    let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
-    for attempt in 1..=INIT_ATTEMPTS {
-        let mut d = Pn7160NfcDriver::new(transport.take().expect("transport"));
-        match d.init() {
-            Ok(()) => {
-                log::warn!("wifi-ccid: PN7160 initialized (attempt {})", attempt);
-                driver = Some(d);
-                break;
-            }
-            Err(e) => {
-                log::warn!(
-                    "wifi-ccid: init attempt {} failed ({:?}) — VEN re-cycle + retry",
-                    attempt,
-                    e
-                );
-                let mut t = d.into_transport();
-                t.ven_cycle();
-                let _ = t.probe();
-                transport = Some(t);
-            }
-        }
-    }
-    let mut driver = driver.unwrap_or_else(|| {
-        log::warn!(
-            "wifi-ccid: PN7160 unresponsive after {} attempts — card-absent mode",
-            INIT_ATTEMPTS
-        );
-        Pn7160NfcDriver::new(transport.take().expect("transport"))
-    });
+    // PN7160 bring-up — boards-as-data seam (t_a0ebcf54): the typed
+    // gpio4/5/6/7 and the inline ACK-window ladder that used to live
+    // here both moved into `board_ctor::pn7160` (the #426 constructor
+    // path), reading the GENERATED boards::NUCULA row.
+    let (mut driver, _pn7160_ok) = crate::board_ctor::pn7160::bring_up(
+        crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins),
+    );
     // Issue #156 B: interim CCID time-extension frames during a
     // stalling (WTX) exchange — hook + raw writer registration.
     crate::ccid_serial_server::time_extension::register_writer(write_wire_tcp);
