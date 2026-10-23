@@ -47,10 +47,20 @@ fn main() {
         watch(&git_dir.join("packed-refs"));
     }
 
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // Reproducible-build pin (research note 2026-10-21, image-path census):
+    // FW_BUILD_TS is one of the two wall-clock bakes that make cross-host
+    // image hashes irreproducible (the other: IDF's esp_app_desc). Honor
+    // the standard SOURCE_DATE_EPOCH (reproducible-builds.org) when set;
+    // keep the live wall clock otherwise so dev builds stay timestamped.
+    let ts = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
     let rev = git_head_short();
     println!("cargo:rustc-env=FW_BUILD_TS={ts}");
     println!("cargo:rustc-env=FW_GIT_REV={rev}");
