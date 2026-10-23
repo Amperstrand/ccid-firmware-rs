@@ -861,6 +861,15 @@ pub mod reader {
     /// no-op, so elapsed is tracked as rounds × this value).
     pub const DATA_COLLECT_WAIT_MS: u64 = 200;
 
+    /// First-round wait (issue #408): a fast peer (S20 HCE measured ~5 ms
+    /// via the m5stick path on the bench) answers well inside one 200 ms
+    /// round, and the round loop's poll-then-sleep quantizes every
+    /// exchange up to a full round. Waiting a short interval first and
+    /// re-polling BEFORE the first long sleep returns those answers at
+    /// wire speed; the 200 ms rounds remain the bounded fallback for
+    /// marginal coupling (the 2026-10-13 13 s stall class).
+    pub const DATA_FIRST_WAIT_MS: u64 = 10;
+
     /// Stall-report cadence (issue #156 B): the stall hook fires once
     /// the nominal elapsed crosses 1.5 s and every 1.5 s after —
     /// comfortably inside libccidtwin's 3 s DEFAULT_COM_READ_TIMEOUT,
@@ -978,8 +987,12 @@ pub mod reader {
             waited_rounds: &mut usize,
             next_stall_ms: &mut u32,
             stall: Option<StallHook>,
+            wait_ms: u64,
         ) {
             *waited_rounds += 1;
+            // Stall clock stays NOMINAL (rounds x 200 ms) so interim
+            // CCID time-extension frames reach the host on the same
+            // cadence regardless of the short first wait (#408).
             let elapsed = (*waited_rounds as u32) * (DATA_COLLECT_WAIT_MS as u32);
             if elapsed >= *next_stall_ms {
                 if let Some(hook) = stall {
@@ -987,7 +1000,7 @@ pub mod reader {
                 }
                 *next_stall_ms = (*next_stall_ms).saturating_add(STALL_REPORT_MS);
             }
-            t.wait_ms(DATA_COLLECT_WAIT_MS);
+            t.wait_ms(wait_ms);
         }
 
         // TX: PBF-chained fragments, credit-gated (NCI 1.0 §3.5).
@@ -1015,6 +1028,7 @@ pub mod reader {
             // until the CORE_CONN_CREDITS_NTF re-grant (NCI 1.0 §4.4.4);
             // churn (WTX advisories) is consumed while waiting.
             let mut credited = false;
+            let mut first_credit_round = true;
             while budget > 0 {
                 if let Some(f) = t.poll_frame() {
                     if is_wtx_ntf(&f) {
@@ -1029,7 +1043,9 @@ pub mod reader {
                     }
                 }
                 budget -= 1;
-                round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall);
+                let w = if first_credit_round { DATA_FIRST_WAIT_MS } else { DATA_COLLECT_WAIT_MS };
+                first_credit_round = false;
+                round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall, w);
             }
             if !credited {
                 return (ExchangeOutcome::Timeout, wtx);
@@ -1039,6 +1055,7 @@ pub mod reader {
         // RX: collect DATA packets on the connection, reassembling the
         // PBF chain (NCI 1.0 §3.5; last packet carries PBF=0).
         let mut response: Vec<u8, 1024> = Vec::new();
+        let mut first_rx_round = true;
         while budget > 0 {
             if let Some(f) = t.poll_frame() {
                 if is_wtx_ntf(&f) {
@@ -1058,7 +1075,9 @@ pub mod reader {
                 }
             }
             budget -= 1;
-            round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall);
+            let w = if first_rx_round { DATA_FIRST_WAIT_MS } else { DATA_COLLECT_WAIT_MS };
+            first_rx_round = false;
+            round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall, w);
         }
         (ExchangeOutcome::Timeout, wtx)
     }
@@ -1863,6 +1882,39 @@ mod tests {
         let rsp = reader::exchange(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00])
             .expect("data must arrive after wtx churn");
         assert_eq!(rsp.as_slice(), &[0x90, 0x00]);
+    }
+
+    #[test]
+    fn exchange_fast_peer_returns_after_short_first_wait() {
+        // Issue #408: a fast peer answers inside the first short wait
+        // (DATA_FIRST_WAIT_MS); the exchange must NOT quantize it up to a
+        // full 200 ms round. Bench shape: S20 HCE answers in ~5 ms.
+        let mut t = mock::MockTransport::new();
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x90, 0x00]);
+        let (outcome, wtx) = reader::exchange_detailed(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00], None);
+        assert!(matches!(outcome, reader::ExchangeOutcome::Data(_)));
+        assert_eq!(wtx, 0);
+        assert_eq!(
+            t.waited_ms, reader::DATA_FIRST_WAIT_MS,
+            "fast peer must pay only the short first wait, not a full round"
+        );
+    }
+
+    #[test]
+    fn exchange_slow_peer_falls_back_to_full_rounds() {
+        // Issue #408 counterpart: churn first, DATA on the second wait —
+        // the cadence is short-first then the full 200 ms rounds.
+        let mut t = mock::MockTransport::new();
+        t.late_on_wait.push_back(vec![0x6F, 0x17, 0x00]); // WTX churn first
+        t.late_on_wait.push_back(vec![0x00, 0x00, 0x02, 0x90, 0x00]); // then DATA
+        let (outcome, wtx) = reader::exchange_detailed(&mut t, 0, &[0x00, 0xA4, 0x04, 0x00], None);
+        assert!(matches!(outcome, reader::ExchangeOutcome::Data(_)));
+        assert_eq!(wtx, 1, "the WTX advisory must be counted");
+        assert_eq!(
+            t.waited_ms,
+            reader::DATA_FIRST_WAIT_MS + reader::DATA_COLLECT_WAIT_MS,
+            "cadence after the short first wait stays on full rounds"
+        );
     }
 
     #[test]
