@@ -111,6 +111,15 @@ impl<T: Transport> NfcDriver for Pn7160NfcDriver<T> {
     fn wtx_counters(&self) -> Option<(u32, u32)> {
         Some(self.inner.wtx_counters())
     }
+
+    /// Issue #408 diagnosis: surface the cumulative wait at which the last
+    /// DATA packet arrived through Escape 0xD2 word 8 (the
+    /// max_transceive_us slot on the MFRC522 backend; ms x 1000 here).
+    fn exchange_decomposition(&self) -> Option<(u32, u32, u32, u32)> {
+        let arrival_ms = pn7160_nci::reader::LAST_DATA_ARRIVAL_MS
+            .load(core::sync::atomic::Ordering::Relaxed);
+        Some((0, self.inner.wtx_counters().0, 0, arrival_ms * 1000))
+    }
 }
 
 #[cfg(test)]
