@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+### Changed — nucula + wifi mains migrate to board_ctor (t_a0ebcf54, boards-as-data)
+
+- `esp32-ccid::board_ctor::pn7160` gains the nucula arm: `bring_up`
+  runs the #426 constructor path table-driven end to end — the esp
+  transport's ACK-window bring-up (`bringup_config_order`: VEN cycle +
+  immediate in-window probe) at the address/pins resolved from the
+  GENERATED `boards::NUCULA` row, then `Pn7160NfcDriver::bring_up`
+  (init ladder with VEN re-cycle + immediate `link_probe` between
+  attempts). `nucula_bus_pins` is the number→token step (§1.1): the
+  esp-idf-hal `Gpio4/5/6/7` types live THERE and nowhere else, pinned
+  to the GENERATED table by a const block (drift fails the build) and
+  the match's panic arm (drift fails boot loudly).
+- `boards::BoardDesc::bus_i2c_pins_const` — const-callable
+  `(sda, scl)` bus lookup, the bus-side twin of `pin_const` (§4
+  step 1: pin a number→token match arm to the table at compile time).
+- `wifi_common` loses its hand-typed gpio4/5/6/7 and the
+  `pn7160_bring_up` ladder (moved to board_ctor): construction flows
+  through the board table; `station_bring_up` (the wifi-specific
+  sequence) is untouched.
+- Mains migrated to the board_ctor seam: `wifi_vpcd` (both arms — the
+  pn7160 typed pins AND the mfrc522 hand-typed Grove numbers now read
+  `boards::NUCULA`/`M5STICK`/`M5ATOM`), `pn7160_ccid` (c3-ccid leg),
+  `pn7160_bringup` (c3 leg — verdict variants keep their
+  hypothesis-specific transport constructors, only the pin/bus facts
+  moved), and the legacy `wifi_ccid` main. Each reduces to board
+  table + constructor + service spawn; inline ACK-window ladders are
+  gone. `firmware/esp32-ccid/Cargo.toml` board comments are pointers
+  to `crates/boards` now (no pin data outside the tables).
+
 ### Added — frontend constructors over pure embedded-hal + diagnostics trait (t_4864e74e)
 
 - `card-interface::FrontendDiagnostics` (home justified in the module
