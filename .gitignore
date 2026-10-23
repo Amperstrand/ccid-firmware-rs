@@ -7,6 +7,9 @@ tmp/
 *.bin
 *.elf
 *.hex
+# …except the flash-bundle test fixtures: tiny SYNTHETIC images the
+# golden-manifest test needs on a fresh clone (t_7a2ec5c3).
+!tests/tools/fixtures/**/*.bin
 
 # Logs and debug output
 *.log

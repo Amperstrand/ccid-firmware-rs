@@ -1,0 +1,48 @@
+{
+  "schema": "amperstrand.device-inventory/1",
+  "devices": {
+    "m5stick": {
+      "port": "/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0",
+      "bundle_id": null,
+      "git_rev": "5a6948e",
+      "project": "micronuts-nfc",
+      "family": {
+        "esp_idf_version": "v5.5.1",
+        "sdkconfig_id": null
+      },
+      "layout_id": "factory:v1",
+      "layout": {
+        "id": "factory:v1",
+        "app_partitions": {
+          "factory": { "offset": "0x30000", "size": "0x3D0000" }
+        }
+      },
+      "flashed_at": "2026-10-16T00:00:00+00:00",
+      "flashed_by": "micronuts build-nfc.sh (ad-hoc, pre-bundle)",
+      "last_boot_proof": null,
+      "note": "Seed row from docs/device-inventory.json forensics (mn-app4.bin sha256 21acb0fd51c4f18d60b3d4bc802967a6d9c2e20754629b0f3349d03686e7aba5): the board carries the micronuts FACTORY table, where 0x30000 is the running factory app — the exact offset this repo's partitions-ota.csv calls otadata."
+    },
+    "nucula-c3": {
+      "port": "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00",
+      "bundle_id": "seed-ota-v1-c3-ccid-e917657",
+      "git_rev": "e917657",
+      "project": "esp32-ccid",
+      "family": {
+        "esp_idf_version": "v5.5.5",
+        "sdkconfig_id": null
+      },
+      "layout_id": "ota:v1",
+      "layout": {
+        "id": "ota:v1",
+        "app_partitions": {
+          "ota_0": { "offset": "0x40000", "size": "0x1A0000" },
+          "ota_1": { "offset": "0x1E0000", "size": "0x1A0000" }
+        }
+      },
+      "flashed_at": "2026-10-20T00:00:00+00:00",
+      "flashed_by": "root@ai-legion",
+      "last_boot_proof": "2026-10-20T00:00:00+00:00",
+      "note": "c3-ccid SERVING image per docs/device-inventory.json nucula-c3 row (full J3R180 lifecycle EXIT=0 @ e917657)."
+    }
+  }
+}

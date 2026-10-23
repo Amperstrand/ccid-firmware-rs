@@ -1,0 +1,9 @@
+# micronuts factory partition table — NOT in this repo's tree; reconstructed
+# from the 2026-10-20 m5stick forensics (docs/device-inventory.json m5stick
+# row: "factory layout nvs@0x9000/128K + phy_init@0x29000/4K +
+# factory@0x30000/3904K" on the 4 MB flash). Fixture for the
+# 0x30000-is-the-factory-app refusal class (design §1.6, §4.5).
+# Name,   Type, SubType, Offset,  Size,     Flags
+nvs,      data, nvs,     0x9000,  0x20000,
+phy_init, data, phy,     0x29000, 0x1000,
+factory,  app,  factory, 0x30000, 0x3D0000,

@@ -1,5 +1,39 @@
 ## [Unreleased]
 
+### Added — flash-bundle verifier + refusal matrix (t_7a2ec5c3, flash-via-labgrid §4.4–4.5)
+
+- `tools/hil/flash_bundle.py` — the flash-side half of
+  `amperstrand.flash-bundle/1`: `check` re-verifies design §4.4
+  self-consistency (digests/bytes vs files, app-in-slot, partition-CSV
+  re-parse, DIO image header #309, family-with-bootloader, complete
+  bl+PT+app set, chip-derived bootloader offset re-derived), `verify`
+  runs the §4.5 refusal matrix against a
+  `amperstrand.device-inventory/1` entry and, on bless, emits the flash
+  plan (images in ONE esptool invocation, offsets DESCENDING, erases
+  derived ONLY from the parsed layout). `build` is the CLI passthrough
+  to the producer. Refusals carry stable reason codes with the §4.5
+  precedence (full bundle WINS over unknown inventory — the seed path).
+  The 0x30000-is-the-factory-app class (2026-10-20 root cause) is
+  refused by construction: erase offsets are never constants, a
+  requested erase must BE the bundle layout's otadata, and an app-only
+  erase may not overlap a recorded device app slot.
+- `tools/hil/make_bundle.py` hardened to the producer half of §4.4:
+  bootloader offset derived from chip (esp32 → 0x1000, C3/S3/C2 → 0x0;
+  contradiction refused), bootloader target mandatory for ESP32,
+  `family.esp_idf_version` required with it, app image header checked
+  (magic 0xE9 + DIO), STM32 shape (layout null, single app target),
+  `--boot-signature-reject` (§4.2 field, was missing).
+- Tests with real fixtures: the repo's `partitions-ota.csv`, the
+  micronuts-factory CSV + seed inventory reconstructed from the
+  `docs/device-inventory.json` forensics, a committed golden bundle
+  regenerating byte-identically (bundle_id `59403d0e…`), negative tests
+  for every refusal reason, and the 0x30000 class unit-proven on three
+  refusal layers. CI: `tests/tools` joins the `python-collect` minimal
+  leg (it had no leg since the M1 producer landed).
+- `tools/hil/FLASH-BUNDLES.md` — usage + the refusal matrix table.
+  Smoke-proven against a real built image dir (m2-mfrc522 xtensa
+  release: real bootloader/PT + `elf2image`'d app, DIO header verified).
+
 ### Changed — nucula + wifi mains migrate to board_ctor (t_a0ebcf54, boards-as-data)
 
 - `esp32-ccid::board_ctor::pn7160` gains the nucula arm: `bring_up`
