@@ -116,7 +116,7 @@ iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "0f7d
 mfrc522-pcd = { path = "../../crates/mfrc522-pcd", optional = true }
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
-pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "2a1afea", optional = true }
+pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "cb3ad97f7", optional = true }
 
 # LCD status screen (bolty-rs display.rs port) — pinned to bolty's exact
 # bench-proven pair (apps/bolty-esp32/Cargo.toml):
