@@ -105,3 +105,7 @@ target-host/
 target-esp/
 target/
 /target-boards/
+
+# build dirs — never commitable (two artifact incidents 2026-10-22)
+/target*/
+**/target*/
