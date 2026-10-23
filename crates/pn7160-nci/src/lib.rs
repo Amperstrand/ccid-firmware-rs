@@ -1043,7 +1043,11 @@ pub mod reader {
                     }
                 }
                 budget -= 1;
-                let w = if first_credit_round { DATA_FIRST_WAIT_MS } else { DATA_COLLECT_WAIT_MS };
+                let w = if first_credit_round {
+                    DATA_FIRST_WAIT_MS
+                } else {
+                    DATA_COLLECT_WAIT_MS
+                };
                 first_credit_round = false;
                 round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall, w);
             }
@@ -1075,7 +1079,11 @@ pub mod reader {
                 }
             }
             budget -= 1;
-            let w = if first_rx_round { DATA_FIRST_WAIT_MS } else { DATA_COLLECT_WAIT_MS };
+            let w = if first_rx_round {
+                DATA_FIRST_WAIT_MS
+            } else {
+                DATA_COLLECT_WAIT_MS
+            };
             first_rx_round = false;
             round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall, w);
         }
@@ -1895,7 +1903,8 @@ mod tests {
         assert!(matches!(outcome, reader::ExchangeOutcome::Data(_)));
         assert_eq!(wtx, 0);
         assert_eq!(
-            t.waited_ms, reader::DATA_FIRST_WAIT_MS,
+            t.waited_ms,
+            reader::DATA_FIRST_WAIT_MS,
             "fast peer must pay only the short first wait, not a full round"
         );
     }
