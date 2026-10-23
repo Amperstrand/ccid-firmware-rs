@@ -381,8 +381,14 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
          lambda r, i: r and r[0][0] == 0x83 and len(r[0][4]) > 0),
         ("Escape sync-enable", MSG_ESCAPE, bytes([0x01, 0x01, 0x01]),
          lambda r, i: r and r[0][0] == 0x83),
+        # Card-state aware (2026-10-23): with no ICC on the coil the
+        # CORRECT answer is bmICCStatus=2 (no ICC); the old expectation
+        # only accepted present-states and failed honest card-absent
+        # benches (the icc probe feeds each reader's state as i).
         ("GetSlotStatus", MSG_GET_SLOT_STATUS, b"",
-         lambda r, i: r and r[0][0] == 0x81 and (r[0][2] & 0x03) in (0x00, 0x01)),
+         lambda r, i: r and r[0][0] == 0x81 and (
+             (r[0][2] & 0x03) in (0x00, 0x01) if i in (0, 1)
+             else (r[0][2] & 0x03) == 0x02)),
         ("IccPowerOn", MSG_ICC_POWER_ON, b"", power_on_expect),
         ("IccPowerOff", MSG_ICC_POWER_OFF, b"",
          lambda r, i: bool(r)),
@@ -410,12 +416,14 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
             if not passed:
                 ok = False
 
+    run_names = list(readers.keys())
     print(f"\nICC state: {icc} (0=present+active 1=present+inactive 2=no ICC)")
-    print(f"{'case':28s} {'nucula':>30s}   {'m5stick':>30s}   verdict")
+    header = "   ".join(f"{rn:>30s}" for rn in run_names)
+    print(f"{'case':28s} {header}   verdict")
     for name, per in results.items():
         cells = []
         agree = True
-        for rn in READERS:
+        for rn in run_names:
             p, d = per[rn]
             cells.append(f"{d[:28]:>28s} {'PASS' if p else 'FAIL'}")
         # structural agreement: same response type AND same command-status
@@ -424,7 +432,7 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
         # lives on the m5stick coil) and never participate in the
         # reader-vs-reader comparison.
         sigs = []
-        for rn in READERS:
+        for rn in run_names:
             _p, d = per[rn]
             if d == "no response":
                 sigs.append("none")
@@ -436,7 +444,8 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
             verdict = "n/a (card-relative)"
         else:
             verdict = "AGREE" if agree else "DIVERGE"
-        print(f"{name:28s} {cells[0]:>34s}   {cells[1]:>34s}   {verdict}")
+        row = "   ".join(f"{c:>34s}" for c in cells)
+        print(f"{name:28s} {row}   {verdict}")
         if verdict == "DIVERGE":
             ok = False
     return ok
@@ -568,28 +577,48 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
     print(f"\npcscd restart soak ({count}x):")
     for r in readers.values():
         r.close()
+    # Reader-name drift lesson (2026-10-23): match each configured
+    # reader by ANY of its historical bench names, not one hardcoded
+    # string — the m5stick conf was renamed 'M5stick GemPC (MFRC522)'
+    # while this probe still hunted only 'GemPCTwin' (10/10 false FAIL).
+    NAME_PATTERNS = {
+        "nucula": ("Nucula",),
+        "m5stick": ("GemPCTwin", "M5stick GemPC", "M5stick"),
+    }
+    run_names = list(readers.keys())
+    probe = (
+        "from smartcard.System import readers as R; "
+        "names = [str(r) for r in R()]; "
+        + " ".join(
+            "print(any({} for n in names));".format(
+                " or ".join(f"'{p}' in n" for p in NAME_PATTERNS[rn])
+            )
+            for rn in run_names
+        )
+    )
     ok = True
     for i in range(count):
         pcscd_start()
+        # sys.executable, NOT PATH python3: in agent/venv environments
+        # PATH python3 lacks pyscard and the probe fails SILENTLY (empty
+        # stdout maps to all-False — 10/10 false FAIL, 2026-10-23).
         out = subprocess.run(
-            ["python3", "-c",
-             "from smartcard.System import readers as R; "
-             "print(any('Nucula' in str(r) for r in R()), "
-             "any('GemPCTwin' in str(r) for r in R()))"],
+            [sys.executable, "-c", probe],
             capture_output=True, text=True, timeout=30)
-        out_line = out.stdout.strip()
-        nuc, gem = out_line == "True True", out_line == "True True"
-        if out_line not in ("True True", "False False"):
-            nuc, gem = out_line.split() if " " in out_line else (False, False)
-        if not (nuc and gem):
+        flags = [ln.strip() == "True" for ln in out.stdout.splitlines()]
+        states = dict(zip(run_names, flags)) if len(flags) == len(run_names) else {
+            n: False for n in run_names
+        }
+        if not all(states.values()):
             ok = False
-            print(f"  restart {i}: nucula={nuc} m5stick={gem} — FAIL")
+            print(f"  restart {i}: {states} — FAIL")
             # the known CDC-state remedy: one clean open/close cycle
-            try:
-                s = serial.Serial(resolve("nucula"), 115200, timeout=0.5)
-                s.close()
-            except Exception:
-                pass
+            if "nucula" in states and not states["nucula"]:
+                try:
+                    s = serial.Serial(resolve("nucula"), 115200, timeout=0.5)
+                    s.close()
+                except Exception:
+                    pass
         pcscd_stop()
     pcscd_start()
     print(f"  {'all restarts clean' if ok else 'some restarts needed the CDC remedy'}")
@@ -624,12 +653,21 @@ def slot_status_soak(readers: dict[str, Reader], count: int) -> bool:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="shrink fuzz/soak rounds")
+    ap.add_argument(
+        "--readers",
+        default=",".join(READERS),
+        help="comma-separated subset to run (lane-held places block the default)",
+    )
     args = ap.parse_args()
+    readers_to_run = tuple(r.strip() for r in args.readers.split(",") if r.strip())
+    unknown = [r for r in readers_to_run if r not in READERS]
+    if unknown:
+        ap.error(f"unknown readers {unknown} (known: {list(READERS)})")
 
     # Acquire the bench places BEFORE stopping pcscd or opening the
     # DUT ports (Codex on #107): the battery owns the hardware for the
     # whole run and must not race sibling sessions.
-    places = [LABGRID_PLACES[name] for name in READERS]
+    places = [LABGRID_PLACES[name] for name in readers_to_run]
     acquired = labgrid_acquire(places)
     if len(acquired) != len(places):
         labgrid_release(acquired)
@@ -638,7 +676,7 @@ def main():
         pcscd_stop()
         readers: dict[str, Reader] = {}
         try:
-            for name in READERS:
+            for name in readers_to_run:
                 readers[name] = Reader(name, resolve(name))
             ok1 = conformance_battery(readers)
             ok2 = fuzz_battery(readers, 20 if args.quick else 80)
