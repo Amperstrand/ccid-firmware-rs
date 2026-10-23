@@ -1,0 +1,77 @@
+{
+  "schema": "amperstrand.flash-bundle/1",
+  "bundle_id": "59403d0ec5b4f555c7c438b361a8ffac932a9e351c929a53a5840674bbb18a86",
+  "git_rev": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "git_dirty": false,
+  "built_at": "2026-10-23T00:00:00+00:00",
+  "project": "esp32-ccid",
+  "board": "c3-nucula-ccid",
+  "chip": "esp32c3",
+  "family": {
+    "esp_idf_version": "v5.5.5",
+    "sdkconfig_id": "69b7c31994365fe55ac808d020be19e668bb4895ac28b607dba9eb3b61a2b43a",
+    "sdkconfig_name": "sdkconfig.full",
+    "toolchain": "esp/1.98.1.0"
+  },
+  "layout": {
+    "source": "partitions-ota.csv",
+    "id": "ota:v1",
+    "partitions": {
+      "nvs": {
+        "offset": "0x9000",
+        "size": "0x26000"
+      },
+      "phy_init": {
+        "offset": "0x2f000",
+        "size": "0x1000"
+      },
+      "otadata": {
+        "offset": "0x30000",
+        "size": "0x2000"
+      },
+      "ota_0": {
+        "offset": "0x40000",
+        "size": "0x1a0000"
+      },
+      "ota_1": {
+        "offset": "0x1e0000",
+        "size": "0x1a0000"
+      },
+      "coredump": {
+        "offset": "0x3f0000",
+        "size": "0x10000"
+      }
+    },
+    "app_slot": "ota_0"
+  },
+  "targets": {
+    "bootloader": {
+      "offset": "0x0",
+      "path": "bootloader.bin",
+      "sha256": "0f2143c0173d1a362bea7456eae437b3204f4acfe1169f129a428cf690fc9d37",
+      "bytes": 149
+    },
+    "partition_table": {
+      "offset": "0x8000",
+      "path": "partition-table.bin",
+      "sha256": "7019d111b0a1c8401641cf4f89c4766cecdd7d1b9ef9d392ae9d018257e1d106",
+      "bytes": 105
+    },
+    "app": {
+      "offset": "0x40000",
+      "path": "app.bin",
+      "sha256": "7353e8a8d46bcb45ead8792e771b2bac6de37e5e659a00e713a670435a0f47cc",
+      "bytes": 282
+    }
+  },
+  "otadata_policy": "erase-if-family-or-layout-change",
+  "boot_signature": "nucula>",
+  "boot_signature_reject": [
+    "i2c: CONFLICT",
+    "CONFLICT! driver_ng is not allowed"
+  ],
+  "baud_cap": 115200,
+  "expected_identity": {
+    "usb_iserial": null
+  }
+}

@@ -231,6 +231,7 @@ def build_manifest(args: argparse.Namespace) -> dict:
         "targets": targets,
         "otadata_policy": args.otadata_policy,
         "boot_signature": args.boot_signature,
+        "boot_signature_reject": args.boot_signature_reject,
         "baud_cap": args.baud_cap,
         "expected_identity": {"usb_iserial": args.usb_iserial},
     }
@@ -257,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sdkconfig", help="sdkconfig file (hashed into family)")
     ap.add_argument("--toolchain")
     ap.add_argument("--boot-signature", default=None)
+    ap.add_argument("--boot-signature-reject", action="append", default=None,
+                    help="console line that must NOT appear post-flash (repeatable)")
     ap.add_argument("--baud-cap", type=int, default=None)
     ap.add_argument("--usb-iserial", default=None)
     ap.add_argument("--otadata-policy", default="erase-if-family-or-layout-change")

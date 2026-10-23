@@ -766,11 +766,16 @@ jobs:
         # (doctrine-aware per-file-ignores for the lazy-import rule).
         # Pinned: the config targets 0.17.0 behavior.
         run: pip install ruff==0.17.0 && ruff check scripts tests/hardware host-tools
-      - name: Unit tests — scripts (stdlib only, fits this minimal env)
+      - name: Unit tests — scripts + tools (stdlib only, fits this minimal env)
         run: |
           python3 scripts/test_gen_status.py
           python3 scripts/test_status_rollup.py
           python3 scripts/test_status_drift.py
+          # flash-bundle tooling (t_7a2ec5c3): producer determinism +
+          # §4.4 self-checks + the §4.5 refusal matrix incl. the
+          # 0x30000-is-the-factory-app class. Pure stdlib+pytest —
+          # belongs in this minimal env, NOT a hardware leg.
+          python3 -m pytest tests/tools/ -q
       - name: Collect tests/hardware (exit-code discipline)
         run: |
           set +e
