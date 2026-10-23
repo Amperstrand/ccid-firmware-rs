@@ -1539,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "pn532-transport"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=2a1afea#2a1afeadd4939956fdd5dc6c99784a2729b6759d"
+source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=cb3ad97f7#cb3ad97f733f993e20de00a015071032cd5d31f1"
 dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-hal",
