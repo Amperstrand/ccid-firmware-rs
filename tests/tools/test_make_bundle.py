@@ -35,8 +35,10 @@ factory,  app,  factory, 0x30000, 0x3F0000,
 def workdir(tmp_path):
     (tmp_path / "partitions-ota.csv").write_text(PARTITIONS_OTA)
     (tmp_path / "partitions-factory.csv").write_text(PARTITIONS_FACTORY)
-    (tmp_path / "sdkconfig.full").write_text("CONFIG_IDF_TARGET=\"esp32\"\n")
-    (tmp_path / "app.bin").write_bytes(b"APP-IMAGE-BYTES" * 64)
+    (tmp_path / "sdkconfig.full").write_text("CONFIG_IDF_TARGET=\"esp32c3\"\n")
+    # Valid ESP app image header: magic 0xE9, segment count, flash mode
+    # DIO (0x02, issue #309), size/freq byte — then payload.
+    (tmp_path / "app.bin").write_bytes(b"\xe9\x03\x02\x02" + b"APP-IMAGE-BYTES" * 64)
     (tmp_path / "bootloader.bin").write_bytes(b"BOOT" * 64)
     (tmp_path / "pt.bin").write_bytes(b"PT" * 64)
     return tmp_path
@@ -46,7 +48,7 @@ def run_producer(tmp_path, out, **over):
     base = dict(
         project="esp32-ccid",
         board="c3-nucula-ccid",
-        chip="esp32",
+        chip="esp32c3",
         layout_source=str(tmp_path / "partitions-ota.csv"),
         layout_id="ota:v1",
         app=str(tmp_path / "app.bin"),
@@ -91,7 +93,7 @@ def test_changed_content_changes_bundle_id(workdir, tmp_path):
     """M1 acceptance, second half (dirty-tree stand-in): any content
     change — here the app bytes — changes the id."""
     id1 = run_producer(workdir, tmp_path / "b1")
-    (workdir / "app.bin").write_bytes(b"APP-IMAGE-BYTES" * 63 + b"X" * 16)
+    (workdir / "app.bin").write_bytes(b"\xe9\x03\x02\x02" + b"APP-IMAGE-BYTES" * 63 + b"X" * 16)
     id2 = run_producer(workdir, tmp_path / "b2")
     assert id1 != id2
 
@@ -157,3 +159,70 @@ def test_parse_partitions_rejects_appless_csv(tmp_path):
     p.write_text("nvs, data, nvs, 0x9000, 0x1000\n")
     with pytest.raises(SystemExit):
         make_bundle.parse_partitions(p)
+
+
+def test_parse_partitions_rejects_missing_layout_id(workdir, tmp_path):
+    with pytest.raises(SystemExit):
+        run_producer(workdir, tmp_path / "b1", layout_id=None)
+
+
+# ------------------------------------------------ design §4.4 checks 4–7
+
+def test_bootloader_offset_derived_from_chip(workdir, tmp_path):
+    """§4.4 check 7: classic xtensa ESP32 → 0x1000, C3 → 0x0 — derived."""
+    run_producer(workdir, tmp_path / "c3", chip="esp32c3")
+    m = json.loads(next((tmp_path / "c3" / "c3-nucula-ccid").glob("*/manifest.json")).read_text())
+    assert m["targets"]["bootloader"]["offset"] == "0x0"
+    run_producer(workdir, tmp_path / "esp", chip="esp32", board="m5stick")
+    m = json.loads(next((tmp_path / "esp" / "m5stick").glob("*/manifest.json")).read_text())
+    assert m["targets"]["bootloader"]["offset"] == "0x1000"
+
+
+def test_bootloader_offset_contradiction_refused(workdir, tmp_path):
+    """The 2026-10-08 m5stick incident made impossible at the producer:
+    a C3 offset (0x0) on a classic ESP32 bundle is refused."""
+    with pytest.raises(SystemExit, match="check 7"):
+        run_producer(workdir, tmp_path / "b1", chip="esp32", bootloader_offset="0x0")
+
+
+def test_unknown_chip_refused(workdir, tmp_path):
+    with pytest.raises(SystemExit, match="no bootloader-offset rule"):
+        run_producer(workdir, tmp_path / "b1", chip="esp32pro")
+
+
+def test_esp32_bundle_requires_bootloader(workdir, tmp_path):
+    """§4.4 check 6: no bootloader, no bundle — a bundle is a complete
+    reprovision set (the v5.5.1-under-v5.5.5 mixed-generation incident)."""
+    with pytest.raises(SystemExit, match="check 6"):
+        run_producer(workdir, tmp_path / "b1", bootloader=None)
+
+
+def test_bootloader_requires_esp_idf_version(workdir, tmp_path):
+    """§4.4 check 5: esp_idf_version IS the bootloader-generation identity."""
+    with pytest.raises(SystemExit, match="check 5"):
+        run_producer(workdir, tmp_path / "b1", esp_idf_version=None)
+
+
+def test_qio_header_app_refused(workdir, tmp_path):
+    """§4.4 check 4 / issue #309: a QIO-header (0x00) app never becomes a
+    bundle — it boot-loops every DIO board this repo ships."""
+    (workdir / "app.bin").write_bytes(b"\xe9\x03\x00\x02" + b"APP" * 64)
+    with pytest.raises(SystemExit, match="309"):
+        run_producer(workdir, tmp_path / "b1")
+
+
+def test_stm32_shape_layout_null(workdir, tmp_path):
+    """STM32 bundle (design §4.2): layout null, single app target at
+    0x08000000, expected identity via iSerial."""
+    bid = run_producer(
+        workdir, tmp_path / "b1",
+        chip="stm32f469", board="stm32f469",
+        layout_source=None, layout_id=None,
+        bootloader=None, partition_table=None, usb_iserial="ST2XXX-001",
+        sdkconfig=None, esp_idf_version=None,
+    )
+    m = json.loads((tmp_path / "b1" / "stm32f469" / bid / "manifest.json").read_text())
+    assert m["layout"] is None
+    assert list(m["targets"]) == ["app"]
+    assert int(m["targets"]["app"]["offset"], 0) == 0x08000000
+    assert m["expected_identity"]["usb_iserial"] == "ST2XXX-001"
