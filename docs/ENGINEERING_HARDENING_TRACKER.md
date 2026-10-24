@@ -631,3 +631,65 @@ the window (verified via socket check before stop).
   is modem-hil's.
 - docs-release observed: modem-core now on branch sisyphus/pcsc-smoke
   (past PR #11 phase; adjacent to issue #7 territory — to check).
+
+### WP-7 — modem-hil vpcd work package + the CSIM allowlist finding (branch
+docs/vpcd-architecture, spec merged PR #28, implementation PR #30 open)
+
+**Finding.** Two-part evening: (a) the ssh:// deploy-validation ledger
+(defects 1-4 fixed v3.5.1/2, #5 PDEATHSIG v3.5.2/PR #26) plus the
+byte-eating cross-lane AT collision led to the owner's vpcd pivot —
+pcscd fully local behind libifdvpcd-amperstrand.so (ccid-campaign
+proven), a router-side modem-vpicc agent playing the card. (b) CLOSING
+INTELLIGENCE (silentlink lane, post-lock window, conwrt-bench 78716a2):
+**this NR7101 firmware's AT+CSIM is an INS allowlist — 70/80/84 ONLY;
+A4/B0/C0/E2 are blocked at AT level and CCHO/CCHC are disabled.** No
+card-app access through this modem, for ANY reader stack. Also:
+AT+QESIM is a facade and `lpa_enable` is a HAZARD — toggling 1 wedged
+slot-2 detection unrecoverably in software (owner pulled the 9eSIM;
+cold reboot restored slot-1 baseline). Never toggle it.
+
+**Impact.** The allowlist finding moots card-level work through THIS
+modem (the planned Telenor stress block is cancelled-on-this-box), and
+raises a provenance question for the historical v4.0
+"provisioning-through-this-driver" evidence (earlier firmware or
+different box — open question for the campaign, not adjudicated here).
+The vpcd package remains the right architecture for permissive-CSIM
+modems and is directly reusable for the other endgame (external reader
+on the router + router pcscd build, per the silentlink lane).
+
+**Implementation.** Spec VPCD-ARCHITECTURE.md (#28: wire protocol from
+the bench-proven VpcdBridge reference, security reqs, acceptance
+criteria). Implementation (#30, commits 8a535b5..90f1e3f): frame codec;
+agent serve loop (stream cap, zero-length skip) relaying APDUs through
+Reader (identical AT discipline to the driver path); connect-out only
++ bounded reconnect; logging per v3.4.1 doctrine; standalone agent/
+crate (root-package builds emit all crate-types — the pcscd cdylib
+link poisoned every mipsel cross-link attempt); mipsel cross-compile
+recipe (nightly build-std — no prebuilt std on any channel — plus
+musl.cc mipsel-linux-muslsf linker; zig routes dead, ledger in
+agent/README.md); lane-runner vpcd mode (libifdvpcd reader entry,
+spawned agent, VPCDSLOTS=2 slot-0 name pinning); the 2s-window fix
+(agent answers within libifdvpcd's VPCD_RECV_TIMEOUT_SEC — slower
+answers return empty + eject the VICC; root-caused live via the
+rehearsal's empty-R-APDU + REMOVED_CARD cascade).
+
+**Verification.** Workspace tests 41/41 (agent integration 5/5: ATR
+parity, APDU round-trip, OFF silence, RESET, reconnect — mock vpcd +
+mock modem + real binary); qemu-mipsel-static smoke of the actual
+mipsel artifact 5/5 ×2 (pre/post fix); **full-chain rehearsal 9/9
+PASS**: sacrificial suite through suite.py → ctypes pcsc →
+namespace-isolated lane pcscd → libifdvpcd-amperstrand.so → vpcd TCP
+→ modem-vpicc → mock modem (drop fingerprints 1.5-1.9 s, channel
+cycle at pacing p50). README architecture updated (vpcd primary).
+Router-side deploy NOT done (hardware-gated, and now moot on this box
+per the allowlist).
+
+**Remaining risk.** Live-modem timing unproven (mock p50 400 ms fits
+the 1.5 s window 4x; a real permissive modem is future hardware);
+pcscd-restart transmit-dead-window (sibling campaign's host-side
+issue) may need lane-side patience on fresh instances; mipsel binary
+needs libgcc_s.so.1 on target (OpenWrt base ships it).
+
+**Next task.** None on this box (allowlist). On permissive hardware or
+the external-reader endgame: deploy the agent router-side under procd
++ flock, rerun the rehearsal ladder, then the stress block as designed.
