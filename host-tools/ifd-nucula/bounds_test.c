@@ -29,6 +29,9 @@
 
 #include "ifd-nucula.c"
 
+#include <arpa/inet.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 
@@ -284,6 +287,171 @@ static void test_t1_walker_boundaries(void)
     }
 }
 
+/* ---- IFDHPowerICC ATR buffer contract (#457; board-backed) ---- */
+
+/* ATR served by the fake board on every IccPowerOn (bench G-05 shape) */
+static const unsigned char pb_atr[] = {
+    0x3B, 0x85, 0x81, 0x31, 0xFE, 0x45, 0x80, 0x73, 0xC8, 0x21, 0x10, 0x84
+};
+
+/* Minimal fake board (tx_semantics_test.c shape): per connection, read
+ * one full frame, echo it byte-exact, answer IccPowerOn with a
+ * DATA_BLOCK carrying pb_atr and the request's bSeq, close. */
+static int pb_read_n(int fd, unsigned char *buf, size_t n)
+{
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, buf + got, n - got);
+        if (r <= 0)
+            return -1;
+        got += (size_t)r;
+    }
+    return 0;
+}
+
+static int pb_read_frame(int fd, unsigned char *out)
+{
+    for (;;) {
+        unsigned char b;
+        if (pb_read_n(fd, &b, 1) != 0)
+            return -1;
+        if (b != NUC_SYNC)
+            continue;
+        if (pb_read_n(fd, &b, 1) != 0)
+            return -1;
+        if (b != NUC_CTRL_ACK)
+            continue;
+        out[0] = NUC_SYNC;
+        out[1] = NUC_CTRL_ACK;
+        if (pb_read_n(fd, out + 2, NUC_CCID_HEADER_SIZE) != 0)
+            return -1;
+        uint32_t dlen = (uint32_t)out[NUC_MSG_LEN_LO]
+            | ((uint32_t)out[NUC_MSG_LEN_LO + 1] << 8)
+            | ((uint32_t)out[NUC_MSG_LEN_LO + 2] << 16)
+            | ((uint32_t)out[NUC_MSG_LEN_LO + 3] << 24);
+        if (dlen > NUC_MAX_CCID_PAYLOAD)
+            return -1;
+        if (dlen && pb_read_n(fd, out + NUC_MSG_PAYLOAD, dlen) != 0)
+            return -1;
+        unsigned char lrc;
+        if (pb_read_n(fd, &lrc, 1) != 0)
+            return -1;
+        out[NUC_MSG_PAYLOAD + dlen] = lrc;
+        return (int)(NUC_MSG_PAYLOAD + dlen + 1);
+    }
+}
+
+static void *pb_thread(void *arg)
+{
+    int listen_fd = *(int *)arg;
+    for (;;) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0)
+            return NULL;
+        unsigned char f[NUC_MAX_FRAME];
+        int n = pb_read_frame(fd, f);
+        if (n <= 0) {
+            close(fd);
+            continue;
+        }
+        if (write(fd, f, (size_t)n) != n) { /* byte-exact echo */
+            close(fd);
+            continue;
+        }
+        unsigned char out[NUC_MAX_FRAME];
+        size_t olen = nuc_build_request(out, NUC_RDR_TO_PC_DATA_BLOCK,
+                                        f[NUC_MSG_SEQ], 0, pb_atr,
+                                        (uint32_t)sizeof(pb_atr));
+        if (olen)
+            (void)!write(fd, out, olen);
+        close(fd);
+    }
+}
+
+static void test_powericc_atr_buffer(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (lfd < 0) {
+        check(0, "powericc: listener socket");
+        return;
+    }
+    int one = 1;
+    setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in sa = { .sin_family = AF_INET,
+                              .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    socklen_t alen = sizeof(sa);
+    if (bind(lfd, (struct sockaddr *)&sa, sizeof(sa)) != 0
+        || getsockname(lfd, (struct sockaddr *)&sa, &alen) != 0
+        || listen(lfd, 4) != 0) {
+        check(0, "powericc: bind/listen");
+        close(lfd);
+        return;
+    }
+    snprintf(g_ctx.host, sizeof(g_ctx.host), "127.0.0.1");
+    g_ctx.port = ntohs(sa.sin_port);
+    g_ctx.fd = -1;
+
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, pb_thread, &lfd) != 0) {
+        check(0, "powericc: board thread");
+        close(lfd);
+        return;
+    }
+
+    printf("-- IFDHPowerICC ATR buffer contract --\n");
+    unsigned char atr[MAX_ATR_SIZE];
+    DWORD alen2;
+    RESPONSECODE r;
+
+    /* exact fit: full ATR delivered */
+    memset(atr, 0xAA, sizeof(atr));
+    alen2 = (DWORD)sizeof(pb_atr);
+    r = IFDHPowerICC(0, IFD_POWER_UP, atr, &alen2);
+    check(r == IFD_SUCCESS && alen2 == sizeof(pb_atr)
+          && memcmp(atr, pb_atr, sizeof(pb_atr)) == 0,
+          "power-on exact-fit buffer: SUCCESS, ATR copied");
+
+    /* one byte short: the IFD contract is INSUFFICIENT_BUFFER + size */
+    pthread_mutex_lock(&g_ctx.lock);
+    nuc_eject_locked(&g_ctx);
+    pthread_mutex_unlock(&g_ctx.lock);
+    memset(atr, 0xAA, sizeof(atr));
+    alen2 = (DWORD)sizeof(pb_atr) - 1;
+    r = IFDHPowerICC(0, IFD_RESET, atr, &alen2);
+    check(r == IFD_ERROR_INSUFFICIENT_BUFFER,
+          "power-on short buffer: IFD_ERROR_INSUFFICIENT_BUFFER");
+    check(alen2 == sizeof(pb_atr),
+          "power-on short buffer: *AtrLength = required size");
+    check(atr[0] == 0xAA && atr[1] == 0xAA && atr[2] == 0xAA && atr[3] == 0xAA,
+          "power-on short buffer: no partial copy into caller buffer");
+
+    /* zero-length buffer: size query shape, same contract */
+    pthread_mutex_lock(&g_ctx.lock);
+    nuc_eject_locked(&g_ctx);
+    pthread_mutex_unlock(&g_ctx.lock);
+    alen2 = 0;
+    r = IFDHPowerICC(0, IFD_RESET, atr, &alen2);
+    check(r == IFD_ERROR_INSUFFICIENT_BUFFER && alen2 == sizeof(pb_atr),
+          "power-on zero-length buffer: INSUFFICIENT_BUFFER + size");
+
+    /* the refused copy must not lose the ATR: the cache still serves
+     * TAG_IFD_ATR (IFDHGetCapabilities contract) */
+    {
+        unsigned char gatr[MAX_ATR_SIZE];
+        DWORD glen = sizeof(gatr);
+        r = IFDHGetCapabilities(0, TAG_IFD_ATR, &glen, gatr);
+        check(r == IFD_SUCCESS && glen == sizeof(pb_atr)
+              && memcmp(gatr, pb_atr, sizeof(pb_atr)) == 0,
+              "GetCapabilities TAG_IFD_ATR serves cached ATR after refusal");
+    }
+
+    shutdown(lfd, SHUT_RDWR);
+    close(lfd);
+    pthread_join(tid, NULL);
+}
+
 int main(void)
 {
     printf("== ifd-nucula bounds test (ASan+UBSan build) ==\n");
@@ -291,6 +459,7 @@ int main(void)
     run_group("nuc_recv_frame_locked boundaries", test_recv_frame_boundaries);
     run_group("IFD entry-point guards", test_ifd_entry_guards);
     run_group("nuc_t1_from_atr boundaries", test_t1_walker_boundaries);
+    run_group("IFDHPowerICC ATR buffer contract", test_powericc_atr_buffer);
     printf("== %s (%d failures) ==\n", failures ? "FAIL" : "ALL PASS",
            failures);
     return failures ? 1 : 0;

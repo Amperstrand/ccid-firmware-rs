@@ -830,12 +830,23 @@ RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action, PUCHAR Atr, PDWORD AtrLength)
                         &rn) == 0) {
             if (resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_DATA_BLOCK
                 && !nuc_resp_cmd_failed(resp)) {
-                nuc_cache_atr(resp);
-                if (Atr && g_ctx.atr_len <= orig) {
-                    memcpy(Atr, g_ctx.atr, g_ctx.atr_len);
+                nuc_cache_atr(resp); /* cache first: TAG_IFD_ATR keeps
+                                      * serving the ATR even when the
+                                      * caller buffer cannot take it */
+                /* #457: a caller buffer smaller than the ATR is
+                 * IFD_ERROR_INSUFFICIENT_BUFFER with the required size
+                 * in *AtrLength (same contract as IFDHGetCapabilities),
+                 * never a silent SUCCESS that drops the ATR. */
+                DWORD avail = Atr ? orig : 0;
+                if (g_ctx.atr_len > avail) {
                     *AtrLength = g_ctx.atr_len;
+                    r = IFD_ERROR_INSUFFICIENT_BUFFER;
+                } else {
+                    if (Atr && g_ctx.atr_len)
+                        memcpy(Atr, g_ctx.atr, g_ctx.atr_len);
+                    *AtrLength = g_ctx.atr_len;
+                    r = IFD_SUCCESS;
                 }
-                r = IFD_SUCCESS;
             } else {
                 NUC_LOG_ERR("power-on failed (bError=0x%02x)",
                             resp[NUC_MSG_ERROR]);
