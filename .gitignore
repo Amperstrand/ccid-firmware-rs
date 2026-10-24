@@ -96,6 +96,8 @@ tests/hardware/perf/results/
 # bench build artifacts (host-tools/ifd-nucula)
 host-tools/ifd-nucula/*.so
 host-tools/ifd-nucula/nucula-selftest
+host-tools/ifd-nucula/nucula-bounds-test
+host-tools/ifd-nucula/nucula-tx-semantics-test
 
 # Worktree-local build dirs (t_72e1e2ed session)
 /.cargo-target/

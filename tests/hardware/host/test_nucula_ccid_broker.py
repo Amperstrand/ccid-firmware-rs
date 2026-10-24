@@ -64,6 +64,22 @@ def test_truncated_header_then_probe_forwards():
     )
 
 
+def test_overcap_anchor_band_is_garbage():
+    """#450: anchors implying dwLength 262..271 (above the true payload
+    cap 261, inside the old wrong 271-as-payload belief) must resync
+    like any garbage — under SANE_MAX=13+271 they counted as 'sane
+    partials' and blocked the scan until 278 bytes arrived."""
+    h = ShimHarness()
+    hdr = bytearray(10)
+    hdr[0] = 0x65
+    hdr[1:5] = (265).to_bytes(4, "little")
+    overcap = bytes([0x03, 0x06]) + bytes(hdr)
+    fwd, _ = h.feed(overcap)
+    assert fwd == b"", "over-cap anchor alone forwards nothing"
+    fwd, _ = h.feed(gss_frame_bytes(4))
+    assert len(fwd) >= 13, "over-cap anchor must not block the next valid frame"
+
+
 def test_garbage_then_valid_poweroff_still_shimmed():
     """The shim's real job must survive the resync fix: an IccPowerOff
     (type 0x65, per GemPC) inside a VALID frame is answered locally,

@@ -218,7 +218,10 @@ def split_frames(buf: bytes):
     past it and rescan. Only a SANE-but-incomplete anchor is a genuine
     partial frame in flight worth waiting for.
     """
-    SANE_MAX = 13 + 271  # SYNC+CTRL+10-byte header+LRC + GemPC payload cap
+    SANE_MAX = 13 + 261  # SYNC+CTRL+10-byte header+LRC + payload cap;
+                         # 261 = ccid-transport-serial MAX_CCID_PAYLOAD
+                         # (271 is the full CCID message cap INCLUDING
+                         # the 10-byte header — payload alone is 261)
     i = 0
     while i + 13 <= len(buf):
         if buf[i] != SYNC:

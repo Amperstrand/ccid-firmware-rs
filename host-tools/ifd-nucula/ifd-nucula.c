@@ -102,9 +102,15 @@
 #define NUC_RDR_TO_PC_ESCAPE 0x83
 
 #define NUC_CCID_HEADER_SIZE 10
-/* frame = SYNC + CTRL + CCID header + payload(<=271) + LRC = 274 max */
-#define NUC_MAX_CCID_MESSAGE 271
-#define NUC_MAX_FRAME 274
+/* Reference-locked against the firmware codec (crates/ccid-protocol
+ * types.rs MAX_CCID_MESSAGE_LENGTH=271; ccid-transport-serial lib.rs
+ * MAX_CCID_PAYLOAD=261, MAX_FRAME_BYTES=274, header-stage reject of
+ * payload_len > 261): a complete CCID bulk message (10-byte header +
+ * payload) is capped at 271 bytes, so the maximum payload/dwLength is
+ * 261 and the full wire frame is SYNC + CTRL + 271 + LRC = 274 bytes. */
+#define NUC_MAX_CCID_MESSAGE 271                                  /* header + payload */
+#define NUC_MAX_CCID_PAYLOAD (NUC_MAX_CCID_MESSAGE - NUC_CCID_HEADER_SIZE) /* 261 */
+#define NUC_MAX_FRAME (2 + NUC_MAX_CCID_MESSAGE + 1)              /* 274 */
 
 /* bmICCStatus values (ccid-protocol: PRESENT_ACTIVE=0, PRESENT_INACTIVE=1,
  * NO_ICC=2) */
@@ -323,8 +329,9 @@ static int nuc_recv_frame_locked(nuc_ctx *c, unsigned char *frame)
         | ((uint32_t)frame[NUC_MSG_LEN_LO + 1] << 8)
         | ((uint32_t)frame[NUC_MSG_LEN_LO + 2] << 16)
         | ((uint32_t)frame[NUC_MSG_LEN_LO + 3] << 24);
-    if (dwlen > NUC_MAX_CCID_MESSAGE)
-        return -1;
+    if (dwlen > NUC_MAX_CCID_PAYLOAD)
+        return -1; /* cannot fit a legal frame — same header-stage
+                    * reject as the firmware codec */
     if (dwlen > 0
         && nuc_read_all_locked(c, frame + NUC_MSG_PAYLOAD, dwlen) != 0)
         return -1;
@@ -343,7 +350,10 @@ static int nuc_send_frame_locked(nuc_ctx *c, const unsigned char *frame, size_t 
 {
     size_t sent = 0;
     while (sent < len) {
-        ssize_t r = write(c->fd, frame + sent, len - sent);
+        /* MSG_NOSIGNAL: a library must never depend on the host
+         * process's SIGPIPE disposition (pcscd's write to a dead
+         * board must error, not kill the daemon) */
+        ssize_t r = send(c->fd, frame + sent, len - sent, MSG_NOSIGNAL);
         if (r > 0) {
             sent += (size_t)r;
             continue;
@@ -355,11 +365,15 @@ static int nuc_send_frame_locked(nuc_ctx *c, const unsigned char *frame, size_t 
     return 0;
 }
 
-/* Build a PC_to_RDR frame; returns frame length. */
+/* Build a PC_to_RDR frame; returns frame length, or 0 if the payload
+ * cannot fit a legal frame (oversize payload — caller must treat 0 as
+ * an error and must not send anything). */
 static size_t nuc_build_request(unsigned char *frame, unsigned char type,
                                 unsigned char seq, unsigned char spec0,
                                 const unsigned char *payload, uint32_t plen)
 {
+    if (plen > NUC_MAX_CCID_PAYLOAD)
+        return 0;
     frame[0] = NUC_SYNC;
     frame[1] = NUC_CTRL_ACK;
     frame[NUC_MSG_TYPE] = type;
@@ -380,10 +394,30 @@ static size_t nuc_build_request(unsigned char *frame, unsigned char type,
 }
 
 /*
- * One request/response exchange with one internal retry:
+ * Typed transaction outcomes (Task 1.2 semantics — no blind retries):
+ *
+ *   NUC_TX_OK        response received, echo-verified
+ *   NUC_TX_NOT_SENT  frame provably incomplete at the peer (send failed
+ *                    mid-frame ⇒ at most a strict prefix delivered; a
+ *                    GemPC frame is only complete with its last byte)
+ *                    — the caller MAY safely retry
+ *   NUC_TX_AMBIGUOUS frame fully handed to the transport and echo-
+ *                    verified/underway, but the response never arrived:
+ *                    the firmware may already have relayed the APDU to
+ *                    the card. Resending could duplicate a state-
+ *                    changing APDU (GP secure channel, eSIM, PIN) —
+ *                    NEVER retry; surface the failure to pcscd.
+ */
+#define NUC_TX_OK 0
+#define NUC_TX_NOT_SENT (-1)
+#define NUC_TX_AMBIGUOUS (-2)
+
+/*
+ * One request/response exchange:
  *   connect (if needed) -> send -> read ECHO (verify byte-exact) ->
  *   read response.
- * Returns 0 ok (resp = full response frame), -1 transport error (ejected).
+ * Retry happens ONLY while the outcome is provably NUC_TX_NOT_SENT;
+ * any post-send failure returns NUC_TX_AMBIGUOUS instead of resending.
  */
 static int nuc_transact_locked(nuc_ctx *c, const unsigned char *req, size_t req_len,
                                unsigned char *resp, int *resp_len)
@@ -392,33 +426,39 @@ static int nuc_transact_locked(nuc_ctx *c, const unsigned char *req, size_t req_
 
     for (int attempt = 0; attempt < 2; attempt++) {
         if (nuc_connect_locked(c) != 0)
-            return -1;
+            return NUC_TX_NOT_SENT;
 
         if (nuc_send_frame_locked(c, req, req_len) != 0) {
-            NUC_LOG_ERR("send failed (attempt %d)", attempt + 1);
+            NUC_LOG_ERR("send failed (attempt %d) — not sent, retrying",
+                        attempt + 1);
             nuc_eject_locked(c);
             continue;
         }
+
         int n = nuc_recv_frame_locked(c, echo);
         if (n <= 0 || (size_t)n != req_len || memcmp(echo, req, req_len) != 0) {
-            NUC_LOG_ERR("echo mismatch/drop (attempt %d, n=%d)", attempt + 1, n);
+            NUC_LOG_ERR("echo mismatch/drop (n=%d) — frame was delivered, "
+                        "outcome unknown, NOT retrying", n);
             nuc_eject_locked(c);
-            continue;
+            return NUC_TX_AMBIGUOUS;
         }
         n = nuc_recv_frame_locked(c, resp);
         if (n <= 0) {
-            NUC_LOG_ERR("no response (attempt %d)", attempt + 1);
+            NUC_LOG_ERR("no response — command may have executed, "
+                        "NOT retrying");
             nuc_eject_locked(c);
-            continue;
+            return NUC_TX_AMBIGUOUS;
         }
         *resp_len = n;
-        return 0;
+        return NUC_TX_OK;
     }
-    return -1;
+    return NUC_TX_NOT_SENT;
 }
 
 /* Convenience: build + transact + bSeq echo check (CCID 6.2-1; the
  * firmware regression-locks it). 0 ok / -1 transport. */
+static int nuc_resp_cmd_failed(const unsigned char *resp);
+
 static int nuc_command(unsigned char type, unsigned char spec0,
                        const unsigned char *payload, uint32_t plen,
                        unsigned char *resp, int *resp_len)
@@ -426,9 +466,43 @@ static int nuc_command(unsigned char type, unsigned char spec0,
     unsigned char req[NUC_MAX_FRAME];
     unsigned char seq = g_ctx.seq++;
     size_t req_len = nuc_build_request(req, type, seq, spec0, payload, plen);
+    if (req_len == 0 || req_len > NUC_MAX_FRAME) {
+        NUC_LOG_ERR("payload %u exceeds frame budget (%d)",
+                    (unsigned)plen, (int)NUC_MAX_CCID_PAYLOAD);
+        return -1;
+    }
     int rc = nuc_transact_locked(&g_ctx, req, req_len, resp, resp_len);
+
+    /* CCID 6.2-2 time extension: a SlotStatus with bmCommandStatus=0
+     * ("still processing") and OUR bSeq means the reader bought more
+     * time — it is not the final answer. Only command types that carry
+     * card work get extensions (GetSlotStatus/GetParameters never do,
+     * and they legitimately answer with a SlotStatus as their FINAL
+     * frame, so they must be excluded). Keep reading until a final
+     * frame, a failure status, or the receive timeout. */
+    int may_extend = (type == NUC_PC_TO_RDR_XFR_BLOCK
+                      || type == NUC_PC_TO_RDR_ICC_POWER_ON
+                      || type == NUC_PC_TO_RDR_ESCAPE);
+    for (int ext = 0;
+         rc == 0 && may_extend && ext < 64
+         && resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_SLOT_STATUS
+         && !nuc_resp_cmd_failed(resp)
+         && resp[NUC_MSG_SEQ] == seq;
+         ext++) {
+        int n2 = nuc_recv_frame_locked(&g_ctx, resp);
+        if (n2 <= 0) {
+            NUC_LOG_ERR("transport died waiting out a time extension");
+            nuc_eject_locked(&g_ctx);
+            return -1;
+        }
+        *resp_len = n2;
+    }
+
     if (rc == 0 && resp[NUC_MSG_SEQ] != seq) {
         NUC_LOG_ERR("bSeq mismatch: sent %u got %u", seq, resp[NUC_MSG_SEQ]);
+        /* the stream is desynced (stale frame): drop the connection so
+         * the next command starts clean instead of chasing ghosts */
+        nuc_eject_locked(&g_ctx);
         return -1;
     }
     return rc;
@@ -492,25 +566,31 @@ static void nuc_t1_from_atr(const unsigned char *atr, DWORD len,
         unsigned char td = 0;
         int have_td = 0;
 
+        /* every interface byte is bounds-checked: a truncated ATR that
+         * still promises more groups stops at the first missing byte
+         * (defaults above stay in force) instead of reading past it */
         if (y & 0x01) { /* TA(i) */
+            if (pos >= len)
+                break;
             if (pending_proto == 1 && atr[pos])
                 *ifsc = atr[pos];
             pos++;
         }
-        if (pos >= len && !(y & 0x0E))
-            break;
         if (y & 0x02) { /* TB(i) */
+            if (pos >= len)
+                break;
             if (pending_proto == 1)
                 *wi = atr[pos];
             pos++;
         }
-        if (pos >= len && !(y & 0x0C))
-            break;
-        if (y & 0x04) /* TC(i) */
+        if (y & 0x04) { /* TC(i) */
+            if (pos >= len)
+                break;
             pos++;
-        if (pos >= len && !(y & 0x08))
-            break;
+        }
         if (y & 0x08) { /* TD(i) */
+            if (pos >= len)
+                break;
             td = atr[pos];
             pos++;
             have_td = 1;
@@ -612,15 +692,25 @@ RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length, PUCHAR Val
 
     switch (Tag) {
     case TAG_IFD_ATR:
-    case SCARD_ATTR_ATR_STRING:
-        if (*Length < g_ctx.atr_len) {
-            *Length = g_ctx.atr_len;
+    case SCARD_ATTR_ATR_STRING: {
+        /* g_ctx.atr/atr_len are written under g_ctx.lock (nuc_cache_atr
+         * from IFDHPowerICC); take the same lock for the read so a
+         * concurrent power-on/reset can never tear the len/data pair. */
+        unsigned char atr[MAX_ATR_SIZE];
+        DWORD alen;
+        pthread_mutex_lock(&g_ctx.lock);
+        alen = g_ctx.atr_len;
+        memcpy(atr, g_ctx.atr, sizeof(atr));
+        pthread_mutex_unlock(&g_ctx.lock);
+        if (*Length < alen) {
+            *Length = alen;
             return IFD_ERROR_INSUFFICIENT_BUFFER;
         }
-        if (g_ctx.atr_len)
-            memcpy(Value, g_ctx.atr, g_ctx.atr_len);
-        *Length = g_ctx.atr_len;
+        if (alen)
+            memcpy(Value, atr, alen);
+        *Length = alen;
         return IFD_SUCCESS;
+    }
     case TAG_IFD_SLOTS_NUMBER:
         if (*Length < 1)
             return IFD_ERROR_INSUFFICIENT_BUFFER;
@@ -628,7 +718,14 @@ RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length, PUCHAR Val
         *Length = 1;
         return IFD_SUCCESS;
     case TAG_IFD_THREAD_SAFE:
-        /* single global ctx + mutex; pcscd serializes (vpcd precedent) */
+        /* Stays 0 (NOT thread-safe), deliberately. The driver has ONE
+         * global context (g_ctx) shared by every reader instance: the
+         * mutex serializes access to that single context, but it cannot
+         * isolate two loaded instances from each other — so pcscd must
+         * keep serializing entry points (vpcd precedent). Advertising 0
+         * is a statement about instance isolation, NOT permission for
+         * unlocked field access: every g_ctx read still takes the lock
+         * (see TAG_IFD_ATR above). */
         if (*Length < 1)
             return IFD_ERROR_INSUFFICIENT_BUFFER;
         Value[0] = 0;
@@ -750,12 +847,23 @@ RESPONSECODE IFDHPowerICC(DWORD Lun, DWORD Action, PUCHAR Atr, PDWORD AtrLength)
                         &rn) == 0) {
             if (resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_DATA_BLOCK
                 && !nuc_resp_cmd_failed(resp)) {
-                nuc_cache_atr(resp);
-                if (Atr && g_ctx.atr_len <= orig) {
-                    memcpy(Atr, g_ctx.atr, g_ctx.atr_len);
+                nuc_cache_atr(resp); /* cache first: TAG_IFD_ATR keeps
+                                      * serving the ATR even when the
+                                      * caller buffer cannot take it */
+                /* #457: a caller buffer smaller than the ATR is
+                 * IFD_ERROR_INSUFFICIENT_BUFFER with the required size
+                 * in *AtrLength (same contract as IFDHGetCapabilities),
+                 * never a silent SUCCESS that drops the ATR. */
+                DWORD avail = Atr ? orig : 0;
+                if (g_ctx.atr_len > avail) {
                     *AtrLength = g_ctx.atr_len;
+                    r = IFD_ERROR_INSUFFICIENT_BUFFER;
+                } else {
+                    if (Atr && g_ctx.atr_len)
+                        memcpy(Atr, g_ctx.atr, g_ctx.atr_len);
+                    *AtrLength = g_ctx.atr_len;
+                    r = IFD_SUCCESS;
                 }
-                r = IFD_SUCCESS;
             } else {
                 NUC_LOG_ERR("power-on failed (bError=0x%02x)",
                             resp[NUC_MSG_ERROR]);
@@ -783,7 +891,9 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci, PUCHAR TxBuff
 
     if (!RxLength || !RecvPci)
         return IFD_COMMUNICATION_ERROR;
-    if (TxLength > NUC_MAX_CCID_MESSAGE) {
+    if (TxLength > NUC_MAX_CCID_PAYLOAD) {
+        /* a legal frame cannot carry this payload; refuse before any
+         * buffer is touched (261 = short-APDU TPDU max) */
         *RxLength = 0;
         return IFD_COMMUNICATION_ERROR;
     }
@@ -799,6 +909,12 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci, PUCHAR TxBuff
                         resp[NUC_MSG_TYPE]);
         } else if (nuc_resp_cmd_failed(resp) && nuc_resp_icc_absent(resp)) {
             r = IFD_ICC_NOT_PRESENT;
+        } else if (nuc_resp_cmd_failed(resp)) {
+            /* failed XfrBlock with the card still seated is a CCID
+             * command failure (bError), never a successful APDU
+             * exchange with a phantom payload */
+            NUC_LOG_ERR("XfrBlock failed (bError=0x%02x)",
+                        resp[NUC_MSG_ERROR]);
         } else {
             uint32_t n = nuc_resp_payload_len(resp);
             if (n > orig) {
@@ -871,7 +987,7 @@ RESPONSECODE IFDHControl(DWORD Lun, DWORD ControlCode, PUCHAR TxBuffer, DWORD Tx
     if (ControlCode == (DWORD)SCARD_CTL_CODE(FEATURE_CCID_ESC_COMMAND)) {
         unsigned char resp[NUC_MAX_FRAME];
         int rn = 0;
-        if (TxLength > NUC_MAX_CCID_MESSAGE)
+        if (TxLength > NUC_MAX_CCID_PAYLOAD)
             return IFD_COMMUNICATION_ERROR;
         pthread_mutex_lock(&g_ctx.lock);
         int rc = nuc_command(NUC_PC_TO_RDR_ESCAPE, 0, TxBuffer, TxLength, resp, &rn);

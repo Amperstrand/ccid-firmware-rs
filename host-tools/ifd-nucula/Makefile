@@ -12,10 +12,12 @@ LDLIBS  ?= -pthread
 
 DRIVER   = libifd-nucula.so
 SELFTEST = nucula-selftest
+BOUNDSTEST = nucula-bounds-test
+TXSEMTEST = nucula-tx-semantics-test
 DESTDIR ?=
 PREFIX  ?= /usr
 
-.PHONY: all clean install selftest
+.PHONY: all clean install selftest bounds tx-semantics check
 
 all: $(DRIVER) $(SELFTEST)
 
@@ -24,6 +26,25 @@ $(DRIVER): ifd-nucula.c
 
 $(SELFTEST): ifd-nucula.c
 	$(CC) $(ALL_CFLAGS) -DNUCULA_STANDALONE -o $@ $< $(LDLIBS)
+
+$(BOUNDSTEST): ifd-nucula.c bounds_test.c
+	$(CC) $(ALL_CFLAGS) -fsanitize=address,undefined -o $@ bounds_test.c $(LDLIBS)
+
+$(TXSEMTEST): ifd-nucula.c tx_semantics_test.c
+	$(CC) $(ALL_CFLAGS) -fsanitize=address,undefined -o $@ tx_semantics_test.c $(LDLIBS)
+
+# Frame-codec boundary regression (H-001): payload/dwLength 0,1,260,261
+# accepted; 262,271,512 rejected with no write past the 274-byte frame
+# buffers. Sanitizer-clean = pass; abort = reproduced overflow.
+bounds: $(BOUNDSTEST)
+	./$(BOUNDSTEST)
+
+# Transaction-semantics fault injection (H-003): a fully-delivered
+# frame must never be resent (duplicate state-changing APDU).
+tx-semantics: $(TXSEMTEST)
+	./$(TXSEMTEST)
+
+check: selftest bounds tx-semantics
 
 selftest: $(SELFTEST) mock_board.py
 	@python3 mock_board.py 29444 & MOCK=$$!; sleep 0.4; \
@@ -50,4 +71,4 @@ install: $(DRIVER)
 	@echo "  DEVICENAME <board-ip>:29443  LIBPATH $(PREFIX)/lib/pcsc/drivers/$(DRIVER)"
 
 clean:
-	rm -f $(DRIVER) $(SELFTEST)
+	rm -f $(DRIVER) $(SELFTEST) $(BOUNDSTEST) $(TXSEMTEST)
