@@ -164,3 +164,44 @@ the bench still logs to the old world-readable file until rotated
 **Next task.** WP-4: H-005 — CCID response decode audit in ifd-nucula
 (bmCommandStatus/bError mapping, time-extension, seq mismatch), then
 Phase 3 IFD conformance checks for both host drivers.
+
+### WP-4 — H-005 nucula CCID response decode (Task 1.4) — commit 505b5f3, issue #455
+
+**Finding.** (1) `IFDHTransmitToICC` reported a FAILED XfrBlock
+(bmCommandStatus=failed, card present) as IFD_SUCCESS with payload —
+CCID command failures were successful IFD exchanges. (2) Interim CCID
+6.2-2 "still processing" SlotStatus frames were rejected as final
+answers instead of waited out. (3) bSeq mismatch left the desynced
+connection open for the next command.
+
+**Verification.** tx_semantics 32/32 (10 new decode checks, RED→GREEN
+for 1+2), stress 15/15 after root-causing a fake-board counter race
+(quiesce barrier added). Full make check green.
+
+**Remaining risk.** Time-extension path untested against real firmware
+(current wifi firmware emits no interims — conformance tolerance only).
+No hardware bench round yet for WP-1..WP-4 (all software-only evidence).
+
+## Session state (2026-10-24, context nearly exhausted — resume here)
+
+- ccid-firmware-rs main: local commits aba34a6, 3b5c74c, 424e9be,
+  903efc7, 7b447db, 6b890ca, 505b5f3 (NOT pushed — owner gate).
+  Issues filed: #450, #453, #455. Untracked pre-existing deletion
+  `firmware/esp32-ccid/reader.conf` — DO NOT TOUCH.
+- ifd-modemifd master: local commits 4086396 (v3.4), b258d52
+  (v3.4.1). Not pushed. conwrt-bench #22 has two session reports.
+- Known follow-ups (next-session priorities):
+  1. IFDHPowerICC ATR-buffer-too-small silently returns IFD_SUCCESS
+     without copying (ifd-nucula.c) — should be
+     IFD_ERROR_INSUFFICIENT_BUFFER. Phase 3 item.
+  2. Phase 3 full IFDHandler conformance sweep both drivers (thread-safe
+     declaration vs actual locking in ifd-nucula IFDHGetCapabilities
+     reads g_ctx.atr WITHOUT the mutex; modemifd IFDHControl ignores
+     all controls incl. GET_FEATURE_REQUEST).
+  3. modemifd CGLA fallback hardening + live-modem bench round for
+     v3.4 semantics (thrash test at 400ms pacing).
+  4. Deployed pre-fix modemifd .so on bench pcscd still writes the old
+     world-readable APDU log — owner-gated rotation.
+  5. Phase 4 reliability issues (#444, #380, #125, #128, #342, #156,
+     #431) and Phase 6 performance work — not yet started.
+  6. Cross-project: ccid-pcsc-host reader-matching improvements.
