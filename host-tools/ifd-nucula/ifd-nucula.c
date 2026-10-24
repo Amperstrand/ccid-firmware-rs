@@ -350,7 +350,10 @@ static int nuc_send_frame_locked(nuc_ctx *c, const unsigned char *frame, size_t 
 {
     size_t sent = 0;
     while (sent < len) {
-        ssize_t r = write(c->fd, frame + sent, len - sent);
+        /* MSG_NOSIGNAL: a library must never depend on the host
+         * process's SIGPIPE disposition (pcscd's write to a dead
+         * board must error, not kill the daemon) */
+        ssize_t r = send(c->fd, frame + sent, len - sent, MSG_NOSIGNAL);
         if (r > 0) {
             sent += (size_t)r;
             continue;
@@ -391,10 +394,30 @@ static size_t nuc_build_request(unsigned char *frame, unsigned char type,
 }
 
 /*
- * One request/response exchange with one internal retry:
+ * Typed transaction outcomes (Task 1.2 semantics — no blind retries):
+ *
+ *   NUC_TX_OK        response received, echo-verified
+ *   NUC_TX_NOT_SENT  frame provably incomplete at the peer (send failed
+ *                    mid-frame ⇒ at most a strict prefix delivered; a
+ *                    GemPC frame is only complete with its last byte)
+ *                    — the caller MAY safely retry
+ *   NUC_TX_AMBIGUOUS frame fully handed to the transport and echo-
+ *                    verified/underway, but the response never arrived:
+ *                    the firmware may already have relayed the APDU to
+ *                    the card. Resending could duplicate a state-
+ *                    changing APDU (GP secure channel, eSIM, PIN) —
+ *                    NEVER retry; surface the failure to pcscd.
+ */
+#define NUC_TX_OK 0
+#define NUC_TX_NOT_SENT (-1)
+#define NUC_TX_AMBIGUOUS (-2)
+
+/*
+ * One request/response exchange:
  *   connect (if needed) -> send -> read ECHO (verify byte-exact) ->
  *   read response.
- * Returns 0 ok (resp = full response frame), -1 transport error (ejected).
+ * Retry happens ONLY while the outcome is provably NUC_TX_NOT_SENT;
+ * any post-send failure returns NUC_TX_AMBIGUOUS instead of resending.
  */
 static int nuc_transact_locked(nuc_ctx *c, const unsigned char *req, size_t req_len,
                                unsigned char *resp, int *resp_len)
@@ -403,29 +426,33 @@ static int nuc_transact_locked(nuc_ctx *c, const unsigned char *req, size_t req_
 
     for (int attempt = 0; attempt < 2; attempt++) {
         if (nuc_connect_locked(c) != 0)
-            return -1;
+            return NUC_TX_NOT_SENT;
 
         if (nuc_send_frame_locked(c, req, req_len) != 0) {
-            NUC_LOG_ERR("send failed (attempt %d)", attempt + 1);
+            NUC_LOG_ERR("send failed (attempt %d) — not sent, retrying",
+                        attempt + 1);
             nuc_eject_locked(c);
             continue;
         }
+
         int n = nuc_recv_frame_locked(c, echo);
         if (n <= 0 || (size_t)n != req_len || memcmp(echo, req, req_len) != 0) {
-            NUC_LOG_ERR("echo mismatch/drop (attempt %d, n=%d)", attempt + 1, n);
+            NUC_LOG_ERR("echo mismatch/drop (n=%d) — frame was delivered, "
+                        "outcome unknown, NOT retrying", n);
             nuc_eject_locked(c);
-            continue;
+            return NUC_TX_AMBIGUOUS;
         }
         n = nuc_recv_frame_locked(c, resp);
         if (n <= 0) {
-            NUC_LOG_ERR("no response (attempt %d)", attempt + 1);
+            NUC_LOG_ERR("no response — command may have executed, "
+                        "NOT retrying");
             nuc_eject_locked(c);
-            continue;
+            return NUC_TX_AMBIGUOUS;
         }
         *resp_len = n;
-        return 0;
+        return NUC_TX_OK;
     }
-    return -1;
+    return NUC_TX_NOT_SENT;
 }
 
 /* Convenience: build + transact + bSeq echo check (CCID 6.2-1; the
