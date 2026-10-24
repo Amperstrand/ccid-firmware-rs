@@ -281,8 +281,16 @@ pacing fix — their doc should cross-reference, not restate. RELEASE-GATE
 hardware rows need superseding entries once modem-hil's bench round
 lands (gate says so itself).
 
-**Next task.** none for this lane (complete); PR cut is owner-gated
-with the rest of session 2.
+**Next task.** lane complete. Published follow-ups (2026-10-24, owner
+pushed): PR Amperstrand/ifd-modemifd#3 (docs branch
+`sisyphus/docs-release-readiness`, stacked on PR #2 head 2d50e52 —
+auto-retargets to master when #2 merges, lands as fast-forward;
+reviewer requested, Codex-head gate before merge per AGENTS rule 0).
+Testing queue filed as issues #4 (post-v3.4 HW re-validation round,
+BLOCKED on modem-hil + tollgate hazard), #5 (live URC-flood thrash /
+echo-correlation residual), #6 (deployed-.so rotation, owner-gated
+ops), #7 (pcscd-level ABI smoke test for by-value SCARD_IO_HEADER —
+closes the v3.2 evidence gap, software-runnable now).
 
 ### Lane status — modem-core (2026-10-24, COMPLETE)
 
