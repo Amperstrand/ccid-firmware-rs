@@ -283,3 +283,72 @@ lands (gate says so itself).
 
 **Next task.** none for this lane (complete); PR cut is owner-gated
 with the rest of session 2.
+
+### Lane status — modem-core (2026-10-24, COMPLETE)
+
+**Finding.** Phase-3 conformance audit of the exported IFDHandler ABI
+against /usr/include/PCSC/{ifdhandler,reader}.h: (1) `IFDHControl`
+returned IFD_SUCCESS for EVERY ioctl — no GET_FEATURE_REQUEST
+dispatch, vendor escapes got silent empty success. (2)
+`IFDHGetCapabilities` 1-byte tags (SLOTS_NUMBER, THREAD_SAFE,
+SIMULTANEOUS_ACCESS) wrote `*Value` without a NULL check — NULL Value
+with Length>=1 is a null-pointer write (latent: stock pcscd always
+passes a real buffer). (3) README claimed a 250 ms pacing floor;
+src/reader.rs enforces `TRANSMIT_GAP_MS=400`. (4) LUN registry
+multi-reader semantics had zero coverage (README: "untested beyond one
+reader").
+
+**Impact.** (1) breaks the pcscd feature-probe contract and hides
+unsupported-control from clients; (2) is a memory-safety defect at the
+pcscd FFI boundary (defense-in-depth class); (3) misleads operators
+sizing pacing budgets; (4) left "multi-reader works" unproven.
+
+**Implementation.** Branch `sisyphus/phase3-conformance` (modem-core
+worktree), 4 local commits on 2d50e52, nothing pushed:
+
+- e73bfa4 — IFDHControl: `CM_IOCTL_GET_FEATURE_REQUEST`
+  (SCARD_CTL_CODE(3400) = 0x42000D48, mirrored in consts.rs) →
+  IFD_SUCCESS + `*returned=0` (zero-feature advertisement: pcscd
+  registers an empty feature list instead of erroring the reader);
+  every other ioctl → IFD_ERROR_NOT_SUPPORTED with `*returned`
+  zeroed (ifdhandler.h note). GetCapabilities 1-byte tags gained the
+  NULL-Value guard → IFD_COMMUNICATION_ERROR (matches the TAG_IFD_ATR
+  branch). consts module made pub so tests assert canonical values.
+- 5105028 — Phase-3 conformance battery in tests/mock_at.rs (10 new
+  tests, 25/25 total): control dispatch incl. SCARD_CTL_CODE(3401)/
+  (4680) rejections; PowerICC buffer contract proven (exact ATR copy /
+  INSUFFICIENT_BUFFER with needed size / no partial copy / null
+  rejection; POWER_UP runs the 3-APDU session normalize exactly once
+  and still returns the fake ATR); GetCapabilities ATR + 1-byte-tag
+  size semantics, Length=0 size query, ERROR_TAG zeroing, NULL Value;
+  TransmitToICC INSUFFICIENT_BUFFER needed-size + null-Tx; LUN
+  registry two-reader isolation / close-removes-everywhere (close
+  idempotent) / recreate-rebinds-to-new-target / invalid+NULL device
+  names refused unregistered. MockModem CSIM counter now counts only
+  APDU-carrying CSIMs (bare `AT+CSIM=?` probe excluded).
+- 0a60b59 — README: enforced 400 ms floor named (TRANSMIT_GAP_MS,
+  constant unchanged), p50-400 ms round trips explained as the floor
+  manifesting, env-configurable pacing TODO noted; multi-reader
+  "untested" limitation retired (mock coverage; physical 2-modem
+  round still pending).
+- 9b813d9 — style: rustfmt over pre-existing drift (fmt --check gate
+  requires it; reflow only, no semantic change).
+
+**Verification.** `cargo test` 27/27 (mock_at 25 + logging 2),
+`cargo build --release` clean (sole warning is a pre-existing unused
+import), `cargo fmt --check` clean. RED→GREEN evidence:
+`control_rejects_all_non_feature_ioctls` FAILED pre-fix (everything
+returned SUCCESS); `getcaps_contracts` debug-aborted on the `*val`
+null write pre-fix.
+
+**Remaining risk.** README pacing bullet overlaps docs-release lane
+commit 4ed1973 (their branch rewrote it too) — trivial merge conflict,
+owner reconciles at PR time. CGLA-fallback path (named in the lane
+charter) deferred with the CGLA-hardening/live-modem round. POWER_DOWN
+returns the fake ATR instead of zeroing it — documented deviation (a
+modem cannot power its SIM down; pcscd keys presence on
+IFDHICCPresence, benign). All software-only evidence; no live-modem
+round.
+
+**Next task.** none for this lane (complete); PR cut owner-gated with
+the rest of session 2.
