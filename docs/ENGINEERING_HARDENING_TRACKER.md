@@ -314,7 +314,10 @@ handed over AND a disposable SIM is seated.
 
 **Next task.** Hardware round (blocked on lane handover): lane-runner.sh
 --plan review, MODEMIFD_ADDR=<bridge> MODEMIFD_CARD=sacrificial hw run,
-then pcscd-lane verification of the FRIENDLYNAME path end-to-end.
+then pcscd-lane verification of the FRIENDLYNAME path end-to-end. Queued
+as ifd-modemifd issues #15 (suite first hw qualification), #16 (private
+pcscd lane + FRIENDLYNAME live proof), #17 (esimgate lpac/EID path), #18
+(direct-AT backend vs real bridge + parity), #19 (SAC_REPEATS soak).
 
 ## Session state (session 2, 2026-10-24 — active, coordinator: w19:pC)
 
