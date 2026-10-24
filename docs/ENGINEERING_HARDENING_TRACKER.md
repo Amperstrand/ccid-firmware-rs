@@ -654,8 +654,10 @@ raises a provenance question for the historical v4.0
 "provisioning-through-this-driver" evidence (earlier firmware or
 different box — open question for the campaign, not adjudicated here).
 The vpcd package remains the right architecture for permissive-CSIM
-modems and is directly reusable for the other endgame (external reader
-on the router + router pcscd build, per the silentlink lane).
+modems. ALIGNMENT (silentlink, 2026-10-24): only THROUGH-the-modem
+paths are dead on this box — the external-reader endgame (USB reader +
+router-side pcscd) bypasses the modem entirely and is NOT blocked by
+the allowlist; it is alive on this box.
 
 **Implementation.** Spec VPCD-ARCHITECTURE.md (#28: wire protocol from
 the bench-proven VpcdBridge reference, security reqs, acceptance
@@ -690,6 +692,10 @@ pcscd-restart transmit-dead-window (sibling campaign's host-side
 issue) may need lane-side patience on fresh instances; mipsel binary
 needs libgcc_s.so.1 on target (OpenWrt base ships it).
 
-**Next task.** None on this box (allowlist). On permissive hardware or
-the external-reader endgame: deploy the agent router-side under procd
-+ flock, rerun the rehearsal ladder, then the stress block as designed.
+**Next task.** None THROUGH the modem on this box (allowlist). Alive
+on this box: external reader + router pcscd — silentlink-lib's mipsel
+SDK pipeline is reusable for pcsc-flavored artifacts
+(router/build-lpac-mt7621-at-csim.sh, SDK 25.12.6/mt7621, staged
+/tmp/opencode/lpac-build; swap LPAC_WITH_APDU_PCSC=ON, ~2 min cached).
+On permissive-CSIM hardware: agent router-side under procd + flock,
+rehearsal ladder, then the stress block as designed.
