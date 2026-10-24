@@ -247,12 +247,50 @@ static void test_ifd_entry_guards(void)
     }
 }
 
+/* ---- ATR walker: nuc_t1_from_atr must stay inside atr[0..len) ---- */
+
+static void test_t1_walker_boundaries(void)
+{
+    printf("-- nuc_t1_from_atr: well-formed reference --\n");
+    {
+        static const unsigned char g05[] = {
+            0x3B, 0x85, 0x81, 0x31, 0xFE, 0x45,
+            0x80, 0x73, 0xC8, 0x21, 0x10, 0x84
+        };
+        unsigned char ifsc = 0, wi = 0;
+        nuc_t1_from_atr(g05, sizeof(g05), &ifsc, &wi);
+        check(ifsc == 0xFE && wi == 0x45,
+              "t1_from_atr G-05 ATR -> IFSC 0xFE, WI 0x45");
+    }
+
+    printf("-- nuc_t1_from_atr: truncated/walking-edge ATRs "
+           "(pre-fix: ASan abort here) --\n");
+    {
+        unsigned char atr[3] = { 0x3B, 0xFF, 0xAA };
+        unsigned char ifsc = 0, wi = 0;
+        nuc_t1_from_atr(atr, sizeof(atr), &ifsc, &wi);
+        check(ifsc == 0xFE && wi == 0x45,
+              "t1_from_atr len=3 all-flags-promised stops at ATR end");
+    }
+    {
+        unsigned char atr[MAX_ATR_SIZE];
+        atr[0] = 0x3B;
+        atr[1] = 0xFF;
+        for (size_t i = 2; i < MAX_ATR_SIZE; i++)
+            atr[i] = 0xFF;
+        unsigned char ifsc = 0, wi = 0;
+        nuc_t1_from_atr(atr, MAX_ATR_SIZE, &ifsc, &wi);
+        check(1, "t1_from_atr full-size edge-walking ATR stays in bounds");
+    }
+}
+
 int main(void)
 {
     printf("== ifd-nucula bounds test (ASan+UBSan build) ==\n");
     run_group("nuc_build_request boundaries", test_build_request_boundaries);
     run_group("nuc_recv_frame_locked boundaries", test_recv_frame_boundaries);
     run_group("IFD entry-point guards", test_ifd_entry_guards);
+    run_group("nuc_t1_from_atr boundaries", test_t1_walker_boundaries);
     printf("== %s (%d failures) ==\n", failures ? "FAIL" : "ALL PASS",
            failures);
     return failures ? 1 : 0;

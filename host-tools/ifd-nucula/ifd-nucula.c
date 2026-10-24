@@ -508,25 +508,31 @@ static void nuc_t1_from_atr(const unsigned char *atr, DWORD len,
         unsigned char td = 0;
         int have_td = 0;
 
+        /* every interface byte is bounds-checked: a truncated ATR that
+         * still promises more groups stops at the first missing byte
+         * (defaults above stay in force) instead of reading past it */
         if (y & 0x01) { /* TA(i) */
+            if (pos >= len)
+                break;
             if (pending_proto == 1 && atr[pos])
                 *ifsc = atr[pos];
             pos++;
         }
-        if (pos >= len && !(y & 0x0E))
-            break;
         if (y & 0x02) { /* TB(i) */
+            if (pos >= len)
+                break;
             if (pending_proto == 1)
                 *wi = atr[pos];
             pos++;
         }
-        if (pos >= len && !(y & 0x0C))
-            break;
-        if (y & 0x04) /* TC(i) */
+        if (y & 0x04) { /* TC(i) */
+            if (pos >= len)
+                break;
             pos++;
-        if (pos >= len && !(y & 0x08))
-            break;
+        }
         if (y & 0x08) { /* TD(i) */
+            if (pos >= len)
+                break;
             td = atr[pos];
             pos++;
             have_td = 1;
