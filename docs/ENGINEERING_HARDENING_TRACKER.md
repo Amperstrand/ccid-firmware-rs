@@ -498,3 +498,32 @@ conflict with #3's 4ed1973 — reconcile at merge).
   confirmed zero CGLA code in src/ today). Adjacent existing: #4
   post-v3.4 live round, #5 URC-flood thrash, #6 .so rotation, #7 ABI
   smoke.
+
+### Lane status — docs-release round 2 (2026-10-24 late: merges + Codex audit closed)
+
+Owner granted review/test/merge authority on ifd-modemifd (bot wait
+waived). Executed:
+
+- **Merges.** PR #2 → master (merge commit fea2a95 — preserves
+  fa42259/2d50e52 SHAs cited by RELEASE-GATE); PR #3 (docs) retargeted
+  and rebase-merged (710beca). Master content verified identical to the
+  tested tree (empty diff) before each merge.
+- **Codex audit (post-merge, runbook followed).** Re-triggered review
+  completed with 3×P2: legacy-0644 log stays world-readable (mode() is
+  create-only); symlink pre-check→open TOCTOU; RELEASE-GATE v3.4.1 row
+  claimed symlink-refusal PASS with no symlink test. All ADDRESSED in
+  PR #12 (7d1a37c/31e18ca): fchmod fd-repair, O_NOFOLLOW atomic refusal
+  (cfg-gated), symlink evidence test. RED→GREEN. 19/19.
+- **Audit round 2.** Codex flagged the repair itself (EPERM discarded on
+  foreign-owned writable files → appends continue). ADDRESSED in PR #13
+  (989a930/035ffe5): fail closed. Repro nuance discovered: sticky /tmp +
+  fs.protected_regular=2 masks the class — test stages a non-sticky dir.
+  21/21 (logging battery now 5 binaries / 6 tests).
+- All 4 finding threads replied + 👍; report in Amperstrand/pr-review-audit
+  (amperstrand-ifd-modemifd-2-report.md, rounds 1–2). Codex round on #13
+  triggered, in flight — process on landing.
+- **Master now 035ffe5** (v4.0 + v3.4 + v3.4.1 + docs + v3.4.2). Local
+  master FF'd. PR #11 (modem-core) retargeted to master as their entry
+  planned — rebase + README pacing conflict vs 4ed1973 remains theirs
+  (note: their IFD_MODMIFD_TX_GAP_MS will need a README mention).
+- Test queue unchanged: issues #4–#7 (this lane) + #8–#10 (modem-core).
