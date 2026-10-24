@@ -231,3 +231,55 @@ No hardware bench round yet for WP-1..WP-4 (all software-only evidence).
   round (→ modem-core/modem-hil), deployed-.so rotation (owner-gated),
   Phase-4 reliability #444/#380/#431 (post-Phase-3), ccid-pcsc-host
   reader-matching (later).
+
+### Lane status — docs-release (2026-10-24, COMPLETE)
+
+**Finding.** README drift vs enforced code: claimed a 250 ms
+inter-command floor with "idle recovery" while src/reader.rs enforces
+`TRANSMIT_GAP_MS=400` (no idle-recovery logic exists); claimed "every
+export wrapped in catch_unwind" (8/10 guarded; two constant stubs are
+not); response-lag-aliasing limitation predated v3.4 echo correlation;
+v3.4/v3.4.1 semantics entirely undocumented; no release-gate artifact.
+
+**Implementation.** Branch `sisyphus/docs-release-readiness` (ifd-modemifd
+worktree), 5 local commits on 2d50e52, docs only, no code touched:
+
+- 4ed1973 — pacing truth: 400 ms floor (constant named), presence-probe
+  exemption, anchored to v4.0 measured p50 400 ms round-trip.
+- 7470a54 — v3.4 transport semantics: AtOutcome table (Ok → response
+  APDU / 6F00-on-unparsable; Error+Refused → SW 6F00 card-level;
+  NotSent+Ambiguous → IFD_COMMUNICATION_ERROR; NotSent the ONLY retried
+  class, once; never re-sent after full delivery), strict framing
+  (declared len == hex count, ≤258 B R-APDU), echo-correlated parse,
+  8 KiB cap; limitation entry updated (narrowed since v3.4, residual
+  post-echo shape unobserved, live thrash test pending).
+- 7f352bb — v3.4.1 logging: IFD_MODMIFD_DEBUG gate,
+  IFD_MODEMIFD_LOG_APDU hex gate (exact spellings flagged — MODMIFD vs
+  MODEMIFD genuinely differ in code), IFD_MODMIFD_LOG_PATH override,
+  0600 + symlink refusal, OnceLock cache ⇒ vars must reach pcscd.
+- 1982261 — docs/RELEASE-GATE.md: PASS/FAIL/SKIP/BLOCKED semantics +
+  zero-FAIL release rule; evidence registry (software reproducible:
+  mock_at 15/15, logging 2/2; hardware recorded-only: v4.0 table
+  2026-10-23); per-version targets v3.2 f0e71a / v3.3 03848b3 /
+  v4.0 3a475eb / v3.4 fa42259 / v3.4.1 2d50e52 — every PASS names its
+  evidence; SKIP/BLOCKED registry for gaps (post-v3.4 hardware round
+  and deployed-.so rotation BLOCKED; serial transport, multi-reader,
+  conformance sweep SKIP with reasons). No aspirational claims.
+- 5871249 — cross-check fixes: catch_unwind scope, eSM→eSIM typo,
+  RELEASE-GATE pointer; all remaining README claims verified against
+  src/+tests (architecture, modem findings incl. post-v3.4 6F00
+  semantics, validate.sh phases/env overrides, fake ATR, TCP-only,
+  LUN registry, build artifacts).
+
+**Verification.** `cargo build --release` clean and `cargo test
+--release` 17/17 (mock_at 15, logging 2) both before and after the doc
+commits (docs-only diff — identical binaries). Working tree clean,
+nothing pushed.
+
+**Remaining risk.** modem-core's pacing-doc task overlaps this README
+pacing fix — their doc should cross-reference, not restate. RELEASE-GATE
+hardware rows need superseding entries once modem-hil's bench round
+lands (gate says so itself).
+
+**Next task.** none for this lane (complete); PR cut is owner-gated
+with the rest of session 2.
