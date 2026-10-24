@@ -414,3 +414,23 @@ round.
 
 **Next task.** none for this lane (complete); PR cut owner-gated with
 the rest of session 2.
+
+**Follow-up (same session, owner-approved push).** Branch pushed as
+PR Amperstrand/ifd-modemifd#11 (5 commits: the four above + 98ce752;
+stacked on PR #2's head, base `sisyphus/v34-no-resend-hardening`,
+retarget master after #2 merges; README pacing bullet will trivially
+conflict with #3's 4ed1973 — reconcile at merge).
+
+- 98ce752 — pacing TODO closed: `IFD_MODMIFD_TX_GAP_MS` env override
+  (default 400 unchanged, unparsable → default, 0 = off) with a
+  RED→GREEN timing test in tests/pacing.rs (own binary; env must
+  precede the OnceLock-cached gap). Suite now 28/28.
+- Test queue filed on ifd-modemifd: #8 live Phase-3 conformance round
+  on NR7101 (tollgate-gated: GET_FEATURE/GetAttrib/PowerICC/TX_GAP
+  validation; supersedes RELEASE-GATE SKIP rows), #9 physical
+  multi-reader LUN round (two phases: shared-port plumbing, then true
+  two-card isolation), #10 CGLA/CCHO/CCHC fallback — capability-routed
+  at session init, never per-APDU retry (no-resend doctrine; audit
+  confirmed zero CGLA code in src/ today). Adjacent existing: #4
+  post-v3.4 live round, #5 URC-flood thrash, #6 .so rotation, #7 ABI
+  smoke.
