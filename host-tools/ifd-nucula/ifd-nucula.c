@@ -457,6 +457,8 @@ static int nuc_transact_locked(nuc_ctx *c, const unsigned char *req, size_t req_
 
 /* Convenience: build + transact + bSeq echo check (CCID 6.2-1; the
  * firmware regression-locks it). 0 ok / -1 transport. */
+static int nuc_resp_cmd_failed(const unsigned char *resp);
+
 static int nuc_command(unsigned char type, unsigned char spec0,
                        const unsigned char *payload, uint32_t plen,
                        unsigned char *resp, int *resp_len)
@@ -470,8 +472,37 @@ static int nuc_command(unsigned char type, unsigned char spec0,
         return -1;
     }
     int rc = nuc_transact_locked(&g_ctx, req, req_len, resp, resp_len);
+
+    /* CCID 6.2-2 time extension: a SlotStatus with bmCommandStatus=0
+     * ("still processing") and OUR bSeq means the reader bought more
+     * time — it is not the final answer. Only command types that carry
+     * card work get extensions (GetSlotStatus/GetParameters never do,
+     * and they legitimately answer with a SlotStatus as their FINAL
+     * frame, so they must be excluded). Keep reading until a final
+     * frame, a failure status, or the receive timeout. */
+    int may_extend = (type == NUC_PC_TO_RDR_XFR_BLOCK
+                      || type == NUC_PC_TO_RDR_ICC_POWER_ON
+                      || type == NUC_PC_TO_RDR_ESCAPE);
+    for (int ext = 0;
+         rc == 0 && may_extend && ext < 64
+         && resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_SLOT_STATUS
+         && !nuc_resp_cmd_failed(resp)
+         && resp[NUC_MSG_SEQ] == seq;
+         ext++) {
+        int n2 = nuc_recv_frame_locked(&g_ctx, resp);
+        if (n2 <= 0) {
+            NUC_LOG_ERR("transport died waiting out a time extension");
+            nuc_eject_locked(&g_ctx);
+            return -1;
+        }
+        *resp_len = n2;
+    }
+
     if (rc == 0 && resp[NUC_MSG_SEQ] != seq) {
         NUC_LOG_ERR("bSeq mismatch: sent %u got %u", seq, resp[NUC_MSG_SEQ]);
+        /* the stream is desynced (stale frame): drop the connection so
+         * the next command starts clean instead of chasing ghosts */
+        nuc_eject_locked(&g_ctx);
         return -1;
     }
     return rc;
@@ -850,6 +881,12 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci, PUCHAR TxBuff
                         resp[NUC_MSG_TYPE]);
         } else if (nuc_resp_cmd_failed(resp) && nuc_resp_icc_absent(resp)) {
             r = IFD_ICC_NOT_PRESENT;
+        } else if (nuc_resp_cmd_failed(resp)) {
+            /* failed XfrBlock with the card still seated is a CCID
+             * command failure (bError), never a successful APDU
+             * exchange with a phantom payload */
+            NUC_LOG_ERR("XfrBlock failed (bError=0x%02x)",
+                        resp[NUC_MSG_ERROR]);
         } else {
             uint32_t n = nuc_resp_payload_len(resp);
             if (n > orig) {

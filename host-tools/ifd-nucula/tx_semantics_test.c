@@ -61,7 +61,13 @@ enum {
     STEP_CLOSE_EARLY,
     STEP_MIDFRAME,
     STEP_NO_ECHO,
-    STEP_NO_RESPONSE
+    STEP_NO_RESPONSE,
+    /* response-decode steps (Task 1.4): the board behaves normally on
+     * the wire but answers with hostile/malformed CCID responses */
+    STEP_BAD_SEQ,
+    STEP_CMD_FAILED_PRESENT,
+    STEP_TIME_EXTENSION,
+    STEP_WRONG_TYPE
 };
 
 struct fake_board {
@@ -70,7 +76,8 @@ struct fake_board {
     int nsteps;
     pthread_mutex_t lock;
     pthread_cond_t cv;
-    int conns_done;      /* connections fully handled */
+    int conns_done;      /* connections fully handled AND counted */
+    int serving;         /* a connection is accepted but not yet counted */
     int frames_complete; /* full frames received (= would-be executions) */
 };
 
@@ -120,6 +127,47 @@ static int fb_read_frame(int fd, unsigned char *out)
     }
 }
 
+/* echo the ORIGINAL frame byte-exact, then answer with one crafted RDR
+ * frame whose bSeq is the echo's seq XOR seq_xor (0 = same seq) */
+static void fb_reply(int fd, const unsigned char *frame,
+                     unsigned char type, unsigned char status,
+                     const unsigned char *payload, uint32_t plen,
+                     unsigned char seq_xor)
+{
+    int n = NUC_MSG_PAYLOAD + (int)nuc_resp_payload_len(frame) + 1;
+    if (write(fd, frame, (size_t)n) != n) {
+        close(fd);
+        return;
+    }
+    unsigned char out[NUC_MAX_FRAME];
+    size_t olen = nuc_build_request(out, type,
+                                    (unsigned char)(frame[NUC_MSG_SEQ] ^ seq_xor),
+                                    status, payload, plen);
+    if (olen == 0) {
+        close(fd);
+        return;
+    }
+    (void)!write(fd, out, olen);
+    close(fd);
+}
+
+/* complete-frame read + count, then a crafted answer (original echo) */
+static void fb_read_and_reply(struct fake_board *fb, int fd,
+                              unsigned char type, unsigned char status,
+                              const unsigned char *payload, uint32_t plen,
+                              unsigned char seq_xor)
+{
+    unsigned char frame[NUC_MAX_FRAME];
+    if (fb_read_frame(fd, frame) <= 0) {
+        close(fd);
+        return;
+    }
+    pthread_mutex_lock(&fb->lock);
+    fb->frames_complete++;
+    pthread_mutex_unlock(&fb->lock);
+    fb_reply(fd, frame, type, status, payload, plen, seq_xor);
+}
+
 static void fb_serve_conn(struct fake_board *fb, int fd, int step)
 {
     unsigned char frame[NUC_MAX_FRAME];
@@ -157,6 +205,57 @@ static void fb_serve_conn(struct fake_board *fb, int fd, int step)
         close(fd);
         return;
     }
+    case STEP_BAD_SEQ:
+        /* DataBlock with SOMEONE ELSE's sequence number */
+        fb_read_and_reply(fb, fd, NUC_RDR_TO_PC_DATA_BLOCK, 0,
+                          (const unsigned char *)"\x90\x00", 2, 0x5A);
+        return;
+    case STEP_CMD_FAILED_PRESENT:
+        /* bStatus: command FAILED, card PRESENT and ACTIVE
+         * (bmCommandStatus=1<<6, bmICCStatus=0) */
+        fb_read_and_reply(fb, fd, NUC_RDR_TO_PC_DATA_BLOCK,
+                          (unsigned char)(1 << 6),
+                          (const unsigned char *)"", 0, 0);
+        return;
+    case STEP_TIME_EXTENSION: {
+        /* CCID 6.2-2 interim frame: AFTER the byte-exact echo, a
+         * SlotStatus with no error (bmCommandStatus=0 = still
+         * processing) and our seq — then the real DataBlock answer */
+        unsigned char frame[NUC_MAX_FRAME];
+        if (fb_read_frame(fd, frame) <= 0) {
+            close(fd);
+            return;
+        }
+        pthread_mutex_lock(&fb->lock);
+        fb->frames_complete++;
+        pthread_mutex_unlock(&fb->lock);
+        int n = NUC_MSG_PAYLOAD + (int)nuc_resp_payload_len(frame) + 1;
+        if (write(fd, frame, (size_t)n) != n) {
+            close(fd);
+            return;
+        }
+        unsigned char interim[NUC_MAX_FRAME];
+        size_t ilen = nuc_build_request(
+            interim, NUC_RDR_TO_PC_SLOT_STATUS, frame[NUC_MSG_SEQ], 0,
+            (const unsigned char *)"", 0);
+        if (ilen == 0 || write(fd, interim, ilen) != (ssize_t)ilen) {
+            close(fd);
+            return;
+        }
+        unsigned char answer[NUC_MAX_FRAME];
+        size_t alen = nuc_build_request(
+            answer, NUC_RDR_TO_PC_DATA_BLOCK, frame[NUC_MSG_SEQ], 0,
+            (const unsigned char *)"\x90\x00", 2);
+        if (alen != 0)
+            (void)!write(fd, answer, alen);
+        close(fd);
+        return;
+    }
+    case STEP_WRONG_TYPE:
+        /* answers an XfrBlock with a Parameters frame */
+        fb_read_and_reply(fb, fd, NUC_RDR_TO_PC_PARAMETERS, 0,
+                          (const unsigned char *)"\x11\x00\x00\x0A\x00", 5, 0);
+        return;
     case STEP_NONE:
     default: {
         int n = fb_read_frame(fd, frame);
@@ -195,12 +294,14 @@ static void *fb_thread(void *arg)
         if (fd < 0)
             return NULL;
         pthread_mutex_lock(&fb->lock);
+        fb->serving = 1;
         int idx = fb->conns_done; /* connection being handled now */
         int step = (idx < fb->nsteps) ? fb->steps[idx] : STEP_NONE;
         pthread_mutex_unlock(&fb->lock);
         fb_serve_conn(fb, fd, step);
         pthread_mutex_lock(&fb->lock);
         fb->conns_done++;
+        fb->serving = 0;
         pthread_cond_broadcast(&fb->cv);
         pthread_mutex_unlock(&fb->lock);
     }
@@ -252,9 +353,53 @@ static int g_conns_done(struct fake_board *fb)
     return n;
 }
 
+static const unsigned char apdu[] = { 0x00, 0xA4, 0x04, 0x00 };
+
+static RESPONSECODE ifd_transmit_once(struct fake_board *fb, int step,
+                                      unsigned char *rx, DWORD rxsz,
+                                      DWORD *rxlen)
+{
+    int steps[2] = { step, STEP_NONE };
+    arm_board(fb, steps, 2);
+    pthread_mutex_lock(&g_ctx.lock);
+    nuc_eject_locked(&g_ctx);
+    pthread_mutex_unlock(&g_ctx.lock);
+    SCARD_IO_HEADER send_pci = { 0, 0 }, recv_pci = { 0, 0 };
+    unsigned char tx[4];
+    memcpy(tx, apdu, sizeof(tx));
+    *rxlen = rxsz;
+    return IFDHTransmitToICC(0, send_pci, tx, sizeof(tx), rx,
+                             rxlen, &recv_pci);
+}
+
+/* Wait until every accepted connection is served AND counted — after
+ * this, counter resets cannot race a late increment from the board
+ * thread (the flake where the next connection applied steps[1]). */
+static void fb_quiesce(struct fake_board *fb)
+{
+    struct timespec ts = { time(NULL) + 5, 0 };
+    pthread_mutex_lock(&fb->lock);
+    while (fb->serving) {
+        if (pthread_cond_timedwait(&fb->cv, &fb->lock, &ts) == ETIMEDOUT)
+            break;
+    }
+    pthread_mutex_unlock(&fb->lock);
+}
+
+static void reset_between(struct fake_board *fb)
+{
+    fb_quiesce(fb);
+    pthread_mutex_lock(&fb->lock);
+    fb->frames_complete = 0;
+    fb->conns_done = 0;
+    pthread_mutex_unlock(&fb->lock);
+    pthread_mutex_lock(&g_ctx.lock);
+    nuc_eject_locked(&g_ctx);
+    pthread_mutex_unlock(&g_ctx.lock);
+}
+
 int main(void)
 {
-    static const unsigned char apdu[] = { 0x00, 0xA4, 0x04, 0x00 };
     struct fake_board fb = { .lock = PTHREAD_MUTEX_INITIALIZER,
                              .cv = PTHREAD_COND_INITIALIZER };
     unsigned char resp[NUC_MAX_FRAME];
@@ -442,6 +587,56 @@ int main(void)
               "no-response: exactly ONE frame delivered (no duplicate)");
         check(g_conns_done(&fb) == 1,
               "no-response: no second connection opened");
+    }
+
+    /* -- scenario 6: response-decode semantics (Task 1.4) -- */
+    printf("-- response decode: CCID status/type/seq handling --\n");
+    {
+        unsigned char rx[NUC_MAX_FRAME];
+        DWORD rxlen;
+        RESPONSECODE r;
+
+        /* command FAILED with card PRESENT+ACTIVE must NOT be reported
+         * as a successful IFD exchange (pre-fix: IFD_SUCCESS + payload) */
+        reset_between(&fb);
+        r = ifd_transmit_once(&fb, STEP_CMD_FAILED_PRESENT, rx, sizeof(rx),
+                              &rxlen);
+        wait_conns(&fb, 1);
+        check(r == IFD_COMMUNICATION_ERROR,
+              "cmd-failed+present: IFD_COMMUNICATION_ERROR (not success)");
+        check(rxlen == 0, "cmd-failed+present: no payload returned");
+        check(g_frames_complete(&fb) == 1, "cmd-failed: no resend");
+
+        /* CCID 6.2-2 time extension: an interim in-progress SlotStatus
+         * must be waited out, not treated as the final answer */
+        reset_between(&fb);
+        r = ifd_transmit_once(&fb, STEP_TIME_EXTENSION, rx, sizeof(rx),
+                              &rxlen);
+        wait_conns(&fb, 1);
+        check(r == IFD_SUCCESS, "time-extension: exchange still succeeds");
+        check(rxlen == 2 && rx[0] == 0x90 && rx[1] == 0x00,
+              "time-extension: final DataBlock payload delivered");
+        check(g_frames_complete(&fb) == 1, "time-extension: no resend");
+
+        /* wrong bSeq: correlation failure — error, and the poisoned
+         * connection must be dropped (next command reconnects) */
+        reset_between(&fb);
+        r = ifd_transmit_once(&fb, STEP_BAD_SEQ, rx, sizeof(rx), &rxlen);
+        wait_conns(&fb, 1);
+        check(r == IFD_COMMUNICATION_ERROR, "bad-seq: IFD_COMMUNICATION_ERROR");
+        check(g_frames_complete(&fb) == 1, "bad-seq: no resend");
+        r = ifd_transmit_once(&fb, STEP_NONE, rx, sizeof(rx), &rxlen);
+        wait_conns(&fb, 1);
+        check(r == IFD_SUCCESS,
+              "bad-seq recovery: fresh connection works after eject");
+
+        /* wrong response type for an XfrBlock: error, no payload */
+        reset_between(&fb);
+        r = ifd_transmit_once(&fb, STEP_WRONG_TYPE, rx, sizeof(rx), &rxlen);
+        wait_conns(&fb, 1);
+        check(r == IFD_COMMUNICATION_ERROR,
+              "wrong-type: Parameters frame to XfrBlock rejected");
+        check(rxlen == 0, "wrong-type: no payload returned");
     }
 
     /* wake the accept-blocked board thread (close() alone does not),
