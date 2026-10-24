@@ -126,3 +126,41 @@ end-to-end — smoke target covers happy path only.
 **Next task.** WP-3: ifd-modemifd — audit `at_expect`/CSIM recovery for
 the same retransmission class + Task 1.3 response-parser hardening
 (reader.rs, at.rs; mock AT server tests per Phase 5).
+
+### WP-3 — ifd-modemifd Tasks 1.2 + 1.3 + Phase-2 logging (commits 4086396, b258d52)
+
+**Finding.** reader.rs: (a) at_full classified read timeouts as `Ok` and
+at_expect retried on Ok-without-echo and on Transport — both reachable
+after the AT line was fully written (stalled bridge / response lost /
+connection cut post-delivery) ⇒ silent AT+CSIM re-send to the SIM
+(duplicate state-changing APDU). (b) parse_csim ignored the declared
+length, accepted any size, and parsed the FIRST +CSIM line in the buffer
+including pre-echo stale responses (response-lag aliasing). (c) Response
+accumulation unbounded. (d) Everything non-Ok collapsed into synthetic
+6F00, hiding transport failures. (e) Debug logging compiled on
+(`if true || env`), full APDU hex world-readable in /tmp (2.7 MB bench
+evidence), symlink-redirectable.
+
+**Implementation.** Typed `AtOutcome { Ok, Error, NotSent, Refused,
+Ambiguous }`; retry ONLY on NotSent (write failed before CR left host ⇒
+provably unexecutable). Refused (echo seen, no final answer) keeps v3.3
+6F00 semantics; Ambiguous (no echo after full write) → transport error,
+never a fake SW, never retried. Strict parse (declared length == hex
+chars, TS 27.007 §8.45 / pySim convention; R-APDU ≤ 258 B) +
+echo-correlated parse_csim_in. 8 KiB read cap. Logging: opt-in, 0600,
+no-symlink, APDU-redact-by-default, IFD_MODMIFD_LOG_PATH override.
+
+**Verification.** tests/mock_at.rs 15/15 (scripted mock modem:
+no-resend invariants under blackhole/post-delivery-cut/echo-silence/
+missing-OK/flood; echo correlation; strict framing; URC tolerance);
+tests/logging*.rs 2/2; cargo build --release + example clean.
+
+**Remaining risk.** No live-modem bench round yet (RG502Q): pacing
+behavior with the stricter final-OK requirement unchanged in theory;
+response-lag aliasing needs a live thrash test. Deployed pre-fix .so on
+the bench still logs to the old world-readable file until rotated
+(owner-gated).
+
+**Next task.** WP-4: H-005 — CCID response decode audit in ifd-nucula
+(bmCommandStatus/bError mapping, time-extension, seq mismatch), then
+Phase 3 IFD conformance checks for both host drivers.
