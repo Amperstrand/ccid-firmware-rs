@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -306,6 +307,40 @@ def pcscd_start():
     subprocess.run(["systemctl", "start", "pcscd.socket", "pcscd.service"],
                    capture_output=True)
     time.sleep(1.5)
+
+
+# Bench disturbance doctrine (tollgate-lab #15/#16): every pcscd restart
+# on the shared bench goes through pcscd-ctl (B32 disturbance lock +
+# waiting reader sessions + journaled reason). Naked systemctl restarts
+# bounced reader sessions bench-wide (ntag424-delta lane, 2026-10-23:
+# pcscd cycled 80x in 3h, ACR1252 dropped from pcsc). The direct-serial
+# phases below still need a hard stop (pcscd must stay DOWN while the
+# probe owns the ports) — pcscd-ctl has no stop; only the restart cycles
+# route through it.
+PCSCD_CTL = shutil.which("pcscd-ctl")
+
+
+def pcscd_restart_coordinated(reason: str) -> bool:
+    """Restart pcscd the sanctioned way when pcscd-ctl exists (bench);
+    fall back to the naked stop+start pair on hosts without it (CI).
+    Returns False if the coordinated restart FAILED — the caller must
+    count that as a failed cycle and NOT probe: the daemon is then
+    whatever it was before (likely still running with the old reader
+    set), and probing it would false-pass the soak."""
+    if PCSCD_CTL:
+        r = subprocess.run(
+            [PCSCD_CTL, "restart",
+             "--project", "ccid-conformance-battery",
+             "--reason", reason],
+            capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"  pcscd-ctl restart FAILED (rc={r.returncode}): "
+                  f"{(r.stderr or r.stdout).strip()[:200]}")
+            return False
+        return True
+    pcscd_stop()
+    pcscd_start()
+    return True
 
 
 # Labgrid bench doctrine (AGENTS.md): every HIL session acquires the
@@ -598,7 +633,13 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
     )
     ok = True
     for i in range(count):
-        pcscd_start()
+        # one sanctioned restart per cycle: B32 disturbance lock, reader
+        # sessions waited out, journaled reason. A FAILED restart counts
+        # as a failed cycle and skips the probe — never false-pass on a
+        # stale daemon (Codex P2 review, 2026-10-24).
+        if not pcscd_restart_coordinated(f"restart-soak cycle {i}"):
+            ok = False
+            continue
         # sys.executable, NOT PATH python3: in agent/venv environments
         # PATH python3 lacks pyscard and the probe fails SILENTLY (empty
         # stdout maps to all-False — 10/10 false FAIL, 2026-10-23).
@@ -619,8 +660,6 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
                     s.close()
                 except Exception:
                     pass
-        pcscd_stop()
-    pcscd_start()
     print(f"  {'all restarts clean' if ok else 'some restarts needed the CDC remedy'}")
     return ok
 
