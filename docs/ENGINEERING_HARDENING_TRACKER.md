@@ -259,6 +259,63 @@ hardware bench round yet (stacks with the WP-1..WP-4 pending round).
 **Next task.** none for this lane (complete); PR #457 push/merge is
 owner-gated with the Codex-review rule (AGENTS rule 0).
 
+### WP-6 — modem-hil sacrificial-SIM suite, PREP-ONLY build (branch
+sisyphus/nr7101-sacrificial-suite, ifd-modemifd worktree, 2026-10-24)
+
+**Finding.** The v4.0 monolithic validate.sh gate is unsafe as a template
+for the campaign: it stopped the SYSTEM pcscd for its direct-AT probe and
+hardcoded a router SSH target. Session-2 constraint: NR7101 owned by
+another lane (w19:p4 uses its modem-data WAN) AND coordinator directive —
+no SIM is to be sacrificed for real; the 9eSIM production card must never
+be a suite target. So the suite was built software-only with a mock-modem
+dry-run as the default execution mode.
+
+**Impact.** Enables the full Class-A qualification + eSIM-gate rehearsal
+with zero hardware, zero AT traffic, zero pcscd interaction, and makes the
+card-safety rule machine-enforced rather than doctrine-only.
+
+**Implementation.** Six local commits on sisyphus/nr7101-sacrificial-suite
+(NOT pushed, per owner gate): mock_modem.py (RG502Q basic-channel A4/P1=04
++ B0 drop fingerprint, fake SIM w/ ICCID + ISD-R AID); report.py (stamped
+JSON+MD, enforced truthful PASS/FAIL/SKIP/BLOCKED — PASS requires evidence,
+suite PASS only if every case ran, dry-run can never open the provisioning
+gate); suite.py (case runner: direct-AT backend mirroring driver v3.4
+transport semantics, ctypes pcsc backend selecting reader BY FRIENDLYNAME
+at two layers — never first-reader; card guard: any run reaching a real
+card requires --card-decl, 9esim-naming values refused outright,
+sacrificial suite requires card-decl=sacrificial); validate.sh split into
+validate-sacrificial.sh (SAC-001..009: basic SELECT-by-FID, drop
+fingerprints whose DROP is the expected PASS, logical-channel cycle with
+EF.ICCID fixture fingerprint) + validate-esimgate.sh (ESG-001..004: ISD-R
+readiness via public-AID select, lpac chip info EID stability) chained by a
+dispatcher that BLOCKs esimgate when sacrificial is not green; lane-runner.sh
+(private socket-activated pcscd lane per ccid AGENTS.md recipe,
+PCSCLITE_CSOCK_NAME-only, --plan, hw interlocks: no default MODEMIFD_ADDR,
+HW_CONFIRM for non-loopback, MODEMIFD_CARD required, 9eSIM refused);
+READMEs updated.
+
+**Verification.** shellcheck clean (all tests/hardware/*.sh), py_compile
+clean (all *.py), report.py --self-test 14/14, suite.py --self-test 21/21
+(includes full suite runs vs mock: filter on/off, URC chaos), end-to-end
+dry-run of validate.sh and lane-runner.sh --dry-run (sacrificial 9/9 PASS
+annotated dry-run; esimgate 3 PASS + 1 SKIP → suite SKIP, chain exit 2 —
+never green for unexecuted), BLOCKED-chain path proven by killing the mock
+mid-run (prerequisite BLOCKED propagation), hw interlocks proven refusing
+(no addr / no confirm / no card-decl / card-decl=9esim → exit 3), cargo
+test regression 15/15 mock_at + 2 logging (no Rust changes; .so builds via
+lane-runner with repo-local CARGO_TARGET_DIR pin).
+
+**Remaining risk.** pcsc backend happy path UNVERIFIED (needs a live
+private pcscd instance — no pcscd interaction this session by directive);
+lpac ESG-004 unverified beyond unit parsing (lpac absent on this host);
+direct-AT bridge backend verified only against the mock, not a real socat
+bridge. All deferred to the hardware session once the NR7101 lane is
+handed over AND a disposable SIM is seated.
+
+**Next task.** Hardware round (blocked on lane handover): lane-runner.sh
+--plan review, MODEMIFD_ADDR=<bridge> MODEMIFD_CARD=sacrificial hw run,
+then pcscd-lane verification of the FRIENDLYNAME path end-to-end.
+
 ## Session state (session 2, 2026-10-24 — active, coordinator: w19:pC)
 
 - Lanes (Herdr-managed OpenCode sessions, own worktrees under ~/src/worktrees/):
@@ -271,12 +328,19 @@ owner-gated with the Codex-review rule (AGENTS rule 0).
     rationale (cf6bfe2), #431 battery verdict SKIP counting (be3c3cf).
     make check 69/69, broker 5/5, sim 5/5. Hardware round pending with
     WP-1..WP-4.
-  - **modem-hil** — SOLE hardware owner. NR7101 read-only capability
-    inventory (fixture identity/fingerprint FIRST, PIN state without retry
-    consumption, AT-endpoint discovery), then Class-A smoke suite +
-    validate.sh split (sacrificial-SIM qualification vs eSIM-provisioning
-    qualification; private pcscd instance; JSON+MD stamped reports in
-    persistent dirs; never-green-for-unexecuted).
+  - **modem-hil** — PREP-ONLY COMPLETE (WP-6, session-2 constraint: NR7101
+    owned by another lane + coordinator directive that no SIM is actually
+    sacrificed and the 9eSIM is never a target — both now enforced in code
+    via MODEMIFD_CARD/--card-decl interlocks). Software suite built on
+    branch sisyphus/nr7101-sacrificial-suite (6 local commits, not pushed):
+    validate.sh split into validate-sacrificial.sh (class-A ops: SELECT by
+    FID, EF reads via LOGICAL channels, drop fingerprints) +
+    validate-esimgate.sh (read-only EID/chipInfo/ISD-R gate), lane-runner.sh
+    private-pcscd lane (reader BY FRIENDLYNAME, never first), mock-AT
+    dry-run default, JSON+MD stamped truthful reports. All software gates
+    green (shellcheck/py_compile/self-tests 14+21/dry-run e2e/BLOCKED
+    chain/interlocks/cargo 15/15). Hardware round pending lane handover +
+    disposable SIM (see WP-6 remaining risk).
   - **docs-release** — README accuracy (modemifd pacing/logging/no-resend
     sections; ccid TESTED_AND_WORKING consistency), release-gate skeleton
     (versioned targets table, PASS/FAIL/SKIP/BLOCKED), onboarding, portfolio.
