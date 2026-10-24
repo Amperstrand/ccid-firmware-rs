@@ -320,18 +320,27 @@ def pcscd_start():
 PCSCD_CTL = shutil.which("pcscd-ctl")
 
 
-def pcscd_restart_coordinated(reason: str) -> None:
+def pcscd_restart_coordinated(reason: str) -> bool:
     """Restart pcscd the sanctioned way when pcscd-ctl exists (bench);
-    fall back to the naked stop+start pair on hosts without it (CI)."""
+    fall back to the naked stop+start pair on hosts without it (CI).
+    Returns False if the coordinated restart FAILED — the caller must
+    count that as a failed cycle and NOT probe: the daemon is then
+    whatever it was before (likely still running with the old reader
+    set), and probing it would false-pass the soak."""
     if PCSCD_CTL:
-        subprocess.run(
+        r = subprocess.run(
             [PCSCD_CTL, "restart",
              "--project", "ccid-conformance-battery",
              "--reason", reason],
-            capture_output=True, timeout=120)
-        return
+            capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"  pcscd-ctl restart FAILED (rc={r.returncode}): "
+                  f"{(r.stderr or r.stdout).strip()[:200]}")
+            return False
+        return True
     pcscd_stop()
     pcscd_start()
+    return True
 
 
 # Labgrid bench doctrine (AGENTS.md): every HIL session acquires the
@@ -625,8 +634,12 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
     ok = True
     for i in range(count):
         # one sanctioned restart per cycle: B32 disturbance lock, reader
-        # sessions waited out, journaled reason (see pcscd_restart_coordinated)
-        pcscd_restart_coordinated(f"restart-soak cycle {i}")
+        # sessions waited out, journaled reason. A FAILED restart counts
+        # as a failed cycle and skips the probe — never false-pass on a
+        # stale daemon (Codex P2 review, 2026-10-24).
+        if not pcscd_restart_coordinated(f"restart-soak cycle {i}"):
+            ok = False
+            continue
         # sys.executable, NOT PATH python3: in agent/venv environments
         # PATH python3 lacks pyscard and the probe fails SILENTLY (empty
         # stdout maps to all-False — 10/10 false FAIL, 2026-10-23).
