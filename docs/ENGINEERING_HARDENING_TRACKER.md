@@ -699,3 +699,49 @@ SDK pipeline is reusable for pcsc-flavored artifacts
 /tmp/opencode/lpac-build; swap LPAC_WITH_APDU_PCSC=ON, ~2 min cached).
 On permissive-CSIM hardware: agent router-side under procd + flock,
 rehearsal ladder, then the stress block as designed.
+
+### WP-7 addendum — 9eSIM transport verdict: the CLA-class mechanism (2026-10-25)
+
+Owner-sanctioned read-only audit closed (modem-hil probe/round-4/cfun
+windows + w19:pF windows esim-lpac-test/esim-c0-test/esim-cla01; stamped
+logs on the router /tmp). The "CSIM allowlist" resolves to a precise
+CLA-class mechanism, not INS-class:
+
+- AT+CSIM MANAGE CHANNEL opens allocate from **ch2 — never ch1**.
+- **CLA 0x4X (logical channels): AT-level ERROR / +CME ERROR 0,
+  deterministic** — the modem refuses the CLA; the card never sees it.
+- **CLA 0x01: routed to the modem's INTERNAL session** — SELECT answers
+  card-class (6121 deterministic) but GET RESPONSE → 6D00: contended
+  shared state, no multi-APDU sessions.
+- **CLA 0x00 (basic): SELECT-by-FID 9000 and READ BINARY both pass on
+  slot 2** — the 9eSIM's ICCID was read live (9853…3229 0000 =
+  swapped 8935…02322). The slot-1 "INS 70/80/84 only" matrix was the
+  Telenor-slot measurement; slot-2 basic reads work.
+- **MANAGE CHANNEL closes: AT-refused regardless of state** — every
+  open leaks until CFUN (budget ~2-3 opens per power cycle; CFUN
+  recycle ~90 s via slot2-cfun.sh pattern).
+- Ops class learned: EXIT-trap `modem-lane release` is unreliable under
+  `ssh sh -s` teardown — explicit release before exit; break-stale is
+  the backstop. Tty raw+echo-off before probing eliminates canonical-
+  mode self-echo (the round-1/2 "foreign writer" signature — no actual
+  foreign holder ever found).
+
+Consequences:
+- **on-device lpac (at_csim): dead on this box** — its 0x4X CLAs are
+  AT-refused (euicc_init fail ×3, measured).
+- **vpcd modem-vpicc: equally CLA-blocked** (same AT layer, same CLAs)
+  — WP-7's "no card APDUs regardless of reader architecture" now has
+  its mechanism. vpcd remains the path for permissive-CSIM hardware and
+  the external-reader endgame.
+- **a6e4-success theory (w19:pF)**: a6e4's slot 1 was EMPTY → ch1
+  allocatable → 0x41-class valid → full SGP.22 succeeded there. This
+  box: the dead Telenor in slot 1 (no registration) holds the internal
+  session / ch1 state.
+- **Owner-gated physical fix proposed** (w19:pF runbook): pull the dead
+  Telenor from slot 1 → CFUN → expect ch1 allocation → 41-class +
+  on-device lpac revive. Tomorrow's windows open with CFUN-recycle
+  (runbook step 0; one leaked ch2 outstanding from the c0-test era).
+
+Card state at close: 9eSIM untouched — the round was read-only
+throughout; no profile writes (owner directive: no silent.link writing
+until everything is understood and improved).
