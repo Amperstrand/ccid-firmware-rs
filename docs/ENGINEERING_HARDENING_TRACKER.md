@@ -9,8 +9,32 @@ Verification / Remaining risk / Next task.
 
 | Repo | Path | Branch | Baseline SHA | Notes |
 |---|---|---|---|---|
-| ccid-firmware-rs | /home/ubuntu/src/ccid-firmware-rs | main | a11a0db | local uncommitted deletion `firmware/esp32-ccid/reader.conf` (pre-existing, DO NOT TOUCH); worktrees: ccid-docs, ccid-drvng, ccid-qgate, ccid-sweep, ccid-sweep2, ccid-tier2 |
-| ifd-modemifd | /home/ubuntu/src/ifd-modemifd | master | 03848b3 (v3.3) | untracked Cargo.lock (pre-existing) |
+| ccid-firmware-rs | /home/ubuntu/src/ccid-firmware-rs | sisyphus/ifd-nucula-hardening (PR #457) | 7ce8a84 | main = origin/main f6b3433; local uncommitted deletion `firmware/esp32-ccid/reader.conf` (pre-existing, DO NOT TOUCH); worktree ccid-docs = stale drafting site, subsumed |
+| ifd-modemifd | /home/ubuntu/src/ifd-modemifd | sisyphus/v34-no-resend-hardening (PR #2) | 2d50e52 | master = origin/master 3a475eb (v4.0); v3.4/v3.4.1 rebased on v4.0, 15/15 mock_at green post-rebase; untracked .omo/ |
+
+**Published (session 2, 2026-10-24):** PR Amperstrand/ccid-firmware-rs#457
+(bounds + TX semantics + decode, commits bc04025/7ea7318/2086cfa/d634dc3/d2d9b79
++ tracker docs); PR Amperstrand/ifd-modemifd#2 (v3.4/v3.4.1). Issue replies
+posted on #450/#453/#455. NO merge before Codex review of the head (AGENTS rule 0).
+
+## Hardware truth (session 2 recon, 2026-10-24)
+
+- **Mission NR7101 = 192.168.1.10** (Zyxel NR7101, OpenWrt 25.12.6 r33311,
+  ramips/mt7621, uptime fresh; SSH root@ works key-based). Quectel modem on
+  /dev/ttyUSB0-3 (RG502Q-class). NO socat bridge running on :7002 yet.
+  Reachable from ai-legion-small via enx00e04c3e7b58 (192.168.1.127/24).
+- Registry conwrt-lab lab.yaml lists nr7101 (192.168.12.124) + nr7101-a6e4
+  as dark-zycast-corrupt since 2026-10-22 — STALE vs the live .10 unit;
+  owner reconciliation pending (do not edit registry from this mission).
+- **Coordination hazard:** the w19:p4 tollgate session uses this router's
+  modem-data WAN (usb0) for an E2E price test — NO CFUN cycles, modem
+  reboots, or AT commands that reset the module until that lane closes.
+  Read-only AT identity (ATI/AT+CGMM/AT+CPIN?/AT+CRSM reads) is safe.
+- Deployed bench .so /usr/local/lib/libifd-modemifd.so = 2026-10-23 12:39
+  (pre-fix; /tmp/modemifd.log 0644 world-readable live evidence). System
+  pcscd reader.conf still points at dead 192.168.1.1:7002.
+- Bench host for ccid HIL (ai-legion .208) is a DIFFERENT machine; nucula
+  hardware rounds run there per AGENTS bench doctrine.
 
 Key instructions read: ccid-firmware-rs AGENTS.md (doctrines: reference-first,
 fix-all-siblings, card-handling/GP budget, clean-wire, CI protocol),
@@ -182,26 +206,28 @@ for 1+2), stress 15/15 after root-causing a fake-board counter race
 (current wifi firmware emits no interims — conformance tolerance only).
 No hardware bench round yet for WP-1..WP-4 (all software-only evidence).
 
-## Session state (2026-10-24, context nearly exhausted — resume here)
+## Session state (session 2, 2026-10-24 — active, coordinator: w19:pC)
 
-- ccid-firmware-rs main: local commits aba34a6, 3b5c74c, 424e9be,
-  903efc7, 7b447db, 6b890ca, 505b5f3 (NOT pushed — owner gate).
-  Issues filed: #450, #453, #455. Untracked pre-existing deletion
-  `firmware/esp32-ccid/reader.conf` — DO NOT TOUCH.
-- ifd-modemifd master: local commits 4086396 (v3.4), b258d52
-  (v3.4.1). Not pushed. conwrt-bench #22 has two session reports.
-- Known follow-ups (next-session priorities):
-  1. IFDHPowerICC ATR-buffer-too-small silently returns IFD_SUCCESS
-     without copying (ifd-nucula.c) — should be
-     IFD_ERROR_INSUFFICIENT_BUFFER. Phase 3 item.
-  2. Phase 3 full IFDHandler conformance sweep both drivers (thread-safe
-     declaration vs actual locking in ifd-nucula IFDHGetCapabilities
-     reads g_ctx.atr WITHOUT the mutex; modemifd IFDHControl ignores
-     all controls incl. GET_FEATURE_REQUEST).
-  3. modemifd CGLA fallback hardening + live-modem bench round for
-     v3.4 semantics (thrash test at 400ms pacing).
-  4. Deployed pre-fix modemifd .so on bench pcscd still writes the old
-     world-readable APDU log — owner-gated rotation.
-  5. Phase 4 reliability issues (#444, #380, #125, #128, #342, #156,
-     #431) and Phase 6 performance work — not yet started.
-  6. Cross-project: ccid-pcsc-host reader-matching improvements.
+- Lanes (Herdr-managed OpenCode sessions, own worktrees under ~/src/worktrees/):
+  - **modem-core** — ifd-modemifd Phase-3 IFDHandler conformance sweep
+    (IFDHControl/GET_FEATURE_REQUEST, GetCapabilities, ATR contract, LUN
+    registry, CGLA-fallback path) + pacing doc (250 ms floor vs 400 ms p50
+    round-trip distinction). Software-only, mock AT TDD.
+  - **ccid-quality** — ifd-nucula follow-ups on PR #457 branch: IFDHPowerICC
+    ATR-buffer-too-small → IFD_ERROR_INSUFFICIENT_BUFFER; IFDHGetCapabilities
+    atr read without mutex; #431 false-positive battery verdicts (software
+    half). Full local gates (make check, workspace tests, fmt, clippy ×2).
+  - **modem-hil** — SOLE hardware owner. NR7101 read-only capability
+    inventory (fixture identity/fingerprint FIRST, PIN state without retry
+    consumption, AT-endpoint discovery), then Class-A smoke suite +
+    validate.sh split (sacrificial-SIM qualification vs eSIM-provisioning
+    qualification; private pcscd instance; JSON+MD stamped reports in
+    persistent dirs; never-green-for-unexecuted).
+  - **docs-release** — README accuracy (modemifd pacing/logging/no-resend
+    sections; ccid TESTED_AND_WORKING consistency), release-gate skeleton
+    (versioned targets table, PASS/FAIL/SKIP/BLOCKED), onboarding, portfolio.
+- Prior session's follow-up list stands: IFDHPowerICC fix (→ ccid-quality),
+  Phase-3 sweep (→ modem-core + ccid-quality), CGLA hardening + live-modem
+  round (→ modem-core/modem-hil), deployed-.so rotation (owner-gated),
+  Phase-4 reliability #444/#380/#431 (post-Phase-3), ccid-pcsc-host
+  reader-matching (later).
