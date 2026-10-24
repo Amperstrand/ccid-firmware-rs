@@ -524,6 +524,28 @@ conflict with #3's 4ed1973 — reconcile at merge).
   post-v3.4 live round, #5 URC-flood thrash, #6 .so rotation, #7 ABI
   smoke.
 
+**Follow-up 2 (same session).** Merge chain executed with owner: #2,
+#3 merged upstream of us; #11 rebased onto master (README pacing bullet
+reconciled with docs-release's rewrite + IFD_MODMIFD_TX_GAP_MS row
+added to the env table; caught and fixed v3.4.2's fmt drift breaking
+fmt --check on master) and MERGED 68e2dee. Then the software test
+round: PR #21 (sisyphus/pcsc-smoke, MERGED de3fbcd, closes #7) —
+hermetic pcscd conformance harness: examples/mockmodem.rs + examples/
+pcsc_conformance.rs + tests/software/pcsc_conformance.sh; PRIVATE pcscd
+via mount-ns tmpfs over /run/pcscd (system daemon untouched; $!-baked
+EXIT-trap teardown — leaked namespaced pcscd instances hold session
+pipes open, three debugging rounds to learn). Bench result GREEN 0/10:
+SCARD_IO_HEADER ABI SW 9000, fake ATR exact, warm-reset stable,
+GET_FEATURE Ok 0 bytes, escape → UnsupportedFeature, TX_GAP=60 ms
+measured through pcscd, dual-reader sessions. Codex review: 2 rounds,
+4 P2 findings addressed (cdylib path on example-only builds, pacing
+check false-GREEN window, non-fatal builds, unverified isolation
+mount); round 3 clean. Issue #7 CLOSED, #8 annotated (software half
+done; NR7101 round remains, tollgate-gated). Bench observation: an ACS
+ACR1252 is attached to this host with its USB interface claimed by
+another process (system pcscd not running — the claimer is unknown,
+possibly the ccid-quality lane's bench work; left untouched).
+
 ### Lane status — docs-release round 2 (2026-10-24 late: merges + Codex audit closed)
 
 Owner granted review/test/merge authority on ifd-modemifd (bot wait
