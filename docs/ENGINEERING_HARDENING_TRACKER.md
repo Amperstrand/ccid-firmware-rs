@@ -260,7 +260,11 @@ hardware bench round yet (stacks with the WP-1..WP-4 pending round).
 owner-gated with the Codex-review rule (AGENTS rule 0).
 
 ### WP-6 — modem-hil sacrificial-SIM suite, PREP-ONLY build (branch
-sisyphus/nr7101-sacrificial-suite, ifd-modemifd worktree, 2026-10-24)
+sisyphus/nr7101-sacrificial-suite, ifd-modemifd worktree, 2026-10-24;
+PUSHED + PR Amperstrand/ifd-modemifd#20 after rebase onto master 68e2dee
+— README conflict resolved keeping master's transport-semantics section;
+full gates re-run green on the new base incl. mock_at 25/25; owner
+confirmed push 2026-10-24; rule 0: no merge before Codex review)
 
 **Finding.** The v4.0 monolithic validate.sh gate is unsafe as a template
 for the campaign: it stopped the SYSTEM pcscd for its direct-AT probe and
