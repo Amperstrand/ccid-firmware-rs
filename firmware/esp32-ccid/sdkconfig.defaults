@@ -12,3 +12,5 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=32768
 # bypass knob (components/driver/Kconfig, default n). The retired fork's
 # real runtime role was keeping legacy i2c out of the link entirely.
 CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y
+# Reproducible images (#440 companion): eliminate IDF-side date/time/path bakes
+CONFIG_APP_REPRODUCIBLE_BUILD=y
