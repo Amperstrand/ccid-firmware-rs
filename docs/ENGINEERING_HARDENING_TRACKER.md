@@ -324,6 +324,23 @@ pcscd lane + FRIENDLYNAME live proof), #17 (esimgate lpac/EID path), #18
 (direct-AT backend vs real bridge + parity), #19 (SAC_REPEATS soak).
 
 Round-execution agreements (docs-release check-in, 2026-10-24 ~17:40):
+
+Session-2 evening update (modem-hil): **#16 private-lane live proof DONE**
+(pcsc-lite 2.0.3 host). Discovery: **the AGENTS.md private-lane recipe is
+broken on pcsc-lite >= 2.0** — second-instance check (stat SYSTEM
+/run/pcscd/pcscd.comm + live pid) precedes the socket-activation branch;
+private pcscd silently exit(1)s while system pcscd lives. Fix proven live:
+lane pcscd under unshare -m + tmpfs over /run/pcscd, lane socket in real
+fs chmod 666 → PR Amperstrand/ifd-modemifd#24 (also: IFD readers list as
+"FRIENDLYNAME 00 00" — anchored-prefix waits; SCardConnect NO_SMARTCARD
+retry window for fresh readers). Evidence: sacrificial 9/9 PASS through
+ctypes pcsc → lane → .so → mock; wrong-reader refused w/ listing; teardown
+zero-residue; system pcscd + its 3 readers (incl. 2x ACS ACR1252 on this
+host) untouched. PR #20 merged to master (be03e9d); v3.5 ssh:// transport
+merged (PR #22) — socat RETIRED per coordinator ruling; card round stays
+WAIT (bench-link NO-CARRIER report pending owner restoration + w19
+arbitration + SIM-slot switch scheduling around tonight's 9eSIM
+provisioning). w19:p4 notified of the 2.0.3 finding (their deploy todo).
 - **Binary pin for #4/#5**: must testify about the ROTATED deployed .so —
   /usr/local/lib/libifd-modemifd.so, sha256
   f859540cd2a8aaf0358da730c4bb2fbcc9eb99c2b63a4c7b6376023856ca4b69
