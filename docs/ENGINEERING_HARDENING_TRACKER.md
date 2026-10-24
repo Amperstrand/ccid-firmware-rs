@@ -319,6 +319,24 @@ as ifd-modemifd issues #15 (suite first hw qualification), #16 (private
 pcscd lane + FRIENDLYNAME live proof), #17 (esimgate lpac/EID path), #18
 (direct-AT backend vs real bridge + parity), #19 (SAC_REPEATS soak).
 
+Round-execution agreements (docs-release check-in, 2026-10-24 ~17:40):
+- **Binary pin for #4/#5**: must testify about the ROTATED deployed .so —
+  /usr/local/lib/libifd-modemifd.so, sha256
+  f859540cd2a8aaf0358da730c4bb2fbcc9eb99c2b63a4c7b6376023856ca4b69
+  (= master fb5f8bc content, built from 035ffe5; fb5f8bc docs-only on
+  top). Run via lane-runner SO_FILE pin, sha verified before+after,
+  reports kept separate from branch-build runs. Pre-fix backup:
+  libifd-modemifd.so.pre-v342.bak (0600 root).
+- **#4/#5 carried by modem-hil** (unassigned until comment-claim at round
+  start); #4's literal "validate.sh phases" are superseded by the split —
+  mapping (300x/150x loads → #19 SAC_REPEATS; bridge-down observability →
+  #18) to be commented on #4 at start; docs-release mirrors into
+  RELEASE-GATE rows when stamped reports land. #5 runs LAST (URC-thrash
+  recovery may need CFUN — only after hazard formally cleared).
+- **Handover/fallback**: docs-release takes #4/#5 against the rotated .so
+  if modem-hil stalls on handover or disposable-SIM availability. System
+  reader.conf dead entry stays dead while the lane is modem-hil's.
+
 ## Session state (session 2, 2026-10-24 — active, coordinator: w19:pC)
 
 - Lanes (Herdr-managed OpenCode sessions, own worktrees under ~/src/worktrees/):
