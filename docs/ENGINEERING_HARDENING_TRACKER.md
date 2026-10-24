@@ -59,6 +59,9 @@ Baseline verification (2026-10-24):
 | H-004 | P1 | ifd-modemifd | AT+CSIM response validation hardening (framing, final result code, length checks, synthetic 6F00 classification) | merged into H-003m work | pending | — |
 | H-005 | P1 | ccid-firmware-rs (host-tools/ifd-nucula) | CCID response decode audit: bmCommandStatus/bError mapping, time-extension, seq mismatch handling | investigation pending | pending | — |
 | H-006 | P3 | ccid-firmware-rs (host-tools/ifd-nucula) | SIGPIPE dependence on host disposition in send path | **FIXED** (send MSG_NOSIGNAL, rode with 903efc7) | tx-semantics suite | 903efc7 |
+| H-007 | P1 | ccid-firmware-rs (host-tools/ifd-nucula) | IFDHPowerICC silent ATR drop on short caller buffer (IFD_SUCCESS, empty ATR) | **FIXED (local)** | bounds 33/33 (board-backed group, RED→GREEN) | eb54716; PR #457 |
+| H-008 | P2 | ccid-firmware-rs (host-tools/ifd-nucula) | IFDHGetCapabilities ATR read without g_ctx.lock (torn pair vs nuc_cache_atr writer) | **FIXED (local)** | bounds GetCapabilities check; make check green | cf6bfe2; PR #457 |
+| H-009 | P1 | ccid-firmware-rs (tests/hardware/nfc) | #431: battery verdict counting — soak ok-overwrite false PASS, fuzz dead-port abort, conformance false red | **FIXED (local, software half)** | offline sim 0/5→5/5; broker 5/5; bench round pending | be3c3cf; #431 / PR #457 |
 
 ## Work package log
 
@@ -206,6 +209,56 @@ for 1+2), stress 15/15 after root-causing a fake-board counter race
 (current wifi firmware emits no interims — conformance tolerance only).
 No hardware bench round yet for WP-1..WP-4 (all software-only evidence).
 
+### WP-5 — ccid-quality lane: PowerICC ATR contract + GetCapabilities lock + #431 battery verdicts (commits eb54716, cf6bfe2, be3c3cf, PR #457)
+
+**Finding.** (1) `IFDHPowerICC` with a caller ATR buffer smaller than
+the ATR skipped the copy but still returned IFD_SUCCESS — pcscd reads
+a silent empty ATR as a successful power-on. (2) `IFDHGetCapabilities`
+(TAG_IFD_ATR / SCARD_ATTR_ATR_STRING) read `g_ctx.atr/atr_len`
+unlocked while `IFDHPowerICC`/`nuc_cache_atr` write them under
+`g_ctx.lock` — torn len/data pair possible. (3) #431 software half:
+`slot_status_soak` overwrote the function-level `ok` per iteration (a
+misbehaving/dead reader followed by a clean reader FALSE-PASSED the
+soak); fuzz dead-port aborted the whole battery (AssertionError);
+conformance FAILed dead-port cases (bench fault shown red).
+
+**Impact.** (1) violates the IFD buffer contract exactly as the
+ifd-modemifd twin (modem-core WP, same semantics: INSUFFICIENT_BUFFER +
+required size, no partial copy). (2) data-race class on the ATR cache.
+(3) battery verdicts lied in both directions: false PASS (soak) and
+false red (conformance) on bench faults.
+
+**Implementation.** eb54716: PowerICC returns IFD_ERROR_INSUFFICIENT_BUFFER
+with `*AtrLength` = required size; ATR still cached (TAG_IFD_ATR keeps
+serving it); board-backed bounds_test group (6 checks, fake-board
+thread). cf6bfe2: GetCapabilities copies the atr pair under the mutex,
+decides after unlock; TAG_IFD_THREAD_SAFE=0 rationale documented (one
+global ctx — mutex serializes the single ctx, cannot isolate two
+instances; 0 is about instance isolation, not unlocked-access
+permission). be3c3cf: Reader dead-port tracking (reopen result, no
+longer ignored in exchange()); soak per-iteration verdict local; fuzz
+dead-port cases SKIP loudly (quick-reopen cadence while dead, one
+probe per case) with WEDGE reserved for port-back-but-no-resync;
+conformance dead-port cases SKIP and drop out of the agreement table;
+final verdict "PASS with SKIPS" + per-reader skip counts.
+
+**Verification.** `make check` 69/69 PASS (selftest 7/7, bounds 33/33
+— 27 baseline + 6 new, tx-semantics 29/29; NOTE: this tree's counts,
+the WP-4 "32/32" was the pre-PR-assembly worktree). PowerICC group
+RED→GREEN (3 checks FAIL pre-fix). #431 offline sim (fake serial +
+virtual clock, /tmp/opencode/431/battery_sim.py): 0/5 pre-fix → 5/5
+post-fix (soak false-pass with failing reader FIRST, fuzz abort,
+conformance false-fail, skip accounting). Broker pytest 5/5; ruff
+(scripts tests/hardware host-tools) clean.
+
+**Remaining risk.** Battery sim is offline-only; the dead-port paths
+need one bench round on a real dropped port to validate timing (the
+quick-reopen cadence assumes the by-id node reappears promptly). No
+hardware bench round yet (stacks with the WP-1..WP-4 pending round).
+
+**Next task.** none for this lane (complete); PR #457 push/merge is
+owner-gated with the Codex-review rule (AGENTS rule 0).
+
 ## Session state (session 2, 2026-10-24 — active, coordinator: w19:pC)
 
 - Lanes (Herdr-managed OpenCode sessions, own worktrees under ~/src/worktrees/):
@@ -213,10 +266,11 @@ No hardware bench round yet for WP-1..WP-4 (all software-only evidence).
     (IFDHControl/GET_FEATURE_REQUEST, GetCapabilities, ATR contract, LUN
     registry, CGLA-fallback path) + pacing doc (250 ms floor vs 400 ms p50
     round-trip distinction). Software-only, mock AT TDD.
-  - **ccid-quality** — ifd-nucula follow-ups on PR #457 branch: IFDHPowerICC
-    ATR-buffer-too-small → IFD_ERROR_INSUFFICIENT_BUFFER; IFDHGetCapabilities
-    atr read without mutex; #431 false-positive battery verdicts (software
-    half). Full local gates (make check, workspace tests, fmt, clippy ×2).
+  - **ccid-quality** — COMPLETE (WP-5): ifd-nucula PowerICC
+    ATR-buffer contract (eb54716), GetCapabilities lock + THREAD_SAFE=0
+    rationale (cf6bfe2), #431 battery verdict SKIP counting (be3c3cf).
+    make check 69/69, broker 5/5, sim 5/5. Hardware round pending with
+    WP-1..WP-4.
   - **modem-hil** — SOLE hardware owner. NR7101 read-only capability
     inventory (fixture identity/fingerprint FIRST, PIN state without retry
     consumption, AT-endpoint discovery), then Class-A smoke suite +
