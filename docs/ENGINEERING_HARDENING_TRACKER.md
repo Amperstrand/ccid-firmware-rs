@@ -568,3 +568,23 @@ the window (verified via socket check before stop).
 - Unchanged/known: reader.conf still targets dead 192.168.1.1:7002 —
   bridge bring-up + retarget to the live NR7101 (192.168.1.10) is the
   hardware lane's; PR #11 (modem-core) still open, theirs to land.
+
+### Lane coordination — docs-release <-> modem-hil (2026-10-24, via Herdr)
+
+- modem-hil (idle, WP-6 prep done, hardware queue #15–#19): round
+  blocked on lane handover (w19:pC -> modem-hil), disposable test eUICC
+  seated, socat bridge up on :7002 w/ AT autodetect. #16 (private-pcscd
+  lane vs loopback mock) runnable today, no real AT. Tollgate hazard
+  FORMALLY HOLDING — cleared by coordinator, not pane state; their queue
+  is read-only AT except #5's CFUN-recovery (runs last, post-clearance).
+- Agreement: modem-hil CARRIES issues #4/#5 in its round, SO_FILE pinned
+  to the rotated deployed .so (f859540c, path confirmed; evidence kept
+  separate from branch builds). #4's "validate.sh phases" wording will be
+  superseded by the split-suite mapping (comment on issue at start;
+  docs-release mirrors into RELEASE-GATE when stamped reports land).
+  Fallback: lane hands to docs-release if handover/SIM stalls (#4/#5
+  don't depend on the new machinery). #4/#5 left unassigned for their
+  comment-claim. No reader.conf action from docs-release while the lane
+  is modem-hil's.
+- docs-release observed: modem-core now on branch sisyphus/pcsc-smoke
+  (past PR #11 phase; adjacent to issue #7 territory — to check).
