@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -306,6 +307,31 @@ def pcscd_start():
     subprocess.run(["systemctl", "start", "pcscd.socket", "pcscd.service"],
                    capture_output=True)
     time.sleep(1.5)
+
+
+# Bench disturbance doctrine (tollgate-lab #15/#16): every pcscd restart
+# on the shared bench goes through pcscd-ctl (B32 disturbance lock +
+# waiting reader sessions + journaled reason). Naked systemctl restarts
+# bounced reader sessions bench-wide (ntag424-delta lane, 2026-10-23:
+# pcscd cycled 80x in 3h, ACR1252 dropped from pcsc). The direct-serial
+# phases below still need a hard stop (pcscd must stay DOWN while the
+# probe owns the ports) — pcscd-ctl has no stop; only the restart cycles
+# route through it.
+PCSCD_CTL = shutil.which("pcscd-ctl")
+
+
+def pcscd_restart_coordinated(reason: str) -> None:
+    """Restart pcscd the sanctioned way when pcscd-ctl exists (bench);
+    fall back to the naked stop+start pair on hosts without it (CI)."""
+    if PCSCD_CTL:
+        subprocess.run(
+            [PCSCD_CTL, "restart",
+             "--project", "ccid-conformance-battery",
+             "--reason", reason],
+            capture_output=True, timeout=120)
+        return
+    pcscd_stop()
+    pcscd_start()
 
 
 # Labgrid bench doctrine (AGENTS.md): every HIL session acquires the
@@ -598,7 +624,9 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
     )
     ok = True
     for i in range(count):
-        pcscd_start()
+        # one sanctioned restart per cycle: B32 disturbance lock, reader
+        # sessions waited out, journaled reason (see pcscd_restart_coordinated)
+        pcscd_restart_coordinated(f"restart-soak cycle {i}")
         # sys.executable, NOT PATH python3: in agent/venv environments
         # PATH python3 lacks pyscard and the probe fails SILENTLY (empty
         # stdout maps to all-False — 10/10 false FAIL, 2026-10-23).
@@ -619,8 +647,6 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
                     s.close()
                 except Exception:
                     pass
-        pcscd_stop()
-    pcscd_start()
     print(f"  {'all restarts clean' if ok else 'some restarts needed the CDC remedy'}")
     return ok
 
