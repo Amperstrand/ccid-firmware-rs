@@ -102,9 +102,15 @@
 #define NUC_RDR_TO_PC_ESCAPE 0x83
 
 #define NUC_CCID_HEADER_SIZE 10
-/* frame = SYNC + CTRL + CCID header + payload(<=271) + LRC = 274 max */
-#define NUC_MAX_CCID_MESSAGE 271
-#define NUC_MAX_FRAME 274
+/* Reference-locked against the firmware codec (crates/ccid-protocol
+ * types.rs MAX_CCID_MESSAGE_LENGTH=271; ccid-transport-serial lib.rs
+ * MAX_CCID_PAYLOAD=261, MAX_FRAME_BYTES=274, header-stage reject of
+ * payload_len > 261): a complete CCID bulk message (10-byte header +
+ * payload) is capped at 271 bytes, so the maximum payload/dwLength is
+ * 261 and the full wire frame is SYNC + CTRL + 271 + LRC = 274 bytes. */
+#define NUC_MAX_CCID_MESSAGE 271                                  /* header + payload */
+#define NUC_MAX_CCID_PAYLOAD (NUC_MAX_CCID_MESSAGE - NUC_CCID_HEADER_SIZE) /* 261 */
+#define NUC_MAX_FRAME (2 + NUC_MAX_CCID_MESSAGE + 1)              /* 274 */
 
 /* bmICCStatus values (ccid-protocol: PRESENT_ACTIVE=0, PRESENT_INACTIVE=1,
  * NO_ICC=2) */
@@ -323,8 +329,9 @@ static int nuc_recv_frame_locked(nuc_ctx *c, unsigned char *frame)
         | ((uint32_t)frame[NUC_MSG_LEN_LO + 1] << 8)
         | ((uint32_t)frame[NUC_MSG_LEN_LO + 2] << 16)
         | ((uint32_t)frame[NUC_MSG_LEN_LO + 3] << 24);
-    if (dwlen > NUC_MAX_CCID_MESSAGE)
-        return -1;
+    if (dwlen > NUC_MAX_CCID_PAYLOAD)
+        return -1; /* cannot fit a legal frame — same header-stage
+                    * reject as the firmware codec */
     if (dwlen > 0
         && nuc_read_all_locked(c, frame + NUC_MSG_PAYLOAD, dwlen) != 0)
         return -1;
@@ -355,11 +362,15 @@ static int nuc_send_frame_locked(nuc_ctx *c, const unsigned char *frame, size_t 
     return 0;
 }
 
-/* Build a PC_to_RDR frame; returns frame length. */
+/* Build a PC_to_RDR frame; returns frame length, or 0 if the payload
+ * cannot fit a legal frame (oversize payload — caller must treat 0 as
+ * an error and must not send anything). */
 static size_t nuc_build_request(unsigned char *frame, unsigned char type,
                                 unsigned char seq, unsigned char spec0,
                                 const unsigned char *payload, uint32_t plen)
 {
+    if (plen > NUC_MAX_CCID_PAYLOAD)
+        return 0;
     frame[0] = NUC_SYNC;
     frame[1] = NUC_CTRL_ACK;
     frame[NUC_MSG_TYPE] = type;
@@ -426,6 +437,11 @@ static int nuc_command(unsigned char type, unsigned char spec0,
     unsigned char req[NUC_MAX_FRAME];
     unsigned char seq = g_ctx.seq++;
     size_t req_len = nuc_build_request(req, type, seq, spec0, payload, plen);
+    if (req_len == 0 || req_len > NUC_MAX_FRAME) {
+        NUC_LOG_ERR("payload %u exceeds frame budget (%d)",
+                    (unsigned)plen, (int)NUC_MAX_CCID_PAYLOAD);
+        return -1;
+    }
     int rc = nuc_transact_locked(&g_ctx, req, req_len, resp, resp_len);
     if (rc == 0 && resp[NUC_MSG_SEQ] != seq) {
         NUC_LOG_ERR("bSeq mismatch: sent %u got %u", seq, resp[NUC_MSG_SEQ]);
@@ -783,7 +799,9 @@ RESPONSECODE IFDHTransmitToICC(DWORD Lun, SCARD_IO_HEADER SendPci, PUCHAR TxBuff
 
     if (!RxLength || !RecvPci)
         return IFD_COMMUNICATION_ERROR;
-    if (TxLength > NUC_MAX_CCID_MESSAGE) {
+    if (TxLength > NUC_MAX_CCID_PAYLOAD) {
+        /* a legal frame cannot carry this payload; refuse before any
+         * buffer is touched (261 = short-APDU TPDU max) */
         *RxLength = 0;
         return IFD_COMMUNICATION_ERROR;
     }
@@ -871,7 +889,7 @@ RESPONSECODE IFDHControl(DWORD Lun, DWORD ControlCode, PUCHAR TxBuffer, DWORD Tx
     if (ControlCode == (DWORD)SCARD_CTL_CODE(FEATURE_CCID_ESC_COMMAND)) {
         unsigned char resp[NUC_MAX_FRAME];
         int rn = 0;
-        if (TxLength > NUC_MAX_CCID_MESSAGE)
+        if (TxLength > NUC_MAX_CCID_PAYLOAD)
             return IFD_COMMUNICATION_ERROR;
         pthread_mutex_lock(&g_ctx.lock);
         int rc = nuc_command(NUC_PC_TO_RDR_ESCAPE, 0, TxBuffer, TxLength, resp, &rn);
