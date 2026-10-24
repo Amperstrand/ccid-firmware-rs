@@ -692,15 +692,25 @@ RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length, PUCHAR Val
 
     switch (Tag) {
     case TAG_IFD_ATR:
-    case SCARD_ATTR_ATR_STRING:
-        if (*Length < g_ctx.atr_len) {
-            *Length = g_ctx.atr_len;
+    case SCARD_ATTR_ATR_STRING: {
+        /* g_ctx.atr/atr_len are written under g_ctx.lock (nuc_cache_atr
+         * from IFDHPowerICC); take the same lock for the read so a
+         * concurrent power-on/reset can never tear the len/data pair. */
+        unsigned char atr[MAX_ATR_SIZE];
+        DWORD alen;
+        pthread_mutex_lock(&g_ctx.lock);
+        alen = g_ctx.atr_len;
+        memcpy(atr, g_ctx.atr, sizeof(atr));
+        pthread_mutex_unlock(&g_ctx.lock);
+        if (*Length < alen) {
+            *Length = alen;
             return IFD_ERROR_INSUFFICIENT_BUFFER;
         }
-        if (g_ctx.atr_len)
-            memcpy(Value, g_ctx.atr, g_ctx.atr_len);
-        *Length = g_ctx.atr_len;
+        if (alen)
+            memcpy(Value, atr, alen);
+        *Length = alen;
         return IFD_SUCCESS;
+    }
     case TAG_IFD_SLOTS_NUMBER:
         if (*Length < 1)
             return IFD_ERROR_INSUFFICIENT_BUFFER;
@@ -708,7 +718,14 @@ RESPONSECODE IFDHGetCapabilities(DWORD Lun, DWORD Tag, PDWORD Length, PUCHAR Val
         *Length = 1;
         return IFD_SUCCESS;
     case TAG_IFD_THREAD_SAFE:
-        /* single global ctx + mutex; pcscd serializes (vpcd precedent) */
+        /* Stays 0 (NOT thread-safe), deliberately. The driver has ONE
+         * global context (g_ctx) shared by every reader instance: the
+         * mutex serializes access to that single context, but it cannot
+         * isolate two loaded instances from each other — so pcscd must
+         * keep serializing entry points (vpcd precedent). Advertising 0
+         * is a statement about instance isolation, NOT permission for
+         * unlocked field access: every g_ctx read still takes the lock
+         * (see TAG_IFD_ATR above). */
         if (*Length < 1)
             return IFD_ERROR_INSUFFICIENT_BUFFER;
         Value[0] = 0;
