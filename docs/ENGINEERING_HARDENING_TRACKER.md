@@ -527,3 +527,23 @@ waived). Executed:
   planned — rebase + README pacing conflict vs 4ed1973 remains theirs
   (note: their IFD_MODMIFD_TX_GAP_MS will need a README mention).
 - Test queue unchanged: issues #4–#7 (this lane) + #8–#10 (modem-core).
+
+### Lane status — docs-release round 3 (2026-10-24 evening: issue #6 rotation executed)
+
+Under the standing owner authority grant: deployed-bench-.so rotation
+(the live exposure) executed on ai-legion-small, zero PC/SC clients in
+the window (verified via socket check before stop).
+
+- Old binary aac7b263 (Oct 23 12:39, pre-fix, was STILL writing
+  /tmp/ifd-modemifd-reader.log 0644 seconds before rotation — 3.46 MB
+  and growing) backed up root-only 0600; new binary f859540c = master
+  035ffe5 installed, sha256-verified.
+- 3.49 MB secret-bearing logs deleted after checksum+size evidence
+  capture (recorded in issue #6 close comment).
+- pcscd restarted; NR7101_SIM_dut initializing via new lib; NO new
+  /tmp logs on the live daemon (default-off honored end-to-end).
+- Issue #6 closed with report; RELEASE-GATE BLOCKED row superseded
+  (PR #14, master fb5f8bc).
+- Unchanged/known: reader.conf still targets dead 192.168.1.1:7002 —
+  bridge bring-up + retarget to the live NR7101 (192.168.1.10) is the
+  hardware lane's; PR #11 (modem-core) still open, theirs to land.
