@@ -653,3 +653,35 @@ the window (verified via socket check before stop).
 | On-device pcscd + direct tty (ModemLink third impl) | FUTURE | same enabled-profile limitation applies to the AT path; only meaningful for enabled-profile access or with a QMI transport |
 
 Numbering (agreed w/ w19 coordinator): v4.2 = incremental hardening; v5.0 reserved for a transport-architecture replacement. SM-DP+ HTTPS rides lpac's HTTP interface over the router's default uplink (the 5G itself — standard consumer-eSIM self-provisioning); the NR7101 has no WiFi. Sequencing rule: process pending notifications AFTER enable+re-registration (enable may drop the 5G data path mid-switch).
+
+## FINAL PROVISIONING PLAN — silent.link → 9eSIM (2026-10-25, owner credential in hand)
+
+**Context**: valid silent.link credential already obtained (no payment step).
+Transport matrix (lanes' verdict): router at_csim DEAD (euicc_init x3 fail,
+channel leaks, 6A81 exhaustion); router QMI ABSENT (no cdc-wdm in ECM mode);
+**physical reader host-side = PROVEN path**. SM-DP+ TLS rides the wired
+uplink / bench internet (unmetered, tollgate postponed per owner).
+
+**Sequence** (owner/lane at bench; modem-lane lock for router touches):
+1. PREFLIGHT (card in bench reader): `lpac chip info` → EID must match the
+   router-read EID (slot2 census) — identity cross-check; `lpac profile list`
+   → exactly [nadanada: enabled]; `lpac notification list` → EMPTY.
+2. CONNECTIVITY: DNS + 443 to the SM-DP+ host from the credential's LPA
+   string; lpac GSMA-CI bundle present (host lpac embeds it).
+3. ONE-SHOT (no-retry abort rule ARMED; capture `lpac -v` output):
+   `lpac profile download -s <smdp> -m <matching-id>` → verify install →
+   `lpac profile enable <iccid-silentlink>` → process pending notifications
+   AFTER enable (card is in the reader — no modem re-registration involved).
+4. RE-SEAT: card back into NR7101 slot 2, modem refresh → verify silent.link
+   registration + live traffic. Switch test back to nadanada documented as
+   follow-up (each switch = card swap until a router-side path exists).
+5. RECORD: EID, profile states, notification log, verdict line in this
+   tracker + release-gate row.
+
+**Follow-up milestones (NOT tonight)**: router-side eUICC transport (ECM→
+RmNet/QMI mode exploration or vpcd-revival on a live transport); C0/E2
+allowlist retest with corrected constructor + lpac -v captures (reviewer
+requests); in-situ profile switching; tollgate/metered integration.
+
+**Abort rule**: any failure mid-download = STOP, capture logs, no retry
+(credential windows may be single-use server-side).
