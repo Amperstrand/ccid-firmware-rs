@@ -614,3 +614,30 @@ the window (verified via socket check before stop).
   is modem-hil's.
 - docs-release observed: modem-core now on branch sisyphus/pcsc-smoke
   (past PR #11 phase; adjacent to issue #7 territory — to check).
+### Architecture-research handoff (2026-10-25, w19 architecture session) — roadmap record
+
+- **AT-transport structurally dead for enabled-profile eUICCs**
+  (findings/csim-session-state 80583a2): with a profile ENABLED, the
+  modem's CSIM path routes to the enabled profile's UICC, not the eUICC
+  ISD-R — explains both the 2026-10-24 CSIM allowlist verdict (C0/E2
+  "blocked" = routing) and why v4.0's one-shot succeeded (no profile
+  was enabled then). Near-term provisioning rides lpac QMI/MBIM, not
+  this driver.
+- **PR #30 disposition findings** (pull/30 comment 6394910718) — all in
+  the PR's NEW agent code, NOT master v4.1 (verified: master maps
+  NotSent/Ambiguous → COMM_ERROR, no 6F00 collapse; no APDU_TIMEOUT):
+  (1) agent's Err→6F00 collapses v3.4 discipline — eject the vpcd
+  session instead; (2) 1.5 s APDU_TIMEOUT mis-sized for BPP/STORE DATA
+  class ops; (3) CTRL label inversion vs upstream + canned ATR answering
+  RESET (false fresh-card signal); (4) open_serial lacks per-tty flock —
+  reintroduces the byte-theft class.
+- **vsmartcard ground truth for any vpcd revival**: upstream active;
+  2-byte BE framing correct; 0x00/0x01/0x02 send-only upstream —
+  answering 0x02 with an ATR (amperstrand dialect) is a one-frame
+  desync generator (matches this repo's open 'APDU response echoed the
+  ATR' bench item); the 2 s receive window is OUR patch
+  (libifdvpcd-amperstrand.patch), not upstream.
+- **ADOPTED roadmap item**: ifd-modemifd session-state preflight
+  (open logical channel → SELECT ISD-R AID → GET RESPONSE; fail FAST
+  with a dedicated "enabled profile shadows the eUICC" error) — the
+  differentiator probe that would have saved the research night.
