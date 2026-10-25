@@ -641,3 +641,15 @@ the window (verified via socket check before stop).
   (open logical channel → SELECT ISD-R AID → GET RESPONSE; fail FAST
   with a dedicated "enabled profile shadows the eUICC" error) — the
   differentiator probe that would have saved the research night.
+
+## Transport & provisioning ROADMAP (2026-10-25, post-CSIM-structural-death finding)
+
+| Track | Status | Path |
+|---|---|---|
+| **eUICC provisioning + profile switching** | **ACTIVE — the near-term path** | lpac ON THE ROUTER, QMI/MBIM APDU backend (reaches ISD-R regardless of enabled profile). lpac already installed at /usr/bin/lpac on 192.168.1.10. One-shot discipline + no-retry abort rule unchanged. |
+| Enabled-profile access (pySim, reads, day-to-day SIM work) | PROVEN (v4.0) / v4.1 hardened | ifd-modemifd ssh:// transport — exactly what CSIM *can* reach |
+| Driver fail-fast guard | ADOPTED, next driver work item | session-state preflight: open→SELECT ISD-R AID→GET RESPONSE → dedicated "enabled profile shadows the eUICC" error |
+| vpcd agent (PR #30) | PARKED | blocked on 4 code findings + no live transport (CSIM is dead for ISD-R); revival requires a QMI-backed transport rethink |
+| On-device pcscd + direct tty (ModemLink third impl) | FUTURE | same enabled-profile limitation applies to the AT path; only meaningful for enabled-profile access or with a QMI transport |
+
+Numbering (agreed w/ w19 coordinator): v4.2 = incremental hardening; v5.0 reserved for a transport-architecture replacement. SM-DP+ HTTPS rides lpac's HTTP interface over the router's default uplink (the 5G itself — standard consumer-eSIM self-provisioning); the NR7101 has no WiFi. Sequencing rule: process pending notifications AFTER enable+re-registration (enable may drop the 5G data path mid-switch).
