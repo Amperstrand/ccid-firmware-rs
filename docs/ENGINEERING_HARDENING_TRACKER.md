@@ -35,6 +35,14 @@ posted on #450/#453/#455. NO merge before Codex review of the head (AGENTS rule 
   pcscd reader.conf still points at dead 192.168.1.1:7002.
 - Bench host for ccid HIL (ai-legion .208) is a DIFFERENT machine; nucula
   hardware rounds run there per AGENTS bench doctrine.
+- **ACR1252 bench lore (broadcast 2026-10-25, bolty-rs B33 / PR
+  Amperstrand/bolty-rs#215):** escape commands on this pcscd/ccid stack
+  ride SCard_CTL_CODE(1)=0x42000001 (vendor CM_IOCTL_SMARTCARD_DIRECT
+  returns 0x8010001f) — probe BOTH codes in client tooling. The
+  auto-polling register (E0 00 00 23) is EEPROM: a sibling session's
+  write made the reader look dead for 2 days across replugs/host moves;
+  never write ACR peripheral registers without the B33 map. ifd-modemifd
+  side-effect: escape-rejection tests now cover CTL_CODE(1) (PR #31).
 
 Key instructions read: ccid-firmware-rs AGENTS.md (doctrines: reference-first,
 fix-all-siblings, card-handling/GP budget, clean-wire, CI protocol),
