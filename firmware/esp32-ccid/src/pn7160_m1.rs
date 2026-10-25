@@ -17,12 +17,18 @@ pub fn run() -> ! {
     );
     log::warn!("M1v2: bus + VEN + probe (build 18:25)");
 
+    // boards-as-data (t_a0ebcf54): the bus pin numbers resolve from the
+    // GENERATED boards::NUCULA row via board_ctor — M1's isolation
+    // mission is about init code that might poison the bus, and a table
+    // lookup is pure computation.
+    let pins = crate::board_ctor::pn7160::binding_from_board(&boards::NUCULA);
+
     let mut bus: esp_idf_sys::i2c_master_bus_handle_t = core::ptr::null_mut();
     unsafe {
         let mut cfg: esp_idf_sys::i2c_master_bus_config_t = core::mem::zeroed();
         cfg.i2c_port = 0;
-        cfg.sda_io_num = 4;
-        cfg.scl_io_num = 5;
+        cfg.sda_io_num = pins.sda;
+        cfg.scl_io_num = pins.scl;
         cfg.__bindgen_anon_1.clk_source = esp_idf_sys::soc_periph_i2c_clk_src_t_I2C_CLK_SRC_DEFAULT;
         cfg.glitch_ignore_cnt = 7;
         let rc = esp_idf_sys::i2c_new_master_bus(&cfg, &mut bus);
@@ -63,13 +69,17 @@ pub fn run() -> ! {
     }
 
     // M2 test: VEN via PinDriver (HAL) instead of raw gpio — A/B whether
-    // the HAL's pin configuration differs from raw gpio_config.
+    // the HAL's pin configuration differs from raw gpio_config. The VEN
+    // token comes out of the board_ctor split (nucula_bus_pins, the #430
+    // double-pinning): same pin both arms of the A/B, pinned to the
+    // GENERATED boards::NUCULA row — the experiment can never compare
+    // two different pins.
     {
         use esp_idf_hal::delay::FreeRtos;
         use esp_idf_hal::gpio::{Output, PinDriver};
         let peripherals = esp_idf_hal::peripherals::Peripherals::take().unwrap();
-        let mut ven: PinDriver<'static, Output> =
-            PinDriver::output(peripherals.pins.gpio7).unwrap();
+        let bus = crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins);
+        let mut ven: PinDriver<'static, Output> = PinDriver::output(bus.ven).unwrap();
         ven.set_high().unwrap();
         FreeRtos::delay_ms(20);
         ven.set_low().unwrap();
