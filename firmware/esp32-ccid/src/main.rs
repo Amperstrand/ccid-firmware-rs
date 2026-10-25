@@ -256,6 +256,11 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
             }
             write_all_logged(uart, server.response());
             let _ = uart.wait_tx_done(esp_idf_hal::delay::BLOCK);
+            // #294 WS2: echo + response drained to the UART wire — the
+            // first fully-delivered exchange is this image's OTA serve
+            // proof (parse alone does not count: a late-dropped or
+            // failed write is not serve evidence).
+            ccid_service::ota_validity::note_serve_evidence("gempc-uart");
             let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
             server
                 .handler_mut()

@@ -645,13 +645,14 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
             }
         }
         self.resp_len = build_response_frame(&self.ccid_resp_buf[..resp_len], &mut self.resp_buf);
-        // #294 WS2 serve-proven OTA validity: a complete command was
-        // parsed, handled and framed — this exchange is the image's
-        // boot self-test evidence. First Respond trips the gate (marks
-        // the app valid when armed); inert when no marker is installed
-        // (host tests, diagnostic mains). CDC/UART/SPP/TCP all feed
-        // through here, so one call covers every serial-kernel main.
-        crate::ota_validity::note_serve_evidence("gempc-serial");
+        // #294 WS2 serve-proven OTA validity: the evidence signal lives
+        // at TRANSPORT COMPLETION (Codex P2 on the head review), not
+        // here — the caller may still drop this response as late
+        // (#153 answer-or-silence) or fail the write, and neither is
+        // serve proof. Every Respond write site fires
+        // ota_validity::note_serve_evidence after the response is
+        // actually on the wire (tcp_server/spp_server in this crate;
+        // the CDC/UART mains in the firmware bin; vpcd after send).
         ServeAction::Respond
     }
 
@@ -2065,46 +2066,34 @@ mod tests {
         }
     }
 
-    // #294 WS2: the kernel itself carries the serve-evidence signal —
-    // the first Respond through feed_byte trips the (armed) OTA
-    // validity gate. Deterministic under the parallel test harness:
-    // only gate tests arm the global gate (serialized on
-    // GATE_TEST_LOCK); sibling tests' Respond traffic can at most be
-    // the one exchange that fires the marker — the fire-once latch
-    // bounds the count at exactly 1 either way.
+    // #294 WS2 (Codex P2 semantics pin): parsing + handling + framing
+    // alone is NOT serve evidence — the caller may still drop the
+    // response as late (#153 answer-or-silence) or fail the write.
+    // The signal fires at transport completion instead (see the
+    // tcp_server / spp_server tests); this test pins the negative:
+    // an armed gate stays untripped by feed_byte alone.
     #[test]
-    fn first_served_exchange_trips_the_ota_validity_gate() {
+    fn feed_byte_alone_does_not_trip_the_ota_validity_gate() {
         use crate::ota_validity::test_support::{reset_global_gate, GATE_TEST_LOCK};
         use core::sync::atomic::{AtomicUsize, Ordering};
 
-        static KERNEL_MARKS: AtomicUsize = AtomicUsize::new(0);
-        fn kernel_marker() -> i32 {
-            KERNEL_MARKS.fetch_add(1, Ordering::SeqCst);
+        static PARSE_MARKS: AtomicUsize = AtomicUsize::new(0);
+        fn parse_marker() -> i32 {
+            PARSE_MARKS.fetch_add(1, Ordering::SeqCst);
             0
         }
 
         let _lock = GATE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         reset_global_gate();
-        crate::ota_validity::install_mark_valid(kernel_marker);
+        crate::ota_validity::install_mark_valid(parse_marker);
 
-        // The boot-smoke bar: one GetSlotStatus round-trip through the
-        // REAL kernel path (mock driver) is the serve evidence.
         let mut server = server_with(false);
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
         assert_eq!(feed_frame(&mut server, &frame, 0), ServeAction::Respond);
         assert_eq!(
-            KERNEL_MARKS.load(Ordering::SeqCst),
-            1,
-            "the first Respond ran the mark-valid marker exactly once"
-        );
-
-        // Second exchange: idempotent — later evidence is a no-op.
-        let frame2 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
-        assert_eq!(feed_frame(&mut server, &frame2, 10), ServeAction::Respond);
-        assert_eq!(
-            KERNEL_MARKS.load(Ordering::SeqCst),
-            1,
-            "later serve evidence never re-marks"
+            PARSE_MARKS.load(Ordering::SeqCst),
+            0,
+            "no transport completion happened — the gate must stay untripped"
         );
 
         reset_global_gate();

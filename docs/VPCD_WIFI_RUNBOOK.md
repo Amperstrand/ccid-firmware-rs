@@ -116,15 +116,25 @@ reverts to the previous slot on the next reset.**
 
 The proof is SERVE EVIDENCE, not bring-up: the serving kernel
 (`ccid_service::ota_validity`, armed by every OTA-capable serving
-main) marks the image valid on the **first completed CCID exchange** —
+main) marks the image valid at TRANSPORT COMPLETION of the **first
+delivered CCID exchange** —
 
 - vpcd builds: the first vpcd answer that is actually SENT (an empty
   no-card ATR counts — pcscd's ~400 ms ATR probe trips it within
   seconds of a healthy boot; reader-alive is the proof, card presence
   is not);
-- serial/CDC/SPP/TCP builds: the first `ServeAction::Respond` through
-  the GemPC serial kernel (a GetSlotStatus round-trip — the same bar
-  the boot-smoke gate uses).
+- TCP builds (wifi-ccid): the first echo+response pair that was
+  written to the stream successfully;
+- SPP builds: the first response accepted into the TX packet (not
+  late-dropped, not congestion-dropped; `esp_spp_write` itself is
+  queued fire-and-forget — the accepted-into-TX boundary is the last
+  portable proof point);
+- CDC/UART builds: the first echo+response pair whose writes
+  succeeded (and, on UART, drained).
+
+Parsing a command alone NEVER trips the gate — a response dropped as
+late (#153 answer-or-silence) or a failed write is not serve proof
+(Codex P2 on the PR review).
 
 Bench consequences:
 

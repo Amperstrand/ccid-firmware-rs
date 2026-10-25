@@ -17,11 +17,14 @@
   `wifi_common::station_bring_up` (fired right after the wifi-connect
   attempt, before any serve evidence) moves behind a boot self-test —
   `ccid_service::ota_validity`, armed by every OTA-capable serving
-  main and tripped by the serving kernel itself on the FIRST answered
-  CCID exchange (first `ServeAction::Respond` in the GemPC serial
-  kernel, first sent vpcd answer). A pending-verify image that never
-  completes one serve exchange still reverts — that is the defense
-  working, not a regression.
+  main and tripped by the serving kernel itself at TRANSPORT
+  COMPLETION of the first CCID exchange (echo+response actually
+  delivered: TCP write ok, SPP response accepted into TX, CDC/UART
+  writes ok; first sent vpcd answer — an empty no-card ATR counts).
+  Parse alone never trips it — a late-dropped (#153) or failed write
+  is not serve proof (Codex P2 on the PR review). A pending-verify
+  image that never completes one delivered exchange still reverts —
+  that is the defense working, not a regression.
 - Explicit no-OTA notes for the non-OTA configs: `sdkconfig.defaults*`
   (CI-parity flow — IDF default single-app table, no otadata/ota
   slots), `sdkconfig.wallet-test` (bench-only wallet-interop defaults

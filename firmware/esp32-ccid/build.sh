@@ -97,9 +97,11 @@ Env:
                                sets CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
                                — a pushed/reflashed image boots
                                pending-verify and the app marks itself
-                               valid ONLY after the first served CCID
-                               exchange (the ccid-service ota_validity
-                               gate); a reset before that proof reverts
+                               valid ONLY after the first DELIVERED
+                               CCID exchange (the ccid-service
+                               ota_validity gate fires at transport
+                               completion, never on parse alone); a
+                               reset before that proof reverts
                                to the previous slot. Diagnostic mains
                                (bringup/bitbang/m1/v10raw/actdiag) never
                                mark valid — see docs/VPCD_WIFI_RUNBOOK.md.

@@ -152,18 +152,41 @@ mod tests {
     use super::*;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
-    // The fn-pointer shape (no closures, no context) is the price of the
-    // installed-sink pattern shared with the card-presence sink. Tests
-    // assert on return values plus these module-static counters; each
-    // test owns a private gate instance, so counts are deterministic.
-    static MARK_RUNS: AtomicUsize = AtomicUsize::new(0);
-    fn marker_ok() -> i32 {
-        MARK_RUNS.fetch_add(1, Ordering::SeqCst);
+    // Codex P2 on the head review (test isolation): the fn-pointer
+    // shape (no closures, no context) is the price of the
+    // installed-sink pattern shared with the card-presence sink — so
+    // every test gets its OWN marker + OWN counter (parallel-runner
+    // safe by construction; nothing is shared between tests). Only the
+    // two global-gate tests share state, and they serialize on
+    // GATE_TEST_LOCK with race-tolerant assertions (any sibling test's
+    // unarmed traffic is inert; armed traffic can only be the single
+    // latch-consuming firing).
+
+    static RUNS_A: AtomicUsize = AtomicUsize::new(0);
+    fn marker_a() -> i32 {
+        RUNS_A.fetch_add(1, Ordering::SeqCst);
         0
     }
-    fn marker_not_pending() -> i32 {
-        MARK_RUNS.fetch_add(1, Ordering::SeqCst);
-        1 // nonzero: the "not pending-verify" arm (warn, not fatal)
+    static RUNS_B: AtomicUsize = AtomicUsize::new(0);
+    fn marker_b() -> i32 {
+        RUNS_B.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+    static RUNS_C: AtomicUsize = AtomicUsize::new(0);
+    fn marker_c() -> i32 {
+        // nonzero rc: the "not pending-verify" arm (warn, not fatal).
+        RUNS_C.fetch_add(1, Ordering::SeqCst);
+        1
+    }
+    static RUNS_D: AtomicUsize = AtomicUsize::new(0);
+    fn marker_d() -> i32 {
+        RUNS_D.fetch_add(1, Ordering::SeqCst);
+        0
+    }
+    static RUNS_G: AtomicUsize = AtomicUsize::new(0);
+    fn marker_g() -> i32 {
+        RUNS_G.fetch_add(1, Ordering::SeqCst);
+        0
     }
 
     #[test]
@@ -173,24 +196,23 @@ mod tests {
         // Evidence while disarmed: noted, nothing to mark...
         assert!(!gate.note_serve_evidence("test"));
         assert!(!gate.note_serve_evidence("test"));
+        assert_eq!(RUNS_A.load(Ordering::SeqCst), 0, "nothing ran");
         // ...and it does NOT consume the gate: arming afterwards still
         // lets the NEXT evidence run the marker.
-        assert!(gate.arm(marker_ok));
-        let before = MARK_RUNS.load(Ordering::SeqCst);
+        assert!(gate.arm(marker_a));
         assert!(gate.note_serve_evidence("test"));
-        assert_eq!(MARK_RUNS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(RUNS_A.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn first_evidence_runs_marker_once_then_idempotent() {
         let mut gate = ValidityGate::new();
-        assert!(gate.arm(marker_ok));
-        let before = MARK_RUNS.load(Ordering::SeqCst);
-        assert!(gate.note_serve_evidence("gempc-serial"));
+        assert!(gate.arm(marker_b));
+        assert!(gate.note_serve_evidence("gempc-uart"));
         // Every later exchange is a no-op — fire-once per boot.
-        assert!(!gate.note_serve_evidence("gempc-serial"));
+        assert!(!gate.note_serve_evidence("gempc-uart"));
         assert!(!gate.note_serve_evidence("vpcd"));
-        assert_eq!(MARK_RUNS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(RUNS_B.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -199,40 +221,53 @@ mod tests {
         // rollback-disabled bootloader): rc != 0 must not panic and the
         // evidence still counts as consumed.
         let mut gate = ValidityGate::new();
-        assert!(gate.arm(marker_not_pending));
-        let before = MARK_RUNS.load(Ordering::SeqCst);
+        assert!(gate.arm(marker_c));
         assert!(gate.note_serve_evidence("vpcd"));
-        assert_eq!(MARK_RUNS.load(Ordering::SeqCst), before + 1);
+        assert_eq!(RUNS_C.load(Ordering::SeqCst), 1);
         assert!(!gate.note_serve_evidence("vpcd"));
+        assert_eq!(RUNS_C.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn late_arm_after_first_evidence_is_rejected() {
         // Arming after the marker already ran cannot re-arm the boot.
         let mut gate = ValidityGate::new();
-        assert!(gate.arm(marker_ok));
-        assert!(gate.note_serve_evidence("gempc-serial"));
-        assert!(!gate.arm(marker_ok), "no second chance per boot");
+        assert!(gate.arm(marker_d));
+        assert!(gate.note_serve_evidence("gempc-cdc"));
+        assert!(!gate.arm(marker_d), "no second chance per boot");
+        assert_eq!(RUNS_D.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn global_layer_round_trip() {
         // The installed-fn layer (what the firmware bin and the kernel
-        // call): install → kernel evidence path fires the marker once.
-        // Serialized against the kernel-wiring test in
-        // ccid_serial_server via GATE_TEST_LOCK (both reset the shared
-        // global gate; ValidityGate instances above are untouched).
+        // write sites call). Race-tolerant by construction (Codex P2):
+        // do NOT assert ownership of the first signal — a sibling
+        // kernel test's delivered response may be the exchange that
+        // consumes the latch. Assert instead that exactly ONE firing
+        // happened (latch-bounded either way) and that further
+        // evidence never re-marks.
         let _lock = test_support::GATE_TEST_LOCK
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         test_support::reset_global_gate();
         assert!(!armed());
-        install_mark_valid(marker_ok);
+        install_mark_valid(marker_g);
         assert!(armed());
-        let before = MARK_RUNS.load(Ordering::SeqCst);
-        assert!(note_serve_evidence("global-test"));
-        assert!(!note_serve_evidence("global-test"));
-        assert_eq!(MARK_RUNS.load(Ordering::SeqCst), before + 1);
+
+        let _ = note_serve_evidence("global-test");
+        let after_first = RUNS_G.load(Ordering::SeqCst);
+        assert_eq!(
+            after_first, 1,
+            "latch guarantees exactly one firing once any evidence arrived"
+        );
+        let _ = note_serve_evidence("global-test");
+        assert_eq!(
+            RUNS_G.load(Ordering::SeqCst),
+            after_first,
+            "later evidence never re-marks"
+        );
+
         test_support::reset_global_gate();
         assert!(!armed());
     }
