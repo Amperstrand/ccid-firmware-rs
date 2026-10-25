@@ -31,6 +31,34 @@
   fragment; knob deliberately unset — its images have no serve-proven
   mark-valid path and bench reflash cycles must not revert), and the
   stm32-f469 product (no esp-idf bootloader; no OTA at all).
+### Changed — diagnostic mains migrate to the boards tables (t_a0ebcf54, boards-as-data)
+
+- The four remaining esp32-ccid mains that hand-typed the nucula
+  gpio4/5/6/7 read the boards tables instead — the last files in
+  `firmware/esp32-ccid/src` with inline pin data:
+  - `pn7160_actdiag`: the typed BusPins block and the hand-copied
+    `pn7160_nci::esp_transport::NUCULA` facts are gone — the token
+    bundle (`nucula_bus_pins`, the #430 double-pinning: const-block
+    asserts + panic arm) and the pin/address numbers
+    (`binding_from_board`) resolve from the GENERATED `boards::NUCULA`
+    row, the same split as `pn7160_bringup`; the single plain `init()`
+    (this diagnostic's subject) stays.
+  - `pn7160_bitbang` / `pn7160_v10raw`: the raw SDA/SCL/IRQ/VEN consts
+    resolve from the table at COMPILE time (`bus_i2c_pins_const` /
+    `pin_const`) — same numbers, now netlist-sourced; the wire-level
+    sequences are untouched (the C-replica's fidelity is the syscall
+    sequence, not the pin literals).
+  - `pn7160_m1`: the inline `sda_io_num = 4` / `scl_io_num = 5` config
+    numbers come from `binding_from_board`, and the M2 A/B's VEN
+    PinDriver token comes out of `nucula_bus_pins` instead of a
+    hand-typed `pins.gpio7` — same pin both arms of the HAL-vs-raw
+    experiment, provably the table's.
+- On-target (riscv32imc-esp-espidf) `cargo check --lib` with all four
+  diagnostic features rides the same build.sh c3 sdkconfig flow and
+  compiles the modules warning-free; the dead `mut` it surfaced in
+  actdiag is fixed in passing. The three pre-existing dead-const
+  warnings in `main.rs` under diagnostic-only feature combos are
+  unchanged (no CI leg builds those combos — out of scope here).
 
 ### Added — flash-bundle verifier + refusal matrix (t_7a2ec5c3, flash-via-labgrid §4.4–4.5)
 
