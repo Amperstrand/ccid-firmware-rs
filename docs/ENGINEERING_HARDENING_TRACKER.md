@@ -745,3 +745,40 @@ Consequences:
 Card state at close: 9eSIM untouched — the round was read-only
 throughout; no profile writes (owner directive: no silent.link writing
 until everything is understood and improved).
+
+### WP-7 addendum correction — the FINAL mechanism (2026-10-25, w19:pF
+esim-lpa/esim-c0/esim-cla01 windows; supersedes the two retracted
+theories above — documented, not silently edited)
+
+RETRACTED: (a) "Telenor-holds-ch1" — channels are per-card; the slot-1
+Telenor cannot hold a channel on the 9eSIM. (b) "0x4X INS-allowlist" —
+the 0x41/0x42 refusals were no-such-channel: the manual probe scripts'
+0x4X form encodes channels-5/6-class (never opened), not channels 1/2.
+Encoding lesson for every future manual probe: the pcscd/suite path
+encodes CLA = channel number directly (0x01/0x02/0x03) — that is the
+form the a6e6-era evidence and this crate's suites use; hand-built
+0x4X-prefixed CLAs in probe scripts were an encoding error misread as a
+firmware filter.
+
+FINAL MECHANISM (measured): AT+CSIM yields no independent channel
+session while an enabled profile is registered — the modem's USIM
+session with the ENABLED NADANADA profile occupies channel 1 of the
+9eSIM itself. SELECT "answers" (61 21 deterministic, even after an
+open-refused 6A81) but INS 2C GET RESPONSE never works in any form
+(6D00 ×5 at 1.5 s and 8 s gaps alike — pacing ruled out; inline-FCI
+P2=00 form 6A82): modem-intercepted contexts, decoupled from channel
+accounting. Basic CLA-00 FID/B0 findings stand unchanged.
+
+a6e6 SUCCESS EXPLAINED: the 9eSIM was BLANK at download time — no
+enabled profile, no modem USIM session, clean CSIM pass-through ("FCI
+answered"). This also reconciles the v4.0-era evidence table (logical-
+channel STORE DATA ×150 etc.): all pre-dates any enabled profile.
+
+CONSEQUENCE (runbook): through-modem provisioning on this box requires
+DISABLE-NADANADA-FIRST (an owner-gated first WRITE — profile state
+change, breaks the card's registration until re-enable) → CFUN → lpac
+gate → on-device window. Alternative: external reader. Card left
+channel-exhausted again (one leaked ch2 + test opens); runbook step-0
+CFUN recycle clears it before any tomorrow window.
+
+Card state unchanged: read-only tonight, zero writes, 9eSIM intact.
