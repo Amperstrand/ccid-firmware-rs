@@ -40,6 +40,11 @@ pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
     crate::install_platform_clock();
+
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange.
+    crate::ota_validity::arm();
+
     // Silence C-level ESP_LOGx IMMEDIATELY (before any PN7160 I2C
     // activity): the driver's persistent-retry NACK messages from
     // ESP-IDF's i2c.master bypass the Rust `log` crate and pollute
@@ -194,9 +199,16 @@ pub fn run() -> ! {
                             continue;
                         }
                         let write_timeout = TickType::new_millis(100).ticks();
-                        // GemPC Twin: echo the received frame, then the response
-                        let _ = usb.write(server.echo(), write_timeout);
-                        let _ = usb.write(server.response(), write_timeout);
+                        // GemPC Twin: echo the received frame, then the
+                        // response. #294 WS2: the OTA serve proof fires
+                        // only when BOTH frames went out — a failed CDC
+                        // write is not serve evidence (the old `let _`
+                        // shape ignored the failure).
+                        let sent = usb.write(server.echo(), write_timeout).is_ok()
+                            && usb.write(server.response(), write_timeout).is_ok();
+                        if sent {
+                            ccid_service::ota_validity::note_serve_evidence("gempc-cdc");
+                        }
                         #[cfg(feature = "ble")]
                         if let Some(ble) = ble_console.as_ref() {
                             ble.drain();

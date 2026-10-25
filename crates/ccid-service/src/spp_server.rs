@@ -448,6 +448,15 @@ impl<D: NfcDriver + FrontendDiagnostics> SppPump<D> {
                             .get_or_insert(self.server.response_deadline_tick());
                         self.respond_stamp_us = Some(crate::t1::now_us());
                         outcome.responded += 1;
+                        // #294 WS2: the response was built AND accepted
+                        // into the TX packet (not late-dropped, not
+                        // congestion-dropped) — the SPP serve proof.
+                        // `esp_spp_write` is queued, not synchronous: the
+                        // accepted-into-TX boundary is the last portable
+                        // proof point (the C write callback is not
+                        // hookable here); a parked packet retries with
+                        // the SAME bytes or drops past its #153 deadline.
+                        crate::ota_validity::note_serve_evidence("gempc-spp");
                     } else {
                         // Roll back — never emit a partial frame.
                         self.tx_len = start;
@@ -916,6 +925,50 @@ mod tests {
         assert!(!link.pending_expired(2_505));
         assert!(link.pending_expired(2_506));
         link.clear_pending();
+    }
+
+    /// #294 WS2 (Codex P2): the SPP serve evidence fires when a
+    /// response is ACCEPTED INTO TX (not late-dropped, not
+    /// congestion-dropped) — the last portable proof point before the
+    /// fire-and-forget `esp_spp_write`. A late-dropped exchange
+    /// (`pump_drops_response_past_host_deadline` shape) must NOT trip
+    /// the gate. Serialized + latch-bounded like the other gate tests.
+    #[test]
+    fn accepted_spp_response_trips_the_ota_validity_gate_once() {
+        use crate::ota_validity::test_support::{reset_global_gate, GATE_TEST_LOCK};
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static SPP_MARKS: AtomicUsize = AtomicUsize::new(0);
+        fn spp_marker() -> i32 {
+            SPP_MARKS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        let _lock = GATE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_global_gate();
+        crate::ota_validity::install_mark_valid(spp_marker);
+
+        let mut ring = SppRxRing::new();
+        let mut pump = pump_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 3);
+        push(&mut ring, &frame, 5);
+        let outcome = drain_and_pump(&mut ring, &mut pump, 10);
+        assert_eq!(outcome.responded, 1);
+        assert!(!pump.tx().is_empty(), "response accepted into TX");
+        assert_eq!(
+            SPP_MARKS.load(Ordering::SeqCst),
+            1,
+            "the first accepted response marked the image valid exactly once"
+        );
+
+        // A second exchange never re-marks (fire-once latch).
+        let frame2 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 4);
+        push(&mut ring, &frame2, 20);
+        let outcome2 = drain_and_pump(&mut ring, &mut pump, 30);
+        assert_eq!(outcome2.responded, 1);
+        assert_eq!(SPP_MARKS.load(Ordering::SeqCst), 1);
+
+        reset_global_gate();
     }
 
     #[test]

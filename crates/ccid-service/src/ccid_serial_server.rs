@@ -645,6 +645,14 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
             }
         }
         self.resp_len = build_response_frame(&self.ccid_resp_buf[..resp_len], &mut self.resp_buf);
+        // #294 WS2 serve-proven OTA validity: the evidence signal lives
+        // at TRANSPORT COMPLETION (Codex P2 on the head review), not
+        // here — the caller may still drop this response as late
+        // (#153 answer-or-silence) or fail the write, and neither is
+        // serve proof. Every Respond write site fires
+        // ota_validity::note_serve_evidence after the response is
+        // actually on the wire (tcp_server/spp_server in this crate;
+        // the CDC/UART mains in the firmware bin; vpcd after send).
         ServeAction::Respond
     }
 
@@ -2056,5 +2064,38 @@ mod tests {
             assert_eq!(wire[1][2], 0x80, "interim DataBlock follows");
             assert_eq!(wire[1][8], 0x33, "bSeq of the stalled XfrBlock");
         }
+    }
+
+    // #294 WS2 (Codex P2 semantics pin): parsing + handling + framing
+    // alone is NOT serve evidence — the caller may still drop the
+    // response as late (#153 answer-or-silence) or fail the write.
+    // The signal fires at transport completion instead (see the
+    // tcp_server / spp_server tests); this test pins the negative:
+    // an armed gate stays untripped by feed_byte alone.
+    #[test]
+    fn feed_byte_alone_does_not_trip_the_ota_validity_gate() {
+        use crate::ota_validity::test_support::{reset_global_gate, GATE_TEST_LOCK};
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static PARSE_MARKS: AtomicUsize = AtomicUsize::new(0);
+        fn parse_marker() -> i32 {
+            PARSE_MARKS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        let _lock = GATE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_global_gate();
+        crate::ota_validity::install_mark_valid(parse_marker);
+
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &frame, 0), ServeAction::Respond);
+        assert_eq!(
+            PARSE_MARKS.load(Ordering::SeqCst),
+            0,
+            "no transport completion happened — the gate must stay untripped"
+        );
+
+        reset_global_gate();
     }
 }

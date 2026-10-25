@@ -256,6 +256,11 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
             }
             write_all_logged(uart, server.response());
             let _ = uart.wait_tx_done(esp_idf_hal::delay::BLOCK);
+            // #294 WS2: echo + response drained to the UART wire — the
+            // first fully-delivered exchange is this image's OTA serve
+            // proof (parse alone does not count: a late-dropped or
+            // failed write is not serve evidence).
+            ccid_service::ota_validity::note_serve_evidence("gempc-uart");
             let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
             server
                 .handler_mut()
@@ -424,6 +429,10 @@ fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
     esp32_ccid::install_platform_clock();
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange
+    // (UART serve loop below).
+    esp32_ccid::ota_validity::arm();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge).
@@ -515,6 +524,10 @@ fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
     esp32_ccid::install_platform_clock();
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange
+    // (UART or SPP serve loop below — both feed the same kernel).
+    esp32_ccid::ota_validity::arm();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge). In

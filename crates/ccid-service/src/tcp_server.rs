@@ -169,6 +169,10 @@ where
                             // client — the inline loop's `break` semantics.
                             break;
                         }
+                        // #294 WS2: echo + response actually went out on
+                        // the TCP stream — the first fully-delivered
+                        // exchange is this image's OTA serve proof.
+                        crate::ota_validity::note_serve_evidence("gempc-tcp");
                         // Dump-and-retrieve: escape 0xD1 ack went out —
                         // panic now so the flash coredump captures state.
                         if server.take_snapshot_request() {
@@ -584,5 +588,59 @@ mod tests {
                 .expect("client finished")
         );
         join.join().expect("client thread");
+    }
+
+    /// #294 WS2 positive pin (Codex P2): the OTA serve evidence fires
+    /// at TRANSPORT COMPLETION — one full GetSlotStatus exchange
+    /// through `serve_session` whose echo + response were actually
+    /// written to the stream trips the armed validity gate exactly
+    /// once. Deterministic under the parallel harness: only gate tests
+    /// arm the global gate (serialized on GATE_TEST_LOCK); sibling
+    /// sessions' delivered responses can at most be the one
+    /// latch-consuming firing.
+    #[test]
+    fn delivered_tcp_exchange_trips_the_ota_validity_gate() {
+        use crate::ota_validity::test_support::{reset_global_gate, GATE_TEST_LOCK};
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static TCP_MARKS: AtomicUsize = AtomicUsize::new(0);
+        fn tcp_marker() -> i32 {
+            TCP_MARKS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        let _lock = GATE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_global_gate();
+        crate::ota_validity::install_mark_valid(tcp_marker);
+
+        let mut server = server_no_card();
+        let frame = slot_status_frame(7);
+        let mut stream = ScriptedStream::bursts(&[&frame]);
+        let mut clock = SteppedClock(0);
+        let mut on_tick = |_: &mut MockNfcDriver| {};
+        let end = serve_session(
+            &mut stream,
+            &quiet_listener(),
+            &mut server,
+            &SessionParams {
+                cfg: SessionConfig::default(),
+                log_tag: "wifi-ccid",
+                peer: "127.0.0.1:1".parse().unwrap(),
+            },
+            &mut || clock.tick(),
+            &mut on_tick,
+        );
+        assert_eq!(end, SessionEnd::ClientClosed);
+        assert!(
+            stream.wrote.len() >= 26,
+            "echo + framed response actually written"
+        );
+        assert_eq!(
+            TCP_MARKS.load(Ordering::SeqCst),
+            1,
+            "the first delivered exchange marked the image valid exactly once"
+        );
+
+        reset_global_gate();
     }
 }

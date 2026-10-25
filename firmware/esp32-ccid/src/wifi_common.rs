@@ -49,20 +49,14 @@ pub fn station_bring_up(
     #[cfg(feature = "bench-net")]
     crate::ota::spawn();
 
-    // OTA_ROLLBACK: signal the bootloader that this image boots and serves
-    // (esp-idf OTA Update Pipeline: the bootloader boots a new OTA slot in
-    // a "pending verify" state; without this call it rolls back to the
-    // previous slot on the next boot — a bad flash auto-recovers to the
-    // last good image).
-    unsafe {
-        let rc = esp_idf_sys::esp_ota_mark_app_valid_cancel_rollback();
-        if rc != 0 {
-            log::warn!(
-                "ota-rollback: mark_app_valid rc={} (not in pending state — first boot or factory)",
-                rc
-            );
-        }
-    }
+    // #294 WS2: the OTA mark-valid that used to run EAGERLY here
+    // (right after the wifi-connect attempt — before any serve
+    // evidence) is gone. The mark now means "this image just served a
+    // host": the serving kernel (ccid_service::ota_validity) trips it
+    // on the first completed CCID exchange, and the main armed the
+    // gate (crate::ota_validity::arm) before this call. A
+    // pending-verify image that never completes one serve exchange
+    // reverts on the next reset — the defense, not a regression.
 
     ip
 }

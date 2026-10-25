@@ -92,7 +92,19 @@ Env:
   NUCULA_WIFI_SSID/_PASS       passed through (baked at build time)
   OTA_TOKEN                    32 chars — arms the authenticated OTA2
                                push protocol (ota_header); unset builds
-                               keep the OTA1 (unauthenticated) form
+                               keep the OTA1 (unauthenticated) form.
+                               Rollback (#294 WS2): every shipped .full
+                               sets CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+                               — a pushed/reflashed image boots
+                               pending-verify and the app marks itself
+                               valid ONLY after the first DELIVERED
+                               CCID exchange (the ccid-service
+                               ota_validity gate fires at transport
+                               completion, never on parse alone); a
+                               reset before that proof reverts
+                               to the previous slot. Diagnostic mains
+                               (bringup/bitbang/m1/v10raw/actdiag) never
+                               mark valid — see docs/VPCD_WIFI_RUNBOOK.md.
   ESP_BOOT_CHECK               console|wire — overrides the boot-proof
                                default for the --flash step (console-none
                                boards otherwise auto-default to wire,

@@ -63,6 +63,11 @@ pub fn run() -> ! {
     esp_idf_hal::sys::link_patches();
     crate::install_platform_clock();
 
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange
+    // (first GetSlotStatus through the TCP session counts).
+    crate::ota_validity::arm();
+
     // netlog writes every log line to the serial console AND (once
     // the network is up) to a UDP broadcast on :4567 — the bench log
     // channel when no USB link exists (wall-power operation). Replaces
