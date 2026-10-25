@@ -460,6 +460,38 @@ echo-correlation residual), #6 (deployed-.so rotation, owner-gated
 ops), #7 (pcscd-level ABI smoke test for by-value SCARD_IO_HEADER —
 closes the v3.2 evidence gap, software-runnable now).
 
+### Lane status — modem-core (2026-10-25, mipsel spike + milestone input)
+
+**Context.** Owner decision: external-reader path DEAD; milestone =
+read-only 9eSIM ops from tooling ON the NR7101 (AT or pcscd/lpac-
+on-router in scope). ifd-modemifd mipsel .so is a candidate option.
+
+**Finding (build feasibility — VERIFIED).** The WP-7 "cdylib poisoned
+mipsel cross-links" hazard does NOT apply to ifd-modemifd's own root
+package: `cargo +nightly build -Z build-std=std --release --target
+mipsel-unknown-linux-musl --lib` with the OpenWrt SDK gcc
+(lpacz-build/sdk toolchain-mipsel_24kc_gcc-14.3.0_musl, mipsel-openwrt-
+linux-gcc as linker; export STAGING_DIR to silence the wrapper warning)
+links the cdylib in ~30 s. Artifact: ELF32 mipsel, all 10 IFDHandler
+exports, NEEDED libgcc_s.so.1+libc.so (musl) — matching the agent
+ledger's expectations. qemu-mipsel-static + SDK libs: dlopen + ABI
+proof PASS (GET_FEATURE rc=0/returned=0; CTL_CODE(1) rc=606/returned=0)
+— ABI_OK. Recipe ready the moment the option is picked.
+
+**Constraint math for the options (decisive).** The CSIM allowlist
+(70/80/84; A4/B0/C0/E2 blocked; CCHO/CCHC disabled) applies to the
+AT+CSIM HANDLER — independent of where the client runs. Therefore on
+THIS firmware every AT+CSIM rider (ifd-modemifd via on-router pcscd,
+lpac at-backend, vpcd modem-vpicc agent) is limited to allowlisted INS:
+NO SELECT (A4), NO READ BINARY (B0) ⇒ standard read-only EF access via
+any pcscd/lpac chain is DEAD on-router too. The only in-scope read
+path on this unit is AT+CRSM (restricted-mode SIM access, verified
+safe for reads during session-2 recon) — which no pcscd driver or lpac
+backend wraps. mipsel .so remains the right artifact for permissive-
+CSIM firmware (agent side, future units); for THIS milestone it can
+carry only allowlisted-INS experiments (incl. the §8.3 corrected-C0
+doubling IF C0's shape fits 70/80/84).
+
 ### Lane status — modem-core (2026-10-24, COMPLETE)
 
 **Finding.** Phase-3 conformance audit of the exported IFDHandler ABI
