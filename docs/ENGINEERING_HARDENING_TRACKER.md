@@ -478,19 +478,42 @@ ledger's expectations. qemu-mipsel-static + SDK libs: dlopen + ABI
 proof PASS (GET_FEATURE rc=0/returned=0; CTL_CODE(1) rc=606/returned=0)
 — ABI_OK. Recipe ready the moment the option is picked.
 
-**Constraint math for the options (decisive).** The CSIM allowlist
-(70/80/84; A4/B0/C0/E2 blocked; CCHO/CCHC disabled) applies to the
-AT+CSIM HANDLER — independent of where the client runs. Therefore on
-THIS firmware every AT+CSIM rider (ifd-modemifd via on-router pcscd,
-lpac at-backend, vpcd modem-vpicc agent) is limited to allowlisted INS:
-NO SELECT (A4), NO READ BINARY (B0) ⇒ standard read-only EF access via
-any pcscd/lpac chain is DEAD on-router too. The only in-scope read
-path on this unit is AT+CRSM (restricted-mode SIM access, verified
-safe for reads during session-2 recon) — which no pcscd driver or lpac
-backend wraps. mipsel .so remains the right artifact for permissive-
-CSIM firmware (agent side, future units); for THIS milestone it can
-carry only allowlisted-INS experiments (incl. the §8.3 corrected-C0
-doubling IF C0's shape fits 70/80/84).
+**Constraint math for the options (CORRECTED 2026-10-25 — my first
+draft below used the retracted INS-allowlist framing; superseded by the
+WP-7 addendum correction "FINAL mechanism", kept visible).**
+
+Per the FINAL mechanism: basic-channel CLA-00 SELECT-by-FID and READ
+BINARY PASS on slot 2 (9eSIM ICCID read live) ⇒ **ifd-modemifd via
+on-router pcscd CAN serve read-only EF access** (ICCID-class reads
+through standard SCardTransmit) — the mipsel option is LIVE for the
+milestone's read-only scope, and a driver session exercises exactly
+the corrected pcscd/suite CLA-encoding form (the §8.3 corrected-C0
+doubling holds). Dead while an enabled profile is registered: logical-
+channel / multi-APDU sessions (SELECT answers 61 21, GET RESPONSE 6D00
+deterministic) ⇒ lpac euicc_init-class flows stay dead through EVERY
+AT+CSIM rider (driver, lpac-at, vpcd agent) until the owner-gated
+DISABLE-profile-first + CFUN runbook.
+
+**Driver caveat found during the spike (must-fix if the option is
+picked):** IFDHPowerICC(POWER_UP) → normalize() opens ch1+ch2 and the
+closes are AT-refused on this box — each pcscd connect BURNS the 2-3
+open budget per power cycle. On-router deployment needs an env-gated
+normalize bypass (small change, ready when sanctioned).
+
+<details><summary>Retracted first draft (INS-allowlist framing — wrong
+per the WP-7 correction; kept for the record)</summary>
+
+The CSIM allowlist (70/80/84; A4/B0/C0/E2 blocked; CCHO/CCHC disabled)
+applies to the AT+CSIM HANDLER — independent of where the client runs.
+Therefore on THIS firmware every AT+CSIM rider (ifd-modemifd via
+on-router pcscd, lpac at-backend, vpcd modem-vpicc agent) is limited to
+allowlisted INS: NO SELECT (A4), NO READ BINARY (B0) ⇒ standard
+read-only EF access via any pcscd/lpac chain is DEAD on-router too.
+The only in-scope read path on this unit is AT+CRSM. mipsel .so remains
+the right artifact for permissive-CSIM firmware; for THIS milestone it
+can carry only allowlisted-INS experiments.
+
+</details>
 
 ### Lane status — modem-core (2026-10-24, COMPLETE)
 
