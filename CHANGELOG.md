@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+### Fixed — OTA rollback wiring was inverted (#294 WS2, issue triage §2)
+
+- `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` in every shipped `.full`
+  whose partition table carries OTA slots (all of them — every build.sh
+  profile boots `partitions-ota.csv` via the GLOB injection). Before,
+  the knob was set ONLY in `sdkconfig.full` (c3/c3-ccid family) whose
+  mains never called `esp_ota_mark_app_valid` — an OTA-updated c3
+  image stayed pending-verify and REVERTED on the next boot — while
+  the six xtensa/ble configs had it unset, so the one mark-valid
+  caller (`wifi_vpcd` on m5stick-vpcd) ran against a bootloader with
+  the state machine compiled out. The two halves of the rollback
+  contract never met in any single profile.
+- Serve-proven mark-valid: the eager
+  `esp_ota_mark_app_valid_cancel_rollback()` in
+  `wifi_common::station_bring_up` (fired right after the wifi-connect
+  attempt, before any serve evidence) moves behind a boot self-test —
+  `ccid_service::ota_validity`, armed by every OTA-capable serving
+  main and tripped by the serving kernel itself on the FIRST answered
+  CCID exchange (first `ServeAction::Respond` in the GemPC serial
+  kernel, first sent vpcd answer). A pending-verify image that never
+  completes one serve exchange still reverts — that is the defense
+  working, not a regression.
+- Explicit no-OTA notes for the non-OTA configs: `sdkconfig.defaults*`
+  (CI-parity flow — IDF default single-app table, no otadata/ota
+  slots), `sdkconfig.wallet-test` (bench-only wallet-interop defaults
+  fragment; knob deliberately unset — its images have no serve-proven
+  mark-valid path and bench reflash cycles must not revert), and the
+  stm32-f469 product (no esp-idf bootloader; no OTA at all).
+
 ### Added — flash-bundle verifier + refusal matrix (t_7a2ec5c3, flash-via-labgrid §4.4–4.5)
 
 - `tools/hil/flash_bundle.py` — the flash-side half of
