@@ -10,7 +10,7 @@ use esp_idf_sys::link_patches;
 
 use crate::nfc::NfcDriver;
 use crate::pn7160_driver::Pn7160NfcDriver;
-use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
+use crate::pn7160_i2c::EspPn7160Transport;
 use pn7160_nci::reader;
 use pn7160_nci::{Frame, Transport};
 
@@ -36,16 +36,15 @@ pub fn run() -> ! {
     );
 
     let peripherals = Peripherals::take().expect("peripherals");
-    let bus = BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    };
-    let mut transport =
-        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
-            .expect("transport");
+    // boards-as-data seam (t_a0ebcf54): the typed gpio4/5/6/7 BusPins
+    // block and the hand-copied `pn7160_nci::esp_transport::NUCULA`
+    // facts are gone — the token bundle and the pin/address numbers
+    // both resolve from the GENERATED boards::NUCULA row (board_ctor),
+    // same split as pn7160_bringup. The single plain `init()` below
+    // (not the retry ladder) is this diagnostic's subject and stays.
+    let bus = crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins);
+    let pins = crate::board_ctor::pn7160::binding_from_board(&boards::NUCULA);
+    let transport = EspPn7160Transport::bringup_config_order(pins, bus).expect("transport");
     let mut d = Pn7160NfcDriver::new(transport);
     d.init().expect("ladder");
 
