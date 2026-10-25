@@ -1239,7 +1239,7 @@ labgrid-client -p stm32-ccid release
 | `stm32-ccid` | F469-DISCO contact DUT | `pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil` (7 tests: USB enum, pcscd, ATR, APDU relay ×2, pinpad, escape 0xD0) |
 | `nucula-c3` | ESP32-C3 + PN7160 DUT | `pytest tests/hardware/nucula/test_nucula.py -v --hil` (responsive, wallet boots, I2C scan, fw ACKs, NCI init, sustained) |
 | `m5stick` | M5Stack MFRC522 DUT | via the differential/battery suites |
-| `ref-acr1252` | ACR1252 reference NFC | differential oracle (`tests/hardware/nfc/`) |
+| `ref-acr1252` | ACR1252 reference NFC | differential oracle (`tests/hardware/nfc/`) — **NVM config contract (bolty-rs B33, PR #215)**: auto-polling/PICC-param registers are EEPROM that survives replugs and host moves; a sibling session's "quiet auto-poll" write (`E0 00 00 23 01 00`, 2026-10-22) made this reader look dead for 2 days (#214). For RF-quiet experiments use a transparent session (`FF C2 … 81`/`82`) — never the polling register. If the oracle "sees no cards" while firmware answers (`FF 00 48`): read `FF 00 50 00 00` — `90 3F` means polling OFF, fix is `FF 00 51 FF 00` + `E0 00 00 23 01 8B` (escape via `SCardControl(CTL_CODE(1))`), no replug. bolty-rs's HIL check-in audits + heals this automatically. |
 | `ref-cardman` | CardMan 3121 reference contact | perf baseline |
 
 **The test pyramid (bottom to top):**
