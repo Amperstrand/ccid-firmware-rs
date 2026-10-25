@@ -128,6 +128,12 @@ pub mod netlog;
 ))]
 pub mod ota;
 
+// #294 WS2: serve-proven OTA mark-valid (every OTA-capable serving
+// main arms it; NOT bench-net-gated — the bootloader rollback state
+// machine rides every shipped .full, serially-flashed images included).
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
+pub mod ota_validity;
+
 // x86_64: pure std, always host-tested in ccid-service. Targets:
 // re-exported for wifi-vpcd builds only (kernel compiles it always).
 #[cfg(any(

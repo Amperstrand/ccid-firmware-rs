@@ -181,6 +181,13 @@ fn serve_connection<D: NfcDriver + FrontendDiagnostics>(
             if send_message(stream, &resp).is_err() {
                 return;
             }
+            // #294 WS2 serve-proven OTA validity: this request produced
+            // an answer that went OUT on the vpcd link — the full
+            // parse→driver→encode→send stack just proved itself. The
+            // first sent answer trips the validity gate (mark-valid
+            // when armed; an empty no-card ATR counts — reader-alive is
+            // the proof, card presence is not).
+            crate::ota_validity::note_serve_evidence("vpcd");
         }
     }
 }

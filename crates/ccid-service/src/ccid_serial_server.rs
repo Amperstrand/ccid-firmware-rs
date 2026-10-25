@@ -645,6 +645,13 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
             }
         }
         self.resp_len = build_response_frame(&self.ccid_resp_buf[..resp_len], &mut self.resp_buf);
+        // #294 WS2 serve-proven OTA validity: a complete command was
+        // parsed, handled and framed — this exchange is the image's
+        // boot self-test evidence. First Respond trips the gate (marks
+        // the app valid when armed); inert when no marker is installed
+        // (host tests, diagnostic mains). CDC/UART/SPP/TCP all feed
+        // through here, so one call covers every serial-kernel main.
+        crate::ota_validity::note_serve_evidence("gempc-serial");
         ServeAction::Respond
     }
 
@@ -2056,5 +2063,50 @@ mod tests {
             assert_eq!(wire[1][2], 0x80, "interim DataBlock follows");
             assert_eq!(wire[1][8], 0x33, "bSeq of the stalled XfrBlock");
         }
+    }
+
+    // #294 WS2: the kernel itself carries the serve-evidence signal —
+    // the first Respond through feed_byte trips the (armed) OTA
+    // validity gate. Deterministic under the parallel test harness:
+    // only gate tests arm the global gate (serialized on
+    // GATE_TEST_LOCK); sibling tests' Respond traffic can at most be
+    // the one exchange that fires the marker — the fire-once latch
+    // bounds the count at exactly 1 either way.
+    #[test]
+    fn first_served_exchange_trips_the_ota_validity_gate() {
+        use crate::ota_validity::test_support::{reset_global_gate, GATE_TEST_LOCK};
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        static KERNEL_MARKS: AtomicUsize = AtomicUsize::new(0);
+        fn kernel_marker() -> i32 {
+            KERNEL_MARKS.fetch_add(1, Ordering::SeqCst);
+            0
+        }
+
+        let _lock = GATE_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        reset_global_gate();
+        crate::ota_validity::install_mark_valid(kernel_marker);
+
+        // The boot-smoke bar: one GetSlotStatus round-trip through the
+        // REAL kernel path (mock driver) is the serve evidence.
+        let mut server = server_with(false);
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &frame, 0), ServeAction::Respond);
+        assert_eq!(
+            KERNEL_MARKS.load(Ordering::SeqCst),
+            1,
+            "the first Respond ran the mark-valid marker exactly once"
+        );
+
+        // Second exchange: idempotent — later evidence is a no-op.
+        let frame2 = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 2);
+        assert_eq!(feed_frame(&mut server, &frame2, 10), ServeAction::Respond);
+        assert_eq!(
+            KERNEL_MARKS.load(Ordering::SeqCst),
+            1,
+            "later serve evidence never re-marks"
+        );
+
+        reset_global_gate();
     }
 }

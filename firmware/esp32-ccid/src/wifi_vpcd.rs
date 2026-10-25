@@ -15,6 +15,11 @@ pub fn run() -> ! {
     esp_idf_hal::sys::link_patches();
     crate::install_platform_clock();
 
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first SENT vpcd answer (an empty
+    // no-card ATR counts: reader-alive is the proof, not card state).
+    crate::ota_validity::arm();
+
     crate::netlog::init();
 
     log::warn!(
