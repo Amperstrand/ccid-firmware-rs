@@ -113,10 +113,7 @@ static GATE: Mutex<ValidityGate> = Mutex::new(ValidityGate::new());
 /// platform mark-valid call. `marker` must be thread-safe (it runs on
 /// whichever task first completes a serve exchange).
 pub fn install_mark_valid(marker: fn() -> i32) {
-    GATE
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .arm(marker);
+    GATE.lock().unwrap_or_else(|p| p.into_inner()).arm(marker);
 }
 
 /// Whether the gate is armed (diagnostic surface).
@@ -127,8 +124,7 @@ pub fn armed() -> bool {
 /// Serve evidence — the kernel-side entry point. See
 /// [`ValidityGate::note_serve_evidence`].
 pub fn note_serve_evidence(source: &str) -> bool {
-    GATE
-        .lock()
+    GATE.lock()
         .unwrap_or_else(|p| p.into_inner())
         .note_serve_evidence(source)
 }
