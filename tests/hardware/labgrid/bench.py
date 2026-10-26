@@ -263,7 +263,13 @@ def dut_absent_reason(place: str) -> str | None:
         if not serving:
             from board_identity import probe_m5stick  # noqa: PLC0415
 
-            probe = probe_m5stick()
+            try:
+                probe = probe_m5stick()
+            except Exception:
+                # Port vanished mid-probe / unresolvable: cannot classify.
+                # SKIP≠FAIL cuts both ways — an unclassifiable board is
+                # not a variant verdict either; leave it testable.
+                return None
             if not probe.get("ok"):
                 return ("m5stick not answering the GemPC identity probe "
                         f"({str(probe.get('detail', '?'))[:40]}) — unknown/"
