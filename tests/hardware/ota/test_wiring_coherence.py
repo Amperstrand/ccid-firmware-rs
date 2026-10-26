@@ -142,8 +142,8 @@ def test_conftest_hardened_flags_match_tracked_configs():
 
 
 @MARK
-def test_m5stick_knob_exemption_stays_documented():
-    """m5stick-vpcd (mark-valid caller, knob UNSET) is a deliberate pair.
+def test_m5stick_knob_state_stays_coherent():
+    """m5stick-vpcd knob state must stay coherent with 94cdf20 (knob ON).
 
     The README "m5stick caveat" records the owner decision: enabling the
     knob means flashing a new bootloader (bench decision), not editing
@@ -155,8 +155,8 @@ def test_m5stick_knob_exemption_stays_documented():
     cases = _parse_build_cases()
     m5stick = cases["m5stick-vpcd"]
     assert "wifi-vpcd" in m5stick["features"]
-    assert not _knob_set(m5stick["sdkconfig"]), (
-        "sdkconfig-xtensa-vpcd.full flipped the rollback knob on - that "
-        "is a bootloader-reflash bench decision (README 'm5stick caveat'); "
-        "update conftest.py rollback_hardened + the caveat together"
+    assert _knob_set(m5stick["sdkconfig"]), (
+        "sdkconfig-xtensa-vpcd.full lost the rollback knob - the WS2 knob "
+        "half (94cdf20) requires it in every OTA-slot .full config; restore "
+        "or re-decide openly (conftest + README caveat together)"
     )

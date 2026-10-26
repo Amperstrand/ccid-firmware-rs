@@ -139,12 +139,12 @@ firmware sources are off-limits here). Design for the follow-up:
 
 ### m5stick caveat (bench audit 2026-10-13)
 
-`firmware/esp32-ccid/sdkconfig.full` (nucula) sets
-`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`, but `build.sh m5stick-vpcd`
-uses `sdkconfig-xtensa-vpcd.full` where it is **not set**. Until that
-config is flipped and the m5stick's bootloader reflashed (the option is
-baked into the compiled bootloader), the m5stick has NO tier-2 rollback:
-a never-valid image would simply keep running. The suite reflects this
+Since 94cdf20 EVERY OTA-slot .full config (incl. m5stick's
+`sdkconfig-xtensa-vpcd.full`) sets `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`.
+CAVEAT THAT REMAINS: the option is baked into the COMPILED BOOTLOADER —
+until the m5stick's bootloader is reflashed, the knob is present in
+config but not enforced by the on-board bootloader. The suite now
+treats m5stick as rollback_hardened=True (config-side coherence)
 - `test_never_valid_image_rolls_back` skips on `--board=m5stick` - and
   the tier-1 tests remain valid there (esp_ota_end validation is
   independent of the rollback option). Do not "fix" this by editing the
