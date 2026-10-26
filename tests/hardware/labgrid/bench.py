@@ -31,11 +31,19 @@ RESULTS_DIR = Path(__file__).parent / "results"
 LEDGER_PATH = RESULTS_DIR / "history.jsonl"
 BENCH_LOCK_PATH = Path("/tmp/amperstrand-bench.lock")
 
-# The bench's five exported places (exporter-ai-legion-nfc.yaml).
-PLACES = ("stm32-ccid", "nucula-c3", "m5stick", "ref-acr1252", "ref-cardman")
+# The bench's exported places (exporter-ai-legion-nfc.yaml).
+#
+# ref-acr1252 RETIRED from this bench 2026-10-25: the reader moved to
+# ai-legion-small (place ref-acr1252-small, conwrt-bench consumption —
+# retirement recorded on that place's coordinator note, #71). Nothing on
+# .208 serves an ACR1252 to pcscd anymore, so ccid legs can neither
+# acquire the old place nor probe its identity.
+PLACES = ("stm32-ccid", "nucula-c3", "m5stick", "ref-cardman")
 
 DUT_PLACES = ("stm32-ccid", "nucula-c3", "m5stick")
-REFERENCE_PLACES = ("ref-acr1252", "ref-cardman")
+# ref-cardman only — the ACR1252 reference now lives on ai-legion-small
+# (see PLACES note).
+REFERENCE_PLACES = ("ref-cardman",)
 
 
 def lg(place: str, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -236,6 +244,31 @@ def dut_absent_reason(place: str) -> str | None:
             return ("m5stick is streaming on UART0 — the wifi-vpcd console "
                     "variant is flashed (another lane's active firmware); "
                     "GemPC legs skip until the standard image returns")
+        # Codex-#188 pattern (the nucula sibling, applied here 2026-10-26):
+        # a board whose port exists but answers NEITHER a live pcscd reader
+        # NOR the GemPC identity probe is in an unknown/foreign-firmware
+        # state (bench case: the cashu-nfc-matrix T5 wallet — silent
+        # console, no vpcd reader, no GemPC answer, reflash owner-gated)
+        # — not evidence about the code under test. Trade-off accepted per
+        # SKIP≠FAIL (#183): a wedged standard image ambers here too; the
+        # place stays ours to re-verify interactively when that matters.
+        # pcscd-listed GemPCTwin = standard image serving: testable, and
+        # the port is pcscd-owned (never raw-probed under it).
+        try:
+            from smartcard.System import readers  # noqa: PLC0415
+
+            serving = any("GemPCTwin" in str(r) for r in readers())
+        except Exception:
+            serving = False
+        if not serving:
+            from board_identity import probe_m5stick  # noqa: PLC0415
+
+            probe = probe_m5stick()
+            if not probe.get("ok"):
+                return ("m5stick not answering the GemPC identity probe "
+                        f"({str(probe.get('detail', '?'))[:40]}) — unknown/"
+                        "foreign firmware variant (wallet/vpcd class); "
+                        "GemPC legs skip until the standard image returns")
     elif place == "nucula-c3":
         # Codex #188 residual (found live 2026-10-15: the nightly failed
         # red instead of skipping when the board sat in a non-serving

@@ -1023,6 +1023,38 @@ disable when idle per the nucula row above.
   break (68b9361, issue #211 closed) and landed the STATUS drift layer;
   main was green through ci-ok at 4fc1982 by afternoon.
 
+### Bench state delta (2026-10-26 session — nightlies green)
+
+- **ref-acr1252 place RETIRED from .208** (2026-10-25; the reader now
+  lives on ai-legion-small as `ref-acr1252-small`, exported by that
+  host's `labgrid-exporter-nfc-small.service`, consumed via conwrt-bench
+  — retirement recorded in the coordinator place note, #71). ccid-side
+  retirement landed 2026-10-26: PLACES/IDENTITY_PROBES/
+  bench_inventory EXPECTED_PLACES+EXPECTED_PCSCD and the in-repo
+  `exporter-ai-legion-nfc.yaml` all dropped it (the in-repo exporter
+  config MUST NOT re-add it — re-exporting would resurrect a phantom
+  place with no hardware). The ACR1252-emu lane (`--acr-emu`) is parked
+  until an ACR returns to this host. The nfc/ differential suite's ACR
+  oracle legs are equally dead on .208 — treat them as card-gated.
+- **m5stick runs the cashu-nfc-matrix T5 wallet** (foreign firmware,
+  reflash owner-gated): silent console, no vpcd reader, no GemPC
+  answer. `dut_absent_reason("m5stick")` now applies the Codex-#188
+  nucula pattern — port present + no pcscd reader + no GemPC identity
+  answer = unknown/foreign variant → amber skip (a wedged standard
+  image ambers there too; interactively re-verify when that matters).
+  The 10-25 nightly was green only because the places were held; the
+  10-26 nightly exposed all of this red.
+- **Fuzz Nightly was NEVER green** (all 9 runs since creation red):
+  the repo's `rust-toolchain.toml` (stable 1.99.0) outranks the
+  dtolnay@nightly install for plain `cargo fuzz run` — stable rejected
+  `-Zsanitizer`. Fixed with `cargo +nightly fuzz run` (the +toolchain
+  proxy exports RUSTUP_TOOLCHAIN to cargo-fuzz's children, which beats
+  the TOML). micronuts' fuzz-nightly.yml carries the same latent bug
+  (same toml pin + same workflow shape) — fix it when touching that
+  repo. Lesson: on ANY pinned-toolchain repo, `dtolnay/rust-toolchain`
+  does not override `rust-toolchain.toml`; steps needing a different
+  toolchain must use `+<toolchain>` explicitly.
+
 ### Recovery events (2026-10-09, all resolved)
 
 - **m5stick re-flashed by micronuts** (display showed their app,

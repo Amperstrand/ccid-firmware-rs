@@ -53,11 +53,11 @@ stm32f746-ccid:
 
 ## --- reference readers (comparison oracles; never DUTs) -------------------
 
-## ACS ACR1252: reference NFC reader (PICC + SAM slots). Serial-less: bound
-## to the physical USB port (stable per cabling).
-ref-acr1252:
-  USBDevice:
-    match: 'ID_VENDOR_ID=072f ID_MODEL_ID=223b ID_PATH=pci-0000:00:14.0-usb-0:4'
+## ACS ACR1252: RETIRED from this exporter 2026-10-25 — the reader moved
+## to ai-legion-small (place ref-acr1252-small, exported by that host's
+## labgrid-exporter-nfc-small.service; retirement recorded in its place
+## note, #71). Do NOT re-add here: the coordinator place no longer exists
+## and re-exporting would resurrect a phantom place with no hardware.
 
 ## OmniKey CardMan 3121: reference contact reader. Serial-less: physical port.
 ref-cardman:

@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+### Fixed — both red nightlies (fuzz since creation, hil-bench bench-state drift)
+
+- Fuzz Nightly: `cargo fuzz run` resolved the repo's pinned stable
+  toolchain (rust-toolchain.toml 1.99.0 outranks the dtolnay@nightly
+  install) and stable rejects `-Zsanitizer` — every run since the
+  workflow's creation (2026-10-18) failed at build with "the option
+  `Z` is only accepted on the nightly compiler", no crash artifacts.
+  Now `cargo +nightly fuzz run` (the +toolchain proxy exports
+  RUSTUP_TOOLCHAIN to cargo-fuzz's child cargo invocations).
+- hil-bench: the 2026-10-26 nightly failed red on bench-state drift,
+  both classes now amber per SKIP≠FAIL (#183):
+  - `ref-acr1252` retired from .208 (2026-10-25; reader now
+    `ref-acr1252-small` on ai-legion-small) — dropped from PLACES,
+    IDENTITY_PROBES, bench_inventory expectations and the in-repo
+    exporter config (which must not re-export a phantom place).
+  - `m5stick` carries the cashu-nfc-matrix T5 wallet (foreign
+    firmware, reflash owner-gated): `dut_absent_reason` applies the
+    Codex-#188 nucula pattern — no pcscd reader + no GemPC identity
+    answer = unknown/foreign variant → skip with reason. A wedged
+    standard image ambers there too; the trade-off is the #183
+    doctrine's (a held/foreign board says nothing about the code).
+
 ### Fixed — OTA rollback wiring was inverted (#294 WS2, issue triage §2)
 
 - `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` in every shipped `.full`
