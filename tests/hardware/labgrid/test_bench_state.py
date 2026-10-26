@@ -66,8 +66,27 @@ def test_place_identity(place_name, bench_lock):
         pytest.skip(f"{place_name}: {absent}")
     probe = IDENTITY_PROBES[place_name]
     if place_name in SERIAL_PROBES:
-        with pcscd_paused():
-            result = probe()
+        # Broker/CDC ownership (nucula): the broker is the board's
+        # sanctioned serving mode and may hold the CDC when this runs —
+        # a raw GemPC probe under it is the documented wedge class
+        # (2026-10-14 nightly, twice). The fast path inside probe_nucula
+        # cannot fire under pcscd_paused() (pcscd is DOWN when it lists
+        # readers), so ask BEFORE pausing; a serving broker IS the
+        # identity evidence (its live reader name), same as the battery
+        # suite's guard.
+        if place_name == "nucula-c3":
+            from board_identity import nucula_broker_serving
+
+            serving = nucula_broker_serving()
+            if serving:
+                result = {"ok": True,
+                          "detail": f"serving pcscd via broker ({serving[0][:40]})"}
+            else:
+                with pcscd_paused():
+                    result = probe()
+        else:
+            with pcscd_paused():
+                result = probe()
     else:
         _pcscd(stop=False)
         result = probe()
