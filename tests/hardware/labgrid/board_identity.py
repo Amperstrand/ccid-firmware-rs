@@ -154,10 +154,12 @@ def probe_pcsc_reader(match: str) -> dict:
 
 
 # The AGENTS.md known-good matrix, one entry per bench place.
+# ref-acr1252 has no entry since the 2026-10-25 retirement (reader moved
+# to ai-legion-small as ref-acr1252-small; nothing on this host serves
+# an ACR1252 to pcscd).
 IDENTITY_PROBES = {
     "stm32-ccid": lambda: probe_pcsc_reader("ST2XXX-001"),
     "nucula-c3": lambda: probe_nucula(),
     "m5stick": lambda: probe_m5stick(),
-    "ref-acr1252": lambda: probe_pcsc_reader("ACR1252"),
     "ref-cardman": lambda: probe_pcsc_reader("CardMan"),
 }

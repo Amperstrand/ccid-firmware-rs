@@ -2,6 +2,10 @@
 
 Run: pytest tests/hardware/labgrid/test_acr1252_emu_hil.py -v --hil --acr-emu
 
+NOTE 2026-10-26: the ref-acr1252 place is RETIRED from .208 (reader now
+on ai-legion-small as ref-acr1252-small) — these legs skip until an ACR
+returns to this host and a place is re-declared; kept for that return.
+
 All tests acquire the `ref-acr1252` place (the fixture drives that
 reader's USB interface directly — the generic `bench` fixture is NOT
 used: it pulls a session hold of stm32-ccid and would both spuriously

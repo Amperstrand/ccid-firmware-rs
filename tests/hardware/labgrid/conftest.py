@@ -176,7 +176,9 @@ def pytest_addoption(parser):
                      help="Skip labgrid place acquisition (coordinator-outage escape hatch).")
     parser.addoption("--places", action="store", default=",".join(PLACES),
                      help="Comma-separated subset of bench places to cover "
-                          "(stm32-ccid,nucula-c3,m5stick,ref-acr1252,ref-cardman).")
+                          "(stm32-ccid,nucula-c3,m5stick,ref-cardman; "
+                          "ref-acr1252 retired 2026-10-25 — now "
+                          "ref-acr1252-small on ai-legion-small).")
     parser.addoption("--reserve", action="store_true", default=False,
                      help="Queue for busy places via coordinator reservations "
                           "(reserve --wait) instead of failing/skipping — the "

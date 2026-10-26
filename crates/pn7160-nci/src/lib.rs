@@ -281,6 +281,17 @@ impl Frame {
             return None;
         }
         let mt = buf[0] & 0xE0;
+        // NCI §3.3 (v1.0 Table 2, unchanged through v2.x): the MT field
+        // defines exactly DATA(000b), CMD(001b), RSP(010b), NTF(011b);
+        // 100b–111b are RFU. The kernel's nci core likewise drops frames
+        // whose MT matches no handler. A frame with RFU MT bits is not a
+        // valid NCI packet — reject it (found by fuzz_nci_frame_decode,
+        // nightly 2026-10-26: input `aa 31 00`, MT=101b decoded as a
+        // valid Frame and could even satisfy the ladder's "first
+        // non-NTF frame" reply wait spuriously).
+        if mt != MT_DATA && mt != MT_CMD && mt != MT_RSP && mt != MT_NTF {
+            return None;
+        }
         let pbf = (buf[0] & PBF_MASK) != 0;
         let gid = buf[0] & 0x0F;
         let oid = buf[1];
@@ -1510,6 +1521,29 @@ mod tests {
         assert_eq!(data_frag.mt, MT_DATA);
         assert_eq!(data_frag.gid, 0);
         assert_eq!(&data_frag.payload[..2], &[0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn decode_rejects_rfu_message_types() {
+        // NCI §3.3: MT 100b–111b are RFU — not valid NCI packets. The
+        // fuzz nightly found decode accepting them (crash input
+        // `aa 31 00`, MT=101b). All four RFU MT values must reject;
+        // length/shape checks must not rescue them.
+        for mt_bits in [0x80u8, 0xA0, 0xC0, 0xE0] {
+            assert!(
+                Frame::decode(&[mt_bits, 0x00, 0x00]).is_none(),
+                "RFU MT {mt_bits:#04x} must not decode"
+            );
+            assert!(
+                Frame::decode(&[mt_bits | GID_RF, 0x06, 0x01, 0x00]).is_none(),
+                "RFU MT {mt_bits:#04x} with payload must not decode"
+            );
+        }
+        // Boundary sanity: the four defined MTs at the same shape decode.
+        assert!(Frame::decode(&[MT_DATA, 0x00, 0x00]).is_some());
+        assert!(Frame::decode(&[MT_CMD, 0x00, 0x00]).is_some());
+        assert!(Frame::decode(&[MT_RSP, 0x00, 0x00]).is_some());
+        assert!(Frame::decode(&[MT_NTF, 0x00, 0x00]).is_some());
     }
 
     #[test]
