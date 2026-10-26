@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+### Fixed — pn7160-nci: Frame::decode accepted RFU message types (fuzz find)
+
+- Found by the (now working) Fuzz Nightly on its first real run:
+  input `aa 31 00` — MT bits 101b are RFU per NCI §3.3 (v1.0 Table 2,
+  unchanged through v2.x; only DATA/CMD/RSP/NTF are defined, and the
+  kernel nci core drops MT-matching-nothing frames). decode returned a
+  valid Frame for all four RFU MT values; such a frame could even
+  satisfy the bring-up ladder's "first non-NTF frame" reply wait
+  spuriously. decode now rejects RFU MTs; locked by
+  `decode_rejects_rfu_message_types`. Verified: crash input replays
+  clean, 16.4M exec / 120 s bounded leg crash-free, crate tests 125/125.
+
 ### Fixed — both red nightlies (fuzz since creation, hil-bench bench-state drift)
 
 - Fuzz Nightly: `cargo fuzz run` resolved the repo's pinned stable
