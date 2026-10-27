@@ -1049,11 +1049,18 @@ disable when idle per the nucula row above.
   dtolnay@nightly install for plain `cargo fuzz run` — stable rejected
   `-Zsanitizer`. Fixed with `cargo +nightly fuzz run` (the +toolchain
   proxy exports RUSTUP_TOOLCHAIN to cargo-fuzz's children, which beats
-  the TOML). micronuts' fuzz-nightly.yml carries the same latent bug
-  (same toml pin + same workflow shape) — fix it when touching that
-  repo. Lesson: on ANY pinned-toolchain repo, `dtolnay/rust-toolchain`
-  does not override `rust-toolchain.toml`; steps needing a different
-  toolchain must use `+<toolchain>` explicitly.
+  the TOML). VERIFIED GREEN post-merge by dispatching both nightlies on
+  main (2026-10-26 ~13:1xZ): Fuzz all three targets success (the
+  workflow's first green run ever), hil-bench 115 tests / 0 failures /
+  14 amber skips. Lesson: on ANY pinned-toolchain repo,
+  `dtolnay/rust-toolchain` does not override `rust-toolchain.toml` for
+  later steps — a step needing a different toolchain must either use
+  `+<toolchain>` explicitly (what we did) or set a job-level
+  `RUSTUP_TOOLCHAIN` env (micronuts' #110 escape hatch — CORRECTION
+  2026-10-26 of this same delta: an earlier revision claimed micronuts
+  carries the same latent bug; that was a too-narrow read of their
+  workflow — micronuts sets the env override at job level and its fuzz
+  nightly was green 5/5 throughout).
 
 ### Recovery events (2026-10-09, all resolved)
 
