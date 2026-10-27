@@ -104,9 +104,15 @@ class Reader:
         self.s.open()
         # AGENTS.md DTR-latch rule: pyserial asserts DTR at open; on the
         # nucula CDC that latches boot:0x5 on the next reset. Deassert
-        # both lines immediately (Codex PR 107 P1).
-        self.s.setDTR(False)
-        self.s.setRTS(False)
+        # both lines immediately (Codex PR 107 P1). On a PTY (the broker
+        # surface, /dev/nucula-ccid) there are no modem lines — the
+        # ioctls fail with ENOTTY and DTR/RTS are a no-op by construction,
+        # so the deassert is skipped rather than fatal (#305).
+        try:
+            self.s.setDTR(False)
+            self.s.setRTS(False)
+        except OSError:
+            pass
         self.seq = 0
         # Dead-port verdict classification (#431): True while the serial
         # port is unusable (last reopen failed). Readers in this state
