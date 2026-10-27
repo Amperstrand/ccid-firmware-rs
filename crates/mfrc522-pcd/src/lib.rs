@@ -251,12 +251,64 @@ impl<I2C: I2c> Mfrc522Transceiver<I2C> {
         Ok(())
     }
 
-    pub fn set_timeout_ms(&mut self, ms: u32) -> Result<(), Mfrc522Error<I2C::Error>> {
-        let prescaler = 0xA9u16;
-        let timer_hz = 13_560_000u32 / (2 * prescaler as u32 + 1);
-        let reload = (ms.saturating_mul(timer_hz) / 1000).min(0xFFFF);
+    /// Timer input frequency (MFRC522 datasheet §8.5.2: f_timer =
+    /// 13.56 MHz / (2*TPrescaler + 1)).
+    const TIMER_INPUT_HZ: u32 = 13_560_000;
 
-        self.mfrc522.write_register(Register::TModeReg, 0x80)?;
+    /// Historical fixed prescaler (init()'s Arduino-default heritage):
+    /// divisor 2*169+1 = 339 → 40 kHz tick. `set_timeout_ms` never ticks
+    /// FASTER than this, so every request expressible under the old
+    /// mapping maps to byte-identical register writes.
+    const TIMER_MIN_DIVISOR: u32 = 2 * 0xA9 + 1;
+
+    /// Hardware maximum: TPrescaler is 12 bits (TModeReg[3:0] high
+    /// nibble + TPrescalerReg low byte — MFRC522 datasheet §8.5.2;
+    /// confirmed by esp-idf-rc522 `rc522_pcd_configure_timer`
+    /// (`(prescaler >> 8) & 0x0F` into TModeReg) and NuttX
+    /// ("TPreScaler = TModeReg[3..0]:TPrescalerReg")), so the divisor
+    /// 2*TPrescaler+1 tops out at 8191 → 65535 reload ticks ≈ 39.6 s.
+    const TIMER_MAX_DIVISOR: u32 = 2 * 4095 + 1;
+
+    /// Configure the transceive timeout timer.
+    ///
+    /// (bolty-rs #180, fixed at the canonical home:) the previous fixed
+    /// 0xA9 prescaler (40 kHz) capped the 16-bit reload at 1638 ms —
+    /// ISO 14443 FWI 13/14 cards (FWT 2483/4957 ms) were silently
+    /// clamped and timed out early. The prescaler is now chosen per
+    /// request: the SMALLEST divisor ≥ the historical 339 whose tick
+    /// keeps the reload within 16 bits (preserving the exact previous
+    /// register bytes for every previously-expressible timeout), moving
+    /// up to the 12-bit prescaler range for longer waits. Requests
+    /// beyond the ~39.6 s hardware maximum are a LOUD error — a silent
+    /// clamp was the bug.
+    ///
+    /// reload = ceil(ms · f_timer / 1000) (round UP so the armed period
+    /// is never shorter than requested by tick truncation).
+    pub fn set_timeout_ms(&mut self, ms: u32) -> Result<(), Mfrc522Error<I2C::Error>> {
+        // Smallest divisor with reload <= 0xFFFF:
+        //   ms * f_in / div / 1000 <= 65535  ⇔  div >= ms * f_in / 65_535_000
+        // (13560000/65535000 = 904/4369 in lowest terms — u32-safe for
+        // any ms; larger requests saturate and fail the max-divisor gate.)
+        let min_div = (ms.saturating_mul(904).saturating_add(4_368)) / 4_369;
+        let mut div = min_div.max(Self::TIMER_MIN_DIVISOR);
+        if div % 2 == 0 {
+            div += 1; // 2*TPrescaler+1 is odd; round UP (slower tick keeps reload in range)
+        }
+        if div > Self::TIMER_MAX_DIVISOR {
+            return Err(Mfrc522Error::Timeout);
+        }
+        let prescaler = (div - 1) / 2; // 0..=4095, 12-bit
+        debug_assert!(prescaler <= 0x0FFF);
+        // reload = ceil(ms · f_in / (1000 · div)), computed against the
+        // TRUE divisor (u64: ms · 13.56 MHz overflows u32 from ~317 ms) so
+        // the armed period is never shorter than the request by tick
+        // truncation. min_div guarantees the result fits 16 bits.
+        let reload = ((u64::from(ms) * u64::from(Self::TIMER_INPUT_HZ) + u64::from(div) * 1000 - 1)
+            / (u64::from(div) * 1000)) as u32;
+        debug_assert!(reload <= 0xFFFF);
+
+        self.mfrc522
+            .write_register(Register::TModeReg, 0x80 | ((prescaler >> 8) as u8 & 0x0F))?;
         self.mfrc522
             .write_register(Register::TPrescalerReg, prescaler as u8)?;
         self.mfrc522
@@ -617,7 +669,9 @@ mod tests {
 
         // f_timer = 13.56 MHz / (2*0xA9 + 1) = 40 kHz → 50 ms = 2000 = 0x07D0
         // (deliberately differs from init()'s 100 ms Arduino default so the
-        // test proves OUR mapping, not init's).
+        // test proves OUR mapping, not init's). Requests the historical
+        // 0xA9 prescaler can express map to BYTE-IDENTICAL register writes
+        // — the dynamic-prescaler fix must not perturb them.
         t.set_timeout_ms(50).unwrap();
         let i2c = t.release();
         assert_eq!(i2c.last_write_to(T_MODE_REG), 0x80);
@@ -627,13 +681,83 @@ mod tests {
     }
 
     #[test]
-    fn set_timeout_ms_clamps_to_16_bit_reload() {
+    fn set_timeout_ms_boundary_stays_on_historical_prescaler() {
+        // 1638 ms is the last request expressible at the 0xA9/40 kHz tick
+        // (reload 65520 <= 0xFFFF); the next millisecond must move the
+        // prescaler, not clamp the reload.
         let mock = MockI2c::default();
         let mut t = Mfrc522Transceiver::from_i2c(mock, DEFAULT_I2C_ADDRESS).unwrap();
-        t.set_timeout_ms(u32::MAX).unwrap();
+        t.set_timeout_ms(1638).unwrap();
         let i2c = t.release();
+        assert_eq!(i2c.last_write_to(T_MODE_REG), 0x80);
+        assert_eq!(i2c.last_write_to(T_PRESCALER_REG), 0xA9);
+        assert_eq!(i2c.last_write_to(T_RELOAD_HIGH_REG), (65_520u32 >> 8) as u8);
+        assert_eq!(i2c.last_write_to(T_RELOAD_LOW_REG), 65_520u32 as u8);
+    }
+
+    #[test]
+    fn set_timeout_ms_fwi13_2483ms_widens_prescaler() {
+        // bolty-rs #180: FWI 13 FWT = 2483 ms — previously SILENTLY
+        // clamped to 1638 ms at the fixed 0xA9 tick. Expected mapping:
+        // divisor 515 (= 2*257+1) → 12-bit prescaler 0x101 (TModeReg
+        // high nibble 0x1, TPrescalerReg 0x01), f_timer = 26,330 Hz,
+        // reload = 65,378 = 0xFF62 (armed period 2.4830 s ≥ request).
+        let mock = MockI2c::default();
+        let mut t = Mfrc522Transceiver::from_i2c(mock, DEFAULT_I2C_ADDRESS).unwrap();
+        t.set_timeout_ms(2483).unwrap();
+        let i2c = t.release();
+        assert_eq!(
+            i2c.last_write_to(T_MODE_REG),
+            0x80 | 0x01,
+            "TPrescaler high nibble"
+        );
+        assert_eq!(i2c.last_write_to(T_PRESCALER_REG), 0x01);
         assert_eq!(i2c.last_write_to(T_RELOAD_HIGH_REG), 0xFF);
-        assert_eq!(i2c.last_write_to(T_RELOAD_LOW_REG), 0xFF);
+        assert_eq!(i2c.last_write_to(T_RELOAD_LOW_REG), 0x62);
+    }
+
+    #[test]
+    fn set_timeout_ms_fwi14_4957ms_widens_prescaler() {
+        // bolty-rs #180: FWI 14 FWT = 4957 ms. Expected mapping:
+        // divisor 1027 (= 2*513+1) → 12-bit prescaler 0x201 (TModeReg
+        // high nibble 0x2, TPrescalerReg 0x01), f_timer = 13,203 Hz,
+        // reload = 65,450 = 0xFFAA (armed period 4.9583 s ≥ request).
+        let mock = MockI2c::default();
+        let mut t = Mfrc522Transceiver::from_i2c(mock, DEFAULT_I2C_ADDRESS).unwrap();
+        t.set_timeout_ms(4957).unwrap();
+        let i2c = t.release();
+        assert_eq!(
+            i2c.last_write_to(T_MODE_REG),
+            0x80 | 0x02,
+            "TPrescaler high nibble"
+        );
+        assert_eq!(i2c.last_write_to(T_PRESCALER_REG), 0x01);
+        assert_eq!(i2c.last_write_to(T_RELOAD_HIGH_REG), 0xFF);
+        assert_eq!(i2c.last_write_to(T_RELOAD_LOW_REG), 0xAA);
+    }
+
+    #[test]
+    fn set_timeout_ms_rejects_beyond_hardware_maximum() {
+        // ~39.6 s is the 12-bit-prescaler + 16-bit-reload ceiling; a
+        // silent clamp was the #180 bug — over-max requests now error
+        // LOUDLY and touch no timer registers.
+        let mock = MockI2c::default();
+        let mut t = Mfrc522Transceiver::from_i2c(mock, DEFAULT_I2C_ADDRESS).unwrap();
+        let err = t.set_timeout_ms(60_000).unwrap_err();
+        assert!(matches!(err, Mfrc522Error::Timeout));
+        let err = t.set_timeout_ms(u32::MAX).unwrap_err();
+        assert!(matches!(err, Mfrc522Error::Timeout));
+        let i2c = t.release();
+        // init()'s Arduino-default timer registers, untouched by the
+        // rejected calls (TModeReg 0x80 / 0xA9 / reload 0x0FA0).
+        assert_eq!(
+            i2c.last_write_to(T_MODE_REG),
+            0x80,
+            "no timer registers written"
+        );
+        assert_eq!(i2c.last_write_to(T_PRESCALER_REG), 0xA9);
+        assert_eq!(i2c.last_write_to(T_RELOAD_HIGH_REG), 0x0F);
+        assert_eq!(i2c.last_write_to(T_RELOAD_LOW_REG), 0xA0);
     }
 
     // ---- t_4864e74e: constructor over pure embedded-hal + the
