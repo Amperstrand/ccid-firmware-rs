@@ -118,9 +118,18 @@ void log_msg(const int priority, const char *fmt, ...)
 """
 
 
+# The compiler the Makefile build will actually use: it honors the
+# environment's CC (`CC ?= cc`), so the prereq probe and the stub build
+# must invoke the SAME one — with CC=<unavailable compiler> a probe via
+# the unrelated hard-coded `cc` succeeds and the subsequent build fails
+# the suite instead of taking the documented missing-toolchain skip
+# (Codex P2 on #297, issue #435).
+CC = os.environ.get("CC", "cc")
+
+
 def _cc(source: str, out: Path, extra=()):
     return subprocess.run(
-        ["cc", "-shared", "-fPIC", "-o", str(out), str(source), *extra],
+        [CC, "-shared", "-fPIC", "-o", str(out), str(source), *extra],
         capture_output=True, text=True)
 
 
@@ -134,7 +143,8 @@ def _build_driver():
 
 
 def _pcsc_prereq_ok(workdir: Path) -> bool:
-    """True when cc + the driver's required PCSC headers exist
+    """True when the selected compiler (env CC, default cc) + the
+    driver's required PCSC headers exist
     (ifdhandler.h AND reader.h — both unconditional includes in
     ifd-nucula.c; debuglog.h is __has_include-optional). cflags use the
     Makefile's own pkg-config / /usr/include/PCSC fallback. Separates
@@ -151,7 +161,7 @@ def _pcsc_prereq_ok(workdir: Path) -> bool:
     probe.write_text("#include <ifdhandler.h>\n#include <reader.h>\n"
                      "int main(void) { return 0; }\n")
     try:
-        probe_rc = subprocess.run(["cc", "-fsyntax-only", *flags, str(probe)],
+        probe_rc = subprocess.run([CC, "-fsyntax-only", *flags, str(probe)],
                                   capture_output=True).returncode
     except OSError:
         return False
@@ -162,7 +172,7 @@ def _pcsc_prereq_ok(workdir: Path) -> bool:
 def driver(tmp_path_factory):
     build_dir = tmp_path_factory.mktemp("ifd-emu")
     if not _pcsc_prereq_ok(build_dir):
-        pytest.skip("cc/PCSC headers unavailable (optional toolchain)")
+        pytest.skip(f"{CC}/PCSC headers unavailable (optional toolchain)")
     build = _build_driver()
     if build.returncode != 0:
         pytest.fail(f"driver build failed with toolchain present: "
@@ -366,7 +376,7 @@ def test_driver_rebuilds_when_source_newer(tmp_path):
     present, any make failure is a code regression and must FAIL
     (Codex P2 on #297)."""
     if not _pcsc_prereq_ok(tmp_path):
-        pytest.skip("cc/PCSC headers unavailable (optional toolchain)")
+        pytest.skip(f"{CC}/PCSC headers unavailable (optional toolchain)")
     src = IFD_DIR / "ifd-nucula.c"
     os.utime(src)
     build = _build_driver()
