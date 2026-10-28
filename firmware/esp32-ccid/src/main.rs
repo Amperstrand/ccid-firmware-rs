@@ -23,7 +23,9 @@ compile_error!("feature board-nucula is mutually exclusive with board-m5atom/boa
         feature = "board-nucula"
     ))
 ))]
-compile_error!("select a board feature: board-m5atom, board-m5stick, or board-nucula — board pin data lives in crates/boards (boards-as-data)");
+compile_error!(
+    "select a board feature: board-m5atom, board-m5stick, or board-nucula — board pin data lives in crates/boards (boards-as-data)"
+);
 #[cfg(all(feature = "ble", feature = "spp"))]
 compile_error!(
     "features ble and spp are mutually exclusive (both claim the single Bluetooth modem)"
@@ -78,18 +80,12 @@ use core::convert::Infallible;
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
-use esp32_ccid::{ccid_handler::CcidHandler, nfc::NfcDriver, pn532_driver::Pn532NfcDriver};
-#[cfg(all(
-    any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
 use esp_idf_hal::{
     delay::FreeRtos,
     gpio::{self, AnyIOPin, PinDriver},
     peripherals::Peripherals,
     spi::{self, SpiDeviceDriver},
-    uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
+    uart::{self, UartDriver, config::DataBits, config::FlowControl, config::StopBits},
     units::Hertz,
 };
 #[cfg(all(
@@ -98,6 +94,12 @@ use esp_idf_hal::{
     not(feature = "backend-mfrc522")
 ))]
 use esp_idf_sys::EspError;
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-pn532",
+    not(feature = "backend-mfrc522")
+))]
+use esp32_ccid::{ccid_handler::CcidHandler, nfc::NfcDriver, pn532_driver::Pn532NfcDriver};
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -125,7 +127,7 @@ use esp_idf_hal::{delay::FreeRtos, peripherals::Peripherals, units::Hertz};
 ))]
 use esp_idf_hal::{
     gpio::AnyIOPin,
-    uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
+    uart::{self, UartDriver, config::DataBits, config::FlowControl, config::StopBits},
 };
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -200,9 +202,13 @@ fn write_all(uart: &UartDriver, mut bytes: &[u8]) -> Result<(), EspError> {
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
-    if let Err(e) = write_all(uart, bytes) {
-        log::error!("UART write failed: {:?}", e);
+fn write_all_logged(uart: &UartDriver, bytes: &[u8]) -> bool {
+    match write_all(uart, bytes) {
+        Ok(()) => true,
+        Err(e) => {
+            log::error!("UART write failed: {:?}", e);
+            false
+        }
     }
 }
 
@@ -249,18 +255,27 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
                 server.poll_if_due_after_response(unsafe { esp_idf_sys::xTaskGetTickCount() });
                 return;
             }
-            write_all_logged(uart, server.echo());
+            // #294 WS2 / #473: evidence fires ONLY when echo (+notify) +
+            // response all reached the wire AND the TX FIFO drained — a
+            // failed or undrained write is not serve evidence (the gate
+            // stays armed for a later exchange; a pending-verify image
+            // that cannot serve rolls back instead of self-certifying).
+            let mut sent = write_all_logged(uart, server.echo());
             let notify = server.notify();
             if !notify.is_empty() {
-                write_all_logged(uart, notify);
+                sent &= write_all_logged(uart, notify);
             }
-            write_all_logged(uart, server.response());
-            let _ = uart.wait_tx_done(esp_idf_hal::delay::BLOCK);
-            // #294 WS2: echo + response drained to the UART wire — the
-            // first fully-delivered exchange is this image's OTA serve
-            // proof (parse alone does not count: a late-dropped or
-            // failed write is not serve evidence).
-            ccid_service::ota_validity::note_serve_evidence("gempc-uart");
+            sent &= write_all_logged(uart, server.response());
+            sent &= uart
+                .wait_tx_done(esp_idf_hal::delay::BLOCK)
+                .map_err(|e| {
+                    log::error!("UART TX drain failed: {:?}", e);
+                    e
+                })
+                .is_ok();
+            if sent {
+                ccid_service::ota_validity::note_serve_evidence("gempc-uart");
+            }
             let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
             server
                 .handler_mut()
@@ -288,7 +303,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
             on_response_extra();
         }
         ServeAction::Nak => {
-            write_all_logged(uart, server.nak_frame());
+            let _ = write_all_logged(uart, server.nak_frame());
         }
         ServeAction::None => {}
     }
@@ -507,7 +522,9 @@ fn main() {
     let frontend = if pn532_ok {
         esp32_ccid::frontend::RetryFrontend::healthy(pn532_driver)
     } else {
-        log::error!("PN532 init failed — serving degraded (card absent), init retried on every presence poll");
+        log::error!(
+            "PN532 init failed — serving degraded (card absent), init retried on every presence poll"
+        );
         esp32_ccid::frontend::RetryFrontend::degraded(pn532_driver)
     };
 
