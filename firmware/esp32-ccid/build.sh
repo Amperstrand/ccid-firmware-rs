@@ -240,6 +240,14 @@ case "${BOARD}" in
         FLASH_BAUD="460800"
         ;;
     wifi-ccid)
+        # 2026-10-28: a --flash invocation WITHOUT the wifi env silently
+        # rebuilt an SSID-less image and boot-looped the board
+        # (ESP_ERR_WIFI_SSID) — twice. Wifi profiles must fail loud when
+        # credentials are missing, exactly like the flash-mode guard.
+        if [ -z "${NUCULA_WIFI_SSID:-}" ] || [ -z "${NUCULA_WIFI_PASS:-}" ] || [ -z "${NUCULA_VPCD_HOST:-}" ]; then
+            echo "error: wifi-ccid needs NUCULA_WIFI_SSID / NUCULA_WIFI_PASS / NUCULA_VPCD_HOST in the environment (see docs/VPCD_WIFI_RUNBOOK.md) — refusing" >&2
+            exit 1
+        fi
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
@@ -251,6 +259,14 @@ case "${BOARD}" in
         FLASH_BAUD="460800"
         ;;
     wifi-vpcd)
+        # 2026-10-28: a --flash invocation WITHOUT the wifi env silently
+        # rebuilt an SSID-less image and boot-looped the board
+        # (ESP_ERR_WIFI_SSID) — twice. Wifi profiles must fail loud when
+        # credentials are missing, exactly like the flash-mode guard.
+        if [ -z "${NUCULA_WIFI_SSID:-}" ] || [ -z "${NUCULA_WIFI_PASS:-}" ] || [ -z "${NUCULA_VPCD_HOST:-}" ]; then
+            echo "error: wifi-vpcd needs NUCULA_WIFI_SSID / NUCULA_WIFI_PASS / NUCULA_VPCD_HOST in the environment (see docs/VPCD_WIFI_RUNBOOK.md) — refusing" >&2
+            exit 1
+        fi
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"

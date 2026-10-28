@@ -48,6 +48,7 @@ pub fn run() -> ! {
     let port: u16 = option_env!("NUCULA_VPCD_PORT")
         .and_then(|p| p.parse().ok())
         .unwrap_or(crate::vpcd::HOST_VPCD_PORT);
+    crate::wifi_common::log_reset_reason();
     log::warn!(
         "wifi-vpcd: station up at {} — connecting to vpcd at {}:{}",
         ip,

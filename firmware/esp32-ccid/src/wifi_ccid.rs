@@ -102,6 +102,7 @@ pub fn run() -> ! {
             }
         }
     };
+    crate::wifi_common::log_reset_reason();
     log::warn!(
         "wifi-ccid: station up at {} — TCP CCID on port {}",
         ip,
