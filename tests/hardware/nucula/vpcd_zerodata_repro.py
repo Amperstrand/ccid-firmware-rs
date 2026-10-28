@@ -128,7 +128,16 @@ def main():
         that: on b"" close the socket, accept the board's reconnect,
         request ATR, and only then report. A board that answers empty
         but then serves a FRESH ATR and clean exchanges is HEALED, not
-        wedged — the harness must not conflate the two."""
+        wedged — the harness must not conflate the two.
+
+        Codex P2 on #232 (issue #436): a failed reconnect leaves the
+        closed fd replaced by a None sentinel — every later exchange
+        and the unconditional final ATR probe must check it instead of
+        raising OSError (Bad file descriptor) on the dead descriptor."""
+        if sock_ref[0] is None:
+            print(f"{label}: SKIP — no live connection "
+                  "(reconnect failed earlier)")
+            return None
         rsp = exchange(sock_ref[0], apdu, label)
         if rsp == b"":
             print(f"{label}: ICC-absent (0-length) — modeling the host "
@@ -140,6 +149,7 @@ def main():
             except socket.timeout:
                 print("no reconnect after ICC-absent — board did not "
                       "re-attach (report this: worse than the wedge)")
+                sock_ref[0] = None
                 return None
             sock_ref[0].settimeout(IO_TIMEOUT_S)
             send_msg(sock_ref[0], bytes([VPCD_CTRL_ATR]))
@@ -169,10 +179,18 @@ def main():
                       f"{rsp[-2:].hex(' ')}")
                 clean = False
 
-    send_msg(sock_ref[0], bytes([VPCD_CTRL_ATR]))
-    atr2 = recv_msg(sock_ref[0])
-    print(f"post-probe ATR: {atr2.hex(' ') if atr2 else atr2!r}")
-    sock_ref[0].close()
+    # #436: the final ATR probe runs only on a LIVE socket — after a
+    # failed reconnect sock_ref[0] is None (the old fd is closed), and
+    # an unconditional send_msg there raised an uncaught OSError instead
+    # of one of the documented outcomes.
+    if sock_ref[0] is not None:
+        send_msg(sock_ref[0], bytes([VPCD_CTRL_ATR]))
+        atr2 = recv_msg(sock_ref[0])
+        print(f"post-probe ATR: {atr2.hex(' ') if atr2 else atr2!r}")
+        sock_ref[0].close()
+    else:
+        print("post-probe ATR: skipped — no live connection "
+              "(reconnect failed)")
     srv.close()
     print("RESULT:", "CLEAN" if clean else "WEDGE SIGNATURE")
     return 0 if clean else 1
