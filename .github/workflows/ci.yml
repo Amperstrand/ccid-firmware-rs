@@ -567,6 +567,22 @@ jobs:
             target: xtensa-esp32-espidf
             sdkconfig: "sdkconfig-xtensa-vpcd.full"
             sdkconfig_full: true
+          # BLE debug console on the C3 reader main (issue #66): the
+          # `ble` feature on riscv32 + a BT-enabled sdkconfig is
+          # compiled by no other matrix entry — target coverage so a
+          # future svc/generation bump or pairing-rule change cannot
+          # rot the c3-ccid-ble bench profile silently (build.sh is
+          # not CI'd). Mirrors build.sh c3-ccid-ble: pn7160-ccid main,
+          # sdkconfig-c3-ble.full, debug profile = bench parity.
+          - name: c3-ccid-ble
+            features: "pn7160-ccid,ble"
+            no-default-features: true
+            gate: false
+            toolchain: esp
+            profile: ""
+            target: riscv32imc-esp-espidf
+            sdkconfig: "sdkconfig-c3-ble.full"
+            sdkconfig_full: true
     steps:
       - uses: actions/checkout@v5
         with:
