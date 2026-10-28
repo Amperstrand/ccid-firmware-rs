@@ -12,8 +12,10 @@
 # RUNNER POLICY (2026-10-28): optimistic self-hosted with hosted fallback.
 # GitHub Actions has no native self-hosted→hosted fallback (a job whose
 # runner is absent queues until its timeout), so `pick-runner` — a
-# seconds-cheap hosted job — asks the API whether a `legion-vm` runner is
-# online and routes the fuzz legs accordingly:
+# seconds-cheap hosted job — infers legion-vm availability from recently
+# EXECUTED jobs and routes the fuzz legs accordingly. (The runners API is
+# admin-only: a job token with actions:read gets HTTP 403 there — proven
+# on this workflow's first dispatch, which is why the fallback lane ran.)
 #   online  -> [self-hosted, legion-vm] (19-vCPU Legion VM; warm target/
 #              dirs + preinstalled nightly/cargo-fuzz/clang after run 1)
 #              and the per-target budget grows 120s -> 900s: preferring
@@ -47,15 +49,37 @@ jobs:
       runner: ${{ steps.pick.outputs.runner }}
       fuzz_seconds: ${{ steps.pick.outputs.fuzz_seconds }}
     steps:
-      - name: Probe legion-vm availability
+      - name: Probe legion-vm availability (secret-free)
         id: pick
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          if gh api "repos/${{ github.repository }}/actions/runners" \
-               --jq 'any(.runners[]; ((.labels | map(.name) | index("legion-vm")) != null) and .status == "online")' \
-               | grep -qx true; then
+          # Availability = "a job executed on a legion-* runner within 24h"
+          # (machine-class heartbeat). This repo's own runs first; the
+          # kali-live-headless CI lane — same VM, pushed frequently —
+          # bootstraps the signal for repos that never ran self-hosted.
+          # Every failure path degrades to hosted, never to a hang.
+          cutoff=$(date -u -d '24 hours ago' +%s)
+          saw_legion() {
+            local repo=$1 runs run
+            runs=$(gh api "repos/$repo/actions/runs?per_page=$2" \
+              --argjson cutoff "$cutoff" \
+              --jq '.workflow_runs[]
+                    | select(.status == "completed")
+                    | select((.updated_at | fromdateiso8601) > $cutoff)
+                    | .id' 2>/dev/null || true)
+            for run in $runs; do
+              if gh api "repos/$repo/actions/runs/$run/jobs" \
+                   --jq 'any(.jobs[]; ((.runner_name // "") | startswith("legion-")))' \
+                   2>/dev/null | grep -qx true; then
+                return 0
+              fi
+            done
+            return 1
+          }
+          if saw_legion "${{ github.repository }}" 15 \
+             || saw_legion Amperstrand/kali-live-headless 5; then
             echo 'runner=["self-hosted","legion-vm"]' >> "$GITHUB_OUTPUT"
             echo 'fuzz_seconds=900' >> "$GITHUB_OUTPUT"
           else
