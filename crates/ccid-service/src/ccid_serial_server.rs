@@ -656,9 +656,25 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
         ServeAction::Respond
     }
 
+    /// Parser holds a partial frame (diagnostics/tests).
+    pub fn parser_is_mid_frame(&self) -> bool {
+        self.parser.mid_frame()
+    }
+
     /// Read-idle path: poll card presence if the interval elapsed.
     /// Returns `true` when a poll ran.
     pub fn poll_if_due(&mut self, now_ticks: u32) -> bool {
+        // Partial-frame stall (bench 2026-10-28, conformance battery fuzz
+        // case "lone SYNC"): the byte-arrival-driven gap reset can never
+        // fire when no further bytes come, so a stray SYNC wedges the
+        // parser in WaitCtrl for seconds. The idle tick is the only other
+        // witness — drop a stalled partial frame here.
+        if self.parser.mid_frame()
+            && now_ticks.wrapping_sub(self.last_byte_tick)
+                > Self::INTER_BYTE_STALL_TICKS
+        {
+            self.parser.reset();
+        }
         if self.poll_due(now_ticks) {
             self.handler.check_card_change();
             true
@@ -1180,6 +1196,29 @@ mod tests {
     }
 
     #[test]
+    fn lone_sync_stall_dropped_from_idle_tick() {
+        // Bench 2026-10-28 wedge (conformance battery fuzz "lone SYNC"):
+        // a stray SYNC leaves the parser mid-frame; with no further
+        // bytes the arrival-driven gap reset never fires and the reader
+        // stays deaf for seconds. The idle tick must drop the partial,
+        // and the NEXT complete frame must be answered immediately.
+        let mut server = server_with(false);
+        let t0 = 100u32;
+        // lone SYNC — no further bytes
+        assert_eq!(server.feed_byte(0x03, t0), ServeAction::None);
+        assert!(server.parser_is_mid_frame());
+        // idle ticks pass (well past INTER_BYTE_STALL_TICKS=10)
+        let _ = server.poll_if_due(t0 + 50);
+        assert!(
+            !server.parser_is_mid_frame(),
+            "idle tick must drop the stalled partial frame"
+        );
+        // the next complete GetSlotStatus parses and is answered
+        let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
+        assert_eq!(feed_frame(&mut server, &frame, t0 + 60),
+                   ServeAction::Respond);
+    }
+
     fn idle_poll_fires_once_per_interval() {
         let mut server = server_with(true);
 

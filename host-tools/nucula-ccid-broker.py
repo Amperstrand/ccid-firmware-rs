@@ -259,12 +259,34 @@ class PowerOffShim:
     def __init__(self) -> None:
         self.enabled = os.environ.get("POWER_OFF_SHIM", "1") == "1"
         self.buf = bytearray()
+        self.last_rx = time.monotonic()
         if self.enabled:
             print("broker: power-off shim ACTIVE (#125 bridge)", flush=True)
 
     def process(self, data: bytes) -> tuple[bytes, bytes]:
         """Buffer host bytes until frames complete. Returns
         (bytes_to_forward, bytes_to_answer_locally)."""
+        # Stale-partial flush (bench 2026-10-28, conformance battery fuzz
+        # "lone SYNC", deterministic 2/2): a stray SYNC buffered with no
+        # follow-up fuses with the NEXT probe frame into a bogus
+        # "sane-length complete" anchor at the stale byte — both frames
+        # desync and the reader reads dead for seconds.
+        #
+        # Why an idle gap can only precede a NEW frame (Codex P1 on #483,
+        # reference-first): the host-side GemPC driver frames and emits
+        # each command in a SINGLE write() — reference/CCID/src/
+        # ccid_serial.c WriteSerial builds SYNC+CTRL+CCID+LRC in
+        # low_level_buffer and issues one write(serialDevice.fd, ...)
+        # per command. Application-layer mid-frame pauses therefore do
+        # not exist; any delivery-level split of that write is kernel
+        # scheduling (us-ms scale). The cutoff sits two orders above the
+        # 274-byte 115200 wire time (~24 ms) and scheduling noise, and
+        # 18x below the observed 4.56 s wedge; env-tunable for the bench.
+        now = time.monotonic()
+        cutoff = float(os.environ.get("BROKER_FRAME_GAP_S", "0.25"))
+        if self.buf and now - self.last_rx > cutoff:
+            self.buf = bytearray()
+        self.last_rx = now
         self.buf += data
         if not self.enabled:
             out, self.buf = bytes(self.buf), bytearray()
