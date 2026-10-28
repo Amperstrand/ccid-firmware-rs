@@ -8,7 +8,7 @@ pub mod diagnostics;
 pub use diagnostics::Diagnostics;
 
 pub mod handler;
-pub use handler::{ContactProfile, ReaderProfile, SerialNfcProfile};
+pub use handler::{ContactProfile, ContactWireTiming, ReaderProfile, SerialNfcProfile};
 
 pub mod secure;
 pub use secure::{PinBuffer, PinModifyParams, PinResult, PinVerifyParams, SecureState};

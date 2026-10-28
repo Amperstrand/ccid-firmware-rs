@@ -43,6 +43,72 @@ pub fn t1_block_total_len(prologue: &[u8], buf_len: usize) -> Option<usize> {
     Some(total)
 }
 
+// ============================================================================
+// STM32 USART smartcard-mode framing constants (issue #135)
+// ============================================================================
+//
+// Pure register-value builders so the framing contract is expressed ONCE,
+// host-testable (this file's top part compiles on x86_64), and locked by
+// unit tests against the vendored ST HAL quotes. The ARM-only
+// `smartcard.rs` consumes these — it never computes framing bits inline.
+
+/// CR2 STOP[13:12] field for `SMARTCARD_STOPBITS_1_5`.
+///
+// ST_HAL: #define SMARTCARD_STOPBITS_1_5              ((uint32_t)(USART_CR2_STOP_0 | USART_CR2_STOP_1))
+pub const CR2_STOP_SMARTCARD_1_5: u16 = 0x3000;
+
+/// GTPR guard-time default when the ATR carries no TC1: ISO 7816-3 default
+/// guard time N=2. The osmoOCTSIM reference reader runs the same choice
+/// (SAMD51 SERCOM GTIME encoding, same ISO N):
+///
+// OSMO_7816: // <o> ISO7816 Guard Time
+pub const GUARD_TIME_DEFAULT_N: u16 = 2;
+
+/// T=1 USART smartcard framing for the STM32F4 (STOP bits + guard time).
+///
+/// STOP stays 1.5 bits — ST's own HAL asserts smartcard mode supports ONLY
+/// 0.5 or 1.5 and recommends 1.5 for both directions; the historical T=1
+/// arm rewrote CR2 to a 1.0 stop bit, which is outside ST's contract
+/// (issue #135, the #132 content-dependent corruption enabler class).
+/// Guard time is expressed via GTPR ONLY (GT counts baud clocks —
+/// `GuardTime << 8`, prescaler in the low byte). `guard_time_n` is the ATR
+/// TC1 value (raw N) as parsed by `parse_atr`; 0 means TC1 absent → ISO
+/// default N=2. N=255 (ISO "reduced guard time") has no citable STM32
+/// mapping yet (RM0090 §26.3.9 verbatim pending, see
+/// reference/ST/PROVENANCE.md) — it is conservatively folded to the N=2
+/// default; longer-than-required guard time only slightly paces TX, it can
+/// never corrupt.
+///
+// ST_HAL: #define IS_SMARTCARD_STOPBITS(STOPBITS)     (((STOPBITS) == SMARTCARD_STOPBITS_0_5) || ... ((STOPBITS) == SMARTCARD_STOPBITS_1_5))
+pub fn t1_usart_framing(guard_time_n: u8) -> (u16, u16) {
+    // Codex P1 on #496 — mapping now REFERENCE-DERIVED. ST USART
+    // reference (RM0090-family USART chapter, "Smartcard mode"
+    // functional description, verbatim): "the USART inserts the Guard
+    // Time (as programmed in the Guard Time register) between two
+    // successive characters. As the Guard Time is measured after the
+    // stop bit of the previous character, the GT[7:0] register must be
+    // programmed to the desired CGT (Character Guard Time, as defined
+    // by the 7816-3 specification) minus 12 (the duration of one
+    // character)."
+    // ISO 7816-3: CGT = 12 etu + N*etu for N in 0..=254; N=255 reduces
+    // CGT to its minimum (12 etu). Therefore GT[7:0] = CGT - 12 = N
+    // exactly, for the FULL value range 0..=254, and 255 -> 0. The old
+    // 0|255 -> N=2 fold was wrong twice over: a host
+    // SetParameters(bGuardTime=0) is the VALID value 0 (GT=0), and 255
+    // is the ISO reduced-guard-time request (GT=0), not "use default".
+    // (ATR TC1-ABSENT defaults are the CALLER's concern — substitute
+    // N=2 there before calling; see the ATR call sites.)
+    let gt = if guard_time_n == 255 { 0 } else { guard_time_n as u16 };
+    (CR2_STOP_SMARTCARD_1_5, gt)
+}
+
+/// T=0 (ATR/convention) framing: STOP=1.5 (as above) with the generous
+/// 16-ETU guard time the init path has always programmed — reception-side
+/// safe, and T=0 enables NACK (CR3.NACKEN) for error signalling:
+///
+// ST_HAL: #define SMARTCARD_NACK_ENABLE               ((uint32_t)USART_CR3_NACK)
+pub const T0_GUARD_TIME_ETU: u16 = 16;
+
 pub const SMARTCARD_CONFIG_DEFAULT: SmartcardConfig = SmartcardConfig {
     power_on_delay_ms: 50,
     reset_delay_ms: 25,
@@ -96,6 +162,57 @@ mod tests {
     fn t1_block_total_len_short_prologue() {
         assert_eq!(t1_block_total_len(&[], 261), None);
         assert_eq!(t1_block_total_len(&[0x00, 0x00], 261), None);
+    }
+
+    /// #135: T=1 keeps STOP=1.5 (CR2 STOP[13:12]=11) — ST's smartcard-mode
+    /// contract allows ONLY 0.5/1.5 (IS_SMARTCARD_STOPBITS assert,
+    /// reference/ST/stm32f4xx-hal-driver/Inc/stm32f4xx_hal_smartcard.h).
+    /// Locks the fix: the pre-#135 code cleared STOP to 1.0 (00).
+    #[test]
+    fn t1_framing_stop_bits_stay_1_5() {
+        for tc1 in [0u8, 1, 2, 0x0A, 0xFF] {
+            let (cr2_stop, _gt) = t1_usart_framing(tc1);
+            assert_eq!(
+                cr2_stop, CR2_STOP_SMARTCARD_1_5,
+                "TC1={:#02X}: STOP must remain 1.5 bits (0x3000), got {:#06X}",
+                tc1, cr2_stop
+            );
+            assert_eq!(cr2_stop & !0x3000, 0, "STOP field only in bits 13:12");
+        }
+    }
+
+    /// #135: guard time expressed via GTPR only, driven by TC1; no TC1
+    /// (parse_atr leaves 0) → ISO default N=2, not the pre-#135 GT=1.
+    /// The osmoOCTSIM reference runs ISO7816 Guard Time = 2-bit times.
+    #[test]
+    fn t1_framing_guard_time_via_gtpr_only() {
+        // VALUE semantics (Codex P1 on #496): input is the N value;
+        // GT = N verbatim (RM0090-family: GT = CGT - 12 = N). The ATR
+        // TC1-ABSENT -> N=2 substitution lives at the ATR call site.
+        assert_eq!(t1_usart_framing(0), (CR2_STOP_SMARTCARD_1_5, 0));
+        // TC1 present → GT = N raw (GT counts baud clocks; HAL: GuardTime<<8)
+        assert_eq!(t1_usart_framing(1).1, 1);
+        assert_eq!(t1_usart_framing(4).1, 4);
+        assert_eq!(t1_usart_framing(0xFE).1, 0xFE);
+        // ISO reduced-guard-time sentinel (255): no citable STM32 mapping
+        // yet — conservatively folded to the N=2 default (never shorter).
+        // 255 = ISO reduced guard time -> GT = 0 (12 etu CGT)
+        assert_eq!(t1_usart_framing(0xFF).1, 0);
+        // GT field is GTPR[15:8] — must stay inside 8 bits. GT=0 is the
+        // VALID reference-derived value (N=0 present, or 255 reduced) —
+        // the old gt>=1 bound encoded the retired fold-to-default.
+        for tc1 in 0..=255u8 {
+            let (_, gt) = t1_usart_framing(tc1);
+            assert!(gt <= 255);
+        }
+    }
+
+    /// T=0/ATR convention guard time (unchanged by #135, locked as-is so a
+    /// future "cleanup" cannot silently tighten it without a citation).
+    #[test]
+    fn t0_guard_time_is_the_historical_16_etu() {
+        assert_eq!(T0_GUARD_TIME_ETU, 16);
+        assert_eq!(CR2_STOP_SMARTCARD_1_5, 0x3000);
     }
 }
 

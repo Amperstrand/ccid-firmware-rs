@@ -299,10 +299,30 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
 
         // The accepted-protocol event (the esp32 t1-armed pattern):
         // SetParameters/ResetParameters acceptance re-programs the
-        // smartcard USART for the negotiated protocol.
+        // smartcard USART for the negotiated protocol — and, #122, the
+        // accepted wire timing (Fi/Di + guard time N, the dwFeatures
+        // bit-5 AUTO_BAUD contract; the driver guards the baud against
+        // the card's actually-negotiated state, guard time is always
+        // safe to apply).
         if self.core.take_parameters_accepted() {
             let protocol = self.core.current_protocol();
             self.core.driver_mut().driver.set_protocol(protocol);
+            if let Some(timing) = self.core.accepted_contact_timing() {
+                self.core.driver_mut().driver.set_wire_timing(
+                    timing.fi,
+                    timing.di,
+                    timing.guard_time_n,
+                );
+            } else {
+                // Codex P2 on #496: the None arm is the ResetParameters
+                // acceptance — host_params is cleared, but the HARDWARE
+                // still carries the last programmed guard time. Restore
+                // the default (CCID §6.1.6): set_wire_timing(0, 0, 0)
+                // programs GTPR with the GUARD_TIME_DEFAULT_N mapping
+                // and deliberately skips the baud (the card's
+                // negotiated wire rate survives a parameters reset).
+                self.core.driver_mut().driver.set_wire_timing(0, 0, 0);
+            }
         }
 
         // #342: surface driver self-healing re-inits inline. A re-init

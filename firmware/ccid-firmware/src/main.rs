@@ -264,6 +264,12 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         self.uart.set_protocol(protocol)
     }
 
+    /// #122 AUTO_BAUD: forward the accepted SetParameters wire timing to
+    /// the USART frontend (guarded application inside `SmartcardUart`).
+    fn set_wire_timing(&mut self, fi: u16, di: u8, guard_time_n: u8) {
+        self.uart.set_wire_timing(fi, di, guard_time_n)
+    }
+
     fn set_clock(&mut self, enable: bool) {
         self.uart.set_clock(enable)
     }

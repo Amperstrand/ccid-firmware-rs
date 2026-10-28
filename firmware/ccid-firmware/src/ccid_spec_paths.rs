@@ -406,6 +406,62 @@ fn test_set_parameters_applies_and_echoes_host_t1_values() {
     assert_eq!(param_data(&gp), &host_params);
 }
 
+/// #122 AUTO_BAUD plumbing: an accepted SetParameters must ALSO reach
+/// the driver as wire timing (Fi/Di + guard time) — the dwFeatures
+/// bit-5 contract all three profiles advertise. The USART frontend
+/// guards the baud against the card's proven rate (see smartcard.rs
+/// `set_wire_timing`); the mock records the delivery so the plumbing
+/// cannot silently regress.
+#[test]
+fn test_set_parameters_delivers_wire_timing_to_driver() {
+    let mut h = CcidMessageHandler::new(
+        MockSmartcardDriver::new()
+            .card_present(true)
+            .with_atr(&T1_ATR_BWI3_CWI7),
+        CHERRY_VID,
+    );
+    exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_ICC_POWER_ON, 0, 1, [0x00, 0, 0], &[]),
+    );
+
+    // libccid's post-PPS shape for a TA1=0x18 card (Di=12): Fi/Di=0x18,
+    // GT=2. TCCKS=0x00 per our pinned validation (the 0x10 libccid
+    // sends is a tracked #122 follow-up).
+    let host_params: [u8; 7] = [0x18, 0x00, 0x02, 0x4D, 0x00, 0xFE, 0x00];
+    let resp = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_SET_PARAMETERS, 0, 3, [1, 0, 0], &host_params),
+    );
+    assert_eq!(resp[0], RDR_TO_PC_PARAMETERS);
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_NO_ERROR);
+
+    assert!(h.driver().call_log().iter().any(|c| matches!(
+        c,
+        MockCall::SetWireTiming {
+            fi: 372,
+            di: 12,
+            guard_time_n: 2
+        }
+    )));
+
+    // A REJECTED SetParameters must NOT deliver wire timing (the event
+    // only fires on acceptance): bIFSC=0x05 is below the 0x10 floor.
+    let bad: [u8; 7] = [0x18, 0x00, 0x02, 0x4D, 0x00, 0x05, 0x00];
+    let resp = exchange(
+        &mut h,
+        &ccid_request(PC_TO_RDR_SET_PARAMETERS, 0, 4, [1, 0, 0], &bad),
+    );
+    assert_eq!(cmd_status(&resp), COMMAND_STATUS_FAILED);
+    let deliveries = h
+        .driver()
+        .call_log()
+        .iter()
+        .filter(|c| matches!(c, MockCall::SetWireTiming { .. }))
+        .count();
+    assert_eq!(deliveries, 1, "exactly one wire-timing delivery");
+}
+
 #[test]
 fn test_set_parameters_rejects_invalid_t1_values_with_bad_parameter() {
     // CCID 1.1 requires invalid SetParameters values to be answered with

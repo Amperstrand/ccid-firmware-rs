@@ -123,3 +123,38 @@ comment_marker = "OSMO_FSM"
 format = "markdown"
 file = "reference/pcsc-lite/src/pcscd.h.in"
 comment_marker = "PCSCD"
+
+# ST F4 HAL smartcard driver (issue #135, quote-only vendored under
+# reference/ST/ — Apache-2.0, pin in reference/ST/PROVENANCE.md): the
+# smartcard-mode framing contract — STOP bits (0.5/1.5 ONLY, the assert
+# behind the T=1 STOP=1.0 violation fix), NACK state macros, guard-time
+# programming (GuardTime<<8 into GTPR, baud-clock units), BRR math/ceiling.
+[sources.ST_HAL]
+format = "markdown"
+file = "reference/ST/stm32f4xx-hal-driver/Inc/stm32f4xx_hal_smartcard.h"
+comment_marker = "ST_HAL"
+
+# Same driver, .c side (trimmed): HAL_SMARTCARD_Init (GTPR/NACK/SCEN
+# sequence), SMARTCARD_SetConfig (CR2 STOP + BRR), the RM0090 pointers and
+# the recommended ATR configuration (9 bits / 1.5 stop / even parity).
+[sources.ST_HAL_C]
+format = "markdown"
+file = "reference/ST/stm32f4xx-hal-driver/Src/stm32f4xx_hal_smartcard.c"
+comment_marker = "ST_HAL_C"
+
+# osmoOCTSIM's SAMD51 ISO 7816 USART config (already a submodule): the
+# reference free-software reader's guard-time (2-bit times) and NACK
+# (INACK=0, NACK transmitted on parity error) policy choices.
+[sources.OSMO_7816]
+format = "markdown"
+file = "reference/osmo-ccid-firmware/sysmoOCTSIM/config/hpl_sercom_config.h"
+comment_marker = "OSMO_7816"
+
+# ST USB Device Library CCID class (issue #138, quote-only vendored under
+# reference/ST/): what a commercial STM32 CCID reader implements —
+# descriptor defaults, TPDU exchange-level choice, message-length ceiling,
+# and the bulk-OUT short-packet/exact-length/ZLP transfer state machine.
+[sources.ST_CCID]
+format = "markdown"
+file = "reference/ST/stm32-mw-usb-device/Class/CCID/Inc/usbd_ccid.h"
+comment_marker = "ST_CCID"

@@ -27,6 +27,25 @@ pub trait SmartcardDriver {
         _rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error>;
 
+    /// Apply host-negotiated wire timing after an accepted
+    /// SetParameters/ResetParameters (#122): Fi/Di + guard time N +
+    /// protocol, decoded by the core (`accepted_contact_timing`) from
+    /// the CCID abProtocolDataStructure. This is the dwFeatures bit-5
+    /// contract ("Automatic baud rate change according to frequency and
+    /// Fi, Di params" — all three of our profiles advertise it).
+    ///
+    /// Implementations must stay SAFE when the requested rate
+    /// contradicts what the CARD actually negotiated: the Cherry
+    /// profile additionally advertises bit 7 (reader-owned PPS), so
+    /// libccid skips its own PPS and sends Fi/Di derived from the ATR
+    /// TA1 REGARDLESS — with the reader's own PPS speed-up gated off
+    /// the card still runs at the ATR-default Di and the wire must NOT
+    /// follow the host's belief (the f5feb61 bench-regression class).
+    /// The default is a no-op; the USART frontend applies guard time
+    /// always (TX pacing only) and the baud only when it matches the
+    /// card's proven state.
+    fn set_wire_timing(&mut self, _fi: u16, _di: u8, _guard_time_n: u8) {}
+
     /// Classify a failed exchange for the CCID error-map table (#136,
     /// forwarded by `SmartcardCoreAdapter` into
     /// `CardBackend::xfr_error_class`). Concrete frontends with a

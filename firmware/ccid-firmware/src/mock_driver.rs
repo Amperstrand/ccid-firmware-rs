@@ -57,6 +57,7 @@ pub enum MockCall {
     SetProtocol { protocol: u8 },
     SetClock { enable: bool },
     SetClockAndRate { clock_hz: u32, rate_bps: u32 },
+    SetWireTiming { fi: u16, di: u8, guard_time_n: u8 },
 }
 
 impl MockSmartcardDriver {
@@ -259,6 +260,14 @@ impl SmartcardDriver for MockSmartcardDriver {
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.log(MockCall::SetClockAndRate { clock_hz, rate_bps });
         Ok((clock_hz, rate_bps))
+    }
+
+    fn set_wire_timing(&mut self, fi: u16, di: u8, guard_time_n: u8) {
+        self.log(MockCall::SetWireTiming {
+            fi,
+            di,
+            guard_time_n,
+        });
     }
 
     fn xfr_error_class(&self, _err: &Self::Error) -> XfrErrorKind {
