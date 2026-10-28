@@ -228,8 +228,13 @@ impl SmartcardUart {
     /// "Card is unresponsive"); when PPS_APPLY_NEGOTIATED_BAUD
     /// re-lands, case (a) covers the negotiated wire.
     pub fn set_wire_timing(&mut self, fi: u16, di: u8, guard_time_n: u8) {
-        // Guard time first (always safe): N=0 → keep programmed default.
-        if guard_time_n != 0 {
+        // Guard time first (always safe). Codex P2 on #496: N=0 is a
+        // VALID parameter value, not "retain previous" — an accepted
+        // SetParameters(0) must reprogram GTPR to the mapping of zero
+        // (t1_usart_framing's GUARD_TIME_DEFAULT_N), else GetParameters
+        // reports the accepted 0 while the hardware keeps pacing with
+        // the previous delay (254-class GT could slow every exchange).
+        {
             let (_stop, gt) = crate::smartcard_common::t1_usart_framing(guard_time_n);
             let psc = self.usart.gtpr().read().bits() & 0xFF;
             self.usart
