@@ -94,3 +94,41 @@ Worktrees: `/tmp` farm (pr82/idf555/pr158-161) already gone from prior
 sweeps; `ccid-c3-wt` (May c3-port lane, 0 unique commits, local-only
 branch) removed this sweep. Remaining: the hub + tonight's open-PR
 lanes.
+
+## Sweep 2026-10-28 (#476 — remote), same-session local-farm pass
+
+Base: main @ cff1e15d (post #464/#465/#452 merges). Fresh
+`git fetch origin refs/heads/main:refs/remotes/origin/main` before
+every claim, per the #166 discipline.
+
+**Remote: 8 branches deleted, every tip archived as
+`archive/2026-10-28/<name>` tags** (journal + per-branch verdicts in
+issue #476; ancestry was false for all eight — squash/re-merged
+landing — so verdicts are CONTENT verifications: per-file tip-vs-main
+diffs + signature greps). Deleted:
+`wave1/issue-262-defmt-refresh` (NOT landed, WIP, issue #262 points at
+the tag), `sisyphus/fix275-lcd` (landed-equivalent, #275 open for the
+hardware half), `sisyphus/fix276-pin-counters`,
+`sisyphus/post279-codex-p2`, `sisyphus/p3-hil-cadence`,
+`bench/battery-pty-tolerance`, `window2/sweep-404`,
+`sisyphus/ifd-nucula-hardening` (all landed). KEPT: `main`,
+`bench/status` (hil-bench nightly publish target — never a work
+branch), `fix/473-uart-serve-evidence` (open PR #474).
+
+Companion bolty sweep same day (issue bolty-rs#238): 7 archived+
+deleted (pin-churn trio + fuzz-start + fork-feeding-prep + merged
+hce-card-registry), remote down to `main` + the active
+`fix/h1-codex-233-235` head.
+
+Local farm (this checkout): 8 stale worktrees removed; 5 branches
+already merged into main deleted outright, 3 local-only unmerged lanes
+archived as `archive/2026-10-28/local-*` tags and pushed before
+worktree removal (`refactor/ccid-service-crate` +7 — superseded: main
+carries crates/ccid-service via a different landing; `ccid-service-finish`
++10; `feat/m3-product-presets` +2). The unpushed-work rule (host
+hygiene §2) is satisfied by the pushed tags.
+
+Search-and-destroy class added this sweep: plain `git fetch --prune`
+reported 65 stale bolty remote refs the branch list was still carrying
+— run `git fetch --prune` BEFORE counting branches or the inventory
+lies about its own size.
