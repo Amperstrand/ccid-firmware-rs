@@ -313,6 +313,15 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                     timing.di,
                     timing.guard_time_n,
                 );
+            } else {
+                // Codex P2 on #496: the None arm is the ResetParameters
+                // acceptance — host_params is cleared, but the HARDWARE
+                // still carries the last programmed guard time. Restore
+                // the default (CCID §6.1.6): set_wire_timing(0, 0, 0)
+                // programs GTPR with the GUARD_TIME_DEFAULT_N mapping
+                // and deliberately skips the baud (the card's
+                // negotiated wire rate survives a parameters reset).
+                self.core.driver_mut().driver.set_wire_timing(0, 0, 0);
             }
         }
 
