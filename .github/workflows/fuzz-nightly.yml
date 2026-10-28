@@ -8,6 +8,31 @@
 # Toolchain note: nightly is the fleet's ONE documented exception class
 # (AGENTS.md "instrumented fuzzing legs" — cargo-fuzz needs
 # -Zsanitizer). Do NOT spread nightly to any other job.
+#
+# RUNNER POLICY (owner direction, 2026-10-28): fuzzing is SELF-HOSTED
+# ONLY. GitHub's acceptable-use policy does not prohibit fuzzing on
+# hosted runners (this is a cost/value judgement, not a ToS workaround),
+# but bounded fuzz is the worst minute-value workload on 4-vCPU hosted
+# machines and precisely what the 19-vCPU legion VM exists for. So:
+#   legion-vm heartbeat within 24h -> fuzz legs run there, budget
+#                                  1800s per target (15x the old hosted
+#                                  budget) across per-repo runner
+#                                  services on the VM.
+#   no heartbeat                   -> fuzz legs SKIP (neutral, not red):
+#                                  a missed nightly is preferable to
+#                                  burning hosted minutes on the one
+#                                  workload we own better hardware for.
+# `pick-runner` (a seconds-cheap hosted job) decides by inferring
+# availability from EXECUTED jobs — the runners API is admin-only and a
+# job token gets HTTP 403 there, and `gh api` has no --argjson; both
+# learned the hard way on this PR's earlier dispatches, which is why
+# every probe branch now emits a ::notice.
+# Security posture unchanged: schedule/dispatch only (origin/main code —
+# same doctrine as hil-bench.yml; PR code never runs on a persistent
+# runner, and build.rs is untrusted code per boot-smoke). Repo-level
+# runners only take jobs for their own repo, so parallel matrix legs
+# need one runner service per leg-slot on the VM (machine-class labels
+# do NOT pool across registrations).
 
 name: Fuzz Nightly
 
@@ -20,9 +45,80 @@ permissions:
   contents: read
 
 jobs:
+  pick-runner:
+    name: pick runner (fuzz is self-hosted-only)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      lane: ${{ steps.pick.outputs.lane }}
+      fuzz_seconds: ${{ steps.pick.outputs.fuzz_seconds }}
+    steps:
+      - name: Probe legion-vm availability (secret-free)
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # Availability = "a job executed on a legion-* runner within 24h"
+          # (machine-class heartbeat). This repo's own runs first; the
+          # kali-live-headless CI lane — same VM, pushed frequently —
+          # bootstraps the signal for repos that never ran self-hosted.
+          cutoff=$(date -u -d '24 hours ago' +%s)
+          case "$cutoff" in ''|*[!0-9]*) echo "::error::bad cutoff"; exit 1 ;; esac
+          saw_legion() {
+            local repo=$1 pages=$2 runs run verdict
+            runs=$(gh api "repos/$repo/actions/runs?per_page=$pages" \
+              --jq ".workflow_runs[]
+                    | select(.status == \"completed\")
+                    | select((.updated_at | fromdateiso8601) > $cutoff)
+                    | .id" 2>&1) || {
+              echo "::notice::probe $repo listing failed: $(printf '%s' "$runs" | tail -1)"
+              return 1
+            }
+            for run in $runs; do
+              verdict=$(gh api "repos/$repo/actions/runs/$run/jobs" \
+                --jq 'any(.jobs[]; ((.runner_name // "") | startswith("legion-")))' 2>/dev/null || true)
+              if [ "$verdict" = true ]; then
+                echo "::notice::probe $repo: run $run executed on a legion-* runner"
+                return 0
+              fi
+            done
+            echo "::notice::probe $repo: no legion-* job within 24h"
+            return 1
+          }
+          if saw_legion "${{ github.repository }}" 15 \
+             || saw_legion Amperstrand/kali-live-headless 5; then
+            echo 'lane=selfhosted' >> "$GITHUB_OUTPUT"
+            echo 'fuzz_seconds=1800' >> "$GITHUB_OUTPUT"
+          else
+            echo 'lane=hosted' >> "$GITHUB_OUTPUT"
+            echo 'fuzz_seconds=0' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Lane summary
+        run: |
+          {
+            echo "## Fuzz lane"
+            echo '```'
+            echo "lane:         ${{ steps.pick.outputs.lane }}"
+            if [ "${{ steps.pick.outputs.lane }}" = selfhosted ]; then
+              echo "fuzz budget:  ${{ steps.pick.outputs.fuzz_seconds }}s per target on legion-vm"
+            else
+              echo "fuzz legs:    SKIPPED — fuzzing is self-hosted-only (no legion-vm heartbeat within 24h)"
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   fuzz:
     name: ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    needs: pick-runner
+    if: needs.pick-runner.outputs.lane == 'selfhosted'
+    runs-on: [self-hosted, legion-vm]
+    # Bounds BOTH the leg and the queue-wait on the race where the VM goes
+    # away between probe and dispatch (schedule-only lane: a timed-out
+    # nightly is noise, not a blocker). 40 min = build + 1800s fuzz +
+    # margin.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +129,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Keep untracked build output on persistent runners (target/,
+          # cargo-fuzz artifacts): the warm incremental build is most of
+          # the self-hosted win.
+          clean: false
 
       - uses: dtolnay/rust-toolchain@nightly
 
@@ -41,7 +142,7 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - name: Fuzz (bounded 120s)
+      - name: Fuzz (bounded ${{ needs.pick-runner.outputs.fuzz_seconds }}s)
         working-directory: fuzz
         run: |
           set +e
@@ -56,7 +157,7 @@ jobs:
           # since the workflow's first run, 2026-10-18). The +toolchain
           # proxy exports RUSTUP_TOOLCHAIN to cargo-fuzz's child cargo
           # invocations, which outranks the TOML.
-          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=120 -timeout=10
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=${{ needs.pick-runner.outputs.fuzz_seconds }} -timeout=10
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "::group::fuzz artifacts"
