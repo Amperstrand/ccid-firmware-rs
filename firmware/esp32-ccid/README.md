@@ -487,7 +487,16 @@ cargo test --target x86_64-unknown-linux-gnu
 - **No SAM** — the PN532's Secure Access Module is not used
 - **Single slot** — only one card at a time
 - **Short APDU only** — extended APDU not supported
-- **115200 baud fixed** — no auto-baudrate negotiation
+- **115200 baud against pcscd** — the host is the ceiling, not the wire:
+  stock libccidtwin ends every serial-reader open in a hardcoded
+  `cfsetspeed(B115200)` (`reference/CCID/src/ccid_serial.c:860-863`,
+  #54), so no negotiated rate survives a pcscd connection. The firmware
+  side of the negotiation IS implemented (escape `[0x05, code]`, codes
+  0x00–0x08 → 115200–3 Mbaud, GemCore-SIMPro2 pattern: ACK at the
+  current baud, switch after the ACK clocks out — UART mains only) and
+  direct-serial tooling can exercise it; it stays inert under pcscd
+  until upstream ccid gains a serial speed knob (issue #54 tracks the
+  upstream ask).
 - **Per-block MFRC522 latency (~40 ms/APDU class)** — CAP-scale uploads
   (GlobalPlatform installs) through the m5stick reader stall; pcscd-level
   APDU relay and T=1 are unaffected

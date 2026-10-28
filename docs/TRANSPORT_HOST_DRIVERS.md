@@ -94,11 +94,13 @@ Our three transport lanes (AGENTS.md):
 - **Open sequence / line control**: `open()` → `TIOCMSET` clearing RTS
   (Gemplus "plug-and-play inhibition") → `tcsetattr` — and this is the
   DTR/RTS chatter that chip-resets an ESP32-C3 on *every* open (#117,
-  `docs/NOCULA_USB.md`). Speed is **hardcoded**
+  `docs/NOCULA_USB.md`).   Speed is **hardcoded**
   `cfsetspeed(&current_termios, B115200)` (`reference/CCID/src/ccid_serial.c:860-863`).
   The only speed negotiation upstream knows is the GemCore SIMPro2 probe:
   start at 9600, `CmdEscape {0x01, 0x10, 0x20}` → switch to 115200
-  (`ccid_serial.c:840-858`) — the pattern a baud-knob patch must follow (#54).
+  (`ccid_serial.c:840-858`) — the pattern a baud-knob patch must follow (#54),
+  and the pattern our firmware-side `[0x05, code]` escape implements
+  (see §3.1; inert against stock pcscd).
 - **Framing**: GemPC serial framing — `SYNC 0x03` + CTRL (`ACK 0x06` /
   `NAK 0x15`) + a full CCID message (10-byte header + data) + XOR LRC;
   every transmitted byte is **echoed** by the reader; max CCID message 271 B
@@ -198,11 +200,33 @@ from #51/#54 (115200 8N2 ≈ 87 µs/byte).
 ## 3. Limitations we hit in practice (each with its issue)
 
 1. **B115200 hardcode** — #54. `ccid_serial.c:860-863` pins every serial
-   reader to B115200; reader.conf has no speed knob. A local fork was
-   costed (~4.6 ms gain) and **rejected** — permanent host-fork maintenance.
-   The upstream-acceptable pattern exists in-tree: GemCore SIMPro2's
-   escape-based 9600→115200 negotiation (`ccid_serial.c:840-858`). Firmware
-   side is ready (`UartDriver::change_baudrate()` + escape dispatch).
+   reader to B115200; reader.conf has no speed knob. The verbatim
+   reference (upstream `1a0f75d`, `OpenSerialByName`, after the
+   GemCoreSIMPro2 arm):
+
+   ```c
+   /* set serial port speed to 115200 bauds */
+   (void)cfsetspeed(&current_termios, B115200);
+   ```
+
+   `cfsetspeed` here is UNCONDITIONAL — it runs for every serial reader
+   type, after and regardless of any negotiation, so no reader.conf
+   trick or readerID declaration can raise a stock pcscd host above
+   115200. The measured gain ceiling is ~4.6 ms/APDU (55 wire bytes,
+   5.25 → 0.66 ms at 921600); a local libccid fork was costed and
+   **rejected** — permanent host-fork maintenance any package update
+   silently reverts. The ceiling is HONEST AND TOTAL until upstream
+   gains a speed knob (filed as an owner-gated upstream ask, §4.3).
+   **Firmware side is implemented end-to-end** (2026-10-28, `wt/serial-transport`):
+   the GemCore-SIMPro2-shaped escape negotiation `[0x05, code]`
+   (`ccid_handler.rs` `ESCAPE_SET_BAUD`/`BAUD_TABLE`, codes 0x00–0x08 →
+   115200–3 Mbaud): the reader ACKs at the CURRENT baud
+   (`[0x05, code, baud u32-LE]`), then the UART serve loop switches
+   only after the ack clocked out (`ack-before-switch`, the 0xD1
+   flush discipline). Inert against stock pcscd by construction — the
+   host never sends it — so production wire behavior is unchanged;
+   direct-serial tooling exercises it today, and a patched libccidtwin
+   gets its reader half ready-made.
 2. **No-resync strict parser / clean wire** — #131 (decision), AGENTS.md
    "Clean-wire doctrine". Boot-log ASCII between frames desyncs pcscd for a
    whole session (`ReadSerial() Got 0x76/0x65/0x64…` = boot text
