@@ -167,10 +167,25 @@ impl ReaderProfile for SerialNfcProfile {
 /// STM32 contact-smartcard profile: byte-identical to the pre-port
 /// STM32 `CcidMessageHandler`.
 pub struct ContactProfile;
-
 impl ReaderProfile for ContactProfile {
     const CONTACT: bool = true;
     const PSEUDO_APDUS: bool = false;
+}
+
+/// Wire timing of the last accepted SetParameters on a contact reader
+/// (#122 AUTO_BAUD plumbing): what a dwFeatures bit-5 reader must apply
+/// to its USART after the host negotiates. Produced by
+/// [`CcidHandlerCore::accepted_contact_timing`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContactWireTiming {
+    /// Fi (clock conversion factor, e.g. 372 at TA1=0x11/0x18).
+    pub fi: u16,
+    /// Di (baud rate adjustment, e.g. 8 at TA1=0x18).
+    pub di: u8,
+    /// bGuardTime (T0: bGuardTimeT0 / T1: bGuardTimeT1) — raw N.
+    pub guard_time_n: u8,
+    /// 0 = T=0, 1 = T=1.
+    pub protocol: u8,
 }
 
 pub struct CcidHandlerCore<D: SlotDriver, P: ReaderProfile = SerialNfcProfile> {
@@ -275,6 +290,28 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             return None;
         }
         Some(t1_bwi_cwi_ifsc(&raw))
+    }
+
+    /// The wire timing of the last ACCEPTED SetParameters — the values a
+    /// dwFeatures bit-5 ("Automatic baud rate change according to
+    /// frequency and Fi, Di params") reader must apply to its USART:
+    /// Fi/Di from abProtocolDataStructure byte 0, guard time from byte 2
+    /// (bGuardTimeT0 for T=0 / bGuardTimeT1 for T=1), plus the protocol.
+    ///
+    /// Host contract (#122): libccid's IFDHSetProtocolParameters fills
+    /// these from the ATR TA1 (and its own PPS when it owns PPS) and
+    /// sends them AFTER IccPowerOn — the reader is expected to bring its
+    /// wire rate to match. `None` until a SetParameters/ResetParameters
+    /// was accepted (and ResetParameters clears the override — the ATR
+    /// defaults govern again).
+    pub fn accepted_contact_timing(&self) -> Option<ContactWireTiming> {
+        let (proto, raw) = self.host_params?;
+        Some(ContactWireTiming {
+            fi: fi_from_ta1_high(raw[0] >> 4),
+            di: di_from_ta1_low(raw[0] & 0x0F),
+            guard_time_n: raw[2],
+            protocol: proto,
+        })
     }
 
     /// True while a PC_to_RDR_Secure PIN session is armed (verify or
@@ -2503,6 +2540,63 @@ mod contact_profile_tests {
         assert_eq!(err, 0);
         assert_eq!(data, host_params);
         assert!(core.take_parameters_accepted());
+    }
+
+    /// #122 AUTO_BAUD plumbing: the accepted SetParameters' wire timing
+    /// must be decodable by the transport — Fi/Di from byte 0, guard
+    /// time N from byte 2, protocol from bProtocolNum. This is exactly
+    /// what libccid sends after IccPowerOn when dwFeatures bit 7 makes
+    /// it skip its own PPS (ifdhandler.c:982) while still computing
+    /// PPS1 from the ATR TA1 (ifdhandler.c:885-899, applied at :1044).
+    #[test]
+    fn accepted_contact_timing_decodes_host_fi_di_and_guard_time() {
+        let mut core = new_core(true, &T1_ATR_BWI3_CWI7, false);
+        power_on(&mut core, 1);
+        assert!(
+            core.accepted_contact_timing().is_none(),
+            "no timing before a SetParameters acceptance"
+        );
+
+        // libccid's shape for a TA1=0x18 card: Fi/Di=0x18 (Fi=372,
+        // Di=8), GT=2, BWI/CWI echo, IFSC=0xFE, NAD=0. (TCCKS here is
+        // 0x00 per our pinned validation — NOTE: libccid's own table
+        // starts param[1] at 0x10 (ifdhandler.c:1030) which our
+        // bmTCCKST1 check rejects with bError 0x08; tracked as a #122
+        // follow-up because it gates whether the AUTO_BAUD application
+        // ever fires against the real host.)
+        let host_params: [u8; 7] = [0x18, 0x00, 0x02, 0x55, 0x00, 0xFE, 0x00];
+        let mut resp = [0u8; 271];
+        core.process_command(
+            &build(PC_TO_RDR_SET_PARAMETERS, 3, [1, 0, 0], &host_params),
+            &mut resp,
+        );
+        assert_eq!(
+            core.accepted_contact_timing(),
+            Some(ContactWireTiming {
+                fi: 372,
+                di: 12, // TA1 0x18: high nibble 1 → Fi=372, code 8 → Di=12
+                guard_time_n: 2,
+                protocol: 1,
+            })
+        );
+
+        // T=0 shape: 5-byte structure — Fi/Di byte 0, TCCKS byte 1,
+        // bGuardTimeT0 at byte 2 (255 = the ISO reduced-guard-time
+        // sentinel, which the bench ComSign eID's TC1 actually carries).
+        let t0_params: [u8; 5] = [0x11, 0x00, 0xFF, 0x0A, 0x00];
+        core.process_command(
+            &build(PC_TO_RDR_SET_PARAMETERS, 4, [0, 0, 0], &t0_params),
+            &mut resp,
+        );
+        assert_eq!(
+            core.accepted_contact_timing(),
+            Some(ContactWireTiming {
+                fi: 372,
+                di: 1,
+                guard_time_n: 0xFF,
+                protocol: 0,
+            })
+        );
     }
 
     #[test]

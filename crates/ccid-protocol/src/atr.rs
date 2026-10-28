@@ -241,6 +241,50 @@ pub fn t1_inter_byte_timeout_ms(cwi: u8, baud: u32) -> u32 {
     t1_cwt_ms(cwi, baud).clamp(T1_INTER_BYTE_FLOOR_MS, T1_FIRST_BYTE_MAX_MS)
 }
 
+/// Character spacing the pre-#135 F469 wire produced, in HALF-ETU units
+/// (×2, so 24 = 12 ETU): STOP=1.0 + GT=1 → 12 ETU per character —
+/// coincidentally the ISO N=2 spacing (10 data ETU + 2 guard). This is
+/// the framing the measured 42.8 ms p50 bench number ran (#122
+/// decomposition).
+pub const T1_CHAR_HALF_ETU_LEGACY_N2: u32 = 24;
+
+/// Character spacing upper bound of the post-#135 conservative framing,
+/// in HALF-ETU units (27 = 13.5 ETU): STOP=1.5 (11.5 ETU frame) + GTPR
+/// GT=2. The exact RM0090 GT-counting semantics are pending the
+/// owner-PDF pass (see reference/ST/PROVENANCE.md); anything in
+/// [24, 27] half-ETU is ISO-legal.
+pub const T1_CHAR_HALF_ETU_POST_135_MAX: u32 = 27;
+
+/// Wire time of one complete T=1 exchange — TX block of `tx_chars`
+/// characters followed by the RX block of `rx_chars` — at Fi/Di on a
+/// card clock of `card_clk_hz`, in whole milliseconds (ceiling).
+/// `char_half_etu` is the per-character spacing in half-ETU units (see
+/// the constants above).
+///
+/// This is the #122 latency-decomposition model: wire_ms =
+/// (tx + rx) · char_half_etu/2 · Fi / (Di · clk). It is deliberately
+/// pure math with no I/O so the host unit tests can lock the arithmetic
+/// the 42.8 ms → ~11 ms gap analysis rests on: at the bench wire
+/// (Fi=372, Di=1, clk=4.2 MHz — pclk1 42 MHz / prescaler 5) a 17+6-char
+/// SELECT round trip spends ~24 ms ON THE WIRE, and the same workload
+/// at a PPS-negotiated Di=8 spends ~3 ms. Baud derivation is the same
+/// expression the reader applies (`baud = clk · Di / Fi`).
+pub fn t1_exchange_wire_time_ms(
+    tx_chars: u32,
+    rx_chars: u32,
+    char_half_etu: u32,
+    fi: u16,
+    di: u8,
+    card_clk_hz: u32,
+) -> u32 {
+    if di == 0 || card_clk_hz == 0 || fi == 0 {
+        return u32::MAX;
+    }
+    let half_etu_total = (tx_chars.saturating_add(rx_chars)) as u64 * char_half_etu as u64;
+    let micros = half_etu_total * fi as u64 * 1_000_000 / (2 * di as u64 * card_clk_hz as u64);
+    micros.div_ceil(1_000).min(u32::MAX as u64) as u32
+}
+
 /// T=0 work waiting time, in milliseconds: WWT = WI × 960 etu
 /// (ISO 7816-3 §8.1/§10.2, quoted by osmo-ccid-firmware
 /// `ccid_common/iso7816_3.c`: "WT = WI x 960 x (Fi / f(max)) where WI
@@ -667,5 +711,66 @@ mod tests {
         assert_eq!(t1_bwi_cwi_ifsc(&raw), (4, 5, 254));
         assert_eq!(t1_tb3(4, 5), 0x45);
         assert_eq!(t1_tb3(0, 3), 0x03);
+    }
+
+    /// #122 decomposition lock, part 1 — the bench wire dominates the
+    /// 42.8 ms p50. The F469 wire: Fi=372/Di=1 (ATR default, PPS
+    /// speed-up gated off), card clock 4.2 MHz (pclk1 42 MHz /
+    /// prescaler 5). The pcscd 25×SELECT workload's block pair is a
+    /// 17-char I-block (3 prologue + 13-char SELECT-by-AID APDU + LRC)
+    /// plus a 6-char SW response block (3 + SW + LRC). Under the
+    /// pre-#135 framing (12 ETU/char) that is 23 × 12 × 88.6 µs ≈
+    /// 24.4 ms of pure wire time per exchange — leaving ~10-15 ms card
+    /// think + ~1-2 ms firmware for the measured constant.
+    #[test]
+    fn t1_wire_time_bench_default_di_dominates_42ms() {
+        // p50 42.8 ms (docs/PERF_AND_DRY_STRATEGY.md table, n=300)
+        let wire = t1_exchange_wire_time_ms(17, 6, T1_CHAR_HALF_ETU_LEGACY_N2, 372, 1, 4_200_000);
+        assert!((24..=25).contains(&wire), "wire={wire}ms");
+    }
+
+    /// #122 decomposition lock, part 2 — the lever: the same workload
+    /// at a PPS-negotiated higher Di drops the wire term by the Di
+    /// ratio, to ~3 ms at Di=8 (TA1=0x14-class; the bench ComSign eID
+    /// offers TA1=0x18 → Di=12, faster still). This is the arithmetic
+    /// behind "42.8 → ~11 ms needs the wire speed-up, not firmware
+    /// micro-optimization" (host-side cost already refuted by the
+    /// strace evidence on the issue: ACR 8.8 / CardMan 10.9 on the
+    /// same host, same pass).
+    #[test]
+    fn t1_wire_time_pps_di8_is_one_eighth() {
+        let legacy = t1_exchange_wire_time_ms(17, 6, T1_CHAR_HALF_ETU_LEGACY_N2, 372, 1, 4_200_000);
+        let pps = t1_exchange_wire_time_ms(17, 6, T1_CHAR_HALF_ETU_LEGACY_N2, 372, 8, 4_200_000);
+        assert!((3..=4).contains(&pps), "pps={pps}ms");
+        // ceiling rounding keeps the ratio within one quantum of 8×
+        let ratio = legacy as f32 / pps as f32;
+        assert!((6.0..=9.0).contains(&ratio), "ratio={ratio}");
+    }
+
+    /// #122/#135 interaction: the corrected conservative framing
+    /// (STOP=1.5 + GT=2, ≤13.5 ETU/char) costs at most ~12.5% more wire
+    /// time than the legacy framing — never enough to offset the 8×
+    /// PPS lever; correctness does not pay for itself in latency here.
+    #[test]
+    fn t1_wire_time_post_135_framing_overhead_is_minor() {
+        let legacy = t1_exchange_wire_time_ms(17, 6, T1_CHAR_HALF_ETU_LEGACY_N2, 372, 1, 4_200_000);
+        let corrected =
+            t1_exchange_wire_time_ms(17, 6, T1_CHAR_HALF_ETU_POST_135_MAX, 372, 1, 4_200_000);
+        assert!(corrected >= legacy);
+        assert!(corrected <= legacy + legacy / 8 + 2);
+    }
+
+    /// Degenerate inputs saturate instead of dividing by zero.
+    #[test]
+    fn t1_wire_time_invalid_inputs_saturate() {
+        assert_eq!(
+            t1_exchange_wire_time_ms(17, 6, 24, 372, 0, 4_200_000),
+            u32::MAX
+        );
+        assert_eq!(
+            t1_exchange_wire_time_ms(17, 6, 24, 0, 1, 4_200_000),
+            u32::MAX
+        );
+        assert_eq!(t1_exchange_wire_time_ms(17, 6, 24, 372, 1, 0), u32::MAX);
     }
 }

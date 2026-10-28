@@ -34,11 +34,23 @@ const SYSCLK_HZ: u32 = 168_000_000;
 ///
 /// Bench regression (2026-10-10, later reverted on main): enabling this broke
 /// the ComSign eID session through the Cherry ("Card is unresponsive") while
-/// all host tests passed. Suspected reader/card baud desync: pcscd may follow
-/// IccPowerOn with SetDataRateAndClockFrequency (rewriting BRR below the
-/// negotiated rate while the card runs at the higher Di), and the IFS-based
-/// fallback can only observe, not prove, which side switched. `false` keeps
-/// the wire at the ATR-default Di forever — the proven round-1 behavior.
+/// all host tests passed. Reader/card baud desync. NOTE (2026-10-28, #122
+/// reference pass): the original suspicion — "pcscd may follow IccPowerOn
+/// with SetDataRateAndClockFrequency rewriting BRR" — is REFUTED by source:
+/// libccid never sends CCID 0x73 (the only mention of SetDataRateAndClock-
+/// Frequency in reference/CCID/src is the ccid.h define; there is no call
+/// site). What the host ACTUALLY sends after IccPowerOn is
+/// SetParameters(T=1) with Fi/Di = the ATR TA1 (ifdhandler.c:1044
+/// `if (PPS_HAS_PPS1(pps)) param[0] = pps[2];`), because dwFeatures bit 7
+/// ("Automatic PPS made by the CCID") makes libccid SKIP its own PPS
+/// (ifdhandler.c:982) and trust ours. Re-land preconditions: (1) the #135
+/// STOP=1.5/GT framing fixes (landed — the regression ran on a
+/// contract-violating 1.0-stop wire), (2) the #122 set_wire_timing guard
+/// (landed — host Fi/Di never moves the wire off the card's proven rate),
+/// (3) a bench A/B on the F469 slot. `false` keeps the wire at the
+/// ATR-default Di — the proven behavior (and the reason the measured
+/// per-APDU constant is wire-dominated: see
+/// ccid_protocol::atr::t1_exchange_wire_time_ms).
 const PPS_APPLY_NEGOTIATED_BAUD: bool = false;
 
 pub struct SmartcardUart {
@@ -193,6 +205,64 @@ impl SmartcardUart {
     pub fn set_protocol(&mut self, protocol: u8) {
         self.protocol = protocol;
         defmt::info!("Protocol set to T={}", protocol);
+    }
+
+    /// #122 AUTO_BAUD application point (dwFeatures bit 5): apply the
+    /// host-negotiated Fi/Di + guard time after an accepted
+    /// SetParameters.
+    ///
+    /// Guard time is ALWAYS applied — it is TX pacing only (GTPR GT,
+    /// the shared builder), never a card-visible parameter, and the
+    /// host's bGuardTime is exactly the reader-side knob CCID defines.
+    ///
+    /// The BAUD is applied only when it matches what the CARD is proven
+    /// to run: (a) our own PPS negotiated it (`pps_speedup_active` and
+    /// the same rate — idempotent re-apply), or (b) it equals the
+    /// current default wire rate (idempotent no-op). Otherwise the host
+    /// believes a rate the card never negotiated — on the Cherry
+    /// profile (dwFeatures bit 7, reader-owned PPS) libccid skips its
+    /// own PPS and still sends ATR-TA1-derived Fi/Di
+    /// (ifdhandler.c:982/1044), so with our PPS speed-up gated off the
+    /// wire must stay at the ATR default. This guard is exactly the
+    /// f5feb61 bench-regression class (reader at Di=8, card at Di=1 →
+    /// "Card is unresponsive"); when PPS_APPLY_NEGOTIATED_BAUD
+    /// re-lands, case (a) covers the negotiated wire.
+    pub fn set_wire_timing(&mut self, fi: u16, di: u8, guard_time_n: u8) {
+        // Guard time first (always safe): N=0 → keep programmed default.
+        if guard_time_n != 0 {
+            let (_stop, gt) = crate::smartcard_common::t1_usart_framing(guard_time_n);
+            let psc = self.usart.gtpr().read().bits() & 0xFF;
+            self.usart
+                .gtpr()
+                .write(|w| unsafe { w.bits((gt << 8) | psc) });
+            defmt::debug!("wire timing: GT={} (host N={})", gt, guard_time_n);
+        }
+        if di == 0 || fi == 0 {
+            return;
+        }
+        let requested = self.card_clk_hz * di as u32 / fi as u32;
+        let current = self.wire_baud();
+        let proven = (self.pps_speedup_active && self.negotiated_baud == requested)
+            || (!self.pps_speedup_active && requested == current);
+        if requested == current {
+            defmt::debug!(
+                "wire timing: Fi/Di already active ({} baud, di={})",
+                current,
+                di
+            );
+            return;
+        }
+        if !proven {
+            defmt::warn!(
+                "wire timing: ignoring host Fi/Di ({} baud) — card proven at {} baud",
+                requested,
+                current
+            );
+            return;
+        }
+        if self.set_baud_from_fi_di(fi, di) {
+            defmt::info!("wire timing: applied host Fi/Di ({} baud)", requested);
+        }
     }
 
     /// Set ICC clock output (CCID IccClock). enable: true = restart, false = stop.
