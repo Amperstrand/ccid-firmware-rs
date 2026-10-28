@@ -113,6 +113,12 @@ PC/SC middleware for Unix-like systems.
 
 ## Additional Resources
 
+> Free-proxy policy for the PAYWALLED specs below (ISO 7816/14443):
+> [docs/SPEC-SOURCES.md](SPEC-SOURCES.md) — the proxy ladder (EMV Book 1,
+> GP Card Spec, ETSI TS 102 221, kernel NFC) and the rule that no ISO
+> clause may be cited without a tracked proxy quote or a reference-
+> implementation line (issue #140).
+
 ### EMV Contact Interface Specification
 
 For payment card compatibility, EMV provides stricter timing requirements.
