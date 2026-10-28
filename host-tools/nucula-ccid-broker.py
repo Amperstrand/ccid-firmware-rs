@@ -259,12 +259,24 @@ class PowerOffShim:
     def __init__(self) -> None:
         self.enabled = os.environ.get("POWER_OFF_SHIM", "1") == "1"
         self.buf = bytearray()
+        self.last_rx = time.monotonic()
         if self.enabled:
             print("broker: power-off shim ACTIVE (#125 bridge)", flush=True)
 
     def process(self, data: bytes) -> tuple[bytes, bytes]:
         """Buffer host bytes until frames complete. Returns
         (bytes_to_forward, bytes_to_answer_locally)."""
+        # Stale-partial flush (bench 2026-10-28, conformance battery fuzz
+        # "lone SYNC", deterministic 2/2): a stray SYNC buffered with no
+        # follow-up fuses with the NEXT probe frame into a bogus
+        # "sane-length complete" anchor at the stale byte — both frames
+        # desync and the reader reads dead for seconds. Host frames never
+        # pause mid-frame: bytes arriving after an idle gap are a NEW
+        # frame, so a partial that survived the gap is garbage — drop it.
+        now = time.monotonic()
+        if self.buf and now - self.last_rx > 0.05:
+            self.buf = bytearray()
+        self.last_rx = now
         self.buf += data
         if not self.enabled:
             out, self.buf = bytes(self.buf), bytearray()
