@@ -564,6 +564,22 @@ if [ -n "${FLASH_PORT}" ]; then
     if [ -z "${PART_TABLE}" ]; then
         PART_TABLE="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/partition-table.bin"
     fi
+    # #442: the flash recipe must also write the BOOTLOADER at 0x1000.
+    # The bootloader's log level (CONFIG_BOOTLOADER_LOG_LEVEL_NONE) is
+    # compiled into that binary — app-only flashes leave whatever
+    # bootloader the board carries, so a loud old one keeps spraying the
+    # UART0 cold-open killer (#378/#381) after a "successful" flash.
+    # Bench-proven 2026-10-23: adding 0x1000 made the wire boot check
+    # pass. Idempotent; resolve by newest esp-idf-sys build like the
+    # partition table.
+    BOOTLOADER_BIN="$(ls -t "${TARGET_DIR}/${TRIPLE}"/${PROFILE}/build/esp-idf-sys*/out/build/bootloader/bootloader.bin 2>/dev/null | head -1)"
+    if [ -z "${BOOTLOADER_BIN}" ]; then
+        BOOTLOADER_BIN="${TARGET_DIR}/${TRIPLE}/${PROFILE}/build/bootloader.bin"
+    fi
+    if [ ! -f "${BOOTLOADER_BIN}" ]; then
+        echo "error: bootloader.bin not found under ${TARGET_DIR}/${TRIPLE}/${PROFILE}/build — refusing to flash without it (#442: app-only flashes keep stale bootloaders alive)" >&2
+        exit 1
+    fi
     # Codex review on #82: writing ota_0 while otadata still points at
     # ota_1 leaves the bootloader on the OLD image after a "successful"
     # flash. Erasing otadata resets boot selection to the first valid
@@ -580,6 +596,7 @@ if [ -n "${FLASH_PORT}" ]; then
     # Never a hand-rolled esptool sequence on a bench reader port.
     ESP_FLASH_TOOL="${SCRIPT_DIR}/../../tests/hardware/labgrid/esp32_flash.py"
     ESP_FLASH_ARGS=(--port "${FLASH_PORT}" --chip "${CHIP}" --baud "${FLASH_BAUD}"
+        --image 0x1000="${BOOTLOADER_BIN}"
         --image 0x8000="${PART_TABLE}" --image "${FLASH_OFFSET}=${IMAGE}"
         --erase "${OTADATA_OFFSET}=0x2000")
     if [ -f "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" ]; then
