@@ -145,8 +145,11 @@ is an STM32 research/roadmap doc, not implemented ESP32 practice.
 baud caps, descending writes, erases-last, USB latch ladder, FTDI
 latency_timer restore, boot proof — "Canonical ESP32 flash path — the
 serial-wedge discipline", :1). Wireless: OTA seats `ccid-nucula` /
-`ccid-m5stick` at `192.168.13.230/.234:3232` under labgrid acquire
-(`tools/hil/labgrid-exporter.yaml:47-69`, workflow in `tools/hil/README.md`).
+`ccid-m5stick` (OTA server on port 3232) — resolve each board's address
+at use time from its labgrid place's NetworkService resource
+(`tools/hil/labgrid-exporter.yaml:47-69`, workflow in
+`tools/hil/README.md`); device IPs are inventory state, never baked into
+docs or commands (AGENTS.md no-hardcoded-IPs rule).
 Emerging third path: flash bundles ("bundle-or-nothing" reprovision sets)
 with `ota_push.py --bundle` planned (`docs/FLASH-VIA-LABGRID-DESIGN.md:231`).
 
