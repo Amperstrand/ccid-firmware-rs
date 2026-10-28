@@ -87,15 +87,14 @@ pub mod mfrc522 {
     /// fault-isolation wrap (#218). Behavior is byte-identical to the
     /// sequence this replaced in `main.rs`; only the home moved.
     pub fn bring_up(binding: NfcBusBinding) -> (Frontend, bool) {
-        // I2C bus recovery (xtensa only — the riscv32 crash-probe path
-        // skips it, mirroring the pre-construction main).
-        #[cfg(target_arch = "xtensa")]
+        // I2C bus recovery on BOTH archs (#447): the old xtensa-only
+        // gate carried a stale "crash probe" rationale — recover_i2c_bus
+        // is pure esp_idf_sys::gpio_* and runs identically on riscv32;
+        // bolty-rs has run it cross-arch since 2026-10-23.
         {
             mfrc522_pcd::recover_i2c_bus(binding.scl, binding.sda);
             esp_idf_hal::delay::FreeRtos::delay_ms(50);
         }
-        #[cfg(not(target_arch = "xtensa"))]
-        log::warn!("bring-up: skipping vTaskDelay on riscv32 (crash probe)");
 
         log::warn!("bring-up: driver_ng i2c_new_master_bus");
         let mut i2c_bus =
@@ -313,6 +312,10 @@ pub mod pn7160 {
         // GENERATED row (host-tested lock: equals the crate's NUCULA
         // reference geometry), not a hand-typed copy.
         let pins = binding_from_board(&boards::NUCULA);
+        // #447: a wedged PN7160 can hold SDA low across resets; the VEN
+        // cycle does not clock the bus. Clock out a stuck slave BEFORE
+        // the transport owns the pins (no-op on a healthy bus).
+        mfrc522_pcd::recover_i2c_bus(pins.scl, pins.sda);
         let transport = crate::pn7160_i2c::EspPn7160Transport::bringup_config_order(pins, bus)
             .expect("peripheral init");
         // t_4864e74e: the VEN-cycle retry ladder is the driver's own

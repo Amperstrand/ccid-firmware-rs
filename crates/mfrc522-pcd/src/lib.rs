@@ -404,10 +404,14 @@ fn log_crc_error<I2C: I2c>(mfrc522: &mut Mfrc522<I2cInterface<I2C>, Initialized>
     );
 }
 
-#[cfg(target_arch = "xtensa")]
+// #447: bus recovery is arch-neutral (pure esp_idf_sys::gpio_* — the
+// old xtensa-only gate carried a stale crash-probe rationale; bolty-rs
+// has run it cross-arch since 2026-10-23). Both embedded targets get
+// it; host test builds (no esp_idf_sys) stay gated out.
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub mod bus_recovery;
 
-#[cfg(target_arch = "xtensa")]
+#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 pub use bus_recovery::{BusRecovery, recover_i2c_bus};
 
 #[cfg(test)]

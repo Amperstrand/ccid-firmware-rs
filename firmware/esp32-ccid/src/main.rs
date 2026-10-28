@@ -651,8 +651,6 @@ fn main() {
     log::warn!("bring-up: UART0 ok");
     #[cfg(not(feature = "spp"))]
     log::warn!("bring-up: pins chosen, entering 50ms settle");
-    #[cfg(target_arch = "riscv32")]
-    log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
     // Frontend construction seam (t_4864e74e, boards-as-data §3.1):
     // the main reduces to board table + constructor + service spawn.
@@ -667,8 +665,6 @@ fn main() {
     #[cfg(feature = "board-nucula")]
     let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::NUCULA);
 
-    #[cfg(target_arch = "riscv32")]
-    log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
     let (mfrc522_frontend, mfrc522_boot_ok) =
         esp32_ccid::board_ctor::mfrc522::bring_up(nfc_binding);
