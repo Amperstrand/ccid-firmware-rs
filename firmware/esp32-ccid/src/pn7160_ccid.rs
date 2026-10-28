@@ -14,13 +14,9 @@ use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
 use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows, ServeAction};
-use crate::nfc::NfcDriver;
-use crate::pn7160_driver::Pn7160NfcDriver;
-use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
 
 const UART_RX_TIMEOUT_MS: u32 = 100;
 const CARD_POLL_INTERVAL_MS: u32 = 500;
-const INIT_ATTEMPTS: u32 = 5;
 
 #[link_section = ".rodata"]
 static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
@@ -43,6 +39,12 @@ fn write_wire_cdc(bytes: &[u8]) {
 pub fn run() -> ! {
     link_patches();
     esp_idf_hal::sys::link_patches();
+    crate::install_platform_clock();
+
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange.
+    crate::ota_validity::arm();
+
     // Silence C-level ESP_LOGx IMMEDIATELY (before any PN7160 I2C
     // activity): the driver's persistent-retry NACK messages from
     // ESP-IDF's i2c.master bypass the Rust `log` crate and pollute
@@ -107,10 +109,18 @@ pub fn run() -> ! {
     // USB-CDC: CCID serial transport. In non-ble builds the console
     // shares this port too (frame parser ignores logs); in ble builds
     // it is CCID-only by construction.
+    //
+    // boards-as-data split (t_a0ebcf54): this main shares the pins
+    // bank with the console wire, so NFC BusPins and the GPIO18/19
+    // console tokens come out of ONE board_ctor split — the typed
+    // gpio4/5/6/7 live only there, pinned to the GENERATED
+    // boards::NUCULA row.
+    let (nfc_bus, console_d_m, console_d_p) =
+        crate::board_ctor::pn7160::nucula_bus_pins_with_console(peripherals.i2c0, peripherals.pins);
     let usb = UsbSerialDriver::new(
         peripherals.usb_serial,
-        peripherals.pins.gpio18,
-        peripherals.pins.gpio19,
+        console_d_m,
+        console_d_p,
         &UsbConfig::new().rx_buffer_size(1024).tx_buffer_size(1024),
     )
     .expect("USB-CDC init failed");
@@ -121,50 +131,14 @@ pub fn run() -> ! {
     // the BLE ring there; it is filtered to nothing here).
     log::warn!("pn7160-ccid: USB-CDC ready");
 
-    let bus = BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    };
-
-    // ACK-window bring-up (AGENTS.md "PN7160 ACK Window"): the constructor
-    // cycles VEN and probes immediately; on ladder failure re-cycle + retry
-    // (the chip only ACKs when talked to right after VEN rise).
-    let transport =
-        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
-            .expect("peripheral init");
-    let mut transport = Some(transport);
-    let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
-    for attempt in 1..=INIT_ATTEMPTS {
-        let mut d = Pn7160NfcDriver::new(transport.take().expect("transport"));
-        match d.init() {
-            Ok(()) => {
-                log::warn!("pn7160-ccid: PN7160 initialized (attempt {})", attempt);
-                driver = Some(d);
-                break;
-            }
-            Err(e) => {
-                log::warn!(
-                    "pn7160-ccid: init attempt {} failed ({:?}) — VEN re-cycle + retry",
-                    attempt,
-                    e
-                );
-                let mut t = d.into_transport();
-                t.ven_cycle();
-                let _ = t.probe(); // immediate probe inside the window
-                transport = Some(t);
-            }
-        }
-    }
-    let mut driver = driver.unwrap_or_else(|| {
-        log::warn!(
-            "pn7160-ccid: PN7160 unresponsive after {} attempts — card-absent mode",
-            INIT_ATTEMPTS
-        );
-        Pn7160NfcDriver::new(transport.take().expect("transport"))
-    });
+    // boards-as-data seam (t_a0ebcf54): the main reduces to board
+    // table + constructor + service spawn. The typed gpio4/5/6/7 and
+    // the inline ACK-window ladder that used to live here both moved
+    // into `board_ctor::pn7160` — the #426 constructor path (transport
+    // VEN-cycle + in-window probe, then the init ladder with VEN
+    // re-cycle + immediate link_probe between attempts), reading the
+    // GENERATED boards::NUCULA row.
+    let (mut driver, _pn7160_ok) = crate::board_ctor::pn7160::bring_up(nfc_bus);
     // Issue #156 B: interim CCID time-extension frames during a
     // stalling (WTX) exchange — hook + raw writer registration.
     crate::ccid_serial_server::time_extension::register_writer(write_wire_cdc);
@@ -225,9 +199,16 @@ pub fn run() -> ! {
                             continue;
                         }
                         let write_timeout = TickType::new_millis(100).ticks();
-                        // GemPC Twin: echo the received frame, then the response
-                        let _ = usb.write(server.echo(), write_timeout);
-                        let _ = usb.write(server.response(), write_timeout);
+                        // GemPC Twin: echo the received frame, then the
+                        // response. #294 WS2: the OTA serve proof fires
+                        // only when BOTH frames went out — a failed CDC
+                        // write is not serve evidence (the old `let _`
+                        // shape ignored the failure).
+                        let sent = usb.write(server.echo(), write_timeout).is_ok()
+                            && usb.write(server.response(), write_timeout).is_ok();
+                        if sent {
+                            ccid_service::ota_validity::note_serve_evidence("gempc-cdc");
+                        }
                         #[cfg(feature = "ble")]
                         if let Some(ble) = ble_console.as_ref() {
                             ble.drain();

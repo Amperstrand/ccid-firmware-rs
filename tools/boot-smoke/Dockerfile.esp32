@@ -1,0 +1,32 @@
+# Boot-smoke build image — pinned esp toolchain, mirrors ci.yml's esp legs.
+# Pure toolchain image: NO repo sources (they are bind-mounted at run time).
+# Pins mirror .github/workflows/ci.yml's esp32 build legs:
+#   - espup 1.98.1.0 (pinned esp fork toolchain; same Rust version as stable)
+#   - ldproxy via cargo install (unpinned, same as ci.yml)
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git curl ca-certificates python3 python3-pip python3-venv \
+        pkg-config libudev-dev libssl-dev \
+        cmake ninja-build ninja-build file wget unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust (rustup default profile) then the pinned esp toolchain via espup.
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN cargo install espup --version 1.98.1.0 --locked \
+    && espup install \
+    && cargo install ldproxy \
+    && cargo install cargo-generate --locked || true
+
+# Warm mounts used by the workflow's docker run: caches cross container
+# lifetimes while the throwaway container stays disposable.
+ENV CARGO_HOME=/work/cargo-registry
+ENV IDF_TOOLS_PATH=/work/espressif
+RUN mkdir -p /work/cargo-registry /work/espressif /out
+
+# build-in-container.sh is executed from the bind-mounted /src checkout.
+WORKDIR /src
+CMD ["bash", "/src/tools/boot-smoke/build-in-container.sh"]

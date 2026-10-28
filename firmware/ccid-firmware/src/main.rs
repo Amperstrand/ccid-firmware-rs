@@ -332,6 +332,17 @@ impl CcidSmartcardDriver for SmartcardWrapper {
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.bitbang.set_clock_and_rate(clock_hz, rate_bps)
     }
+
+    /// #344: the Escape 0xD0 answer backed by the bit-bang state —
+    /// `card_present` is read from the presence pin LIVE here, so the
+    /// snapshot can never be the fabricated all-zero default with a
+    /// card inserted (the core's cached value only refreshes when the
+    /// serve loop runs a presence poll; a 0xD0 between polls must
+    /// still see the card). Counters (apdu/nak/error/uptime) stay
+    /// core-owned — #268 proved the driver cannot fabricate those.
+    fn diagnostics(&self, base: &mut ccid_core::Diagnostics) {
+        base.card_present = self.bitbang.is_card_present();
+    }
 }
 
 /// Framebuffer draw target for embedded-graphics

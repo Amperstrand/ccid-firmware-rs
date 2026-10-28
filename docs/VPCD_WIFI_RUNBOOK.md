@@ -100,10 +100,67 @@ means the board is gone. A wall-power nucula that loses its reader
 behaves the same via the PN7160 card-absent mode.
 
 Credentials are build-time env vars only — never in the tree. The
-board answers OTA on TCP :3232 (ESP-IDF OTA with rollback hardening:
-`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` + `mark_app_valid` after
-bring-up). USB serial is only needed for recovery — opening the port
-toggles DTR and chip-resets the board.
+board answers OTA on TCP :3232 (ESP-IDF OTA with rollback hardening,
+#294 WS2: `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` in every shipped
+`.full`; the app marks itself valid **serve-proven** — see below — not
+at bring-up). USB serial is only needed for recovery — opening the
+port toggles DTR and chip-resets the board.
+
+### OTA rollback semantics (serve-proven mark-valid, #294 WS2)
+
+Every shipped `.full` config boots `partitions-ota.csv` and carries
+`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`, so a freshly pushed (or
+serially reflashed over pending otadata) image runs
+`ESP_OTA_IMG_PENDING_VERIFY`: **one boot to prove itself, then it
+reverts to the previous slot on the next reset.**
+
+The proof is SERVE EVIDENCE, not bring-up: the serving kernel
+(`ccid_service::ota_validity`, armed by every OTA-capable serving
+main) marks the image valid at TRANSPORT COMPLETION of the **first
+delivered CCID exchange** —
+
+- vpcd builds: the first vpcd answer that is actually SENT (an empty
+  no-card ATR counts — pcscd's ~400 ms ATR probe trips it within
+  seconds of a healthy boot; reader-alive is the proof, card presence
+  is not);
+- TCP builds (wifi-ccid): the first echo+response pair that was
+  written to the stream successfully;
+- SPP builds: the first response accepted into the TX packet (not
+  late-dropped, not congestion-dropped; `esp_spp_write` itself is
+  queued fire-and-forget — the accepted-into-TX boundary is the last
+  portable proof point);
+- CDC/UART builds: the first echo+response pair whose writes
+  succeeded (and, on UART, drained).
+
+Parsing a command alone NEVER trips the gate — a response dropped as
+late (#153 answer-or-silence) or a failed write is not serve proof
+(Codex P2 on the PR review).
+
+Bench consequences:
+
+- A **bad push that still answers probes** will NOT auto-revert — the
+  gate proves the serving stack, not the new feature. Revert manually
+  (push the previous image back) or via serial reflash.
+- An image that **boots but never completes one exchange** (early
+  panic, wedged serve loop) reverts on the next reset — that is the
+  defense working, not a regression.
+- **Serial reflash + rollback**: a serially flashed image boots
+  pending-verify whenever otadata holds a pending state for its slot;
+  the first pcscd/broker probe (GetSlotStatus or ATR) now marks it
+  valid, so the DTR chip-reset on the next port open no longer eats
+  it. If you flash and the board "reverts by itself", the image never
+  answered a single probe — check the netlog listener before
+  reflashing harder.
+- **Diagnostic mains never mark valid** (pn7160-bringup, bitbang, m1,
+  v10raw, actdiag): a diagnostic image reverting to the previous
+  serving image on reset is the SAFE direction — don't "fix" it.
+- `sdkconfig.wallet-test` (bench-only defaults fragment) deliberately
+  keeps the knob unset: its wallet-interop images have no serve-proven
+  mark path and wallet-bench reflash cycles must not revert.
+
+Both-directions bench proof (early-panic on ota_1 → auto-revert with
+console evidence; good image → mark rc=0) is tracked on the WS2 card —
+deferred to a bench window, not yet run.
 
 Logs: the firmware broadcasts WARN+ lines as UDP to the /24 subnet
 broadcast, port 4567 (`192.168.x.255:4567`; limited broadcast is not

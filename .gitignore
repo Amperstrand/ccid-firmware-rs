@@ -7,6 +7,9 @@ tmp/
 *.bin
 *.elf
 *.hex
+# …except the flash-bundle test fixtures: tiny SYNTHETIC images the
+# golden-manifest test needs on a fresh clone (t_7a2ec5c3).
+!tests/tools/fixtures/**/*.bin
 
 # Logs and debug output
 *.log
@@ -93,3 +96,18 @@ tests/hardware/perf/results/
 # bench build artifacts (host-tools/ifd-nucula)
 host-tools/ifd-nucula/*.so
 host-tools/ifd-nucula/nucula-selftest
+host-tools/ifd-nucula/nucula-bounds-test
+host-tools/ifd-nucula/nucula-tx-semantics-test
+
+# Worktree-local build dirs (t_72e1e2ed session)
+/.cargo-target/
+/.embuild
+target-host/
+target-host/
+target-esp/
+target/
+/target-boards/
+
+# build dirs — never commitable (two artifact incidents 2026-10-22)
+/target*/
+**/target*/

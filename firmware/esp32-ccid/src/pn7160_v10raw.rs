@@ -5,6 +5,7 @@
 //! ACKs where the full Rust bringup fails, the culprit is one of the
 //! removed Rust layers — add them back one at a time.
 
+use boards::{BusRole, NUCULA};
 use esp_idf_sys as sys;
 
 // nci.c replica: the ISR must quench the level interrupt itself (the
@@ -25,10 +26,14 @@ fn delay_ticks(ms: u32) -> sys::TickType_t {
     ms * sys::configTICK_RATE_HZ / 1000
 }
 
-const SDA: i32 = 4;
-const SCL: i32 = 5;
-const IRQ: i32 = 6;
-const VEN: i32 = 7;
+// boards-as-data (t_a0ebcf54): the raw gpio numbers resolve from the
+// GENERATED boards::NUCULA row at COMPILE time. The C-replica's
+// fidelity is the syscall SEQUENCE (unchanged below); the pin values
+// it drives are netlist facts, not hand-typed copies.
+const SDA: i32 = NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend).0 as i32;
+const SCL: i32 = NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend).1 as i32;
+const IRQ: i32 = NUCULA.pin_const("nfc_irq") as i32;
+const VEN: i32 = NUCULA.pin_const("nfc_ven") as i32;
 
 pub fn run() -> ! {
     sys::link_patches();

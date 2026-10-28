@@ -81,6 +81,10 @@ def open_cdc() -> serial.Serial:
     s.port = port
     s.baudrate = 115200
     s.timeout = 0.05
+    s.write_timeout = 2.0  # bench rule: a wedged C3 CDC never drains TX —
+    #                     # an unbounded write() blocks FOREVER (py-spy'd
+    #                     # 2026-10-21: broker stuck in write() inside
+    #                     # wait_serving while the board sat dead)
     s.dtr = False  # bench rule: deassert BEFORE open — no DTR pulse
     s.rts = False
     s.open()
@@ -115,7 +119,13 @@ def wait_serving(s: serial.Serial, budget_s: float = 2.5) -> bool:
     deadline = time.monotonic() + budget_s
     while time.monotonic() < deadline:
         seq = (seq % 255) + 1
-        s.write(gss_frame(seq))
+        try:
+            s.write(gss_frame(seq))
+        except serial.SerialTimeoutException:
+            # write_timeout tripped: TX is not draining (dead/wedged CDC).
+            # Bounded failure, not a forever-block — let the caller's
+            # retry ladder decide (bring_up_cdc reopens or reports).
+            return False
         t0 = time.monotonic()
         buf = b""
         while time.monotonic() - t0 < 0.3:
@@ -196,7 +206,22 @@ def synth_power_off_response(host_frame: bytes) -> bytes:
 
 
 def split_frames(buf: bytes):
-    """Yield (start, end, type) for each complete GemPC frame in buf."""
+    """Yield (start, end, type) for each complete GemPC frame in buf.
+
+    #375: a truncated/garbage frame whose bytes land on the dwLength
+    field (e.g. the 4-byte cut header `03 06 65 01` + the next probe's
+    SYNC/CTRL) implies an insane length and used to `break` the scan
+    WITHOUT rescanning — the shim then buffered every subsequent host
+    frame forever and the reader looked dead (zero responses to any
+    probe; misattributed to firmware). The firmware caps payloads at
+    271 bytes, so any anchor implying more is garbage: skip ONE byte
+    past it and rescan. Only a SANE-but-incomplete anchor is a genuine
+    partial frame in flight worth waiting for.
+    """
+    SANE_MAX = 13 + 261  # SYNC+CTRL+10-byte header+LRC + payload cap;
+                         # 261 = ccid-transport-serial MAX_CCID_PAYLOAD
+                         # (271 is the full CCID message cap INCLUDING
+                         # the 10-byte header — payload alone is 261)
     i = 0
     while i + 13 <= len(buf):
         if buf[i] != SYNC:
@@ -204,8 +229,11 @@ def split_frames(buf: bytes):
             continue
         dlen = int.from_bytes(buf[i + 3:i + 7], "little")
         total = 13 + dlen
+        if total > SANE_MAX:
+            i += 1  # garbage anchor: resync past it (#375)
+            continue
         if total > len(buf) - i:
-            break
+            break  # sane partial frame in flight
         yield i, i + total, buf[i + 2]
         i += total
 

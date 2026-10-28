@@ -480,7 +480,13 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             // this used to read the SmartcardDriver trait stub, which on
             // the F469 only filled reinit_count + card_present, so the
             // HIL saw apdu_tx=0/apdu_rx=0/uptime=0 after real exchanges.
-            let diag = *self.core.diagnostics();
+            let mut diag = *self.core.diagnostics();
+            // #344: driver-known state overlays the core's counters —
+            // the F746 bit-bang wrapper stamps its live presence-pin
+            // card_present (the cached snapshot only refreshes on a
+            // presence poll). The default trait fold is a no-op, so
+            // F469/mock behavior is byte-identical.
+            self.driver_mut().diagnostics(&mut diag);
             let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
             diag.to_bytes(&mut diag_buf);
             self.tx_len = write_message(
@@ -885,6 +891,112 @@ mod wrap_tests {
         assert!(declared_fits(261, 271)); // exactly buffer - header
         assert!(!declared_fits(262, 271)); // one past capacity
         assert!(declared_fits(0, 271));
+    }
+}
+
+#[cfg(test)]
+mod escape_diag_fold_tests {
+    //! #344: the Escape 0xD0 answer is the core's LIVE counters
+    //! OVERLAID with driver-known state. The F746 bit-bang wrapper
+    //! (arm-only, not host-testable) folds its live presence-pin
+    //! reading; these tests lock the plumbing with the mock's
+    //! equivalent seam — the wire answer must carry the driver's
+    //! card_present between presence polls, keep the core-owned
+    //! counters intact (the #268 lesson, inverted), and stay
+    //! byte-identical for default-fold drivers.
+
+    use super::*;
+
+    const CHERRY: u16 = 0x046A;
+
+    fn frame(msg_type: u8, seq: u8, payload: &[u8]) -> std::vec::Vec<u8> {
+        let mut f = std::vec::Vec::with_capacity(10 + payload.len());
+        f.push(msg_type);
+        f.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        f.push(0); // slot
+        f.push(seq);
+        f.extend_from_slice(&[0, 0, 0]); // bSpecific(3)
+        f.extend_from_slice(payload);
+        f
+    }
+
+    fn escape_d0(
+        h: &mut CcidMessageHandler<crate::mock_driver::MockSmartcardDriver>,
+    ) -> ccid_core::Diagnostics {
+        h.set_rx_data(&frame(PC_TO_RDR_ESCAPE, 0x42, &[0xD0]));
+        h.handle_message();
+        let (len, resp) = h.take_response();
+        assert_eq!(resp[0], RDR_TO_PC_ESCAPE, "0xD0 answers an Escape");
+        assert_eq!(
+            len,
+            10 + ccid_core::Diagnostics::SERIALIZED_SIZE,
+            "payload is the frozen 28-byte layout"
+        );
+        ccid_core::Diagnostics::from_bytes(&resp[10..len])
+            .expect("28-byte diagnostics payload decodes")
+    }
+
+    #[test]
+    fn driver_fold_backs_card_present_between_presence_polls() {
+        // the polled cache said ABSENT at construction; the driver's
+        // live view (the F746 presence pin) says a card IS in — the
+        // 0xD0 answer must carry the driver's reading, not the stale
+        // cache and not the fabricated all-zero default
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new().with_diag_card_present(true),
+            CHERRY,
+        );
+        assert!(!h.diagnostics().card_present, "cache starts absent");
+        let diag = escape_d0(&mut h);
+        assert!(
+            diag.card_present,
+            "the driver fold must back card_present in the answer"
+        );
+    }
+
+    #[test]
+    fn driver_fold_preserves_core_counters() {
+        // one card exchange advances the core's apdu counters; the
+        // driver fold must ADD its state, never reset the counters
+        // (the #268 failure mode: a driver-side stub fabricating
+        // zeros for core-owned fields)
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new()
+                .card_present(true)
+                .with_atr(&[0x3B, 0x00])
+                .with_apdu_response(&[0x90, 0x00])
+                .with_diag_card_present(true),
+            CHERRY,
+        );
+        h.set_rx_data(&frame(PC_TO_RDR_ICC_POWER_ON, 1, &[]));
+        h.handle_message();
+        let _ = h.take_response();
+        h.set_rx_data(&frame(
+            PC_TO_RDR_XFR_BLOCK,
+            2,
+            &[0x00, 0xC0, 0x00, 0x00, 0x00],
+        ));
+        h.handle_message();
+        let _ = h.take_response();
+        assert_eq!(h.diagnostics().apdu_tx_count, 1);
+
+        let diag = escape_d0(&mut h);
+        assert_eq!(diag.apdu_tx_count, 1, "core counters survive the fold");
+        assert_eq!(diag.apdu_rx_count, 1);
+        assert!(diag.card_present);
+    }
+
+    #[test]
+    fn default_fold_keeps_cached_presence() {
+        // drivers without an override (F469 today) are byte-identical:
+        // the answer still carries the core's polled-cache presence
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new().card_present(true),
+            CHERRY,
+        );
+        let diag = escape_d0(&mut h);
+        assert!(diag.card_present, "cache-fed presence still answers");
+        assert_eq!(diag.apdu_tx_count, 0);
     }
 }
 

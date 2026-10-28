@@ -21,15 +21,16 @@ default = ["backend-mfrc522", "board-m5atom"]
 # the vendored-hal `legacy-i2c` opt-in are retired with this wiring.
 backend-mfrc522 = ["dep:mfrc522", "dep:iso14443", "dep:mfrc522-pcd", "dep:pn7160-nci", "pn7160-nci/esp"]
 backend-pn532 = ["dep:pn532", "dep:pn532-transport"]
-# Grove I2C pinout differs across M5Stack boards (bolty-rs docs/lessons-learned.md B2):
-#   board-m5atom:  SDA=GPIO26, SCL=GPIO32  (Atom Matrix / Atomic Port)
-#   board-m5stick: SDA=GPIO32, SCL=GPIO33  (StickC / StickC-Plus Port)
+# Grove I2C pinout — pin data lives in `crates/boards` (boards-as-data,
+# design §4): do not add pin numbers here. board-m5stick / board-m5atom
+# read `boards::M5STICK` / `boards::M5ATOM`; board-nucula reads the
+# GENERATED `boards::NUCULA` row via `board_ctor::pn7160` (t_a0ebcf54).
 board-m5atom = []
 board-m5stick = []
-# ESP32-C3 nucula board: PN7160 NFC @ I2C addr 0x28, SDA=GPIO4 SCL=GPIO5 IRQ=GPIO6 VEN=GPIO7.
-# Console is the ROM USB-Serial/JTAG CDC (GPIO18/19); there is no UART bridge.
-# NOTE: the PN7160 backend driver is a later phase; this feature only selects the
-# board pin mapping so the firmware compiles for riscv32imc-esp-espidf.
+# ESP32-C3 nucula board (zeugmaster hardware repo). Pin/bus facts live
+# ONLY in the GENERATED `crates/boards/src/nucula_gen.rs` (netlist sha-
+# pinned; never hand-typed). Console is the ROM USB-Serial/JTAG CDC;
+# there is no UART bridge.
 board-nucula = []
 backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp"]
 pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
@@ -84,25 +85,38 @@ ble-diag = ["ble"]
 # at the esp-idf-svc `bt::spp` imports, same compile-loud pairing rule as
 # `ble`. ESP32 silicon only (BR/EDR). Mutually exclusive with `ble` (modem).
 spp = []
+# M3 product preset (t_0492b7c6, products.toml provisioner-min): kernel +
+# NFC frontend + the bolty-core provisioner app (card burn / wipe /
+# derive-keys). The app module is NOT vendored here — it lands as a
+# rev-pinned git dep from bolty-rs in a follow-up PR (one-way-kernel
+# doctrine, M2). Until it lands this feature is the composition marker:
+# `build.sh product=provisioner-min` compiles the exact kernel+frontend
+# surface the app mounts on (src/provisioner_app.rs is the mount point),
+# so the preset and its CI artifact leg are real today.
+provisioner = []
 
 [dependencies]
 card-interface = { path = "../../crates/card-interface" }
+# Board tables as const data (boards-as-data pilot): the board-m5stick
+# wiring reads `boards::M5STICK` — never inline pin numbers.
+boards = { path = "../../crates/boards" }
 ccid-core = { path = "../../crates/ccid-core" }
 ccid-protocol = { path = "../../crates/ccid-protocol" }
+ccid-service = { path = "../../crates/ccid-service" }
 ccid-transport-serial = { path = "../../crates/ccid-transport-serial" }
 embedded-hal = "1.0"
 heapless = "0.9"
 log = "0.4"
 nb = "1.1"
 mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1e", optional = true }
-iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "73db6d4", features = ["alloc"], optional = true }
+iso14443 = { git = "https://github.com/Amperstrand/iso14443-rs.git", rev = "0f7d9d70", features = ["alloc"], optional = true }
 # Transceiver bridge + bus recovery shared with bolty-rs; only the
 # backend-mfrc522 feature pulls it (dep: wiring keeps PN7160/PN532 builds
 # from compiling — and warning about — an unused git dependency.
-mfrc522-pcd = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "2a1afea", optional = true }
+mfrc522-pcd = { path = "../../crates/mfrc522-pcd", optional = true }
 pn7160-nci = { path = "../../crates/pn7160-nci", optional = true }
 pn532 = { version = "0.5.0", features = ["msb-spi"], default-features = false, optional = true }
-pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "2a1afea", optional = true }
+pn532-transport = { git = "https://github.com/Amperstrand/bolty-rs.git", rev = "cb3ad97f7", optional = true }
 
 # LCD status screen (bolty-rs display.rs port) — pinned to bolty's exact
 # bench-proven pair (apps/bolty-esp32/Cargo.toml):

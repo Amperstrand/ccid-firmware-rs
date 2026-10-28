@@ -23,7 +23,7 @@ compile_error!("feature board-nucula is mutually exclusive with board-m5atom/boa
         feature = "board-nucula"
     ))
 ))]
-compile_error!("select a board feature: board-m5atom (Grove SDA=26/SCL=32), board-m5stick (Grove SDA=32/SCL=33), or board-nucula (ESP32-C3, SDA=4/SCL=5)");
+compile_error!("select a board feature: board-m5atom, board-m5stick, or board-nucula — board pin data lives in crates/boards (boards-as-data)");
 #[cfg(all(feature = "ble", feature = "spp"))]
 compile_error!(
     "features ble and spp are mutually exclusive (both claim the single Bluetooth modem)"
@@ -98,8 +98,6 @@ use esp_idf_hal::{
     not(feature = "backend-mfrc522")
 ))]
 use esp_idf_sys::EspError;
-#[cfg(all(target_arch = "xtensa", feature = "backend-mfrc522"))]
-use mfrc522_pcd::recover_i2c_bus;
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -221,7 +219,7 @@ fn write_all_logged(uart: &UartDriver, bytes: &[u8]) {
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
+fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
     server: &mut esp32_ccid::ccid_serial_server::CcidSerialServer<D>,
     byte: u8,
@@ -258,6 +256,11 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
             }
             write_all_logged(uart, server.response());
             let _ = uart.wait_tx_done(esp_idf_hal::delay::BLOCK);
+            // #294 WS2: echo + response drained to the UART wire — the
+            // first fully-delivered exchange is this image's OTA serve
+            // proof (parse alone does not count: a late-dropped or
+            // failed write is not serve evidence).
+            ccid_service::ota_validity::note_serve_evidence("gempc-uart");
             let turnaround_us = esp32_ccid::t1::now_us() - byte_us;
             server
                 .handler_mut()
@@ -302,7 +305,7 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver>(
     any(feature = "backend-mfrc522", feature = "backend-pn532"),
     not(feature = "spp")
 ))]
-fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
+fn serve_uart<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
     handler: esp32_ccid::ccid_handler::CcidHandler<D>,
     mut on_read_idle_extra: impl FnMut(),
@@ -425,6 +428,11 @@ fn serve_uart<D: esp32_ccid::nfc::NfcDriver>(
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    esp32_ccid::install_platform_clock();
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange
+    // (UART serve loop below).
+    esp32_ccid::ota_validity::arm();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge).
@@ -484,17 +492,11 @@ fn main() {
     )
     .expect("SPI2 init failed");
 
-    let mut pn532_driver =
-        Pn532NfcDriver::new(spi_device, irq_pin, rst_pin).expect("PN532 driver init failed");
-
-    let pn532_ok = (0..5).any(|_| {
-        if pn532_driver.init().is_ok() {
-            true
-        } else {
-            FreeRtos::delay_ms(1000);
-            false
-        }
-    });
+    // t_4864e74e: the bring-up ladder lives in the constructor — the
+    // main reduces to bus handles + constructor + service spawn.
+    let (mut pn532_driver, pn532_ok) =
+        Pn532NfcDriver::bring_up(spi_device, irq_pin, rst_pin, 5, &mut FreeRtos)
+            .expect("PN532 driver init failed");
 
     // Frontend fault isolation (#218 — supersedes the bolty-rs B5 halt
     // loop this replaced): a failed boot init no longer halts the CCID
@@ -521,6 +523,11 @@ fn main() {
 fn main() {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    esp32_ccid::install_platform_clock();
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first completed CCID exchange
+    // (UART or SPP serve loop below — both feed the same kernel).
+    esp32_ccid::ota_validity::arm();
     // Note: with the default sdkconfig (CONFIG_ESP_CONSOLE_NONE=y) log output is
     // dropped — UART0 belongs to the CCID protocol. Logs surface in debug builds
     // (console enabled) and in the `ble` feature build (BLE log bridge). In
@@ -630,78 +637,86 @@ fn main() {
     #[cfg(target_arch = "riscv32")]
     log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
-    // I2C pinout per board variant — see Cargo.toml [features]. Raw GPIO
-    // numbers only: driver_ng claims the controller by port, so neither
-    // the `Peripherals::i2c0` token nor typed pin drivers are consumed
-    // (the #149 P3 shared adapter owns the bus).
+    // Frontend construction seam (t_4864e74e, boards-as-data §3.1):
+    // the main reduces to board table + constructor + service spawn.
+    // The table resolves the NFC bus binding; board_ctor owns bus
+    // recovery, the driver_ng bus, the probe, the mfrc522-pcd
+    // constructor + VersionReg self-test, the init ladder and the
+    // fault-isolation wrap. nucula reads the GENERATED table (§2.1).
     #[cfg(feature = "board-m5atom")]
-    let (sda_gpio_no, scl_gpio_no) = (26, 32);
+    let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::M5ATOM);
     #[cfg(feature = "board-m5stick")]
-    let (sda_gpio_no, scl_gpio_no) = (32, 33);
-    // ESP32-C3 nucula: PN7160 NFC on the Grove-free header, SDA=GPIO4 / SCL=GPIO5.
-    // (PN7160 IRQ=GPIO6, VEN=GPIO7 — wired for the later PN7160 backend phase.)
+    let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::M5STICK);
     #[cfg(feature = "board-nucula")]
-    let (sda_gpio_no, scl_gpio_no) = (4, 5);
+    let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::NUCULA);
 
-    #[cfg(target_arch = "xtensa")]
-    recover_i2c_bus(scl_gpio_no, sda_gpio_no);
-    // Mirror bolty's proven bring-up (bolty-rs apps/bolty-esp32): 50 ms settle
-    // after recovery, then a bus probe before the first MFRC522 register
-    // access. 400 kHz (was 100 kHz): this board was marginal at 400 kHz in
-    // early bring-up (worked intermittently, then hung the first
-    // transaction) — re-attempted per #59 with a measured RTT table
-    // and a 100-transaction soak before landing.
-    log::warn!("bring-up: skipping vTaskDelay on riscv32 (crash probe)");
-    #[cfg(target_arch = "xtensa")]
-    FreeRtos::delay_ms(50);
-    log::warn!("bring-up: driver_ng i2c_new_master_bus");
-    let mut i2c_bus = pn7160_nci::hal_i2c::I2cMasterBus::new(0, sda_gpio_no, scl_gpio_no)
-        .expect("I2C0 init failed");
-    log::warn!("bring-up: I2C0 ok (driver_ng)");
+    #[cfg(target_arch = "riscv32")]
+    log::warn!("bring-up: riscv32 skips i2c bus recovery (mfrc522-pcd xtensa-only)");
 
-    let probe_found = i2c_bus.probe(0x28, 100).is_ok();
-    log::info!(
-        "i2c probe @0x28: {}",
-        if probe_found { "ack" } else { "no-ack" }
-    );
-
-    let i2c_dev = i2c_bus
-        .add_hal_device(0x28, 400_000)
-        .expect("MFRC522 device add failed");
-    let mfrc522_result = mfrc522::Mfrc522::new(mfrc522::comm::blocking::i2c::I2cInterface::new(
-        i2c_dev, 0x28,
-    ))
-    .init();
-    log::info!(
-        "MFRC522 init: {:?}",
-        mfrc522_result.as_ref().err().map(|e| format!("{e:?}"))
-    );
+    let (mfrc522_frontend, mfrc522_boot_ok) =
+        esp32_ccid::board_ctor::mfrc522::bring_up(nfc_binding);
 
     // M5StickC LCD status screen (bolty-rs display.rs port): claims I2C1
     // (AXP192), SPI2 + the LCD pins. GPIO27 is the StickC backlight —
     // LedStatus (Atom LED matrix on GPIO27) must stay OFF on lcd builds
     // or its RMT pulses fight the backlight. The display takes over the
     // status-signalling role; CCID serving never depends on it.
+    //
+    // boards-as-data step 3 (design §4): the LCD call site reads the
+    // table — the typed `GpioN` tokens stay (a const table cannot hand
+    // out HAL tokens, §1.3), but they sit behind a number→token match
+    // keyed on the boards table, and the const-time assert proves the
+    // matched arm is THE table arm: a drifted pin fails the BUILD, not
+    // the bench. Drop the assert and the match still panics at boot.
     #[cfg(all(feature = "board-m5stick", feature = "lcd", target_arch = "xtensa"))]
     {
-        let result = unsafe {
-            esp32_ccid::m5stick_lcd::init(
-                peripherals.spi2,
-                peripherals.pins.gpio13,
-                peripherals.pins.gpio15,
-                peripherals.pins.gpio5,
-                peripherals.pins.gpio23,
-                peripherals.pins.gpio18,
-                peripherals.pins.gpio27,
-                env!("FW_GIT_REV"),
-                "GemPC serial",
-            )
+        const _: () = {
+            assert!(boards::M5STICK.pin_const("lcd_sclk") == 13);
+            assert!(boards::M5STICK.pin_const("lcd_mosi") == 15);
+            assert!(boards::M5STICK.pin_const("lcd_cs") == 5);
+            assert!(boards::M5STICK.pin_const("lcd_dc") == 23);
+            assert!(boards::M5STICK.pin_const("lcd_rst") == 18);
+            assert!(boards::M5STICK.pin_const("lcd_bl") == 27);
+        };
+        let result = match (
+            boards::M5STICK.pin("lcd_sclk"),
+            boards::M5STICK.pin("lcd_mosi"),
+            boards::M5STICK.pin("lcd_cs"),
+            boards::M5STICK.pin("lcd_dc"),
+            boards::M5STICK.pin("lcd_rst"),
+            boards::M5STICK.pin("lcd_bl"),
+        ) {
+            // number→token: the ONLY arm — provably taken (const block
+            // above); the tokens below are the m5stick_lcd::init types.
+            (13, 15, 5, 23, 18, 27) => unsafe {
+                esp32_ccid::m5stick_lcd::init(
+                    peripherals.spi2,
+                    peripherals.pins.gpio13,
+                    peripherals.pins.gpio15,
+                    peripherals.pins.gpio5,
+                    peripherals.pins.gpio23,
+                    peripherals.pins.gpio18,
+                    peripherals.pins.gpio27,
+                    env!("FW_GIT_REV"),
+                    "GemPC serial",
+                )
+            },
+            (sclk, mosi, cs, dc, rst, bl) => panic!(
+                "m5stick LCD pins drifted from boards::M5STICK: \
+                 sclk={sclk} mosi={mosi} cs={cs} dc={dc} rst={rst} bl={bl}"
+            ),
         };
         if let Err(e) = result {
             log::error!("Display init failed: {e} — continuing headless");
         } else {
             esp32_ccid::m5stick_lcd::spawn_ticker();
         }
+        // t_72e1e2ed: the handler kernel pushes presence through an
+        // installed sink (crate boundary — it cannot see m5stick_lcd).
+        // Same #275 defect-3 wiring as the old in-handler call.
+        esp32_ccid::ccid_handler::install_card_presence_sink(
+            esp32_ccid::m5stick_lcd::set_card_present,
+        );
     }
 
     #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
@@ -717,56 +732,24 @@ fn main() {
     // needs a reboot (same as the old halt loop, minus the dead
     // reader). LED Error is held until reboot; recovery is
     // host-visible via GetSlotStatus flipping present.
-    let frontend = match mfrc522_result {
-        Ok(hw) => {
-            let transceiver = mfrc522_pcd::Mfrc522Transceiver::new(hw);
-            let mut mfrc522_driver = esp32_ccid::mfrc522_driver::Mfrc522NfcDriver::new(transceiver);
-
-            let init_ok = (0..5).any(|_| {
-                // Routed through the recovery wrapper (Codex reviews on #43/#40/#38,
-                // P1): plain init() never reaches the failure tracker, so repeated
-                // startup failures could not trigger the self-healing full re-init.
-                if mfrc522_driver.init_with_recovery().is_ok() {
-                    true
-                } else {
-                    FreeRtos::delay_ms(1000);
-                    false
-                }
-            });
-
-            if init_ok {
-                #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-                led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
-                esp32_ccid::frontend::EitherFrontend::Primary(
-                    esp32_ccid::frontend::RetryFrontend::healthy(mfrc522_driver),
-                )
-            } else {
-                #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-                led.set_state(esp32_ccid::led::LedState::Error);
-                log::error!("MFRC522 init failed — serving degraded (card absent), init retried on every presence poll");
-                esp32_ccid::frontend::EitherFrontend::Primary(
-                    esp32_ccid::frontend::RetryFrontend::degraded(mfrc522_driver),
-                )
-            }
-        }
-        Err(e) => {
-            #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
-            led.set_state(esp32_ccid::led::LedState::Error);
-            log::error!("MFRC522 hw init failed ({e:?}) — no frontend; CCID stays up card-absent");
-            esp32_ccid::frontend::EitherFrontend::Fallback(
-                esp32_ccid::frontend::RetryFrontend::degraded(
-                    esp32_ccid::frontend::UnavailableNfcDriver,
-                ),
-            )
-        }
-    };
+    // Boot outcome drives the LED (the LCD main replaces it); the
+    // frontend + its health already classify themselves through the
+    // diagnostics surface (RetryFrontend/UnavailableNfcDriver).
+    let frontend = mfrc522_frontend;
+    if mfrc522_boot_ok {
+        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
+        led.blink_state(esp32_ccid::led::LedState::Ready, 3, 150, 100);
+    } else {
+        #[cfg(not(all(feature = "board-m5stick", feature = "lcd")))]
+        led.set_state(esp32_ccid::led::LedState::Error);
+    }
 
     // Transport split: `spp` builds serve the same CcidHandler over the
-    // BT-Classic SPP byte pipe (spp_server::shell::serve_spp — same
+    // BT-Classic SPP byte pipe (spp_shell::serve_spp — same
     // echo/response/poll cadence as serve_uart, REFERENCE
     // esp-idf-svc bt_spp_acceptor.rs); everything else stays on UART0.
     #[cfg(feature = "spp")]
-    esp32_ccid::spp_server::shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
+    esp32_ccid::spp_shell::serve_spp(peripherals.modem, CcidHandler::new(frontend));
     #[cfg(not(feature = "spp"))]
     {
         // #163: ble builds pump the NUS log queue at every read-idle —

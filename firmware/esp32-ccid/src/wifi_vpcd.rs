@@ -13,6 +13,12 @@
 pub fn run() -> ! {
     esp_idf_sys::link_patches();
     esp_idf_hal::sys::link_patches();
+    crate::install_platform_clock();
+
+    // #294 WS2: serve-proven OTA validity — arm the gate; the kernel
+    // marks this image valid on the first SENT vpcd answer (an empty
+    // no-card ATR counts: reader-alive is the proof, not card state).
+    crate::ota_validity::arm();
 
     crate::netlog::init();
 
@@ -49,19 +55,21 @@ pub fn run() -> ! {
         port
     );
 
-    // NFC backend per feature composition (mirrors the CDC mains' pin maps).
+    // NFC backend per feature composition — construction flows through
+    // the board tables (t_a0ebcf54, boards-as-data): the typed
+    // gpio4/5/6/7 (pn7160/nucula) and the hand-typed Grove pin numbers
+    // (mfrc522) that used to live here are gone; board_ctor resolves
+    // every pin/bus fact from the table row the feature selected.
     #[cfg(feature = "backend-pn7160")]
-    let driver = crate::wifi_common::pn7160_bring_up(crate::pn7160_i2c::BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    });
+    let (driver, _nfc_ok) = crate::board_ctor::pn7160::bring_up(
+        crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins),
+    );
     #[cfg(all(feature = "backend-mfrc522", feature = "board-m5stick"))]
-    let driver = crate::wifi_common::mfrc522_bring_up(33, 32);
+    let grove = crate::board_ctor::NfcBusBinding::from_board(&boards::M5STICK);
     #[cfg(all(feature = "backend-mfrc522", feature = "board-m5atom"))]
-    let driver = crate::wifi_common::mfrc522_bring_up(32, 26);
+    let grove = crate::board_ctor::NfcBusBinding::from_board(&boards::M5ATOM);
+    #[cfg(feature = "backend-mfrc522")]
+    let driver = crate::wifi_common::mfrc522_bring_up(grove.scl, grove.sda);
 
     crate::vpcd::spawn(driver, host, port);
     loop {

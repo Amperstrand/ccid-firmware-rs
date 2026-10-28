@@ -4,6 +4,7 @@ Run: python3 -m unittest tests/hardware/labgrid/test_esp32_flash.py
 (also collected by pytest).
 """
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -254,6 +255,71 @@ class HygieneTests(unittest.TestCase):
             finally:
                 esp32_flash.PCSCD_LOCK = orig_lock
 
+    def test_raising_stop_releases_the_flock_and_lays_recovery_marker(self):
+        # #337: the rc≠0 stop already unlocked; the RAISE window did
+        # not — a subprocess.TimeoutExpired (or any raise) inside the
+        # systemctl stop leaked the flock fd and left a long-lived
+        # caller (labgrid exporter) holding the bench lock with pcscd
+        # possibly down. The acquire side now cleans up like the
+        # release side's finally, and lays the stale-down marker
+        # because pcscd state is UNKNOWN (the stop may have taken
+        # effect before the raise).
+        import fcntl
+        from pathlib import Path as P
+
+        def run(cmd, timeout=60):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig_lock = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    esp32_flash.pcscd_lock_acquire(run=run)
+                # the flock was RELEASED: a fresh non-blocking acquire
+                # on the same file succeeds
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+                # marker laid for the next invocation's recovery
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+                self.assertTrue(marker.exists())
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(0)))
+                self.assertFalse(marker.exists())
+            finally:
+                esp32_flash.PCSCD_LOCK = orig_lock
+
+    def test_raising_stop_marker_write_failure_still_releases_the_flock(self):
+        # the marker is best-effort: an OSError while laying it must
+        # not mask the flock release (#337 cleanup must be unconditional)
+        import fcntl
+        from unittest import mock
+
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig_lock = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                def run(cmd, timeout=60):
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+
+                def boom(_self, _data):
+                    raise OSError("read-only filesystem")
+
+                with mock.patch.object(esp32_flash.Path, "write_text",
+                                       boom):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        esp32_flash.pcscd_lock_acquire(run=run)
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+            finally:
+                esp32_flash.PCSCD_LOCK = orig_lock
+
     def test_failed_erase_reports_old_image_boot_risk(self):
         cmds = []
 
@@ -355,6 +421,161 @@ class BootCheckTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("SKIPPED", log)
         self.assertIn("NOT boot-proven", log)
+
+
+class JtagResetDecisionTests(unittest.TestCase):
+    # #336: esptool's post-flash RTS reset AND raw setRTS() are both
+    # intermittently dropped on the C3's USB-JTAG composite port
+    # (AGENTS.md C3 lifecycle, failure mode 4) — a good flash must not
+    # fail the boot check purely because the reset pulse was eaten.
+    def test_c3_empty_capture_warrants_fallback(self):
+        self.assertTrue(esp32_flash.jtag_reset_warranted("esp32c3", ""))
+
+    def test_c3_rom_banner_only_warrants_fallback(self):
+        # banners replay on a boot-looping image — only firmware-level
+        # evidence (app_main) counts as proof
+        self.assertTrue(esp32_flash.jtag_reset_warranted(
+            "esp32c3", "ESP-ROM:esp32c3-api1-20210207\nrst:0x1 "
+                       "(POWERON_RESET)\nload:0x3fcd5820\n"))
+
+    def test_c3_capture_with_boot_evidence_does_not(self):
+        self.assertFalse(esp32_flash.jtag_reset_warranted(
+            "esp32c3", "ESP-ROM:esp32c3-api1\n"
+                       "I (252) main_task: Calling app_main()"))
+
+    def test_classic_esp32_never_warrants_fallback(self):
+        # the m5stick (classic ESP32) has no USB-JTAG reset path — an
+        # empty capture there is a real failure, not a dropped pulse
+        self.assertFalse(esp32_flash.jtag_reset_warranted("esp32", ""))
+        self.assertFalse(esp32_flash.jtag_reset_warranted("esp32", "\n"))
+
+    def test_chip_match_is_case_insensitive_prefix(self):
+        self.assertTrue(esp32_flash.jtag_reset_warranted("ESP32C3", ""))
+        self.assertTrue(esp32_flash.jtag_reset_warranted(" esp32c3 ", ""))
+
+
+class JtagFallbackCaptureTests(unittest.TestCase):
+    PORT = ("/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_"
+            "90:DA:72:9A:50:18-if00")
+
+    def _cap(self, texts):
+        calls = []
+
+        def cap(p):
+            calls.append(p)
+            return texts[min(len(calls) - 1, len(texts) - 1)]
+        return cap, calls
+
+    def test_jtag_reset_recovers_a_dropped_rts_pulse(self):
+        # the dropped-reset class: capture sees NOTHING (pulse eaten),
+        # JTAG reset re-boots the chip, second capture proves app_main
+        cap, calls = self._cap(
+            ["", "I (252) main_task: Calling app_main()"])
+        resets = []
+        text = esp32_flash.boot_capture_with_jtag_fallback(
+            self.PORT, "esp32c3", base_capture=cap,
+            jtag_reset=lambda run=None: resets.append(1) or True)
+        self.assertIn("Calling app_main", text)
+        self.assertEqual(len(calls), 2)      # initial + ONE re-capture
+        self.assertEqual(resets, [1])        # exactly one JTAG reset
+
+    def test_boot_evidence_on_first_capture_skips_the_fallback(self):
+        cap, calls = self._cap(["I (252) main_task: Calling app_main()"])
+
+        def boom(run=None):
+            raise AssertionError("JTAG reset must not run")
+
+        text = esp32_flash.boot_capture_with_jtag_fallback(
+            self.PORT, "esp32c3", base_capture=cap, jtag_reset=boom)
+        self.assertIn("Calling app_main", text)
+        self.assertEqual(len(calls), 1)
+
+    def test_classic_esp32_skips_the_fallback_entirely(self):
+        cap, calls = self._cap([""])
+
+        def boom(run=None):
+            raise AssertionError("no JTAG path on classic esp32")
+
+        esp32_flash.boot_capture_with_jtag_fallback(
+            self.PORT, "esp32", base_capture=cap, jtag_reset=boom)
+        self.assertEqual(len(calls), 1)
+
+    def test_one_fallback_attempt_only_even_if_still_empty(self):
+        # one fallback, not a ladder: a capture still empty after the
+        # JTAG reset is returned as-is — the boot check fails it on
+        # its merits, next escalation is the physical replug
+        cap, calls = self._cap(["", ""])
+        log = []
+        text = esp32_flash.boot_capture_with_jtag_fallback(
+            self.PORT, "esp32c3", base_capture=cap,
+            jtag_reset=lambda run=None: True, log=log)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(text, "")
+        self.assertTrue(any("STILL lacks boot evidence" in s for s in log))
+
+    def test_failed_jtag_reset_still_recaptures_once(self):
+        # an openocd failure (no JTAG tap / board wedged) is logged,
+        # and the re-capture still runs — maybe the reset landed anyway
+        cap, calls = self._cap(["", "Calling app_main()"])
+        log = []
+        text = esp32_flash.boot_capture_with_jtag_fallback(
+            self.PORT, "esp32c3", base_capture=cap,
+            jtag_reset=lambda run=None: False, log=log)
+        self.assertIn("Calling app_main", text)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(any("FAILED" in s for s in log))
+
+    def test_jtag_reset_command_is_the_agents_doc_one_liner(self):
+        # AGENTS.md C3 lifecycle ladder step 4: openocd -f
+        # board/esp32c3-builtin.cfg -c 'init; reset run; shutdown'
+        cmds = []
+        ok = esp32_flash._jtag_reset(
+            run=lambda c, timeout=60: (cmds.append(c), FakeResult(0))[1])
+        self.assertTrue(ok)
+        self.assertEqual(len(cmds), 1)
+        self.assertIn("-f board/esp32c3-builtin.cfg", cmds[0])
+        self.assertIn("-c 'init; reset run; shutdown'", cmds[0])
+
+    def test_flash_path_threads_chip_and_reset_into_the_capture(self):
+        # flash_esp32's DEFAULT capture wiring carries the fallback:
+        # the chip (esp32c3) and the injectable JTAG reset reach the
+        # capture path — proven via monkeypatched base capture so no
+        # pyserial is needed (minimal collect env)
+        import tempfile
+        caps = []
+        resets = []
+
+        def fake_cap(p, seconds=6.0):
+            caps.append(p)
+            return "" if len(caps) == 1 else "Calling app_main()"
+
+        orig_cap = esp32_flash._boot_capture
+        orig_jtag = esp32_flash._jtag_reset
+        esp32_flash._boot_capture = fake_cap
+        esp32_flash._jtag_reset = \
+            lambda run=None: resets.append(1) or True
+        try:
+            def run(cmd, timeout=300):
+                return FakeResult(0)
+
+            with tempfile.NamedTemporaryFile() as lockfile:
+                orig = esp32_flash.PCSCD_LOCK
+                esp32_flash.PCSCD_LOCK = lockfile.name
+                try:
+                    ok, log = esp32_flash.flash_esp32(
+                        self.PORT, "esp32c3", {"0x40000": "/tmp/app.bin"},
+                        run=run, usb_reset=lambda d: True,
+                        rebind=lambda p: True)
+                finally:
+                    esp32_flash.PCSCD_LOCK = orig
+        finally:
+            esp32_flash._boot_capture = orig_cap
+            esp32_flash._jtag_reset = orig_jtag
+        self.assertTrue(ok)
+        self.assertEqual(len(caps), 2)     # initial + fallback re-capture
+        self.assertEqual(resets, [1])
+        self.assertIn("JTAG-reset fallback", log)
+        self.assertIn("# boot check passed", log)
 
 
 class QuiesceUnitTests(unittest.TestCase):
@@ -597,6 +818,357 @@ class ObservabilityTests(unittest.TestCase):
                         f"no phase line before first esptool: {seen[:3]}")
 
 
+class ConsoleNoneDefaultTests(unittest.TestCase):
+    # #332 P2 on #324: console-none families (sdkconfig-xtensa.full,
+    # sdkconfig.defaults.esp32 — CONFIG_ESP_CONSOLE_NONE=y) can never
+    # print the console signature. With NO explicit boot_check the
+    # proof-of-boot AUTO-defaults to the wire check; explicit flags
+    # still win.
+    PORT = ("/dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-"
+            "if00-port0")
+
+    def _flash(self, console_none=True, boot_check=None, text=None,
+               wire=(True, "GetSlotStatus: OK")):
+        caps, wires = [], []
+
+        def run(cmd, timeout=300):
+            return FakeResult(0)
+
+        ok, log = esp32_flash.flash_esp32(
+            self.PORT, "esp32", {"0x40000": "/tmp/app.bin"}, run=run,
+            usb_reset=lambda d: True, rebind=lambda p: True,
+            quiesce=lambda: None, restore=lambda: None,
+            boot_check=boot_check, console_none=console_none,
+            capture=lambda p: caps.append(p)
+            or (text if text is not None else "Calling app_main()"),
+            wire_check=lambda p: wires.append(p) or wire)
+        return ok, log, caps, wires
+
+    def test_console_none_defaults_to_wire(self):
+        ok, log, caps, wires = self._flash()
+        self.assertTrue(ok)
+        self.assertEqual(wires, [self.PORT])   # wire check ran
+        self.assertEqual(caps, [])             # console never touched
+        self.assertIn("auto-default", log)
+
+    def test_console_none_explicit_optout_wins(self):
+        ok, log, caps, wires = self._flash(boot_check=False)
+        self.assertTrue(ok)
+        self.assertIn("SKIPPED", log)
+        self.assertEqual(wires, [])
+        self.assertEqual(caps, [])
+
+    def test_console_none_explicit_check_wins(self):
+        ok, log, caps, wires = self._flash(
+            boot_check=lambda t: "Calling app_main" in t)
+        self.assertTrue(ok)
+        self.assertEqual(caps, [self.PORT])    # console check ran
+        self.assertEqual(wires, [])
+
+    def test_console_build_keeps_the_console_default(self):
+        # console_none=False (or omitted): nothing changes — the
+        # default console check still governs, wire never runs
+        ok, log, caps, wires = self._flash(
+            console_none=False,
+            text="E (250) i2c: CONFLICT! driver_ng is not allowed")
+        self.assertFalse(ok)
+        self.assertIn("BOOT CHECK FAILED", log)
+        self.assertEqual(caps, [self.PORT])
+        self.assertEqual(wires, [])
+
+
+class CliBootCheckResolutionTests(unittest.TestCase):
+    # #332: the CLI layer must forward the auto-default inputs so the
+    # LIBRARY does the defaulting (one code path), while an explicit
+    # --boot-check console must beat --console-none instead of being
+    # silently flipped to the wire check.
+    def _cli(self, *extra):
+        import io
+        import contextlib
+        captured = {}
+
+        def fake_flash(port, chip, images, **kw):
+            captured.update(kw)
+            return True, "stub"
+
+        orig_flash = esp32_flash.flash_esp32
+        orig_recover = esp32_flash.recover_stale_pcscd_down
+        orig_argv = sys.argv
+        esp32_flash.flash_esp32 = fake_flash
+        esp32_flash.recover_stale_pcscd_down = lambda run=None: False
+        sys.argv = ["esp32_flash.py", "--port", "/dev/null",
+                    "--chip", "esp32", "--image", "0x40000=/tmp/app.bin",
+                    *extra]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = esp32_flash._cli()
+        finally:
+            esp32_flash.flash_esp32 = orig_flash
+            esp32_flash.recover_stale_pcscd_down = orig_recover
+            sys.argv = orig_argv
+        self.assertEqual(rc, 0)
+        return captured
+
+    def test_console_none_forwards_and_threads_wire_check(self):
+        kw = self._cli("--console-none")
+        self.assertTrue(kw["console_none"])
+        self.assertIsNone(kw["boot_check"])   # library auto-defaults
+        self.assertIsNotNone(kw["wire_check"])  # --stopbits threading
+
+    def test_explicit_console_beats_console_none(self):
+        kw = self._cli("--console-none", "--boot-check", "console")
+        self.assertFalse(kw["console_none"])
+        self.assertIsNone(kw["boot_check"])   # plain console default
+
+    def test_explicit_no_boot_check_beats_console_none(self):
+        kw = self._cli("--console-none", "--no-boot-check")
+        self.assertFalse(kw["boot_check"])
+        self.assertTrue(kw["console_none"])   # forwarded, but inert
+
+    def test_plain_invocation_is_unchanged(self):
+        kw = self._cli()
+        self.assertFalse(kw["console_none"])
+        self.assertIsNone(kw["boot_check"])
+
+
+class UnitRestartRaiseTests(unittest.TestCase):
+    # #332 P2 on #324: a RAISING unit restart (e.g. a subprocess
+    # TimeoutExpired out of run()) used to propagate out of restore()
+    # BEFORE pcscd_lock_release — stranding the held bench flock in a
+    # long-lived caller. The raise is reported and the pcscd restore
+    # (and the lock release) must still happen.
+    PORT = ("/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_"
+            "90:DA:72:9A:50:18-if00")
+
+    def test_unit_restart_raise_still_releases_the_bench_lock(self):
+        import fcntl
+        import tempfile
+        calls = []
+        seen = []
+
+        class LogSpy(list):
+            def __init__(self, echo=False):
+                super().__init__()
+
+            def append(self, item):
+                seen.append(str(item))
+                super().append(item)
+
+        def run(cmd, timeout=300):
+            calls.append(cmd)
+            if "systemctl start nucula-ccid-broker" in cmd:
+                raise RuntimeError("systemd lost the bus")
+            return FakeResult(0)
+
+        orig_log = esp32_flash.StreamingLog
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig_lock = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            esp32_flash.StreamingLog = LogSpy
+            try:
+                ok, _ = esp32_flash.flash_esp32(
+                    self.PORT, "esp32c3", {"0x40000": "/tmp/app.bin"},
+                    run=run, usb_reset=lambda d: True,
+                    rebind=lambda p: True,
+                    boot_check=lambda t: True,
+                    capture=lambda p: "Calling app_main()",
+                    quiesce_unit="nucula-ccid-broker")
+                self.assertTrue(ok)
+                self.assertTrue(any("RESTART RAISED" in s for s in seen),
+                                f"no raise warning in log: {seen}")
+                # pcscd restore ran DESPITE the raise
+                self.assertTrue(any("start pcscd.socket pcscd" in c
+                                    for c in calls))
+                # the flock was NOT stranded: a fresh non-blocking
+                # acquire on the same file must succeed
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+            finally:
+                esp32_flash.PCSCD_LOCK = orig_lock
+                esp32_flash.StreamingLog = orig_log
+
+
+class MarkerUntilRestartTests(unittest.TestCase):
+    # #332 P2 on #324: the .pcscd-down marker is cleared ONLY on a
+    # VERIFIED pcscd restart — a failed/raising `systemctl start` used
+    # to clear it in the finally, losing the only recoverable record
+    # that pcscd (and every other bench reader) is down.
+
+    def test_marker_kept_when_restart_fails(self):
+        import fcntl
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                fd = esp32_flash.pcscd_lock_acquire(
+                    run=lambda c, timeout=60: FakeResult(0))
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+                self.assertTrue(marker.exists())
+                pcscd_ok, _ = esp32_flash.pcscd_lock_release(
+                    fd, run=lambda c, timeout=60:
+                    FakeResult(1, err="start request repeated too quickly"),
+                    warn=lambda msg: None)
+                self.assertFalse(pcscd_ok)
+                self.assertTrue(marker.exists(),
+                                "marker cleared on a DEAD pcscd — the "
+                                "stale-marker recovery can never fire")
+                # the lock itself was still released
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+                # and the stale-marker recovery can now put pcscd back
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(0)))
+                self.assertFalse(marker.exists())
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_marker_kept_when_restart_raises(self):
+        import fcntl
+        import subprocess
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                fd = esp32_flash.pcscd_lock_acquire(
+                    run=lambda c, timeout=60: FakeResult(0))
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+
+                def run(cmd, timeout=60):
+                    raise subprocess.TimeoutExpired(cmd, timeout)
+
+                pcscd_ok, _ = esp32_flash.pcscd_lock_release(
+                    fd, run=run, warn=lambda msg: None)
+                self.assertFalse(pcscd_ok)
+                self.assertTrue(marker.exists())
+                # lock released even though the restart raised
+                probe = open(lockfile.name, "w")
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    probe.close()
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+    def test_stale_marker_recovery_keeps_marker_on_failed_restart(self):
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.NamedTemporaryFile() as lockfile:
+            orig = esp32_flash.PCSCD_LOCK
+            esp32_flash.PCSCD_LOCK = lockfile.name
+            try:
+                marker = P(esp32_flash.lock_marker_path(lockfile.name))
+                marker.write_text("pcscd down since flash quiesce\n")
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(1)))
+                self.assertTrue(
+                    marker.exists(),
+                    "recovery cleared the marker on a failed restart")
+                # a later successful retry clears it
+                self.assertTrue(esp32_flash.recover_stale_pcscd_down(
+                    run=lambda c, timeout=60: FakeResult(0)))
+                self.assertFalse(marker.exists())
+            finally:
+                esp32_flash.PCSCD_LOCK = orig
+
+
+class EntryPointTests(unittest.TestCase):
+    # #332 P2s on #324: the in-repo flash entry points must actually
+    # USE the tool's protections — the nucula flow passes
+    # --quiesce-unit nucula-ccid-broker (not opt-in-only), and
+    # console-none builds default their boot proof to the wire check.
+    REPO = Path(__file__).resolve().parents[3]
+    BUILD_SH = REPO / "firmware" / "esp32-ccid" / "build.sh"
+    FLASH_AND_TEST = REPO / "firmware" / "esp32-ccid" / "flash_and_test.sh"
+
+    # build.sh resolves the partition table under CARGO_TARGET_DIR and
+    # runs `set -euo pipefail` — a missing glob match would abort the
+    # script before the flash line, so each dry run gets a fake target
+    # dir carrying a partition-table.bin at the expected path.
+    BOARDS = {
+        "c3-ccid": ("riscv32imc-esp-espidf", "debug"),
+        "m5stick": ("xtensa-esp32-espidf", "release"),
+    }
+
+    def _dry_run_flash_cmd(self, board, env=None):
+        import os
+        import subprocess
+        import tempfile
+        triple, profile = self.BOARDS[board]
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        pt = (Path(td.name) / triple / profile / "build"
+              / "esp-idf-sys-dryrun" / "out" / "build"
+              / "partition_table" / "partition-table.bin")
+        pt.parent.mkdir(parents=True)
+        pt.write_bytes(b"\xeb\xeb\xa7\x00" + b"\0" * 28)
+        r = subprocess.run(
+            ["bash", str(self.BUILD_SH), board, "--flash",
+             "/dev/serial/by-id/dry-run-port", "--dry-run"],
+            capture_output=True, text=True, timeout=120,
+            env={**os.environ, "CARGO_TARGET_DIR": td.name,
+                 **(env or {})})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = next(l for l in r.stdout.splitlines()
+                    if "esp32_flash.py" in l)
+        return line
+
+    def test_nucula_flash_passes_the_broker_quiesce_unit(self):
+        # the nucula CDC is held by the standing broker — the c3 board
+        # family must quiesce it, no longer opt-in
+        line = self._dry_run_flash_cmd("c3-ccid")
+        self.assertIn("--quiesce-unit nucula-ccid-broker", line)
+
+    def test_console_board_does_not_claim_console_none(self):
+        line = self._dry_run_flash_cmd("c3-ccid")
+        self.assertNotIn("--console-none", line)
+        self.assertNotIn("--boot-check", line)
+
+    def test_console_none_board_defaults_to_wire(self):
+        # sdkconfig-xtensa.full is console-none: the boot proof rides
+        # the wire check without the operator remembering the flag
+        line = self._dry_run_flash_cmd("m5stick")
+        self.assertIn("--console-none", line)
+        self.assertNotIn("--quiesce-unit", line)  # xtensa ≠ nucula
+
+    def test_explicit_boot_check_env_overrides_the_default(self):
+        line = self._dry_run_flash_cmd(
+            "m5stick", env={"ESP_BOOT_CHECK": "console"})
+        self.assertIn("--boot-check console", line)
+        self.assertNotIn("--console-none", line)
+
+    def test_quiesce_unit_env_overrides_the_nucula_default(self):
+        # escape hatch for hosts without the broker deployed: an EMPTY
+        # ESP_QUIESCE_UNIT suppresses the flag entirely; a named unit
+        # is passed through verbatim
+        line = self._dry_run_flash_cmd("c3-ccid",
+                                       env={"ESP_QUIESCE_UNIT": ""})
+        self.assertNotIn("--quiesce-unit", line)
+        line = self._dry_run_flash_cmd(
+            "m5stick", env={"ESP_QUIESCE_UNIT": "other-owner.service"})
+        self.assertIn("--quiesce-unit other-owner.service", line)
+
+    def test_flash_and_test_defaults_to_wire(self):
+        # its sdkconfig.defaults.esp32 flow is console-none — the
+        # esp32_flash.py invocation must carry the wire default (no
+        # dry-run mode exists for this script, so the invocation is
+        # asserted on source)
+        text = self.FLASH_AND_TEST.read_text()
+        idx = text.rindex("esp32_flash.py")  # the invocation, not the header
+        window = text[max(0, idx - 200):idx + 2000]
+        self.assertIn("--console-none", window)
+        self.assertIn("ESP_BOOT_CHECK", window)
+
+
 class SysfsTests(unittest.TestCase):
     def test_usb_dev_path_resolves_serial(self):
         with tempfile.TemporaryDirectory() as td:
@@ -618,3 +1190,27 @@ class SysfsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerdictCarriesRestoreTest(unittest.TestCase):
+    def test_restore_warning_rides_returned_log(self):
+        # #352 (Codex P2): the DEFAULT restore() appends warnings to the
+        # function's log AFTER the verdict returns in source order — the
+        # deferred join must include them.
+        import subprocess
+        import esp32_flash as ef
+
+        def failing_run(cmd, timeout):
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        ok, log = ef.flash_esp32(
+            "/dev/null", "esp32",
+            {"0x40000": "/tmp/nonexistent.bin"},
+            quiesce_unit="broken-unit",
+            run=failing_run,
+            boot_check=False, usb_reset=lambda dev: True,
+            rebind=lambda port: True,
+        )
+        self.assertFalse(ok)
+        self.assertIn("RESTART RAISED", log,
+                      "restore warnings must ride the returned verdict")

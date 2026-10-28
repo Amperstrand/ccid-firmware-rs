@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Amperstrand <141745238+Amperstrand@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 23:00:00 +0200
+Subject: [PATCH 0/2] STM32F469 support: endpoint re-enablement + RAL warning
+ hygiene
+
+The STM32F469 OTG core (core_id 0x0000_1200) requires F446-like
+endpoint re-enablement after OUT transactions; without it, a
+STM32F469I-DISCO device answers EP0 and then goes silent after the
+first OUT transaction — no interface endpoint ever delivers data.
+
+Patch 1 adds the core_id to the existing re-enablement condition
+(3 functional lines). Patch 2 is independent build hygiene: crate-level
+allows for the warnings emitted by the generated RAL code, so
+downstream -D warnings builds stay clean; it can be dropped if the
+generator should be fixed instead.
+
+Base: f5ed464 ("Merge pull request #55 from stm32-rs/release"), the
+v0.5.0 tag and current master tip.
+
+Downstream lifecycle tracked as Amperstrand/ccid-firmware-rs#271; the
+fork pin rides Amperstrand/synopsys-usb-otg@764bc042 until an upstream
+release carries this.
+
+Amperstrand (2):
+  Re-enable endpoints on STM32F469 after OUT transactions
+  Suppress warnings from generated RAL code
+
+ src/bus.rs | 5 +++--
+ src/lib.rs | 5 +++++
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+-- 
+2.43.0
+

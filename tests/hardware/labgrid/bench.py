@@ -24,18 +24,26 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 RESULTS_DIR = Path(__file__).parent / "results"
 LEDGER_PATH = RESULTS_DIR / "history.jsonl"
 BENCH_LOCK_PATH = Path("/tmp/amperstrand-bench.lock")
 
-# The bench's five exported places (exporter-ai-legion-nfc.yaml).
-PLACES = ("stm32-ccid", "nucula-c3", "m5stick", "ref-acr1252", "ref-cardman")
+# The bench's exported places (exporter-ai-legion-nfc.yaml).
+#
+# ref-acr1252 RETIRED from this bench 2026-10-25: the reader moved to
+# ai-legion-small (place ref-acr1252-small, conwrt-bench consumption —
+# retirement recorded on that place's coordinator note, #71). Nothing on
+# .208 serves an ACR1252 to pcscd anymore, so ccid legs can neither
+# acquire the old place nor probe its identity.
+PLACES = ("stm32-ccid", "nucula-c3", "m5stick", "ref-cardman")
 
 DUT_PLACES = ("stm32-ccid", "nucula-c3", "m5stick")
-REFERENCE_PLACES = ("ref-acr1252", "ref-cardman")
+# ref-cardman only — the ACR1252 reference now lives on ai-legion-small
+# (see PLACES note).
+REFERENCE_PLACES = ("ref-cardman",)
 
 
 def lg(place: str, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -111,6 +119,41 @@ class PlaceBusy(Exception):
             f"labgrid place '{place}' held by "
             f"{holder or 'unknown session'} {detail}".strip()
         )
+
+
+def bench_lock_mode(skip_labgrid: bool) -> str:
+    """#334: what --skip-labgrid skips, in one testable place.
+
+    The flag is the documented coordinator-outage escape hatch: it
+    skips PLACE acquisition only. The cross-project flock
+    (/tmp/amperstrand-bench.lock) does not depend on the coordinator —
+    pcscd/serial legs must still exclude bolty-rs/micronuts sessions,
+    so the lock mode is never "none".
+    """
+    return "flock-only" if skip_labgrid else "flock+places"
+
+
+def yield_acquired_place(place: str, skip, ledger_fn=None):
+    """#334: acquire `place` for a fixture body; SKIP on the acquire race.
+
+    `acquired_place` RAISES PlaceBusy when another session wins the
+    place between the holder check and the acquire — with no caller
+    catching it, the promised busy-place skip surfaced as a setup
+    ERROR. This wrapper turns that raise into `skip(reason)` (with the
+    winning holder named) and releases the place on teardown. `skip` is
+    injected (bench.py stays pytest-free); the fixture passes
+    `pytest.skip`.
+    """
+    ledger_fn = ledger_fn or ledger
+    with ExitStack() as stack:
+        try:
+            p = stack.enter_context(acquired_place(place))
+        except PlaceBusy as e:
+            skip(f"place busy (lost the check→acquire race): {e}")
+            return
+        ledger_fn("place_acquired", place=p)
+        yield p
+    ledger_fn("place_released", place=place)
 
 
 # F469 ST-LINK serial, pinned by the exporter config (flashed_firmware
@@ -201,6 +244,37 @@ def dut_absent_reason(place: str) -> str | None:
             return ("m5stick is streaming on UART0 — the wifi-vpcd console "
                     "variant is flashed (another lane's active firmware); "
                     "GemPC legs skip until the standard image returns")
+        # Codex-#188 pattern (the nucula sibling, applied here 2026-10-26):
+        # a board whose port exists but answers NEITHER a live pcscd reader
+        # NOR the GemPC identity probe is in an unknown/foreign-firmware
+        # state (bench case: the cashu-nfc-matrix T5 wallet — silent
+        # console, no vpcd reader, no GemPC answer, reflash owner-gated)
+        # — not evidence about the code under test. Trade-off accepted per
+        # SKIP≠FAIL (#183): a wedged standard image ambers here too; the
+        # place stays ours to re-verify interactively when that matters.
+        # pcscd-listed GemPCTwin = standard image serving: testable, and
+        # the port is pcscd-owned (never raw-probed under it).
+        try:
+            from smartcard.System import readers  # noqa: PLC0415
+
+            serving = any("GemPCTwin" in str(r) for r in readers())
+        except Exception:
+            serving = False
+        if not serving:
+            from board_identity import probe_m5stick  # noqa: PLC0415
+
+            try:
+                probe = probe_m5stick()
+            except Exception:
+                # Port vanished mid-probe / unresolvable: cannot classify.
+                # SKIP≠FAIL cuts both ways — an unclassifiable board is
+                # not a variant verdict either; leave it testable.
+                return None
+            if not probe.get("ok"):
+                return ("m5stick not answering the GemPC identity probe "
+                        f"({str(probe.get('detail', '?'))[:40]}) — unknown/"
+                        "foreign firmware variant (wallet/vpcd class); "
+                        "GemPC legs skip until the standard image returns")
     elif place == "nucula-c3":
         # Codex #188 residual (found live 2026-10-15: the nightly failed
         # red instead of skipping when the board sat in a non-serving

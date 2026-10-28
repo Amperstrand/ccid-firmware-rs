@@ -41,10 +41,11 @@ import pytest
 from bench import (  # noqa: F401  (PLACES re-exported for addoption default)
     PLACES,
     BenchLockHeld,
-    acquired_place,
     bench_lock as _bench_lock_ctx,
+    bench_lock_mode,
     ledger as _ledger,
     place_holder as _place_holder,
+    yield_acquired_place as _yield_acquired_place,
 )
 
 import stm32_flash  # noqa: E402  (sibling module, after the bench import block)
@@ -175,7 +176,9 @@ def pytest_addoption(parser):
                      help="Skip labgrid place acquisition (coordinator-outage escape hatch).")
     parser.addoption("--places", action="store", default=",".join(PLACES),
                      help="Comma-separated subset of bench places to cover "
-                          "(stm32-ccid,nucula-c3,m5stick,ref-acr1252,ref-cardman).")
+                          "(stm32-ccid,nucula-c3,m5stick,ref-cardman; "
+                          "ref-acr1252 retired 2026-10-25 — now "
+                          "ref-acr1252-small on ai-legion-small).")
     parser.addoption("--reserve", action="store_true", default=False,
                      help="Queue for busy places via coordinator reservations "
                           "(reserve --wait) instead of failing/skipping — the "
@@ -229,16 +232,25 @@ def bench_lock_gate(request):
     yield
 
 
+# The #334 extraction lives in bench.py (bench_lock_mode,
+# yield_acquired_place) so host unit tests can import it by its unique
+# module name — imported above as bench_lock_mode /
+# _yield_acquired_place.
+
+
 @pytest.fixture(scope="session")
 def bench_lock(request):
     """Cross-project bench flock (bolty-rs protocol, layer 1) for tests
-    that drive pcscd or serial ports. Held for the session."""
-    if request.config.getoption("--skip-labgrid"):
-        yield None
-        return
+    that drive pcscd or serial ports. Held for the session.
+
+    #334: --skip-labgrid skips only PLACE acquisition (the coordinator
+    escape hatch) — the flock is still taken, so pcscd/serial legs keep
+    their cross-project exclusion in every mode.
+    """
+    mode = bench_lock_mode(request.config.getoption("--skip-labgrid"))
     try:
         with _bench_lock_ctx():
-            print("[bench] flock acquired (cross-project)")
+            print(f"[bench] flock acquired (cross-project, mode={mode})")
             yield True
     except BenchLockHeld as e:
         pytest.skip(f"bench busy: {e}")
@@ -281,10 +293,9 @@ def place_name(request):
         return
     if holder:
         pytest.skip(f"place held by {holder}: {request.param}")
-    with acquired_place(request.param) as p:
-        _ledger("place_acquired", place=p)
-        yield p
-    _ledger("place_released", place=request.param)
+    # #334: a place lost between the holder check and the acquire is a
+    # SKIP with the winning holder named — never a setup ERROR.
+    yield from _yield_acquired_place(request.param, pytest.skip)
 
 
 @pytest.fixture(scope="session")

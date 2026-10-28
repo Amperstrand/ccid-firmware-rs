@@ -395,6 +395,12 @@ impl EspPn7160Transport {
 }
 
 impl Transport for EspPn7160Transport {
+    /// Stateless link liveness probe (t_4864e74e): the inherent
+    /// `probe()`'s zero-length I2C write — safe mid-session.
+    fn link_probe(&mut self) -> bool {
+        self.probe().is_ok()
+    }
+
     /// Write-only, no RSP wait (non-blocking re-arm path): one I2C
     /// transmit bounded by SEND_TIMEOUT_MS.
     fn send(&mut self, cmd: &[u8]) -> bool {

@@ -1,0 +1,22 @@
+[package]
+name = "ccid-service"
+rust-version = "1.98"
+version = "0.1.0"
+edition = "2021"
+description = "Board-agnostic CCID serving kernel: serial GemPC server, vpcd/SPP transports, CCID handler"
+license = "GPL-2.0-or-later"
+
+# Boundary rule (t_72e1e2ed): this crate is the reader-mode service
+# kernel. It may depend ONLY on the shared protocol/card crates —
+# card-interface, ccid-core, ccid-protocol, ccid-transport-serial — and
+# plain std/heapless. It must NEVER see board/frontend internals (pins,
+# peripherals, board tables): the firmware bin owns those and hands the
+# service a constructed card driver. "Works on any board" is
+# compiler-enforced by this dependency edge.
+[dependencies]
+card-interface = { path = "../card-interface" }
+ccid-core = { path = "../ccid-core" }
+ccid-protocol = { path = "../ccid-protocol" }
+ccid-transport-serial = { path = "../ccid-transport-serial" }
+heapless = "0.9"
+log = "0.4"

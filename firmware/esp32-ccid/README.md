@@ -42,8 +42,10 @@ cargo build --release --target xtensa-esp32-espidf --features backend-mfrc522
 # MFRC522 backend, M5Stick Grove pinout (SDA=32/SCL=33)
 cargo build --release --target xtensa-esp32-espidf --features backend-mfrc522,board-m5stick
 
-# PN532 backend (original hardware, SPI — board feature not used)
-cargo build --release --target xtensa-esp32-espidf --features backend-pn532
+# PN532 backend (original hardware, SPI — board feature not used).
+# --no-default-features is required: features are additive, and the
+# default set already builds backend-mfrc522 + board-m5atom.
+cargo build --release --target xtensa-esp32-espidf --no-default-features --features backend-pn532
 ```
 
 If neither flag is specified, `backend-mfrc522` is the default.
@@ -117,8 +119,8 @@ rustup target add xtensa-esp32-espidf
 # Build (MFRC522 backend, default)
 cargo build --release --target xtensa-esp32-espidf
 
-# Build (PN532 backend)
-cargo build --release --target xtensa-esp32-espidf --features backend-pn532
+# Build (PN532 backend — needs --no-default-features, features are additive)
+cargo build --release --target xtensa-esp32-espidf --no-default-features --features backend-pn532
 ```
 
 The firmware binary will be at `target/xtensa-esp32-espidf/release/esp32-ccid`.
@@ -201,17 +203,27 @@ raw esptool sequences are bench-banned):
 # C3 / Nucula — ota_0 slot of the OTA table, 4 MB flash
 esptool --chip esp32c3 elf2image --flash-mode dio -o /tmp/c3.bin <target-dir>/riscv32imc-esp-espidf/debug/esp32-ccid
 python3 ../../tests/hardware/labgrid/esp32_flash.py --chip esp32c3 \
-  -p /dev/serial/by-id/<espressif-jtag-port> \
+  --port /dev/serial/by-id/<espressif-jtag-port> \
+  --quiesce-unit nucula-ccid-broker \
   --image 0x8000=<target-dir>/riscv32imc-esp-espidf/debug/build/partition-table.bin \
   --image 0x40000=/tmp/c3.bin --erase 0x30000=0x2000
 
 # M5Stick — OTA table, ota_0 slot
 esptool --chip esp32 elf2image --flash-mode dio -o /tmp/m5.bin <target-dir>/xtensa-esp32-espidf/release/esp32-ccid
 python3 ../../tests/hardware/labgrid/esp32_flash.py --chip esp32 \
-  -p /dev/serial/by-id/<m5stick-port> --baud 115200 \
+  --port /dev/serial/by-id/<m5stick-port> --baud 115200 --boot-check wire \
   --image 0x8000=<target-dir>/xtensa-esp32-espidf/release/build/partition-table.bin \
   --image 0x40000=/tmp/m5.bin --erase 0x30000=0x2000
 ```
+
+Flag notes (#332): the nucula CDC is permanently held by the standing
+`nucula-ccid-broker` service — a c3 flash MUST pass
+`--quiesce-unit nucula-ccid-broker` (the tool stops/starts it under the
+held pcscd flock; `build.sh` passes it for every `esp32c3` board).
+`sdkconfig-xtensa.full` builds are console-none
+(`CONFIG_ESP_CONSOLE_NONE=y`): their proof-of-boot is `--boot-check wire`
+(or `--console-none`, which auto-defaults an unspecified `--boot-check`
+to the wire check) — the console signature can never appear.
 
 On a failed station connect the firmware now scans and logs every visible AP
 (SSID/channel/RSSI/auth) — distinguishes "target SSID out of range from this

@@ -11,11 +11,17 @@
 //!   idle ok + bit-bang NAK                 → electrical environment of
 //!     THIS binary is faulty (compare against wallet fw which ACKs)
 
+use boards::{BusRole, NUCULA};
 use esp_idf_hal::peripherals::Peripherals;
 
-const SDA: i32 = 4;
-const SCL: i32 = 5;
-const VEN: i32 = 7;
+// boards-as-data (t_a0ebcf54): the raw gpio numbers resolve from the
+// GENERATED boards::NUCULA row at COMPILE time — this wire-level
+// instrument drives whatever the netlist says, never a hand-typed
+// copy. (The probe addresses below are experiment targets, not board
+// pin data.)
+const SDA: i32 = NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend).0 as i32;
+const SCL: i32 = NUCULA.bus_i2c_pins_const(BusRole::NfcFrontend).1 as i32;
+const VEN: i32 = NUCULA.pin_const("nfc_ven") as i32;
 
 const HALF_US: u32 = 5; // 100 kHz
 

@@ -48,6 +48,17 @@ PCSCD_LOCK = "/run/lock/bench-pcscd.lock"
 PCSCD_DOWN_MARKER = PCSCD_LOCK + ".pcscd-down"
 USBDEVFS_RESET_IOCTL = 0x5514
 SETTLE_S = 2
+# The firmware-level boot-evidence marker: the IDF main_task line every
+# chip prints BEFORE the app body runs (silencing happens inside
+# app_main) — the last console evidence of a good boot.
+BOOT_EVIDENCE_MARKER = "Calling app_main"
+# #336: the AGENTS.md C3-lifecycle reset ladder step 4 — the JTAG path
+# of the C3's USB-Serial/JTAG composite port stays alive when CDC/RTS
+# resets are dropped. Espressif's openocd build is preferred (Debian's
+# package lacks target/esp32c3.cfg, AGENTS.md toolchain notes).
+OPENOCD_ESP32C3_RESET = (
+    "-f board/esp32c3-builtin.cfg -c 'init; reset run; shutdown'")
+ESPRESSIF_OPENOCD = "/opt/espressif/openocd-esp32/bin/openocd"
 
 
 class StreamingLog(list):
@@ -226,29 +237,56 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
     the next invocation (or any bench script) can detect the stale
     marker and put pcscd back instead of silently leaving every other
     bench reader dead (2026-10-20 c3 incident follow-up).
+
+    Exception-safe on the acquire side (#337): any raise inside the
+    stop window releases the flock fd before propagating — a long-lived
+    caller (labgrid exporter) must not be left holding the bench lock
+    with pcscd down. (The release side got its finally in the #299
+    round; this closes the acquire side's raise window.)
     """
     import fcntl
     import os
     lp = lock_path or PCSCD_LOCK
     fd = os.open(lp, os.O_CREAT | os.O_RDWR)
     fcntl.flock(fd, fcntl.LOCK_EX)
-    # bare systemctl on purpose: the fd above IS the lock — wrapping
-    # this in a shell `flock <path>` opens a second file description
-    # and self-deadlocks against it (flock(1) blocks on LOCK_EX)
-    r = (run or _run_local)("systemctl stop pcscd.socket pcscd",
-                            timeout=60)
-    if r.returncode != 0:
+    try:
+        # bare systemctl on purpose: the fd above IS the lock — wrapping
+        # this in a shell `flock <path>` opens a second file description
+        # and self-deadlocks against it (flock(1) blocks on LOCK_EX)
+        r = (run or _run_local)("systemctl stop pcscd.socket pcscd",
+                                timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"pcscd stop failed (rc={r.returncode}) — the socket unit "
+                "may still be armed and can re-grab the reader port "
+                "mid-flash; refusing to flash (run with the rights the "
+                "bench expects). stderr: {(r.stderr or '')[-200:]}")
+        marker = lock_marker_path(lp)
+        Path(marker).write_text(
+            f"pcscd down since flash quiesce, pid={os.getpid()}\n")
+        return fd
+    except RuntimeError:
+        # the stop ANSWERED and failed — pcscd state is known; release
+        # the flock and re-raise (no marker: pcscd was not left down)
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-        raise RuntimeError(
-            f"pcscd stop failed (rc={r.returncode}) — the socket unit "
-            "may still be armed and can re-grab the reader port "
-            "mid-flash; refusing to flash (run with the rights the "
-            "bench expects). stderr: {(r.stderr or '')[-200:]}")
-    marker = lock_marker_path(lp)
-    Path(marker).write_text(
-        f"pcscd down since flash quiesce, pid={os.getpid()}\n")
-    return fd
+        raise
+    except BaseException:
+        # #337: the stop never answered (e.g. subprocess.TimeoutExpired
+        # out of _run_local) — release the flock and lay the stale-down
+        # marker (pcscd state is unknown: the stop may have taken
+        # effect before the raise), so the next invocation's
+        # recover_stale_pcscd_down() can put the bench back. Then
+        # re-raise.
+        try:
+            Path(lock_marker_path(lp)).write_text(
+                f"pcscd state unknown after aborted quiesce, "
+                f"pid={os.getpid()}\n")
+        except OSError:
+            pass
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        raise
 
 
 def pcscd_lock_release(fd: int, run=None,
@@ -259,11 +297,17 @@ def pcscd_lock_release(fd: int, run=None,
     A failed START does not fail the flash (the images are proven on
     flash) but is reported — the caller must know pcscd is down. The
     fd is unlocked/closed in a finally so a runner exception cannot
-    leak the flock in a long-lived caller.
+    leak the flock in a long-lived caller. The .pcscd-down marker is
+    cleared ONLY on a VERIFIED restart (#332, Codex P2 on #324): if
+    the start fails or raises, the marker STAYS so the stale-marker
+    recovery (next invocation's recover_stale_pcscd_down) can put
+    pcscd back — clearing it on a dead pcscd lost the only record
+    that the bench readers are down.
     """
     import fcntl
     import os
     pcscd_ok = True
+    restarted = False
     lp = PCSCD_LOCK
     try:
         # resolve the ACTUAL lock file this fd was opened on (acquire
@@ -272,18 +316,29 @@ def pcscd_lock_release(fd: int, run=None,
             lp = os.readlink(f"/proc/self/fd/{fd}")
         except OSError:
             lp = PCSCD_LOCK
-        r = (run or _run_local)("systemctl start pcscd.socket pcscd",
-                                timeout=60)
-        if r.returncode != 0:
-            pcscd_ok = False
-            warn(f"pcscd RESTART FAILED (rc={r.returncode}) — other "
-                 f"bench readers are DOWN until restarted manually. "
-                 f"stderr: {(r.stderr or '')[-200:]}")
-    finally:
         try:
-            os.unlink(lock_marker_path(lp))
-        except OSError:
-            pass
+            r = (run or _run_local)("systemctl start pcscd.socket pcscd",
+                                    timeout=60)
+        except Exception as e:  # noqa: BLE001 — reported in the verdict
+            pcscd_ok = False
+            warn(f"pcscd RESTART RAISED ({e!r}) — other bench readers "
+                 "are DOWN until restarted manually; the .pcscd-down "
+                 "marker is KEPT for the stale-marker recovery")
+        else:
+            if r.returncode != 0:
+                pcscd_ok = False
+                warn(f"pcscd RESTART FAILED (rc={r.returncode}) — other "
+                     "bench readers are DOWN until restarted manually; "
+                     "the .pcscd-down marker is KEPT for the stale-marker "
+                     f"recovery. stderr: {(r.stderr or '')[-200:]}")
+            else:
+                restarted = True
+    finally:
+        if restarted:
+            try:
+                os.unlink(lock_marker_path(lp))
+            except OSError:
+                pass
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
     return pcscd_ok, None
@@ -312,10 +367,16 @@ def recover_stale_pcscd_down(run=None) -> bool:
     try:
         r = (run or _run_local)("systemctl start pcscd.socket pcscd",
                                 timeout=60)
-        marker.unlink(missing_ok=True)
+        # #332: clear the marker ONLY on a verified restart — a failed
+        # start must leave it for the next retry, or the record that
+        # pcscd is down is lost (same class as the release-side fix).
+        if r.returncode == 0:
+            marker.unlink(missing_ok=True)
         print(f"# recovered stale pcscd-down marker: pcscd start rc="
               f"{r.returncode} (a previous flash was killed before "
-              "restore)")
+              f"restore)"
+              + ("" if r.returncode == 0 else
+                 " — START FAILED, marker KEPT for the next retry"))
         return True
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -367,10 +428,12 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                 baud: int | None = None,
                 erase_regions: tuple[tuple[int, int], ...] = (),
                 exporter_cfg: Path | None = None,
-                boot_check=None, capture=None, run=None, usb_reset=None,
+                boot_check=None, capture=None, jtag_reset=None, run=None,
+                usb_reset=None,
                 rebind=None, usb_path=None, quiesce=None, restore=None,
                 quiesce_unit: str | None = None, wire_check=None,
-                stopbits: int = 2, stream_log: bool = False
+                stopbits: int = 2, stream_log: bool = False,
+                console_none: bool = False
                 ) -> tuple[bool, str]:
     """Flash an ESP32 with the full wedge discipline. Returns (ok, log).
 
@@ -389,6 +452,20 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     GetSlotStatus round-trip on the freshly flashed port (via
     gempc_smoke — any LRC-valid RDR reply proves the serve loop is
     alive; the CONFLICT veto is console-side and does not apply).
+    The DEFAULT console capture carries the C3 JTAG-reset fallback
+    (#336): both esptool's post-flash RTS reset and raw `setRTS()` are
+    intermittently dropped on the C3's USB-JTAG composite port (AGENTS
+    C3 lifecycle, failure mode 4), so a C3 capture with no boot
+    evidence gets one documented `openocd ... 'init; reset run;
+    shutdown'` reset and a re-capture before the check runs
+    (`jtag_reset` injectable for tests; classic-ESP32 boards have no
+    JTAG path and never fall back).
+    `console_none` (#313/#332): the image was built console-less
+    (CONFIG_ESP_CONSOLE_NONE=y — sdkconfig-xtensa.full and the
+    sdkconfig.defaults.esp32 flow) — when NO explicit `boot_check` is
+    given, the proof-of-boot AUTO-defaults to the wire check (a
+    console signature can never appear on a console-none build);
+    explicit flags still win.
     `quiesce_unit` (#314): a systemd unit that owns the port (e.g. the
     nucula's standing `nucula-ccid-broker`) — stopped under the SAME
     held pcscd flock before the flash and restarted during restore.
@@ -400,9 +477,28 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     run = run or _run_local
     usb_reset = usb_reset or usbdevfs_reset
     rebind = rebind or ftdi_rebind
-    capture = capture or _boot_capture
     log = StreamingLog(echo=stream_log)
     lock_state = {"fd": None}
+    if capture is None:
+        def _capture_with_fallback(p):
+            # #336: the DEFAULT capture path threads the chip/reset
+            # strategy through boot_capture_with_jtag_fallback — a C3
+            # whose RTS pulse was dropped gets the documented JTAG-reset
+            # re-capture instead of a failed boot check. An explicitly
+            # injected capture keeps raw semantics (the unit tests'
+            # doubles must not grow a fallback).
+            return boot_capture_with_jtag_fallback(
+                p, chip, jtag_reset=jtag_reset, log=log, run=run)
+        capture = _capture_with_fallback
+
+    # #332 (Codex P2 on #324): a console-none build can never print
+    # the console signature — with no EXPLICIT boot_check, default the
+    # proof-of-boot to the wire check instead of an unavoidable fail.
+    if boot_check is None and console_none:
+        boot_check = "wire"
+        log.append("# boot check auto-default: console-none build — "
+                   "proof-of-boot is the wire check (#313); pass "
+                   "boot_check=False to opt out explicitly")
 
     if quiesce is None:
         def quiesce():
@@ -423,14 +519,26 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
         def restore():
             set_ftdi_latency(port)
             if quiesce_unit:
-                r = run(f"systemctl start {shlex.quote(quiesce_unit)}",
-                        timeout=60)
-                log.append(f"$ systemctl start {quiesce_unit} "
-                           f"rc={r.returncode}")
-                if r.returncode != 0:
-                    log.append(f"# WARNING: {quiesce_unit} RESTART FAILED "
-                               "(rc={r.returncode}) — the standing port "
-                               "owner is DOWN; restart it manually")
+                # #332 (Codex P2 on #324): a RAISING unit restart (e.g.
+                # subprocess.TimeoutExpired) used to propagate out of
+                # restore() BEFORE pcscd_lock_release below — stranding
+                # the held flock (and the marker) in a long-lived
+                # caller. The restart failure is reported loudly but
+                # must never skip the pcscd restore.
+                try:
+                    r = run(f"systemctl start {shlex.quote(quiesce_unit)}",
+                            timeout=60)
+                except Exception as e:  # noqa: BLE001 — reported below
+                    log.append(f"# WARNING: {quiesce_unit} RESTART RAISED "
+                               f"({e!r}) — the standing port owner is "
+                               "DOWN; restart it manually")
+                else:
+                    log.append(f"$ systemctl start {quiesce_unit} "
+                               f"rc={r.returncode}")
+                    if r.returncode != 0:
+                        log.append(f"# WARNING: {quiesce_unit} RESTART FAILED "
+                                   "(rc={r.returncode}) — the standing port "
+                                   "owner is DOWN; restart it manually")
             if lock_state["fd"] is not None:
                 ok_pcscd, _ = pcscd_lock_release(lock_state["fd"],
                                                  run=run,
@@ -451,13 +559,19 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
     if baud is None:
         baud = 460800
 
+    # #352 (Codex P2): the verdict log is JOINED AFTER restore() — its
+    # warnings (RESTART RAISED, marker kept) must ride the returned log
+    # or a failed broker restart returns (True, log) invisibly in
+    # library mode (stream_log=False).
+    outcome: list = [False, []]
     try:
         try:
             quiesce()
         except Exception as e:  # noqa: BLE001 — reported in the verdict
             log.append(f"# QUIESCE FAILED ({e}) — flash NOT attempted; "
                        "pcscd state unknown, verify before bench use")
-            return False, "\n".join(log)
+            outcome[:] = (False, log)
+            return
         state = {"written": False, "erased": False}
         # DESCENDING offset order: the app lands before the partition
         # table — a mid-write failure leaves the OLD table describing
@@ -506,7 +620,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                 "boots; re-run this flash. If the port stays dead this "
                 "is the physical-replug class (Gotcha #3): replug USB, "
                 "then re-run.")
-            return False, "\n".join(log)
+            outcome[:] = (False, log)
+            return
         state["written"] = True
 
         # -- destructive steps ONLY after every write landed --
@@ -519,7 +634,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                            "flash but the old otadata/selector still "
                            "points at the previous slot — the board "
                            "may boot the OLD image. Re-run this flash.")
-                return False, "\n".join(log)
+                outcome[:] = (False, log)
+                return
         state["erased"] = True
 
         # -- final reset + sync sanity (the documented chip-reset step) --
@@ -528,7 +644,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
             log.append("# reset/flash-id failed after successful "
                        "write+erase — power-cycle or replug, images ARE "
                        "on flash.")
-            return False, "\n".join(log)
+            outcome[:] = (False, log)
+            return
 
         if boot_check is not False:
             if boot_check == "wire":
@@ -543,7 +660,8 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                     log.append("# BOOT CHECK FAILED (wire) — the freshly "
                                "flashed image does not answer GetSlotStatus; "
                                "flash verified ≠ boot verified.")
-                    return False, "\n".join(log)
+                    outcome[:] = (False, log)
+                    return
             else:
                 check = boot_check if boot_check is not None \
                     else boot_check_no_conflict
@@ -554,15 +672,18 @@ def flash_esp32(port: str, chip: str, images: dict[str, str],
                                "verified; the dropped-reset class is "
                                "documented in AGENTS). Console tail:\n"
                                f"{text[-600:]}")
-                    return False, "\n".join(log)
+                    outcome[:] = (False, log)
+                    return
             log.append("# boot check passed")
         else:
             log.append("# BOOT CHECK SKIPPED (caller explicitly opted "
                        "out) — flash success is esptool-only, NOT "
                        "boot-proven")
-        return True, "\n".join(log)
+        outcome[:] = (True, log)
+        return
     finally:
         restore()
+        return outcome[0], "\n".join(outcome[1])
 
 
 def _boot_capture(port: str, seconds: float = 6.0) -> str:
@@ -593,6 +714,75 @@ def _boot_capture(port: str, seconds: float = 6.0) -> str:
         s.close()
 
 
+def jtag_reset_warranted(chip: str, captured: str) -> bool:
+    """Unit-testable decision (#336): does this capture warrant the C3
+    JTAG-reset fallback?
+
+    True iff the chip is a C3 — the only bench family whose USB-JTAG
+    composite port keeps a reset path when CDC/RTS control requests are
+    dropped (AGENTS.md "ESP32-C3 Nucula Board — USB Port Lifecycle",
+    failure mode 4: BOTH esptool's post-flash RTS reset and raw
+    `setRTS()` are intermittently eaten; the classic-ESP32 m5stick has
+    no JTAG fallback at all) — AND the capture carries no
+    firmware-level boot evidence (`Calling app_main`, the same marker
+    `boot_check_no_conflict` requires: an empty capture means the reset
+    pulse was eaten before capture began, and ROM banners alone replay
+    on a boot-looping image).
+    """
+    return ((chip or "").strip().lower().startswith("esp32c3")
+            and BOOT_EVIDENCE_MARKER not in (captured or ""))
+
+
+def _jtag_reset(run=None, timeout: int = 60) -> bool:
+    """The documented C3 JTAG reset one-liner (AGENTS.md ladder step 4).
+
+    `openocd -f board/esp32c3-builtin.cfg -c 'init; reset run;
+    shutdown'` — connect over JTAG, system-reset the chip, resume,
+    disconnect. Returns True iff openocd exited 0 (reset issued)."""
+    oc = ESPRESSIF_OPENOCD if Path(ESPRESSIF_OPENOCD).exists() \
+        else "openocd"
+    r = (run or _run_local)(f"{oc} {OPENOCD_ESP32C3_RESET}",
+                            timeout=timeout)
+    return r.returncode == 0
+
+
+def boot_capture_with_jtag_fallback(port: str, chip: str,
+                                    base_capture=None, jtag_reset=None,
+                                    log=None, run=None) -> str:
+    """RTS-pulse console capture with the C3 JTAG-reset fallback (#336).
+
+    Capture first; if `jtag_reset_warranted` says the RTS pulse was
+    likely dropped (C3 + no boot evidence), issue the documented JTAG
+    reset and capture ONCE more — the second capture is the verdict
+    either way. One fallback attempt, not a ladder: a capture that
+    still lacks evidence after a JTAG reset fails the boot check on
+    its merits (escalation past JTAG is the physical-replug class,
+    AGENTS.md ladder step 5). `base_capture`/`jtag_reset`/`run` are
+    injectable for the unit tests; `log` (the flash path's
+    StreamingLog) records the fallback for the verdict.
+    """
+    cap = base_capture or _boot_capture
+    text = cap(port)
+    if not jtag_reset_warranted(chip, text):
+        return text
+    reset = jtag_reset or _jtag_reset
+    ok = reset(run=run)
+    if log is not None:
+        log.append(f"# C3 boot capture had no "
+                   f"'{BOOT_EVIDENCE_MARKER}' evidence — JTAG-reset "
+                   f"fallback ({OPENOCD_ESP32C3_RESET}) "
+                   f"{'issued' if ok else 'FAILED'}, re-capturing "
+                   f"(#336: dropped RTS pulses must not fail a good "
+                   f"flash)")
+    text = cap(port)
+    if log is not None and BOOT_EVIDENCE_MARKER not in text:
+        log.append("# JTAG-reset fallback capture STILL lacks boot "
+                   "evidence — the boot check will fail this flash on "
+                   "its merits (next escalation is the physical replug, "
+                   "AGENTS.md ladder step 5)")
+    return text
+
+
 def boot_check_no_conflict(text: str) -> bool:
     """The default boot proof: firmware-level evidence required.
 
@@ -604,7 +794,7 @@ def boot_check_no_conflict(text: str) -> bool:
     on #299); an empty capture fails — no evidence is not proof."""
     if "CONFLICT! driver_ng is not allowed" in text:
         return False
-    return "Calling app_main" in text
+    return BOOT_EVIDENCE_MARKER in text
 
 
 def wire_boot_check(port: str, stopbits: int = 2,
@@ -642,9 +832,13 @@ def _cli() -> int:
     exporter-configured speed), --exporter-cfg PATH, --no-boot-check
     (explicit opt-out, logged), --boot-check wire (#313: console-none
     families — proof-of-boot is a GetSlotStatus round-trip, not a
-    console signature), --quiesce-unit NAME (#314: a systemd unit that
-    owns the port, e.g. nucula-ccid-broker — stopped/started under the
-    held flock), --stopbits N (2 = GemPC serial, 1 = USB-CDC).
+    console signature), --console-none (#332: the image was built
+    console-less, CONFIG_ESP_CONSOLE_NONE — with no explicit
+    --boot-check the proof-of-boot AUTO-defaults to the wire check;
+    --boot-check/--no-boot-check still win), --quiesce-unit NAME
+    (#314: a systemd unit that owns the port, e.g.
+    nucula-ccid-broker — stopped/started under the held flock),
+    --stopbits N (2 = GemPC serial, 1 = USB-CDC).
     """
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
@@ -658,7 +852,12 @@ def _cli() -> int:
     ap.add_argument("--exporter-cfg", default=None)
     ap.add_argument("--no-boot-check", action="store_true")
     ap.add_argument("--boot-check", choices=("console", "wire"),
-                    default="console")
+                    default=None)
+    ap.add_argument("--console-none", action="store_true",
+                    help="the image is console-less "
+                         "(CONFIG_ESP_CONSOLE_NONE): with no explicit "
+                         "--boot-check, default the proof-of-boot to "
+                         "the wire check")
     ap.add_argument("--quiesce-unit", default=None)
     ap.add_argument("--stopbits", type=int, default=2)
     args = ap.parse_args()
@@ -673,7 +872,15 @@ def _cli() -> int:
         boot_check = False
     elif args.boot_check == "wire":
         boot_check = "wire"
+    elif args.boot_check == "console":
+        # an EXPLICIT console choice beats --console-none: forwarded
+        # as-is, the library auto-default would silently flip it to
+        # the wire check (#332: explicit flags always win)
+        boot_check = None
+        args.console_none = False
     else:
+        # "console" or unspecified: the library-level console default
+        # applies — BUT console_none may auto-default it to "wire"
         boot_check = None
     # a previous SIGKILL'd flash may have left pcscd down with a stale
     # marker — put the bench back before we begin (2026-10-20 c3
@@ -695,8 +902,11 @@ def _cli() -> int:
         boot_check=boot_check,
         quiesce_unit=args.quiesce_unit,
         stream_log=True,
-        wire_check=(lambda p: wire_boot_check(p, stopbits=args.stopbits))
-        if boot_check == "wire" else None)
+        console_none=args.console_none,
+        # unconditional: harmless in console mode, and threads
+        # --stopbits into the wire check when console_none AUTO-defaults
+        # the boot proof (#332) exactly as an explicit --boot-check wire
+        wire_check=lambda p: wire_boot_check(p, stopbits=args.stopbits))
     # the log already streamed live (stream_log=True); the returned copy
     # is the canonical record — print it once more for file/pipe capture
     print(log)

@@ -1,0 +1,327 @@
+# boot-smoke — the #294 WS1 pre-merge gate: build a PR head the way the
+# bench would ship it, so "compile-green" can never again stand in for
+# "boots" (the #278 lesson).
+#
+# SOFTWARE HALF (live on merge of this PR):
+#   label `boot-smoke` on a PR whose diff touches the esp32 firmware
+#   surface → the PR HEAD is built in an EPHEMERAL ISOLATED CONTAINER
+#   (never on the root runner: build.rs is untrusted code — the exact
+#   reason hil-bench.yml bans PR events on the self-hosted runner), and
+#   ONLY the flash images (.bin + sha256) leave the container.
+#
+# BENCH HALF (INERT until an owner enables it — see
+# docs/BOOT-SMOKE-GATE.md "Bench-leg enablement checklist"):
+#   the flash+probe+restore legs run on the self-hosted bench runner and
+#   require BOTH the `boot-smoke-bench` label (does not exist until an
+#   owner creates it — its absence is the inert guarantee) AND the
+#   protected `bench` environment (does not exist until an owner creates
+#   it). The bench legs execute ONLY code from origin/main (trusted);
+#   the PR contributes the .bin artifact and nothing else.
+#
+# Trigger shape mirrors ci.yml post-#366: pull_request fires on label
+# additions (plus synchronize/opened so an already-labeled PR re-gates
+# every push — a pre-merge gate must follow the head). Label ordering
+# with the opt-in `ci-run` label: add `boot-smoke` FIRST, then re-add
+# `ci-run` LAST, so one triggering event sees both labels (re-runs
+# replay the original payload).
+
+name: boot-smoke
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+
+# No cancel-in-progress ON PURPOSE: a cancelled bench leg mid-flash is
+# exactly the wedge class esp32_flash.py exists to prevent (its CLI
+# catches SIGTERM and runs the finally-restore, but the runner's grace
+# timer can SIGKILL first). A superseded QUEUED run is dropped by
+# GitHub's one-pending-per-group rule; a RUNNING one is allowed to
+# finish, restore included.
+concurrency:
+  group: boot-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The bench seat this gate flashes (card t_ae840473: ONE place, the
+  # nucula c3 seat; exporter-ai-legion-nfc.yaml pins its port+speed).
+  NUCULA_PLACE: nucula-c3
+  NUCULA_PORT: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
+  # RESTORE TARGET (card t_ae840473): the known-good nucula-c3 image —
+  # merge commit 1c05a6a36 = PR #292 ("fix #278 legacy i2c"), the image
+  # the bench was last proven serving on. The restore leg builds this
+  # ref through the ordinary bench flow (build.sh c3-ccid) and flashes
+  # it back whenever the gate goes red.
+  KNOWN_GOOD_IMAGE_REF: 1c05a6a36
+  # Flash geometry (build.sh c3-ccid): OTA partition table at 0x8000,
+  # app at ota_0 (0x40000), otadata erase (0x30000, 0x2000) LAST.
+  PART_TABLE_OFFSET: "0x8000"
+  APP_OFFSET: "0x40000"
+  OTADATA_OFFSET: "0x30000"
+  # esp32_flash.py caps to the exporter-configured speed anyway (115200
+  # for this port); this is the requested ceiling.
+  FLASH_BAUD: "115200"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # Mirror of ci.yml's #366 label gate: a labeled event that is NOT
+      # the `boot-smoke` label forces boot false — a stray label costs
+      # one seconds-cheap job, never a container build.
+      boot: ${{ (github.event.action == 'labeled' && github.event.label.name != 'boot-smoke') && 'false' || steps.filter.outputs.boot }}
+    steps:
+      - uses: actions/checkout@v5
+      # Paths follow card t_ae840473 DONE MEANS (a): the esp32 firmware
+      # surface — Cargo.toml/Cargo.lock/sdkconfig*/firmware/esp32-ccid/**
+      # (sdkconfig* lives inside firmware/esp32-ccid/). crates/** rides
+      # along because esp32-ccid consumes crates/ path deps (same
+      # cross-effect ci.yml's esp32 filter carries); rust-toolchain.toml
+      # changes the build world; the gate's own files self-report.
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            boot:
+              - 'firmware/esp32-ccid/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/boot-smoke.yml'
+              - 'tools/boot-smoke/**'
+
+  boot-smoke-build:
+    name: boot-smoke build (isolated container)
+    needs: changes
+    # Label gate, ci-full-matrix pattern (ci.yml:~205): the PR must
+    # carry `boot-smoke` (present in the payload on every PR event
+    # type; a label added BEFORE a push is seen by synchronize too).
+    if: >-
+      needs.changes.outputs.boot == 'true' &&
+      contains(github.event.pull_request.labels.*.name, 'boot-smoke')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      # The PR HEAD, not the merge ref — the gate's promise is "this
+      # exact commit boots", and the bench flashes this exact artifact.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: true
+
+      - name: Restore build caches (container volumes)
+        # Same caches ci.yml's esp32 legs keep: the cargo registry and
+        # the target dir (esp-idf-sys compiles the whole ESP-IDF C
+        # framework + Rust std there — the dominant build cost).
+        # KEY-VERSION RULE: bump v1 when the toolchain/IDF world moves
+        # (see the poison-class notes on ci.yml's espressif cache).
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/boot-smoke-cache/target
+            ~/boot-smoke-cache/cargo-registry
+            ~/boot-smoke-cache/espressif
+          key: boot-smoke-v1-${{ hashFiles('Cargo.lock', 'firmware/esp32-ccid/sdkconfig.full', 'firmware/esp32-ccid/partitions-ota.csv') }}
+          restore-keys: |
+            boot-smoke-v1-
+
+      - name: Build the pinned esp toolchain image
+        # The image is pure toolchain (no repo sources) — mirrors the
+        # espup/ldproxy/crosstool pins of ci.yml's esp32-build legs.
+        run: |
+          docker build \
+            -f tools/boot-smoke/Dockerfile.esp32 \
+            -t boot-smoke-esp32:latest \
+            tools/boot-smoke
+
+      - name: Build the PR head IN the ephemeral container
+        # THE ISOLATION BOUNDARY: cargo — and therefore the untrusted
+        # build.rs of the PR — runs confined to a throwaway container.
+        # The checkout is mounted read-write (esp-idf-sys writes .embuild
+        # there on the espup flow) but nothing executes on the host from
+        # it, and the container is removed afterwards. Cache volumes are
+        # bind-mounted so warm builds stay warm. ONLY /out crosses back.
+        run: |
+          mkdir -p ~/boot-smoke-cache/target \
+                   ~/boot-smoke-cache/cargo-registry \
+                   ~/boot-smoke-cache/espressif \
+                   "${RUNNER_TEMP}/boot-smoke-out"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src" \
+            -v "$HOME/boot-smoke-cache/target:/target" \
+            -v "$HOME/boot-smoke-cache/cargo-registry:/work/cargo-registry" \
+            -v "$HOME/boot-smoke-cache/espressif:/work/espressif" \
+            -v "${RUNNER_TEMP}/boot-smoke-out:/out" \
+            -e PR_NUMBER="${{ github.event.pull_request.number }}" \
+            -e HEAD_SHA="${{ github.event.pull_request.head.sha }}" \
+            boot-smoke-esp32:latest \
+            bash /src/tools/boot-smoke/build-in-container.sh
+          # container ran as root: hand the outputs to the runner user
+          sudo chown -R "$(id -u):$(id -g)" \
+            ~/boot-smoke-cache "${RUNNER_TEMP}/boot-smoke-out"
+
+      - name: Verify outputs (sha256 + dio flash-mode byte, issue #309)
+        run: |
+          cd "${RUNNER_TEMP}/boot-smoke-out"
+          ls -l
+          sha256sum -c esp32-ccid-c3-ccid.bin.sha256
+          sha256sum -c partition-table.bin.sha256
+          mode="$(od -An -tx1 -j2 -N1 esp32-ccid-c3-ccid.bin | tr -d ' \n')"
+          [ "$mode" = "02" ] || {
+            echo "::error::flash-mode byte is 0x${mode} (expected 02/dio) — refusing (issue #309)"; exit 1; }
+          echo "app image: $(cat esp32-ccid-c3-ccid.bin.sha256)"
+          echo "partition table: $(cat partition-table.bin.sha256)"
+
+      - name: Upload the flash image set
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-smoke-image
+          retention-days: 5
+          path: |
+            ${{ runner.temp }}/boot-smoke-out/esp32-ccid-c3-ccid.bin
+            ${{ runner.temp }}/boot-smoke-out/esp32-ccid-c3-ccid.bin.sha256
+            ${{ runner.temp }}/boot-smoke-out/partition-table.bin
+            ${{ runner.temp }}/boot-smoke-out/partition-table.bin.sha256
+            ${{ runner.temp }}/boot-smoke-out/manifest.json
+
+  # ---------------------------------------------------------------------
+  # BENCH LEGS — INERT BY DESIGN until an owner enables them.
+  #
+  # Neither gate can be satisfied tonight:
+  #   * the `boot-smoke-bench` label DOES NOT EXIST — no one can apply
+  #     it until an owner creates it (docs/BOOT-SMOKE-GATE.md checklist);
+  #   * the `bench` environment DOES NOT EXIST — even with the label,
+  #     an owner must first create it WITH protection (required
+  #     reviewers and/or a deployment branch policy), which is where
+  #     the human sign-off for pcscd-affecting automation lives.
+  # Until then these jobs report SKIPPED (== success) on every run.
+  # ---------------------------------------------------------------------
+  boot-smoke-bench:
+    name: boot-smoke bench (flash+probe+restore) — INERT until enabled
+    needs: [changes, boot-smoke-build]
+    if: >-
+      needs.changes.result == 'success' &&
+      needs.boot-smoke-build.result == 'success' &&
+      contains(github.event.pull_request.labels.*.name, 'boot-smoke-bench') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, bench]
+    # Owner-created protected environment (see checklist). Until the
+    # environment exists this line is a no-op; the label above is the
+    # hard inert gate.
+    environment: bench
+    timeout-minutes: 25
+    steps:
+      # BENCH CODE COMES FROM MAIN ONLY. The PR head is never checked
+      # out here (the #183 ban rationale: untrusted code as root on the
+      # bench host); the PR contributes the .bin artifact and nothing
+      # else. esp32_flash.py / gempc_smoke.py / exporter cfg below are
+      # all this main checkout's copies.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          submodules: false
+
+      - name: Bench etiquette preflight (flock + labgrid + port)
+        run: bash tools/boot-smoke/bench_preflight.sh
+
+      - name: Fetch + verify the PR flash image set
+        uses: actions/download-artifact@v4
+        with:
+          name: boot-smoke-image
+          path: image
+
+      - name: Verify image set integrity
+        run: |
+          cd image
+          sha256sum -c esp32-ccid-c3-ccid.bin.sha256
+          sha256sum -c partition-table.bin.sha256
+          cat manifest.json
+
+      - name: Flash PR image + boot check + wire probe (one flock window)
+        # One bench-flock window for the whole flash+probe sequence
+        # (README "Bench coordination" layer 1). esp32_flash.py owns the
+        # pcscd flock dance internally; the outer flock is the
+        # CROSS-PROJECT exclusion. Its DEFAULT boot_check
+        # (boot_check_no_conflict) is the #278 CONFLICT veto; gempc_smoke
+        # then proves the SERVE loop on the wire (stopbits 1 = USB-CDC,
+        # the nucula c3) including the Escape 0xD0 uptime liveness.
+        run: |
+          exec 9>/tmp/amperstrand-bench.lock
+          flock 9
+          echo "# bench flock held (fd 9) for flash+probe"
+          python3 tests/hardware/labgrid/esp32_flash.py \
+            --port "$NUCULA_PORT" \
+            --chip esp32c3 \
+            --baud "$FLASH_BAUD" \
+            --image "${PART_TABLE_OFFSET}=image/partition-table.bin" \
+            --image "${APP_OFFSET}=image/esp32-ccid-c3-ccid.bin" \
+            --erase "${OTADATA_OFFSET}=0x2000" \
+            --exporter-cfg tests/hardware/labgrid/exporter-ai-legion-nfc.yaml \
+            --quiesce-unit nucula-ccid-broker
+          python3 tests/hardware/labgrid/gempc_smoke.py \
+            --port "$NUCULA_PORT" --stopbits 1 --uptime
+
+      - name: RESTORE known-good ($KNOWN_GOOD_IMAGE_REF) on red
+        # known-good-state doctrine: a failed gate must never leave the
+        # bad image serving on the bench. Build the pinned ref through
+        # the ordinary bench flow and flash it back with the same
+        # discipline; prove recovery with the uptime-monotonic probe
+        # (card DONE MEANS (c)). `always() &&` keeps this step armed on
+        # cancellation too (best effort — an in-flight SIGTERM is
+        # handled inside esp32_flash.py's CLI).
+        if: always() && (failure() || cancelled())
+        run: |
+          exec 9>/tmp/amperstrand-bench.lock
+          flock 9
+          RESTORE_DIR="$(mktemp -d /tmp/boot-smoke-restore.XXXXXX)"
+          git fetch origin "${KNOWN_GOOD_IMAGE_REF}" --depth=1
+          git worktree add "$RESTORE_DIR" "${KNOWN_GOOD_IMAGE_REF}"
+          # the ordinary, proven bench build of the known-good image
+          ( cd "$RESTORE_DIR/firmware/esp32-ccid" && \
+            CARGO_TARGET_DIR="$RESTORE_DIR/target" ./build.sh c3-ccid )
+          python3 tests/hardware/labgrid/esp32_flash.py \
+            --port "$NUCULA_PORT" \
+            --chip esp32c3 \
+            --baud "$FLASH_BAUD" \
+            --image "${PART_TABLE_OFFSET}=$RESTORE_DIR/target/partition-table.bin" \
+            --image "${APP_OFFSET}=$RESTORE_DIR/target/esp32-ccid-c3-ccid.bin" \
+            --erase "${OTADATA_OFFSET}=0x2000" \
+            --exporter-cfg tests/hardware/labgrid/exporter-ai-legion-nfc.yaml \
+            --quiesce-unit nucula-ccid-broker
+          python3 tests/hardware/labgrid/gempc_smoke.py \
+            --port "$NUCULA_PORT" --stopbits 1 --uptime
+          git worktree remove --force "$RESTORE_DIR"
+
+      - name: Record bench state (history + summary)
+        if: always()
+        run: |
+          OUTCOME="$( [ "${{ job.status }}" = success ] && echo green || echo red )"
+          mkdir -p results
+          printf '%s\n' "$(python3 - "$OUTCOME" <<'PY'
+          import datetime, json, os, sys
+          print(json.dumps({
+              "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "event": "boot-smoke-gate",
+              "pr": int(os.environ.get("PR_NUMBER", 0)),
+              "head_sha": os.environ.get("HEAD_SHA", ""),
+              "outcome": sys.argv[1],
+              "known_good_ref": os.environ.get("KNOWN_GOOD_IMAGE_REF", ""),
+          }))
+          PY
+          )" >> results/history.jsonl
+          {
+            echo "## boot-smoke bench leg"
+            echo "- outcome: ${OUTCOME}"
+            echo "- PR head: ${HEAD_SHA:-?}"
+            echo "- restore target: ${KNOWN_GOOD_IMAGE_REF}"
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}

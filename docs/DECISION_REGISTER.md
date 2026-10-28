@@ -36,6 +36,7 @@ pins 1.94.1 per their README + release notes.
 ## D-2: esp-idf-svc 0.53 / hal 0.47 generation (legacy-I2C lane closed)
 
 **Authority**: ccid + bolty `Cargo.toml` pins (unified 2026-10-15/16).
+Fork-pin map per dep: `docs/vendor-patches.md` (#294 manifest).
 **Decision**: both ESP32 repos ride the hal-0.47/sys-0.38/svc-0.53 generation
 on IDF v5.5.5, crosstool `esp-14.2.0_20260121`, fork `v1.98.1.0`.
 **Evidence**: the cross-repo SDK-version matrix was the root of repeated
@@ -152,7 +153,9 @@ revisit whether it belongs in a policy enum.
 ## D-9: Single I2C driver generation — driver_ng everywhere; esp-idf-hal fork retired
 
 **Authority**: PR #242 + this entry (root `Cargo.toml` `[patch]` comment +
-AGENTS.md vendoring-policy class 2).
+AGENTS.md vendoring-policy class 2). Every patched/forked dep's pin, fork
+delta, runtime role, upstream status and retirement trigger are manifest-ed
+in `docs/vendor-patches.md` (#294 item 3 — the WS3 vendor-patch manifest).
 **Decision**: every embedded-hal I2C consumer rides the shared adapter
 (`pn7160-nci::hal_i2c`); the PN7160 transport itself rides the raw
 driver_ng FFI directly by design (esp_transport.rs); the Amperstrand
@@ -166,7 +169,9 @@ run on the patch-removal commit green on every esp leg (9 build legs +
 swapped git `c1d4ec35` → registry v0.47.0.
 **Change triggers**: a future crate needing the legacy `i2c` driver API →
 reintroduce via a git fork pin (vendoring-policy class 2 still applies),
-never a silent re-vendor; IDF 6 removing the legacy driver entirely →
+never a silent re-vendor — and the new fork gets a manifest row (pin, delta,
+runtime role, upstream status, retirement trigger) in `docs/vendor-patches.md`
+the same session; IDF 6 removing the legacy driver entirely →
 this decision becomes moot.
 
 **Trigger FIRED and RESOLVED (2026-10-18, #278)**: registry hal links
@@ -182,6 +187,55 @@ fork's real runtime role was keeping the legacy object OUT of the link;
 that role is now the knob's. Bench-proven on nucula-c3: clean `app_main`
 + pcscd absent-card round-trip through the broker. Layering lesson:
 `sdkconfig.defaults` does NOT merge into an existing `.full` config.
+
+## D-10: nucula-board upstream posture — consume, don't fork (O-1)
+
+**Authority**: `docs/BOARDS-AS-DATA-DESIGN.md` §2.1 (design merged via #396);
+this entry records the open decision as resolved by the implementation card
+(t_099ed2af pilot).
+**Decision**: ccid reads `zeugmaster/nucula-board` as a read-only dependency
+at *generation time only* (pinned rev + netlist sha256 recorded in the
+generated `crates/boards/src/nucula_gen.rs` header); the net-name sidecar map
+(`crates/boards/gen/nucula-nets.toml`) lives in ccid. No Amperstrand fork of
+the CAD repo.
+**Evidence**: upstream is alive (last push 2026-10-09), CERN-OHL-S-2.0
+permits use; a fork's PR-back workflow adds nothing under the EXTERNAL-POST
+GATE (ops doctrine, 2026-10-21 — no automated interaction with non-org
+repos); the generator + sidecar make either posture a one-line repoint.
+**Change triggers**: we ship our own schematic change ("nucula all-in-one"
+product milestone) or upstream goes dormant while rev-A/B units are in
+service → fork `Amperstrand/nucula-board` and repoint the generator.
+
+## D-11: boards crate name — `boards` (O-2)
+
+**Authority**: `docs/BOARDS-AS-DATA-DESIGN.md` §1.4; crates/boards landed by
+t_099ed2af.
+**Decision**: the workspace-level board-table crate is named `boards`
+(candidates were `board-registry`, `ccid-boards`). The pn7160-nci precedent
+keeps block-scoped names (`board.rs` inside a crate); a whole-board registry
+claims the short name.
+**Evidence**: the crate is repo-internal (path dep) until bolty consumes it
+via a rev-pinned git dep — at which point it gains a `docs/SHARED-CRATES.md`
+row + drift-check entry (design §3.4). The short name is what that row wants.
+**Change triggers**: a crates.io publish or a name collision in bolty's
+workspace → rename is cheap while path-dep-only (one workspace line per
+consumer); after the bolty flip it needs a coordinated rev bump.
+
+## D-12: board selection stays Cargo features; presets compose on top (O-3)
+
+**Authority**: `docs/BOARDS-AS-DATA-DESIGN.md` §3.1/§3.3 (O-3).
+**Decision**: as-designed for now — per-board cargo features
+(`board-m5stick` …) remain the compile-time selector; a feature selects a
+`boards::ALL_BOARDS` table entry instead of carrying pin data inline. Product
+presets (M3, `cargo xtask build product=X`) layer on as wants ⊆ haves
+resolution, not as a replacement of features.
+**Evidence**: `#![no_std]` + dead-code elimination + the existing
+mutually-exclusive-feature contract (`compile_error!` guards) all ride
+features; the design supports flipping later because the registry, not the
+feature list, holds the data.
+**Change triggers**: M3 presets landing (t_506dfe03 milestone) → revisit
+whether presets replace per-board features entirely (registry selected by
+preset name). Decision point is M3, not before.
 
 ---
 

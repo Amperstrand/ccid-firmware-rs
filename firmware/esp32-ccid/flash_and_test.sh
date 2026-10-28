@@ -13,6 +13,9 @@
 #   ./flash_and_test.sh --no-flash   # Skip flash, just start pcscd + test
 #   ./flash_and_test.sh --test-only  # Only run pcsc_scan
 #   BOARD=m5stick ./flash_and_test.sh ...  # Select board variant (default m5atom)
+#   ESP_BOOT_CHECK=console ./flash_and_test.sh ...  # Override the boot-proof
+#                                    # mode (console-none defaults flow
+#                                    # otherwise auto-defaults to wire, #332)
 #
 set -euo pipefail
 
@@ -95,6 +98,9 @@ flash() {
     # --flash-mode dio (#309): esptool >=5 defaults the image header to
     # QIO — a silent boot-loop on every DIO board this repo ships. The
     # header guard fails loud on any future default change.
+    # Converter provenance in the log — see build.sh (#308 evidence:
+    # 5.2.0 ≡ 5.3.1 byte-identical images, so the log is for stamps/triage).
+    info "esptool: $(esptool version 2>/dev/null | head -1 || echo unknown)"
     esptool --chip esp32 elf2image --flash-mode dio -o "${app_bin}" \
         "${WORKSPACE_ROOT}/${FIRMWARE}" || {
             error "elf2image failed"; exit 1; }
@@ -111,11 +117,22 @@ flash() {
     # sudo: the tool's pcscd stop/start need service rights (same
     # elevation this script uses for its own pcscd operations); an
     # unsudoed stop fails and the tool correctly refuses to flash
+    #
+    # #313/#332: this defaults flow builds console-none
+    # (sdkconfig.defaults.esp32: CONFIG_ESP_CONSOLE_NONE=y) — the
+    # console boot signature can never appear, so the proof-of-boot
+    # defaults to the WIRE check unless ESP_BOOT_CHECK overrides.
+    local flash_args=(--port "$PORT" --chip esp32 --baud 115200
+        --image 0x8000="${part_table}" --image 0x40000="${app_bin}"
+        --erase 0x30000=0x2000
+        --exporter-cfg "${WORKSPACE_ROOT}/tests/hardware/labgrid/exporter-ai-legion-nfc.yaml")
+    if [ -n "${ESP_BOOT_CHECK:-}" ]; then
+        flash_args+=(--boot-check "${ESP_BOOT_CHECK}")
+    else
+        flash_args+=(--console-none)
+    fi
     sudo python3 "${WORKSPACE_ROOT}/tests/hardware/labgrid/esp32_flash.py" \
-        --port "$PORT" --chip esp32 --baud 115200 \
-        --image 0x8000="${part_table}" --image 0x40000="${app_bin}" \
-        --erase 0x30000=0x2000 \
-        --exporter-cfg "${WORKSPACE_ROOT}/tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" \
+        "${flash_args[@]}" \
         || { error "Flash failed — see the tool verdict above."; exit 1; }
     rm -f "${app_bin}"
 

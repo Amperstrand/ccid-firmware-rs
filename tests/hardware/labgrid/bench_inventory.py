@@ -47,12 +47,15 @@ EXPORTER_CONFIGS = {
     "ai-legion-nfc": HERE / "exporter-ai-legion-nfc.yaml",
     "ai-legion-ccid": HERE.parent.parent.parent / "tools" / "hil" / "labgrid-exporter.yaml",
 }
+# ref-acr1252 retired from .208 on 2026-10-25 (now ref-acr1252-small on
+# ai-legion-small) — not expected here anymore.
 EXPECTED_PLACES = [
-    "stm32-ccid", "nucula-c3", "m5stick", "ref-acr1252", "ref-cardman",
+    "stm32-ccid", "nucula-c3", "m5stick", "ref-cardman",
     "stm32-f746", "ccid-nucula", "ccid-m5stick",
 ]
 # readers pcscd must list, keyed by stable identity fragment
-EXPECTED_PCSCD = ["ST2XXX-001", "ACR1252", "CardMan"]
+# (ACR1252 dropped with the 2026-10-25 retirement — no ACR on this host)
+EXPECTED_PCSCD = ["ST2XXX-001", "CardMan"]
 # (vid:pid, label) pairs that identify the bench host's USB tree; if NONE
 # are present, the pcscd/USB sections are skipped as not-on-bench-host.
 BENCH_USB_IDS = [

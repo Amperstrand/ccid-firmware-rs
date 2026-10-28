@@ -36,8 +36,9 @@ OTA_PORT = 3232
 #: writing (audit note in README "m5stick caveat"):
 #:   nucula  firmware/esp32-ccid/sdkconfig.full:1769
 #:     CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-#:   m5stick firmware/esp32-ccid/sdkconfig-xtensa-vpcd.full:288
-#:     # CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE is not set
+#:   m5stick firmware/esp32-ccid/sdkconfig-xtensa-vpcd.full
+#:     CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y (since 94cdf20 — the knob
+#:     half of #294 WS2; bootloader must be REFLASHED to bake it in)
 #: Tier-1 (device-side rejection) tests are valid on both boards; the
 #: tier-2 never-valid rollback test requires rollback_hardened=True.
 BOARDS = {
@@ -63,7 +64,7 @@ BOARDS = {
         # degrades to an EMPTY reader - the slot must still ANSWER pcscd,
         # but no ATR is expected.
         "expect_card": False,
-        "rollback_hardened": False,
+        "rollback_hardened": True,
     },
 }
 

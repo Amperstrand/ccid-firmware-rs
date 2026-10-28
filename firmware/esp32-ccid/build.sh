@@ -42,6 +42,18 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 usage() {
     cat <<EOF
 Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+       $0 product=<name> [board=<name>] [--flash <port>] [--dry-run]
+
+Products (M3 presets, t_0492b7c6 — products.toml is the SSOT):
+  product=<name> [board=<name>]
+               resolve the named preset (reader-min, provisioner-min,
+               connected, nucula-all-in-one) to a base board case +
+               feature delta and build it; the image is named after the
+               preset artifact (esp32-ccid-<artifact>.bin). board= may be
+               omitted when the product lists exactly one board.
+               List/inspect: python3 tools/products.py list|check|--format table
+               (stm32-f469 is a cargo product — this script refuses it
+               and prints the equivalent cargo command)
 
 Boards:
   c3           ESP32-C3 nucula, PN7160 bring-up (nightly toolchain, debug build,
@@ -80,20 +92,74 @@ Env:
   NUCULA_WIFI_SSID/_PASS       passed through (baked at build time)
   OTA_TOKEN                    32 chars — arms the authenticated OTA2
                                push protocol (ota_header); unset builds
-                               keep the OTA1 (unauthenticated) form
+                               keep the OTA1 (unauthenticated) form.
+                               Rollback (#294 WS2): every shipped .full
+                               sets CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+                               — a pushed/reflashed image boots
+                               pending-verify and the app marks itself
+                               valid ONLY after the first DELIVERED
+                               CCID exchange (the ccid-service
+                               ota_validity gate fires at transport
+                               completion, never on parse alone); a
+                               reset before that proof reverts
+                               to the previous slot. Diagnostic mains
+                               (bringup/bitbang/m1/v10raw/actdiag) never
+                               mark valid — see docs/VPCD_WIFI_RUNBOOK.md.
+  ESP_BOOT_CHECK               console|wire — overrides the boot-proof
+                               default for the --flash step (console-none
+                               boards otherwise auto-default to wire,
+                               #313/#332)
+  ESP_QUIESCE_UNIT             overrides the --quiesce-unit the --flash
+                               step passes for esp32c3/nucula boards
+                               (default nucula-ccid-broker, #332); set
+                               it EMPTY on hosts without that unit
 EOF
 }
 
 DRY_RUN=0
 FLASH_PORT=""
+FLASH_CONSOLE_NONE=0
 
+# M3 product presets (t_0492b7c6): `product=<X> [board=<Y>]` resolves the
+# named preset from products.toml (the SSOT) via tools/products.py and
+# rides the per-board machinery below unchanged — the case table stays
+# the bench authority; the preset picks a base variant + feature delta
+# and renames the image after the preset artifact.
+PRODUCT_NAME=""
 BOARD="${1:-}"
 if [ -z "${BOARD}" ] || [ "${BOARD}" = "-h" ] || [ "${BOARD}" = "--help" ]; then
     usage
     [ -n "${BOARD}" ] && exit 0
     exit 1
 fi
-shift
+if [ "${BOARD#product=}" != "${BOARD}" ]; then
+    PRODUCT_NAME="${BOARD#product=}"
+    shift  # drop product=<X>
+    # optional second positional: board=<Y>
+    if [ $# -gt 0 ] && [ "${1#board=}" != "${1}" ]; then
+        BOARD="${1#board=}"
+        shift  # drop board=<Y>
+    else
+        BOARD=""
+    fi
+    RESOLVE_ARGS=(resolve --product "${PRODUCT_NAME}")
+    [ -n "${BOARD}" ] && RESOLVE_ARGS+=(--board "${BOARD}")
+    RESOLVED="$(python3 "${SCRIPT_DIR}/../../tools/products.py" "${RESOLVE_ARGS[@]}" 2>&1)" || {
+        echo "error: product preset resolution failed:" >&2
+        echo "${RESOLVED}" >&2
+        exit 1
+    }
+    eval "${RESOLVED}"
+    if [ "${PD_DISPATCHER}" != "build.sh" ]; then
+        echo "error: product '${PRODUCT_NAME}' does not build through this script" >&2
+        echo "       (dispatcher: ${PD_DISPATCHER}). Equivalent command:" >&2
+        echo "       ${PD_HINT:-python3 tools/products.py --format commands}" >&2
+        exit 1
+    fi
+    BOARD="${PD_BASE_VARIANT}"
+else
+    shift  # drop the board positional (original flow)
+fi
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -220,6 +286,7 @@ case "${BOARD}" in
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
+        FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
     m5stick-plus-lcd)
         # m5stick + MFRC522 CCID + the ST7789 status screen (bolty-rs
@@ -237,6 +304,7 @@ case "${BOARD}" in
         CHIP="esp32"
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="115200"
+        FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
     m5stick-ble)
         TOOLCHAIN="esp"
@@ -270,6 +338,7 @@ case "${BOARD}" in
         CHIP="esp32"
         FLASH_OFFSET="0x40000"  # ota_0 slot per partitions-ota.csv (Codex #79 P1)
         FLASH_BAUD="115200"
+        FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
     *)
         echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, or m5atom)" >&2
@@ -277,8 +346,26 @@ case "${BOARD}" in
         ;;
 esac
 
+# Product-preset overlay (t_0492b7c6): replace the base variant's feature
+# list with the resolved preset composition (products.toml via
+# tools/products.py — the case table above supplied target/sdkconfig/
+# profile unchanged) and name the image after the preset artifact.
+if [ -n "${PRODUCT_NAME}" ]; then
+    if [ "${PD_NO_DEFAULT_FEATURES}" = "1" ]; then
+        FEATURE_ARGS=(--no-default-features --features "${PD_FEATURES}")
+    elif [ -n "${PD_FEATURES}" ]; then
+        FEATURE_ARGS=(--features "${PD_FEATURES}")
+    else
+        FEATURE_ARGS=()
+    fi
+fi
+
 ELF="${TARGET_DIR}/${TRIPLE}/${PROFILE}/esp32-ccid"
-IMAGE="${TARGET_DIR}/esp32-ccid-${BOARD}.bin"
+if [ -n "${PRODUCT_NAME}" ]; then
+    IMAGE="${TARGET_DIR}/esp32-ccid-${PD_ARTIFACT}.bin"
+else
+    IMAGE="${TARGET_DIR}/esp32-ccid-${BOARD}.bin"
+fi
 
 # Print a command; execute it unless --dry-run.
 run() {
@@ -287,6 +374,9 @@ run() {
     "$@"
 }
 
+if [ -n "${PRODUCT_NAME}" ]; then
+    info "product=${PRODUCT_NAME} board=${PD_BOARD} artifact=${PD_ARTIFACT} (base variant: ${PD_BASE_VARIANT})"
+fi
 info "board=${BOARD} target=${TRIPLE} profile=${PROFILE} chip=${CHIP}"
 info "CARGO_TARGET_DIR=${TARGET_DIR}"
 if [ -n "${NUCULA_WIFI_SSID:-}" ]; then
@@ -417,7 +507,7 @@ if [ "${DRY_RUN}" -eq 0 ]; then
 fi
 
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
-    cargo build --target "${TRIPLE}" "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
+    cargo build --target "${TRIPLE}" --ignore-rust-version "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
 
 # Record the config only after a successful build. If cargo fails, leave the
 # stamp unchanged so the next attempt still invalidates caches whose
@@ -432,6 +522,11 @@ fi
 # header to QIO and a QIO-header app silently boot-loops every DIO board
 # this repo ships (all sdkconfigs mandate dio). The header guard below
 # fails loud if any future toolchain default changes.
+# Stamp the converter into the build log: image bytes are esptool-version-
+# invariant within the 5.x line for identical args (verified 5.2.0 ≡ 5.3.1
+# byte-identical, #308 evidence), but stamps and triage must know which
+# converter produced an image.
+info "esptool: $(esptool version 2>/dev/null | head -1 || echo unknown)"
 run esptool --chip "${CHIP}" elf2image --flash-mode dio -o "${IMAGE}" "${ELF}"
 if [ "${DRY_RUN}" -eq 0 ]; then
     img_mode="$(od -An -tx1 -j2 -N1 "${IMAGE}" | tr -d ' \n')"
@@ -474,7 +569,33 @@ if [ -n "${FLASH_PORT}" ]; then
     if [ -f "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" ]; then
         ESP_FLASH_ARGS+=(--exporter-cfg "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml")
     fi
-    run python3 "${ESP_FLASH_TOOL}" "${ESP_FLASH_ARGS[@]}"
+    # #332 (Codex P2 on #324): every esp32c3 board here IS the nucula,
+    # whose CDC is permanently held by the STANDING nucula-ccid-broker
+    # service — fuser -k alone lets systemd restart it onto the port
+    # mid-flash (the #314 Checksum-error class). The quiesce-unit
+    # protection is no longer opt-in: this flow always passes it for
+    # c3 boards. ESP_QUIESCE_UNIT overrides (set it empty on hosts
+    # without the broker deployed).
+    if [ -z "${ESP_QUIESCE_UNIT+x}" ] && [ "${CHIP}" = "esp32c3" ]; then
+        ESP_QUIESCE_UNIT="nucula-ccid-broker"
+    fi
+    if [ -n "${ESP_QUIESCE_UNIT:-}" ]; then
+        ESP_FLASH_ARGS+=(--quiesce-unit "${ESP_QUIESCE_UNIT}")
+    fi
+    # #313/#332: console-none boards (sdkconfig-xtensa.full carries
+    # CONFIG_ESP_CONSOLE_NONE=y) can never print the console signature
+    # the default boot check looks for — default their proof-of-boot
+    # to the WIRE check. An explicit ESP_BOOT_CHECK=console|wire wins.
+    if [ -n "${ESP_BOOT_CHECK:-}" ]; then
+        ESP_FLASH_ARGS+=(--boot-check "${ESP_BOOT_CHECK}")
+    elif [ "${FLASH_CONSOLE_NONE}" -eq 1 ]; then
+        ESP_FLASH_ARGS+=(--console-none)
+    fi
+    # #335: sudo — the tool's pcscd stop/start need service rights; an
+    # unsudoed stop fails and the tool correctly refuses to flash (same
+    # elevation flash_and_test.sh:111-114 already uses for this tool —
+    # this was the remaining unsudoed caller).
+    run sudo python3 "${ESP_FLASH_TOOL}" "${ESP_FLASH_ARGS[@]}"
     if [ "${CHIP}" = "esp32" ]; then
         warn "FTDI DTR/RTS wedge: physically replug the M5Stack board before expecting"
         warn "serial communication to work again (see flash_and_test.sh header)."

@@ -45,6 +45,17 @@ Its preflights encode every trap of the establishing session:
 - ATR wrong-card guard accepts the J3R180 ATR FAMILY — the ATR is
   negotiated per-reader from the ATS: `3B 85 80 01 80 …` via ACR1252,
   `3B 85 81 31 FE 45 …` via the m5stick MFRC522. Same card.
+- **CPLC identity ledger (REQUIRED, #341)**: the fixed org keyset only
+  ever goes to cards listed in `J3R180_CPLC_ALLOWLIST` (comma-separated
+  hex). An entry must pin identity — ≥ 32 hex chars of the CPLC `9F7F`
+  value (through the GP CPLC ICF serial; full 84-hex value is the
+  strongest pin) — or declare a batch prefix with a trailing `*`
+  (e.g. `47909E*` = operator-accepted batch kinship, weaker). Missing
+  ledger, unreadable/malformed CPLC, unregistered card, or a malformed
+  entry = preflight FAIL, no GP auth (`--allow-unverified-cplc` is the
+  ONLY override and only covers an unreadable CPLC when a ledger IS
+  set). `--status-only` never sends VERIFY and exits nonzero on failed
+  checks (PIN retry budget and CI visibility).
 - ISD must authenticate with the org keyset before anything else.
 
 ## Reader matrix (how each reader becomes a pcscd reader)

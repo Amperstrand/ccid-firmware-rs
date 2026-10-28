@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+  # Owner decision #366 (2026-10-21): PR CI is OPT-IN. pull_request fires
+  # ONLY on label-addition events; the `changes` job gates non-`ci-run`
+  # labels to all-false (see its outputs) so a stray label costs one
+  # seconds-cheap job, not a matrix. Every merge still verifies on the
+  # push-to-main leg below; schedule + dispatch unchanged. Open PRs opt
+  # in by adding the `ci-run` label.
   pull_request:
     branches: [main]
+    types: [labeled]
   # Nightly full-matrix lane: secondary-tier legs that PRs no longer build
   # would bitrot silently (toolchain/IDF drift) — 03:00 UTC rebuilds BOTH
   # tiers (the changes job defaults every family to true on schedule).
@@ -39,14 +46,21 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
+      # Label gate (owner decision #366, 2026-10-21): the pull_request
+      # trigger only fires on label additions. A labeled event that is NOT
+      # the `ci-run` label forces every family false — the whole matrix
+      # skips (job-level if => skipped => success for branch protection;
+      # ci-ok still aggregates green). Push events have no
+      # github.event.label, so the guard is action-scoped, not
+      # event-name-scoped.
       # schedule/workflow_dispatch: paths-filter diffs against a base with
       # no changes for those events and would silence the whole run
       # (PostHog CI lesson: paths filters must not silence scheduled runs)
       # — default every family to true instead; the per-tier job gates
       # decide how much of the matrix a dispatched run builds.
-      stm32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.stm32 }}
-      esp32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.esp32 }}
-      lint: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.lint }}
+      stm32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event.action == 'labeled' && github.event.label.name != 'ci-run') && 'false' || steps.filter.outputs.stm32 }}
+      esp32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event.action == 'labeled' && github.event.label.name != 'ci-run') && 'false' || steps.filter.outputs.esp32 }}
+      lint: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event.action == 'labeled' && github.event.label.name != 'ci-run') && 'false' || steps.filter.outputs.lint }}
     steps:
       - uses: actions/checkout@v5
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
@@ -121,10 +135,14 @@ jobs:
   # m5atom-default, pn532 — built on main pushes (every merge stays
   # firmware-verified),
   # the nightly schedule, dispatch with full-matrix=true, or a PR
-  # labeled `ci-full-matrix`. Label note: apply the label BEFORE the
-  # triggering push — re-runs replay the original event payload, so
-  # labeling an existing run does not light the legs up; push a commit
-  # (empty is fine) after labeling. Skipped legs report SUCCESS
+  # labeled `ci-full-matrix`. Label note (post-#366): PR runs fire only
+  # on label ADDITIONS, and the label set is read at event time — add
+  # `ci-full-matrix` FIRST, then add/remove/re-add `ci-run` LAST so the
+  # triggering event sees both labels (a plain push no longer
+  # re-triggers anything; re-runs replay the original payload). Mind the
+  # concurrency group: a later label on the same PR cancels an
+  # in-flight run — re-add `ci-run` once label churn settles. Skipped
+  # legs report SUCCESS
   # (job-level if, never workflow paths: a paths filter would leave
   # required checks pending forever).
   stm32-build:
@@ -748,11 +766,16 @@ jobs:
         # (doctrine-aware per-file-ignores for the lazy-import rule).
         # Pinned: the config targets 0.17.0 behavior.
         run: pip install ruff==0.17.0 && ruff check scripts tests/hardware host-tools
-      - name: Unit tests — scripts (stdlib only, fits this minimal env)
+      - name: Unit tests — scripts + tools (stdlib only, fits this minimal env)
         run: |
           python3 scripts/test_gen_status.py
           python3 scripts/test_status_rollup.py
           python3 scripts/test_status_drift.py
+          # flash-bundle tooling (t_7a2ec5c3): producer determinism +
+          # §4.4 self-checks + the §4.5 refusal matrix incl. the
+          # 0x30000-is-the-factory-app class. Pure stdlib+pytest —
+          # belongs in this minimal env, NOT a hardware leg.
+          python3 -m pytest tests/tools/ -q
       - name: Collect tests/hardware (exit-code discipline)
         run: |
           set +e
@@ -883,6 +906,12 @@ jobs:
 
       - name: Clippy (never-linted trio, zero warnings)
         run: cargo clippy -p pn7160-nci -p ccid-pcsc-host -p ccid-host-tools --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
+      # t_72e1e2ed: the serving-kernel crate carries its own lint gate so
+      # the board-blind dependency boundary stays warning-clean (it is in
+      # no other clippy'd graph as a standalone crate).
+      - name: Clippy (ccid-service serving kernel, zero warnings)
+        run: cargo clippy -p ccid-service --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
 
   ci-ok:
     # Required-check aggregator for branch protection: tier-gated legs skip

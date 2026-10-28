@@ -47,7 +47,16 @@ jobs:
           set +e
           # --target gnu: cargo-fuzz's musl default is ASan-incompatible
           # (statically linked libc) and not preinstalled on the runner.
-          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=120 -timeout=10
+          #
+          # +nightly is LOAD-BEARING: the repo's rust-toolchain.toml pins
+          # stable 1.99.0, and rustup gives the TOML precedence over the
+          # toolchain dtolnay/rust-toolchain installed — plain `cargo fuzz
+          # run` compiled with stable, which rejects -Zsanitizer ("the
+          # option `Z` is only accepted on the nightly compiler"; red
+          # since the workflow's first run, 2026-10-18). The +toolchain
+          # proxy exports RUSTUP_TOOLCHAIN to cargo-fuzz's child cargo
+          # invocations, which outranks the TOML.
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=120 -timeout=10
           rc=$?
           if [ $rc -ne 0 ]; then
             echo "::group::fuzz artifacts"

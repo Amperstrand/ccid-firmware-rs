@@ -1,5 +1,11 @@
 #![no_std]
 
+// Frontend diagnostics trait surface (t_4864e74e) — module doc carries
+// the home justification (ccid-service boundary + no_std frontends).
+pub mod frontend_diag;
+
+pub use frontend_diag::{FrontendDiagnostics, FrontendErrorKind, FrontendHealth, FrontendStatus};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresenceState {
     pub present: bool,

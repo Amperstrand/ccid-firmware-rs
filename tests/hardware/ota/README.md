@@ -139,16 +139,38 @@ firmware sources are off-limits here). Design for the follow-up:
 
 ### m5stick caveat (bench audit 2026-10-13)
 
-`firmware/esp32-ccid/sdkconfig.full` (nucula) sets
-`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`, but `build.sh m5stick-vpcd`
-uses `sdkconfig-xtensa-vpcd.full` where it is **not set**. Until that
-config is flipped and the m5stick's bootloader reflashed (the option is
-baked into the compiled bootloader), the m5stick has NO tier-2 rollback:
-a never-valid image would simply keep running. The suite reflects this
+Since 94cdf20 EVERY OTA-slot .full config (incl. m5stick's
+`sdkconfig-xtensa-vpcd.full`) sets `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y`.
+CAVEAT THAT REMAINS: the option is baked into the COMPILED BOOTLOADER —
+until the m5stick's bootloader is reflashed, the knob is present in
+config but not enforced by the on-board bootloader. The suite now
+treats m5stick as rollback_hardened=True (config-side coherence)
 - `test_never_valid_image_rolls_back` skips on `--board=m5stick` - and
   the tier-1 tests remain valid there (esp_ota_end validation is
   independent of the rollback option). Do not "fix" this by editing the
   sdkconfig casually: flashing a new bootloader is a bench decision.
+
+### Rollback wiring map (verified 2026-10-25, t_a11d2275 software half)
+
+Static map of knob (sdkconfig) x mark-valid (main), locked by
+`test_wiring_coherence.py` (local, stdlib-only):
+
+| build.sh board | sdkconfig | knob | main | marks valid? |
+|---|---|---|---|---|
+| `wifi-vpcd` (nucula seat) | `sdkconfig.full` | **y** | `wifi_vpcd` -> `station_bring_up` | yes |
+| `wifi-ccid` (legacy) | `sdkconfig.full` | **y** | `wifi_ccid` -> `wifi_common::mark_app_valid` | yes (since t_a11d2275; previously NEVER - a good image pushed over the OTA seat reverted on the next reset) |
+| `c3` / `c3-ccid` | `sdkconfig.full` | **y** | `pn7160_bringup` / `pn7160_ccid` | **no - tier-2 revert-by-design when pushed** (no network-confirm contract; `c3`'s cred-conditional `ota::spawn` is a debug convenience) |
+| `m5stick-vpcd` (m5stick seat) | `sdkconfig-xtensa-vpcd.full` | not set | `wifi_vpcd` -> `station_bring_up` | call present but INERT (see m5stick caveat above) |
+| all other boards | xtensa/c3-ble `.full`s | not set | UART/BLE/SPP mains | no (no OTA surface) |
+
+Mechanical note for diagnosis readers: a revert on ANY board proves
+that board's bootloader has the knob ON (a knob-off bootloader has no
+pending-verify state machine and can never revert anything). An OTA'd
+nucula image that reverts therefore means the image never confirmed -
+either it is a never-mark main (rows 3), or it chip-reset before its
+`mark_app_valid` (the documented rst:0x15 CDC-open race - see
+docs/VPCD_WIFI_RUNBOOK.md "opening the port toggles DTR and
+chip-resets the board"), not an inverted config.
 
 ## Suite layout
 
@@ -161,6 +183,7 @@ tests/hardware/ota/
   test_ota_push_local.py local unit tests for push_ex() vs a fake board
   test_ota_positive.py   e2e: good image -> board healthy
   test_ota_rollback.py   e2e: taxonomy, mandatory good-image restore
+  test_wiring_coherence.py local unit tests - knob x mark-valid wiring map
   results/               gitignored ledger output (ota-history.jsonl)
 ```
 

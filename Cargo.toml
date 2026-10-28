@@ -1,13 +1,17 @@
 [workspace]
 members = [
+    "crates/mfrc522-pcd",
     "crates/ccid-protocol",
     "crates/card-interface",
     "crates/ccid-core",
     "crates/ccid-transport-serial",
+    "crates/ccid-service",
     "crates/pn7160-nci",
     "crates/ccid-pcsc-host",
+    "crates/boards",
     "firmware/ccid-firmware",
     "firmware/esp32-ccid",
+    "tools/boards-gen",
     "host-tools",
 ]
 default-members = ["firmware/ccid-firmware"]
@@ -30,12 +34,16 @@ synopsys-usb-otg = { git = "https://github.com/Amperstrand/synopsys-usb-otg", re
 # Patched BSP — ⚠️ AUDIT 2026-10-18 (docs/VENDOR_PATCH_AUDIT.md #2): this
 # vendor copy is a STRANDED SNAPSHOT of the fork's DELETED `sdio-support`
 # branch (fa6dc86 era) + HAL-pin realignment to 05d999d (issue #193 — the
-# fork's `main` pins an older HAL rev, two instances broke display-init
-# Pin/Rcc types). The patch is currently the SOLE PROVIDER of the BSP: the
-# dep's declared `branch = "sdio-support"` no longer exists on the remote.
-# Clean path (bench-gated): branch off fork main with the HAL-pin bump,
-# port the display feature onto it, bench-verify per #193, then point the
-# dep at that branch and DELETE this patch + the vendor tree.
+# deleted branch pinned the older HAL rev 789e5e8; two instances broke
+# display-init Pin/Rcc types. Fork `main` has since moved to 0c5bc3d, a
+# DESCENDANT of our 05d999d — DR-BSP-2026-10-18, issue #271). The patch is
+# currently the SOLE PROVIDER of the BSP: the dep's declared
+# `branch = "sdio-support"` no longer exists on the remote.
+# Registered snapshot (provenance + SHA256SUMS + drift tripwire):
+# vendor-patches/stm32f469i-disc/. Clean path (bench-gated): branch off
+# fork main, port the display feature onto it, bench-verify per #193,
+# then point the dep at that branch and DELETE this patch + the vendor
+# tree + the vendor-patches/ registration in the same change.
 [patch."https://github.com/Amperstrand/stm32f469i-disc.git"]
 stm32f469i-disc = { path = "vendor/stm32f469i-disc" }
 

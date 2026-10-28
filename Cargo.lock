@@ -116,6 +116,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
+name = "boards"
+version = "0.1.0"
+dependencies = [
+ "pn7160-nci",
+]
+
+[[package]]
+name = "boards-gen"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "bounded-integer"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -236,6 +251,7 @@ dependencies = [
 name = "ccid-firmware-rs"
 version = "0.0.8"
 dependencies = [
+ "boards",
  "card-interface",
  "ccid-core",
  "ccid-protocol",
@@ -271,6 +287,18 @@ dependencies = [
 [[package]]
 name = "ccid-protocol"
 version = "0.1.0"
+
+[[package]]
+name = "ccid-service"
+version = "0.1.0"
+dependencies = [
+ "card-interface",
+ "ccid-core",
+ "ccid-protocol",
+ "ccid-transport-serial",
+ "heapless 0.9.2",
+ "log",
+]
 
 [[package]]
 name = "ccid-transport-serial"
@@ -861,9 +889,11 @@ dependencies = [
 name = "esp32-ccid"
 version = "0.1.0"
 dependencies = [
+ "boards",
  "card-interface",
  "ccid-core",
  "ccid-protocol",
+ "ccid-service",
  "ccid-transport-serial",
  "embedded-graphics",
  "embedded-hal 1.0.0",
@@ -1171,7 +1201,7 @@ dependencies = [
 [[package]]
 name = "iso14443"
 version = "0.3.1"
-source = "git+https://github.com/Amperstrand/iso14443-rs.git?rev=73db6d4#73db6d4b2c339561c476998d4bdf6e9e9b2fbffc"
+source = "git+https://github.com/Amperstrand/iso14443-rs.git?rev=0f7d9d70#0f7d9d70f986e924397f5b7245eeabd553cb375f"
 dependencies = [
  "bitflags 2.11.1",
  "bounded-integer",
@@ -1301,7 +1331,6 @@ dependencies = [
 [[package]]
 name = "mfrc522-pcd"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=2a1afea#2a1afeadd4939956fdd5dc6c99784a2729b6759d"
 dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-sys",
@@ -1510,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "pn532-transport"
 version = "0.1.0"
-source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=2a1afea#2a1afeadd4939956fdd5dc6c99784a2729b6759d"
+source = "git+https://github.com/Amperstrand/bolty-rs.git?rev=cb3ad97f7#cb3ad97f733f993e20de00a015071032cd5d31f1"
 dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-hal",

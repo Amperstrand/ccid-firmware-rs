@@ -18,3 +18,19 @@ build-std = ["std", "panic_abort"]
 
 [env]
 ESP_IDF_SYS_ROOT_CRATE = { value = "esp32-ccid" }
+
+# Partition-CSV GLOB injection (issue #446): every sdkconfig*.full
+# references partitions-ota.csv by its BARE name, which esp-idf cmake
+# resolves against the embuild project dir — the file only exists there
+# because the esp-idf-sys build script copies ESP_IDF_GLOB_PARTCSV_*
+# matches in BEFORE cmake configure (esp-idf-sys BUILD-OPTIONS.md §GLOB).
+# build.sh and CI export this pair; without it a bare local
+# `cargo check/build` (only ESP_IDF_SDKCONFIG set) died with
+# FileNotFoundError on <out>/partitions-ota.csv. Declaring it here makes
+# the env self-contained for every invocation from this crate dir.
+# `relative = true` resolves against THIS config's parent directory
+# (= the crate dir) — the same path build.sh's SCRIPT_DIR export yields,
+# so the two sources can never drift. Values identical to build.sh/CI;
+# an explicit process env still takes precedence per cargo's [env] rules.
+ESP_IDF_GLOB_PARTCSV_BASE = { value = ".", relative = true }
+ESP_IDF_GLOB_PARTCSV_1 = { value = "/partitions-ota.csv" }

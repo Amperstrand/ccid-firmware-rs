@@ -30,6 +30,7 @@ mod logging;
 // (the bin tree compiles only for target_arch = "arm").
 #[cfg(feature = "display")]
 pub mod app_enum;
+pub mod board_registry;
 pub mod ccid_core;
 pub mod device_profile;
 pub mod driver;

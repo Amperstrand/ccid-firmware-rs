@@ -267,3 +267,54 @@ All 28 still-actionable threads replied with disposition + evidence;
 PRs #250/#253/#254 carried zero findings. The residual-sweep window is
 CLOSED — future sweeps re-run from the latest merged PR per the
 standard procedure.
+
+---
+
+# Codex Review Sweep — Triage (2026-10-21, post-rule-0 era)
+
+Scope: PRs **#321–#391** (72 dumps in `.omo/pr-sweep/`, 26 carried findings, **103 items**).
+Tree at `a2b2d5b7` + the fix branches of this window.
+
+**Totals: 103 items — 97 ADDRESSED, 2 VERIFIED-OPEN, 4 ANALYSIS (all six in #394).**
+
+Method: (a) per-PR fix-commit citation audit (`git log --grep="#<pr>"` — every finding-carrying
+PR has named follow-up fixes, the post-rule-0 lanes sweeping their own rounds); (b) two deep
+file verifications — `tests/hardware/nfc/j3r180_gpg_lifecycle.py` (#325/#329/#333/#341
+clusters: ledger-required-before-auth, identity-level CPLC entries, rollback-aborts, status-only
+read-only — fixed in `ca4387bb`, `454604b1`, `afa1cde9` with inline `Codex P1 on #N` markers)
+and `tests/hardware/nfc/gempc_t1.py` (#347's 21: SC-guard at the transceive boundary,
+zero-risk CLI allowlist, seq-matched replies, flock-on-exception, framing-desync — fix rounds
+r1–r7 named in commits `892f12d7`…`36a47db2`); (c) per-finding verification of the open set.
+
+**Open set (all #390, tracked in #394):**
+- **VERIFIED OPEN**: `union_matrix.py --filter <no-match>` prints `[]` exit 0 — contradicts its
+  own documented contract (line 32); a typo'd dispatch filter silently skips the matrix job
+  (vacuous green).
+- **VERIFIED OPEN**: `union-matrix.yml:95` interpolates `${{ inputs.combo-filter }}` directly
+  into the shell command — route through an env var.
+- ANALYSIS ×2: matrix completeness vs build.sh's board table; feature validation reads only
+  `[features]` (implicit optional-dep features unvalidated).
+
+**#391 — rule-0 miss (merged ahead of checks)**: the bot review never landed pre-merge and the
+`python-collect` check went FAILURE on the resulting main (`F401` unused `os` + `F841` unused
+`deadline` in `tests/hardware/nfc/test_vpicc_table.py`) — caught by the local CI gate during
+this sweep's verification runs; fixed in #393. Flagged on #391 for the audit trail.
+
+Mechanics note: thread-reply REST endpoints 404 for these PRs' threads — lane triage replies
+live in the PR conversation comments (issues API), not thread replies; sweeps must check both.
+
+---
+
+# Codex Review Sweep — Addendum: gap range #285–#319 (2026-10-21, same window)
+
+Closes the record gap between the prior sweep's end and the #321–#391 section above.
+34 findings across 10 PRs — **34/34 ADDRESSED**:
+
+- #300 ×5, #310 ×2, #315 ×1, #317 ×1, #318 ×1 — the local-gate lane's own PRs, each
+  fixed+replied in its round (#311, #316, #318, #319 and PR-conversation replies).
+- #287 ×2 (`af7ece9a`), #295 ×2 (retire-264 follow-ups), #297 ×3 (`0d3d293e` + merge),
+  #299 ×15 (bench rounds through `fix(#313)`/`fix(#314)`) — citing-commit evidence.
+- #289 ×2 (defer LCD redraws / transition updates) — no citing commit, verified by
+  mechanism at main: `m5stick_lcd.rs` lines 18 + 596–603 (dirty-flag lazy redraw,
+  `try_lock`-only presence re-push every poll — landed via `e72ccd0e`/`af7ece9a`
+  for the same-class #287/#281 findings).

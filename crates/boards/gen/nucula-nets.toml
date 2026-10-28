@@ -1,0 +1,38 @@
+# nucula net-map sidecar (boards-as-data design §2.1) — the generator's
+# designator anchors live HERE, not in the parser: an upstream net rename
+# in zeugmaster/nucula-board changes ONE line in this file, not code.
+#
+# Regenerate the checked-in table:
+#   cargo run -p boards-gen -- --board nucula
+# (fetches docs/netlist.xml at the pinned rev via gh, verifies the
+# sha256 below, writes crates/boards/src/nucula_gen.rs)
+
+[source]
+repo = "zeugmaster/nucula-board"
+rev = "78e5891bb76745feffe0c2ac38e27e92bc887c31"
+netlist_path = "docs/netlist.xml"
+netlist_sha256 = "520b07791f390b7d5eea90824531773e7555caf1fde4b1b927a5e4ab249eeb0f"
+
+[anchors]
+# Designator anchors (§2.1): the ESP32-C3 module whose symbol pin names
+# carry the GPIO numbers (pinfunction "IO<gpio>_<module pin>"), and the
+# PN7160 it wires to. A board respin that renumbers refs changes these
+# two lines.
+mcu_ref = "U3" # ESP32-C3-MINI-1-H4X
+nfc_ref = "U6" # PN7160A1HN/C100E
+
+[nfc]
+# NOT derivable from the netlist: NFC_ADR0/NFC_ADR1 are R23/R24 straps.
+# The bench-proven nominal (crates/pn7160-nci/src/board.rs:30-36, strap
+# margin confirmed on the bench #62) wins; the generated table's host
+# test asserts equality with pn7160-nci::board::NUCULA so drift is
+# impossible, not merely discouraged.
+i2c_addr = 0x28
+
+[nfc.nets]
+# table field -> net name in docs/netlist.xml + the U6 pinfunction
+# anchor (matched exactly or as the "NAME_<pin>" prefix KiCad emits).
+sda = { net = "/I2C_SDA", pin = "I2C_SDA" }
+scl = { net = "/I2C_SCL", pin = "I2C_SCL" }
+irq = { net = "/NFC_IRQ", pin = "IRQ" }
+ven = { net = "/NFC_VEN", pin = "VEN" }

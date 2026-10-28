@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -103,10 +104,20 @@ class Reader:
         self.s.open()
         # AGENTS.md DTR-latch rule: pyserial asserts DTR at open; on the
         # nucula CDC that latches boot:0x5 on the next reset. Deassert
-        # both lines immediately (Codex PR 107 P1).
-        self.s.setDTR(False)
-        self.s.setRTS(False)
+        # both lines immediately (Codex PR 107 P1). On a PTY (the broker
+        # surface, /dev/nucula-ccid) there are no modem lines — the
+        # ioctls fail with ENOTTY and DTR/RTS are a no-op by construction,
+        # so the deassert is skipped rather than fatal (#305).
+        try:
+            self.s.setDTR(False)
+            self.s.setRTS(False)
+        except OSError:
+            pass
         self.seq = 0
+        # Dead-port verdict classification (#431): True while the serial
+        # port is unusable (last reopen failed). Readers in this state
+        # contribute SKIPs (bench fault), never toward PASS or FAIL.
+        self.dead = False
         # Late-response accumulation (issue #114, Codex on #107): a
         # response arriving after the read window used to sit in the OS
         # buffer until the NEXT exchange discarded it via
@@ -141,18 +152,27 @@ class Reader:
         except Exception:
             pass
 
-    def reopen(self) -> bool:
+    def reopen(self, quick: bool = False) -> bool:
         """Recover from a USB-CDC drop (the nucula re-enumerates on reset).
 
         A mid-battery disconnect raises SerialException from read/write;
         one clean close+open cycle is the documented bench remedy.
+
+        #431 verdict classification: a FAILED reopen marks the reader
+        dead (``self.dead``) — callers must count affected cases as SKIP
+        (bench fault), never toward a PASS. ``quick=True`` does one
+        immediate attempt without the 1 s re-enumeration waits, for the
+        per-case cadence on a reader already known dead.
         """
+        self.dead = True  # presumed dead until a fresh open succeeds
         try:
             self.s.close()
         except Exception:
             pass
-        for _ in range(5):
-            time.sleep(1.0)
+        attempts, delay = (1, 0.0) if quick else (5, 1.0)
+        for _ in range(attempts):
+            if delay:
+                time.sleep(delay)
             try:
                 # Codex P1 on #331: preserve the constructor's serial
                 # settings on reopen — a bare Serial(port, 115200)
@@ -167,6 +187,7 @@ class Reader:
                 s.rts = False
                 s.open()
                 self.s = s
+                self.dead = False
                 return True
             except serial.SerialException:
                 continue
@@ -178,16 +199,46 @@ class Reader:
         Clean-wire enforcement (issues #131/#133): post-handshake, the
         GemPC wires must deliver zero bytes until the host speaks. The
         m5stick twin of the nucula's test_wire_silence_after_banner.
+
+        #339 (mirrors the fixed nucula twin, Codex #145 P2): silence can
+        never be PROVEN on a dropped port. A failed reopen RAISES — a
+        dead reader is a bench hardware fault, not a quiet wire (the
+        old `break` returned b"" collected-so-far and PASSed the check
+        on a dead reader). A successful reopen restarts the FULL quiet
+        window so the post-reconnect observation is as long as the
+        original, not whatever the reconnect left over.
         """
         got = bytearray()
-        t0 = time.time()
+        deadline = time.time() + window_s
+        # #361 review P2: a flapping port (drop → reopen ok → drop …)
+        # must not extend the quiet window forever — the bench
+        # launchers' `timeout` kill bypasses cleanup while labgrid
+        # places are held and pcscd is stopped. Bounded reopens only
+        # (no wall-clock multiple: a legitimately slow reopen cycle is
+        # not a fault).
+        reopens = 0
+        MAX_QUIET_REOPENS = 3
         self.s.timeout = 0.1
-        while time.time() - t0 < window_s:
+        while time.time() < deadline:
             try:
                 chunk = self.s.read(8192)
             except serial.SerialException:
                 if not self.reopen():
-                    break
+                    raise AssertionError(
+                        f"{self.name}: serial port dropped during the "
+                        "quiet window and reopen failed — bench hardware "
+                        "fault, not wire silence (#339)"
+                    ) from None
+                reopens += 1
+                if reopens > MAX_QUIET_REOPENS:
+                    raise AssertionError(
+                        f"{self.name}: {reopens - 1} reopens inside one "
+                        "quiet window — flapping port, bench hardware "
+                        "fault (#361 review P2)"
+                    )
+                # Codex #145 P2 twin: a successful reconnect restarts
+                # the FULL quiet window.
+                deadline = time.time() + window_s
                 continue
             if chunk:
                 got.extend(chunk)
@@ -206,12 +257,16 @@ class Reader:
         arriving after ~0.3 s of silence was declared missing.
 
         A transient port drop yields [] after a reopen attempt instead
-        of killing the whole battery with an unhandled SerialException.
+        of killing the whole battery run with an unhandled SerialException.
+        A FAILED reopen leaves the reader flagged dead (#431): the []
+        then means "port unusable, bench fault" — callers classify by
+        ``r.dead``, not by the empty list alone.
         """
         try:
             return self._exchange_once(msg_type, data, raw, settle)
         except serial.SerialException:
-            self.reopen()  # nucula CDC readiness quirk — one clean cycle
+            if not self.reopen():  # nucula CDC readiness quirk cycle
+                return []          # reader marked dead — SKIP, not FAIL
             try:
                 return self._exchange_once(msg_type, data, raw, settle)
             except serial.SerialException:
@@ -243,6 +298,7 @@ class Reader:
                 self.s.write(payload)
             except serial.SerialException:
                 return []
+        self.dead = False  # the frame left on a working port
         self.s.timeout = 0.15
         buf = b""
         idle = 0
@@ -278,6 +334,40 @@ def pcscd_start():
     time.sleep(1.5)
 
 
+# Bench disturbance doctrine (tollgate-lab #15/#16): every pcscd restart
+# on the shared bench goes through pcscd-ctl (B32 disturbance lock +
+# waiting reader sessions + journaled reason). Naked systemctl restarts
+# bounced reader sessions bench-wide (ntag424-delta lane, 2026-10-23:
+# pcscd cycled 80x in 3h, ACR1252 dropped from pcsc). The direct-serial
+# phases below still need a hard stop (pcscd must stay DOWN while the
+# probe owns the ports) — pcscd-ctl has no stop; only the restart cycles
+# route through it.
+PCSCD_CTL = shutil.which("pcscd-ctl")
+
+
+def pcscd_restart_coordinated(reason: str) -> bool:
+    """Restart pcscd the sanctioned way when pcscd-ctl exists (bench);
+    fall back to the naked stop+start pair on hosts without it (CI).
+    Returns False if the coordinated restart FAILED — the caller must
+    count that as a failed cycle and NOT probe: the daemon is then
+    whatever it was before (likely still running with the old reader
+    set), and probing it would false-pass the soak."""
+    if PCSCD_CTL:
+        r = subprocess.run(
+            [PCSCD_CTL, "restart",
+             "--project", "ccid-conformance-battery",
+             "--reason", reason],
+            capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"  pcscd-ctl restart FAILED (rc={r.returncode}): "
+                  f"{(r.stderr or r.stdout).strip()[:200]}")
+            return False
+        return True
+    pcscd_stop()
+    pcscd_start()
+    return True
+
+
 # Labgrid bench doctrine (AGENTS.md): every HIL session acquires the
 # DUT places before touching hardware — concurrent sessions cannot
 # race a device. Places from tests/hardware/labgrid/
@@ -309,7 +399,8 @@ def labgrid_release(places: list[str]) -> None:
 
 # ---------------------------------------------------------------- battery
 
-def conformance_battery(readers: dict[str, Reader]) -> bool:
+def conformance_battery(readers: dict[str, Reader],
+                        skips: dict[str, int] | None = None) -> bool:
     """Same commands through every reader; compare card-state semantics.
 
     Card-dependent cases (IccPowerOn, XfrBlock) adapt to each reader's
@@ -319,6 +410,10 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
     against correct firmware. Those cases are verified per-reader only
     and marked "n/a (card-relative)" — their outcomes depend on physical
     coupling, not on protocol divergence between readers.
+
+    #431: a case whose reader port is dead (reopen failed) is recorded
+    as SKIP — a bench fault, excluded from PASS/FAIL counting and from
+    the cross-reader comparison — and tallied into `skips`.
     """
     ok = True
 
@@ -351,8 +446,14 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
          lambda r, i: r and r[0][0] == 0x83 and len(r[0][4]) > 0),
         ("Escape sync-enable", MSG_ESCAPE, bytes([0x01, 0x01, 0x01]),
          lambda r, i: r and r[0][0] == 0x83),
+        # Card-state aware (2026-10-23): with no ICC on the coil the
+        # CORRECT answer is bmICCStatus=2 (no ICC); the old expectation
+        # only accepted present-states and failed honest card-absent
+        # benches (the icc probe feeds each reader's state as i).
         ("GetSlotStatus", MSG_GET_SLOT_STATUS, b"",
-         lambda r, i: r and r[0][0] == 0x81 and (r[0][2] & 0x03) in (0x00, 0x01)),
+         lambda r, i: r and r[0][0] == 0x81 and (
+             (r[0][2] & 0x03) in (0x00, 0x01) if i in (0, 1)
+             else (r[0][2] & 0x03) == 0x02)),
         ("IccPowerOn", MSG_ICC_POWER_ON, b"", power_on_expect),
         ("IccPowerOff", MSG_ICC_POWER_OFF, b"",
          lambda r, i: bool(r)),
@@ -367,6 +468,14 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
     for name, mt, data, expect in cases:
         for rname, r in readers.items():
             resp = r.exchange(mt, data)
+            if not resp and r.dead:
+                # #431: dead port — bench fault. SKIP the case for this
+                # reader; never FAIL honest firmware on a missing board
+                # and never count the case as executed.
+                results.setdefault(name, {})[rname] = (None, "SKIP (dead port)")
+                if skips is not None:
+                    skips[rname] = skips.get(rname, 0) + 1
+                continue
             passed = False
             detail = "no response"
             if resp:
@@ -380,33 +489,42 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
             if not passed:
                 ok = False
 
+    run_names = list(readers.keys())
     print(f"\nICC state: {icc} (0=present+active 1=present+inactive 2=no ICC)")
-    print(f"{'case':28s} {'nucula':>30s}   {'m5stick':>30s}   verdict")
+    header = "   ".join(f"{rn:>30s}" for rn in run_names)
+    print(f"{'case':28s} {header}   verdict")
     for name, per in results.items():
         cells = []
-        agree = True
-        for rn in READERS:
+        for rn in run_names:
             p, d = per[rn]
-            cells.append(f"{d[:28]:>28s} {'PASS' if p else 'FAIL'}")
+            state = "SKIP" if p is None else ("PASS" if p else "FAIL")
+            cells.append(f"{d[:28]:>28s} {state}")
         # structural agreement: same response type AND same command-status
         # class (bits 6-7). Card-dependent cases are per-reader relative
         # (activation outcome depends on physical coupling — the bench card
         # lives on the m5stick coil) and never participate in the
-        # reader-vs-reader comparison.
+        # reader-vs-reader comparison. #431: dead-port readers are SKIPped
+        # and excluded here; agreement is judged among executed readers.
         sigs = []
-        for rn in READERS:
+        for rn in run_names:
             _p, d = per[rn]
+            if _p is None:
+                continue
             if d == "no response":
                 sigs.append("none")
             else:
                 t, st = d.split()[0], d.split()[1]
                 sigs.append(f"{t}|{(int(st.split('=')[1], 16) >> 6) & 3}")
-        agree = len(set(sigs)) == 1
-        if name in ("IccPowerOn", "XfrBlock"):
-            verdict = "n/a (card-relative)"
+        if not sigs:
+            verdict = "SKIP (all dead)"
         else:
-            verdict = "AGREE" if agree else "DIVERGE"
-        print(f"{name:28s} {cells[0]:>34s}   {cells[1]:>34s}   {verdict}")
+            agree = len(set(sigs)) == 1
+            if name in ("IccPowerOn", "XfrBlock"):
+                verdict = "n/a (card-relative)"
+            else:
+                verdict = "AGREE" if agree else "DIVERGE"
+        row = "   ".join(f"{c:>34s}" for c in cells)
+        print(f"{name:28s} {row}   {verdict}")
         if verdict == "DIVERGE":
             ok = False
     return ok
@@ -414,9 +532,16 @@ def conformance_battery(readers: dict[str, Reader]) -> bool:
 
 # ------------------------------------------------------------------- fuzz
 
-def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
+def fuzz_battery(readers: dict[str, Reader], rounds: int,
+                 skips: dict[str, int] | None = None) -> bool:
     """Malformed frames must never wedge the reader: every case ends with a
-    valid GetSlotStatus answered correctly."""
+    valid GetSlotStatus answered correctly.
+
+    #431 verdict counting: a dead serial port (reopen failed) is a bench
+    fault — the affected cases are SKIPped and tallied into `skips`,
+    never counted toward a PASS. A wedge is reserved for the real
+    failure class: port back, but the protocol does not resync.
+    """
     ok = True
     rng = random.Random(20261009)
     # Wire-silence check (issues #131/#133): no frames sent for 2 s —
@@ -425,7 +550,16 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
     # reintroduced unsolicited log line).
     print("\nwire silence (2 s quiet window, no frames sent):")
     for rname, r in readers.items():
-        quiet = r.quiet_bytes(2.0)
+        try:
+            quiet = r.quiet_bytes(2.0)
+        except AssertionError as e:
+            # #339/#361 twin of the #431 rule: silence can never be
+            # PROVEN on a dead/flapping port — SKIP the check for this
+            # reader (never PASS it), never abort the whole battery.
+            print(f"  {rname}: SKIP — {e}")
+            if skips is not None:
+                skips[rname] = skips.get(rname, 0) + 1
+            continue
         state = "PASS" if quiet == b"" else f"FAIL ({len(quiet)}B: {quiet[:24]!r})"
         print(f"  {rname}: {state}")
         if quiet:
@@ -451,19 +585,26 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
         cases.append((f"random-{rnd}", body))
 
     for rname, r in readers.items():
+        reader_skips = 0
         for name, raw in cases:
+            if r.dead:
+                # #431: reader known dead — one cheap probe per case
+                # (no 5x1s reopen cycle); a still-dead port SKIPs the
+                # case, it never silently counts toward the executed
+                # total. A reopened port resumes normal testing.
+                if not r.reopen(quick=True):
+                    reader_skips += 1
+                    continue
             r.seq = (r.seq % 255) + 1
             try:
                 r.s.reset_input_buffer()
                 r.s.write(raw)
             except serial.SerialException:
-                # Issue #114 (Codex on #96): a dead port is a bench
-                # fault — it must FAIL, never silently skip the case.
                 if not r.reopen():
-                    raise AssertionError(
-                        f"{rname}: port died during fuzz case {name!r} "
-                        "and reopen failed — bench hardware fault"
-                    ) from None
+                    reader_skips += 1
+                    print(f"  SKIP {rname} case {name!r}: port dead, "
+                          "reopen failed — bench fault (#431)")
+                    continue
                 # Port back: prove protocol resync (same disarm-then-
                 # probe discipline as the normal path — T=1 fuzz
                 # payloads can leave the endpoint armed, issue #101).
@@ -475,10 +616,15 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
                         answered = True
                         break
                 if not answered:
-                    wedges[rname] += 1
-                    ok = False
-                    print(f"  WEDGE {rname} after {name}: no GetSlotStatus "
-                          "resync within 3 probes after reopen")
+                    if r.dead:
+                        reader_skips += 1
+                        print(f"  SKIP {rname} after {name}: port died "
+                              "again during resync probes (#431)")
+                    else:
+                        wedges[rname] += 1
+                        ok = False
+                        print(f"  WEDGE {rname} after {name}: no GetSlotStatus "
+                              "resync within 3 probes after reopen")
                 continue
             time.sleep(0.05)
             # Resync proof: a valid GetSlotStatus must be answered within a
@@ -500,13 +646,23 @@ def fuzz_battery(readers: dict[str, Reader], rounds: int) -> bool:
                     answered = attempt
                     break
             if answered is None:
-                wedges[rname] += 1
-                ok = False
-                latency = recovery_latency(r, raw)
-                print(f"  WEDGE {rname} after {name}: no valid GetSlotStatus in 3 probes"
-                      + (f"; recovered after {latency:.2f}s" if latency is not None
-                         else "; NO RECOVERY within 5s"))
-        print(f"  {rname}: {len(cases)} fuzz cases, {wedges[rname]} wedges")
+                if r.dead:
+                    # port died during the probes and never came back —
+                    # bench fault, not a firmware wedge (#431)
+                    reader_skips += 1
+                    print(f"  SKIP {rname} after {name}: port died during "
+                          "resync probes — bench fault (#431)")
+                else:
+                    wedges[rname] += 1
+                    ok = False
+                    latency = recovery_latency(r, raw)
+                    print(f"  WEDGE {rname} after {name}: no valid GetSlotStatus in 3 probes"
+                          + (f"; recovered after {latency:.2f}s" if latency is not None
+                             else "; NO RECOVERY within 5s"))
+        if reader_skips and skips is not None:
+            skips[rname] = skips.get(rname, 0) + reader_skips
+        print(f"  {rname}: {len(cases)} fuzz cases, {wedges[rname]} wedges, "
+              f"{reader_skips} skipped (dead port)")
     return ok
 
 
@@ -538,54 +694,89 @@ def pcscd_restart_soak(readers: dict[str, Reader], count: int) -> bool:
     print(f"\npcscd restart soak ({count}x):")
     for r in readers.values():
         r.close()
+    # Reader-name drift lesson (2026-10-23): match each configured
+    # reader by ANY of its historical bench names, not one hardcoded
+    # string — the m5stick conf was renamed 'M5stick GemPC (MFRC522)'
+    # while this probe still hunted only 'GemPCTwin' (10/10 false FAIL).
+    NAME_PATTERNS = {
+        "nucula": ("Nucula",),
+        "m5stick": ("GemPCTwin", "M5stick GemPC", "M5stick"),
+    }
+    run_names = list(readers.keys())
+    probe = (
+        "from smartcard.System import readers as R; "
+        "names = [str(r) for r in R()]; "
+        + " ".join(
+            "print(any({} for n in names));".format(
+                " or ".join(f"'{p}' in n" for p in NAME_PATTERNS[rn])
+            )
+            for rn in run_names
+        )
+    )
     ok = True
     for i in range(count):
-        pcscd_start()
-        out = subprocess.run(
-            ["python3", "-c",
-             "from smartcard.System import readers as R; "
-             "print(any('Nucula' in str(r) for r in R()), "
-             "any('GemPCTwin' in str(r) for r in R()))"],
-            capture_output=True, text=True, timeout=30)
-        out_line = out.stdout.strip()
-        nuc, gem = out_line == "True True", out_line == "True True"
-        if out_line not in ("True True", "False False"):
-            nuc, gem = out_line.split() if " " in out_line else (False, False)
-        if not (nuc and gem):
+        # one sanctioned restart per cycle: B32 disturbance lock, reader
+        # sessions waited out, journaled reason. A FAILED restart counts
+        # as a failed cycle and skips the probe — never false-pass on a
+        # stale daemon (Codex P2 review, 2026-10-24).
+        if not pcscd_restart_coordinated(f"restart-soak cycle {i}"):
             ok = False
-            print(f"  restart {i}: nucula={nuc} m5stick={gem} — FAIL")
+            continue
+        # sys.executable, NOT PATH python3: in agent/venv environments
+        # PATH python3 lacks pyscard and the probe fails SILENTLY (empty
+        # stdout maps to all-False — 10/10 false FAIL, 2026-10-23).
+        out = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, timeout=30)
+        flags = [ln.strip() == "True" for ln in out.stdout.splitlines()]
+        states = dict(zip(run_names, flags)) if len(flags) == len(run_names) else {
+            n: False for n in run_names
+        }
+        if not all(states.values()):
+            ok = False
+            print(f"  restart {i}: {states} — FAIL")
             # the known CDC-state remedy: one clean open/close cycle
-            try:
-                s = serial.Serial(resolve("nucula"), 115200, timeout=0.5)
-                s.close()
-            except Exception:
-                pass
-        pcscd_stop()
-    pcscd_start()
+            if "nucula" in states and not states["nucula"]:
+                try:
+                    s = serial.Serial(resolve("nucula"), 115200, timeout=0.5)
+                    s.close()
+                except Exception:
+                    pass
     print(f"  {'all restarts clean' if ok else 'some restarts needed the CDC remedy'}")
     return ok
 
 
-def slot_status_soak(readers: dict[str, Reader], count: int) -> bool:
+def slot_status_soak(readers: dict[str, Reader], count: int,
+                     skips: dict[str, int] | None = None) -> bool:
     print(f"\nGetSlotStatus soak ({count}x per reader):")
     ok = True
     for rname, r in readers.items():
         errs = 0
+        dead_skips = 0
         first_icc = None
         t0 = time.time()
         for i in range(count):
             resp = r.exchange(MSG_GET_SLOT_STATUS, settle=0.01)
-            ok = bool(resp and resp[0][0] == 0x81)
-            if ok:
+            # per-iteration verdict stays LOCAL (#431): the old code
+            # overwrote the function-level `ok`, so a misbehaving or
+            # dead reader followed by a clean reader FALSE-PASSED the
+            # soak (its errors were silently erased).
+            resp_ok = bool(resp and resp[0][0] == 0x81)
+            if resp_ok:
                 icc = resp[0][2] & 7
                 if first_icc is None:
                     first_icc = icc
-                ok = icc == first_icc
-            if not ok:
+                resp_ok = icc == first_icc
+            if not resp_ok and r.dead:
+                dead_skips += 1  # dead port: bench fault -> SKIP (#431)
+            elif not resp_ok:
                 errs += 1
         dt = time.time() - t0
         rate = count / dt if dt else 0
-        print(f"  {rname}: {count - errs}/{count} clean ({rate:.0f}/s)")
+        print(f"  {rname}: {count - errs - dead_skips}/{count} clean "
+              f"({rate:.0f}/s), {errs} errors, {dead_skips} skipped (dead port)")
+        if dead_skips and skips is not None:
+            skips[rname] = skips.get(rname, 0) + dead_skips
         if errs:
             ok = False
     return ok
@@ -594,12 +785,21 @@ def slot_status_soak(readers: dict[str, Reader], count: int) -> bool:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="shrink fuzz/soak rounds")
+    ap.add_argument(
+        "--readers",
+        default=",".join(READERS),
+        help="comma-separated subset to run (lane-held places block the default)",
+    )
     args = ap.parse_args()
+    readers_to_run = tuple(r.strip() for r in args.readers.split(",") if r.strip())
+    unknown = [r for r in readers_to_run if r not in READERS]
+    if unknown:
+        ap.error(f"unknown readers {unknown} (known: {list(READERS)})")
 
     # Acquire the bench places BEFORE stopping pcscd or opening the
     # DUT ports (Codex on #107): the battery owns the hardware for the
     # whole run and must not race sibling sessions.
-    places = [LABGRID_PLACES[name] for name in READERS]
+    places = [LABGRID_PLACES[name] for name in readers_to_run]
     acquired = labgrid_acquire(places)
     if len(acquired) != len(places):
         labgrid_release(acquired)
@@ -607,11 +807,16 @@ def main():
     try:
         pcscd_stop()
         readers: dict[str, Reader] = {}
+        # #431 dead-port ledger: cases skipped because a reader's serial
+        # port was dead (bench fault). They never count toward PASS; the
+        # final verdict says "PASS with SKIPS" so a dead reader can never
+        # read as a clean run.
+        skips: dict[str, int] = {}
         try:
-            for name in READERS:
+            for name in readers_to_run:
                 readers[name] = Reader(name, resolve(name))
-            ok1 = conformance_battery(readers)
-            ok2 = fuzz_battery(readers, 20 if args.quick else 80)
+            ok1 = conformance_battery(readers, skips)
+            ok2 = fuzz_battery(readers, 20 if args.quick else 80, skips)
             ok3 = pcscd_restart_soak(readers, 3 if args.quick else 10)
             # the restart soak leaves pcscd RUNNING (it holds the ports);
             # stop it and reopen our direct connections
@@ -622,7 +827,7 @@ def main():
                 except Exception:
                     pass
                 readers[name] = Reader(name, resolve(name))
-            ok4 = slot_status_soak(readers, 100 if args.quick else 1000)
+            ok4 = slot_status_soak(readers, 100 if args.quick else 1000, skips)
         finally:
             for r in readers.values():
                 r.close()
@@ -631,7 +836,12 @@ def main():
         labgrid_release(acquired)
 
     verdict = all([ok1, ok2, ok3, ok4])
-    print(f"\nBATTERY VERDICT: {'PASS' if verdict else 'FAIL'}")
+    if verdict and any(skips.values()):
+        print(f"\nBATTERY VERDICT: PASS with SKIPS — dead-port bench faults "
+              f"excluded from counting, rerun on a healthy bench "
+              f"(skipped: {skips}, #431)")
+    else:
+        print(f"\nBATTERY VERDICT: {'PASS' if verdict else 'FAIL'}")
     sys.exit(0 if verdict else 1)
 
 

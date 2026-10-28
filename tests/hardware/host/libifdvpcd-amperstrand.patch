@@ -1,0 +1,51 @@
+diff --git a/virtualsmartcard/src/vpcd/vpcd.c b/virtualsmartcard/src/vpcd/vpcd.c
+index 371daa3..560a0f2 100644
+--- a/virtualsmartcard/src/vpcd/vpcd.c
++++ b/virtualsmartcard/src/vpcd/vpcd.c
+@@ -58,6 +58,11 @@ typedef WORD uint16_t;
+ static ssize_t sendToVICC(struct vicc_ctx *ctx, size_t size, const unsigned char *buffer);
+ static ssize_t recvFromVICC(struct vicc_ctx *ctx, unsigned char **buffer);
+ 
++/* AMPERSTRAND FIX (#326): receive timeout for vpicc sockets, seconds */
++#ifndef VPCD_RECV_TIMEOUT_SEC
++#define VPCD_RECV_TIMEOUT_SEC 2
++#endif
++
+ static ssize_t sendall(SOCKET sock, const void *buffer, size_t size);
+ static ssize_t recvall(SOCKET sock, void *buffer, size_t size);
+ 
+@@ -383,7 +388,9 @@ ssize_t vicc_transmit(struct vicc_ctx *ctx,
+         unlock(ctx->io_lock);
+     }
+ 
+-    if (r <= 0)
++    /* AMPERSTRAND FIX (#326): eject on hard transport errors only.
++     * r == 0 is a valid zero-length answer (see recvFromVICC). */
++    if (r < 0)
+         vicc_eject(ctx);
+ 
+     return r;
+@@ -408,8 +415,21 @@ int vicc_connect(struct vicc_ctx *ctx, long secs, long usecs)
+     if (ctx->client_sock == INVALID_SOCKET)
+         /* not connected */
+         return 0;
+-    else
+-        return 1;
++
++    /* AMPERSTRAND FIX (#326, part 2): bound every blocking receive on
++     * the vpicc socket.  Without this, one unanswered probe (vpicc
++     * rebooting mid-conversation, firmware serve loop stalled) wedges
++     * pcscd's EH thread in recv() forever — and because the listener
++     * runs with backlog 0, every future vpicc connection attempt is
++     * then dropped too: a permanent wedge until pcscd restarts. */
++    {
++        struct timeval tv;
++        tv.tv_sec  = VPCD_RECV_TIMEOUT_SEC;
++        tv.tv_usec = 0;
++        setsockopt(ctx->client_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
++    }
++
++    return 1;
+ }
+ 
+ int vicc_present(struct vicc_ctx *ctx) {

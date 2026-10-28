@@ -1,0 +1,134 @@
+# products.toml — M3 product presets: the single source of truth (SSOT)
+# for named build compositions (kanban t_0492b7c6).
+#
+# A PRODUCT is a named preset = feature-set + boards + artifact name, per
+# the owner's product-tier direction (2026-10-20). `tools/products.py`
+# parses this file, validates it against the build authorities (build.sh
+# case table + the crate Cargo.toml feature vocabulary — same doctrine as
+# tools/union_matrix.py), resolves a product/board pair to a concrete
+# feature set, and generates the CI product-artifact matrix. CI never
+# inlines a product definition; build.sh never hardcodes one either: both
+# resolve through this file.
+#
+# Row shapes:
+#   esp32 rows    carry `variant` (the base build.sh case — the verified
+#                 bench composition) plus optional add/remove feature
+#                 deltas. The final feature set is resolved, not copied:
+#                 products.py check re-derives it from build.sh live, so
+#                 the preset can never drift from the bench authority.
+#   cargo rows    (stm32-f469 today) carry the crate/target/features
+#                 directly; products.py validates the features against
+#                 that crate's Cargo.toml.
+#
+# `ci = true` marks rows that build release artifacts in the union-matrix
+# `product-artifacts` job (elf2image .bin uploaded). Rows with `ci =
+# false` are declared compositions whose coverage lives elsewhere
+# (union-matrix esp32-check legs, release.yml, or a pending marker).
+
+[products.reader-min]
+description = "The simple secure pcscd device: kernel + NFC frontend + ccid-service over serial/USB. No wifi, no bluetooth, no screen — minimal feature surface is the security posture."
+
+[products.reader-min.boards.m5stick]
+variant = "m5stick"
+add-features = []
+remove-features = []
+artifact = "reader-min-m5stick"
+ci = true
+
+[products.reader-min.boards.m5atom]
+variant = "m5atom"
+add-features = []
+remove-features = []
+artifact = "reader-min-m5atom"
+ci = true
+
+[products.reader-min.boards.nucula]
+variant = "c3-ccid"
+add-features = []
+remove-features = []
+artifact = "reader-min-nucula"
+ci = true
+
+[products.provisioner-min]
+description = "Card provisioning device: kernel + NFC frontend + the bolty-core provisioner app (burn / wipe / derive-keys)."
+# Honest composition marker: the bolty-core app is NOT vendored into this
+# repo (one-way-kernel doctrine, M2). It lands as a rev-pinned git dep in
+# a follow-up bolty-rs PR; until then the `provisioner` feature is the
+# composition stub — product=provisioner-min builds the exact kernel +
+# frontend surface the app mounts on.
+pending = ["bolty-core app module via rev-pin (bolty-rs follow-up PR)"]
+
+[products.provisioner-min.boards.m5stick]
+variant = "m5stick"
+add-features = ["provisioner"]
+remove-features = []
+artifact = "provisioner-min-m5stick"
+ci = true
+
+[products.provisioner-min.boards.m5atom]
+variant = "m5atom"
+add-features = ["provisioner"]
+remove-features = []
+artifact = "provisioner-min-m5atom"
+ci = true
+
+[products.connected]
+description = "reader-min plus a network/remote transport: WiFi-VPCD (reversed vpcd), Bluetooth Classic SPP, or the BLE debug console."
+
+[products.connected.boards.nucula]
+variant = "wifi-vpcd"
+add-features = []
+remove-features = []
+artifact = "connected-nucula"
+ci = false  # compile coverage: union-matrix esp32-check (wifi-vpcd leg)
+
+[products.connected.boards.m5stick-vpcd]
+variant = "m5stick-vpcd"
+add-features = []
+remove-features = []
+artifact = "connected-m5stick-vpcd"
+ci = false  # compile coverage: union-matrix esp32-check (m5stick-vpcd leg)
+
+[products.connected.boards.m5stick-spp]
+variant = "m5stick-spp"
+add-features = []
+remove-features = []
+artifact = "connected-m5stick-spp"
+ci = false  # compile coverage: union-matrix esp32-check (m5stick-spp leg)
+
+[products.connected.boards.m5stick-ble]
+variant = "m5stick-ble"
+add-features = []
+remove-features = []
+artifact = "connected-m5stick-ble"
+ci = false  # compile coverage: union-matrix esp32-check (m5stick-ble leg)
+
+[products.connected.boards.nucula-ble]
+variant = "c3-ccid-ble"
+add-features = []
+remove-features = []
+artifact = "connected-nucula-ble"
+ci = false  # compile coverage: union-matrix esp32-check (c3-ccid-ble leg)
+
+[products.nucula-all-in-one]
+description = "The nucula wearable: screen + PMU + tap-to-pay wallet on one device."
+pending = ["wallet app composition (screen + PMU + tap-to-pay surface)"]
+
+[products.nucula-all-in-one.boards.m5stick-plus]
+variant = "m5stick-plus-lcd"
+add-features = []
+remove-features = []
+artifact = "nucula-all-in-one-m5stick-plus"
+ci = false  # lcd leg compiles in ci.yml esp32-build; wallet app pending
+
+[products.stm32-f469]
+description = "Wired contact reader: STM32F469-DISCO USB CCID (ISO 7816-3 contact cards)."
+crate = "ccid-firmware"
+target = "thumbv7em-none-eabihf"
+profile = "release"
+
+[products.stm32-f469.boards.f469-disco]
+features = []  # crate defaults: stm32f469 + profile-cherry-smartterminal-st2xxx
+no-default-features = false
+artifact = "stm32-f469"
+ci = false  # artifacts ride release.yml (tag flow) + ci.yml stm32-build

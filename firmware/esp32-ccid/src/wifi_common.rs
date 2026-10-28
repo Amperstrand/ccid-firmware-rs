@@ -1,6 +1,9 @@
 //! Shared bring-up for the network firmware paths (wifi-ccid legacy,
 //! wifi-vpcd primary). `station_bring_up` is backend-agnostic (WiFi,
-//! netlog, OTA, rollback mark); each NFC backend gets its own ladder so
+//! netlog, OTA, rollback mark); NFC construction flows through
+//! `board_ctor` (boards-as-data, t_a0ebcf54): pin/bus facts come from
+//! the board tables — the typed gpio4/5/6/7 this module used to
+//! hand-type are gone. Each NFC backend gets its own ladder so
 //! `wifi-vpcd` composes with any board/backend feature pair:
 //!
 //!   nucula:  `--features wifi-vpcd,backend-pn7160,board-nucula`
@@ -10,11 +13,9 @@
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 
 #[cfg(feature = "backend-pn7160")]
-use crate::nfc::NfcDriver;
-#[cfg(feature = "backend-pn7160")]
 use crate::pn7160_driver::Pn7160NfcDriver;
 #[cfg(feature = "backend-pn7160")]
-use crate::pn7160_i2c::{BusPins, EspPn7160Transport};
+use crate::pn7160_i2c::EspPn7160Transport;
 #[cfg(feature = "backend-pn7160")]
 use esp_idf_hal::peripherals::Peripherals;
 
@@ -48,73 +49,32 @@ pub fn station_bring_up(
     #[cfg(feature = "bench-net")]
     crate::ota::spawn();
 
-    // OTA_ROLLBACK: signal the bootloader that this image boots and serves
-    // (esp-idf OTA Update Pipeline: the bootloader boots a new OTA slot in
-    // a "pending verify" state; without this call it rolls back to the
-    // previous slot on the next boot — a bad flash auto-recovers to the
-    // last good image).
-    unsafe {
-        let rc = esp_idf_sys::esp_ota_mark_app_valid_cancel_rollback();
-        if rc != 0 {
-            log::warn!(
-                "ota-rollback: mark_app_valid rc={} (not in pending state — first boot or factory)",
-                rc
-            );
-        }
-    }
+    // #294 WS2: the OTA mark-valid that used to run EAGERLY here
+    // (right after the wifi-connect attempt — before any serve
+    // evidence) is gone. The mark now means "this image just served a
+    // host": the serving kernel (ccid_service::ota_validity) trips it
+    // on the first completed CCID exchange, and the main armed the
+    // gate (crate::ota_validity::arm) before this call. A
+    // pending-verify image that never completes one serve exchange
+    // reverts on the next reset — the defense, not a regression.
 
     ip
 }
 
 /// Convenience: full bring-up including `Peripherals::take()` when only
 /// the PN7160/nucula composition is needed (the legacy wifi-ccid shape).
+/// t_a0ebcf54 (boards-as-data): the typed gpio4/5/6/7 this used to
+/// hand-type are gone — NFC construction flows through the GENERATED
+/// `boards::NUCULA` table via `board_ctor`.
 #[cfg(feature = "backend-pn7160")]
 pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
     let peripherals = Peripherals::take().expect("peripherals already taken");
     let nvs = EspDefaultNvsPartition::take().expect("nvs partition");
     let ip = station_bring_up(peripherals.modem, nvs);
-    let bus = BusPins {
-        i2c0: peripherals.i2c0,
-        sda: peripherals.pins.gpio4,
-        scl: peripherals.pins.gpio5,
-        irq: peripherals.pins.gpio6,
-        ven: peripherals.pins.gpio7,
-    };
-    (ip, pn7160_bring_up(bus))
-}
-
-/// PN7160 ladder (nucula): the ACK-window bring-up with VEN-cycle
-/// retries, verbatim from the CDC main.
-#[cfg(feature = "backend-pn7160")]
-pub fn pn7160_bring_up<I2C, SDA, SCL, IRQ, VEN>(
-    bus: BusPins<I2C, SDA, SCL, IRQ, VEN>,
-) -> Pn7160NfcDriver<EspPn7160Transport> {
-    let transport =
-        EspPn7160Transport::bringup_config_order(pn7160_nci::esp_transport::NUCULA, bus)
-            .expect("peripheral init");
-    let mut transport = Some(transport);
-    let mut driver: Option<Pn7160NfcDriver<EspPn7160Transport>> = None;
-    for attempt in 1..=INIT_ATTEMPTS {
-        let mut d = Pn7160NfcDriver::new(transport.take().expect("transport"));
-        match d.init() {
-            Ok(()) => {
-                log::warn!("bring-up: PN7160 initialized (attempt {})", attempt);
-                driver = Some(d);
-                break;
-            }
-            Err(e) => {
-                log::warn!("bring-up: init attempt {} failed ({:?})", attempt, e);
-                let mut t = d.into_transport();
-                t.ven_cycle();
-                let _ = t.probe();
-                transport = Some(t);
-            }
-        }
-    }
-    driver.unwrap_or_else(|| {
-        log::warn!("bring-up: PN7160 unresponsive — card-absent mode");
-        Pn7160NfcDriver::new(transport.take().expect("transport"))
-    })
+    let (driver, _ok) = crate::board_ctor::pn7160::bring_up(
+        crate::board_ctor::pn7160::nucula_bus_pins(peripherals.i2c0, peripherals.pins),
+    );
+    (ip, driver)
 }
 
 /// Reader-present or card-absent stand-in. When the NFC frontend never
@@ -168,6 +128,30 @@ impl<D: crate::nfc::NfcDriver> crate::nfc::NfcDriver for OrNull<D> {
     }
 }
 
+impl<D: crate::nfc::NfcDriver + card_interface::FrontendDiagnostics>
+    card_interface::FrontendDiagnostics for OrNull<D>
+{
+    fn frontend_status(&self) -> card_interface::FrontendStatus {
+        match self {
+            // t_4864e74e: the Null arm IS the unavailable class — the
+            // controller never answered at bring-up.
+            OrNull::Live(d) => d.frontend_status(),
+            OrNull::Null => card_interface::FrontendStatus {
+                health: card_interface::FrontendHealth::Unavailable,
+                last_error: card_interface::FrontendErrorKind::Bus,
+                ..card_interface::FrontendStatus::ok()
+            },
+        }
+    }
+
+    fn frontend_self_test(&mut self) -> Result<(), card_interface::FrontendErrorKind> {
+        match self {
+            OrNull::Live(d) => d.frontend_self_test(),
+            OrNull::Null => Err(card_interface::FrontendErrorKind::Bus),
+        }
+    }
+}
+
 /// MFRC522 ladder (m5atom/m5stick, Grove I2C @0x28): bus recovery,
 /// 400 kHz I2C, then `init_with_recovery` retries — the stock m5stick
 /// CDC main sequence, minus the UART/LED CCID plumbing. Bus + device
@@ -177,7 +161,7 @@ impl<D: crate::nfc::NfcDriver> crate::nfc::NfcDriver for OrNull<D> {
 pub fn mfrc522_bring_up(
     scl_gpio_no: i32,
     sda_gpio_no: i32,
-) -> impl crate::nfc::NfcDriver + Send + 'static {
+) -> impl crate::nfc::NfcDriver + card_interface::FrontendDiagnostics + Send + 'static {
     // I2C bus recovery (xtensa only — the riscv32 crash-probe path skips
     // the settle delay, mirroring the CDC main).
     #[cfg(target_arch = "xtensa")]

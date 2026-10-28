@@ -1,0 +1,17 @@
+[package]
+name = "boards-gen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "boards-as-data generator: builds crates/boards tables from hardware repos (nucula: zeugmaster/nucula-board docs/netlist.xml, design §2.1)"
+license = "GPL-2.0-or-later"
+
+[dependencies]
+# Same toml/serde the lock already carries (host-tools graph) — no new
+# download beyond the boards-gen package entry itself.
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+
+# Explicit generation command by design (§1.3 option "generated code"):
+# NEVER wired into any build.rs — checked-in output, provenance header,
+# network only at explicit `cargo run -p boards-gen` time.
