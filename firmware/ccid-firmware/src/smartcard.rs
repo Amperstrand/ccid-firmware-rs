@@ -141,11 +141,34 @@ impl SmartcardUart {
         // Configure USART for smartcard mode.
         // CR1: UE=1, M=1(9bit), PCE=1(parity), TE=1, RE=1 = 0x340C
         self.usart.cr1().write(|w| unsafe { w.bits(0x340C) });
-        // CR2: STOP=1.5, CLKEN=1, CPOL=0, CPHA=0, LBCL=1 = 0x3900
+        // CR2: STOP=1.5, CLKEN=1, CPOL=0, CPHA=0, LBCL=1 = 0x3900.
+        // #135: 1.5 stop bits is ST's own smartcard-mode recommendation
+        // (0.5 is receive-only; "use 1.5 stop bits for both transmitting
+        // and receiving to avoid switching between the two configurations"
+        // — vendored HAL, quote below) and the only other legal value
+        // besides 0.5 per the HAL assert:
+        //
+        // ST_HAL: #define IS_SMARTCARD_STOPBITS(STOPBITS)     (((STOPBITS) == SMARTCARD_STOPBITS_0_5) || ... ((STOPBITS) == SMARTCARD_STOPBITS_1_5))
+        //
+        // ST_HAL_C:    (+) Recommended SmartCard interface configuration to get the Answer to Reset from the Card:
+        // ST_HAL_C:        (++) Word Length = 9 Bits
+        // ST_HAL_C:        (++) 1.5 Stop Bit
+        // ST_HAL_C:        (++) Even parity
         self.usart.cr2().write(|w| unsafe { w.bits(0x3900) });
-        // CR3: SCEN (bit 5), NACK disabled = 0x0020
+        // CR3: SCEN (bit 5), NACK disabled = 0x0020.
+        // NACK is enabled later for T=0 only (power_on) — T=1 relays
+        // parity errors up as bError 0xFD (#136) instead of the hardware
+        // character retry.
         self.usart.cr3().write(|w| unsafe { w.bits(0x0020) });
-        // GTPR: Guard time (upper byte), prescaler (lower byte)
+        // GTPR: Guard time (upper byte), prescaler (lower byte) — the
+        // HAL programming order ("Set the Prescaler" then "Set the Guard
+        // Time", GuardTime<<8 | PSC):
+        //
+        // ST_HAL_C:   /* Set the Prescaler */
+        // ST_HAL_C:   MODIFY_REG(hsc->Instance->GTPR, USART_GTPR_PSC, hsc->Init.Prescaler);
+        //
+        // ST_HAL_C:   /* Set the Guard Time */
+        // ST_HAL_C:   MODIFY_REG(hsc->Instance->GTPR, USART_GTPR_GT, ((hsc->Init.GuardTime)<<8U));
         self.usart
             .gtpr()
             .write(|w| unsafe { w.bits((16u16 << 8) | prescaler as u16) });
@@ -421,27 +444,35 @@ impl SmartcardUart {
                 let _ = self.negotiate_pps_fsm(&params, pps_suppress);
 
                 if self.protocol == 0 {
-                    // T=0: enable NACK (CR3 bit 4) for error signaling
+                    // T=0: enable NACK (CR3 bit 4) for hardware character
+                    // retry on parity error — the ST contract:
+                    //
+                    // ST_HAL: #define SMARTCARD_NACK_ENABLE               ((uint32_t)USART_CR3_NACK)
                     self.usart
                         .cr3()
                         .modify(|r, w| unsafe { w.bits(r.bits() | (1 << 4)) });
                 }
                 if self.protocol == 1 {
                     self.ifsc = params.ifsc;
-                    // T=1: switch STOP bits from 1.5 to 1.
-                    // T=1 has 1 ETU guard time (no NACK), vs T=0's 2 ETU (with NACK).
-                    // CR2 bits 13:12: 00 = 1 stop bit (11 was 1.5 stop bits)
-                    self.usart
-                        .cr2()
-                        .modify(|r, w| unsafe { w.bits(r.bits() & !0x3000) });
-                    // Reduce guard time for T=1 (GT=1 is minimum: 1 stop-bit ETU)
+                    // #135: T=1 keeps STOP=1.5 bits (CR2 STOP=11). ST's HAL
+                    // asserts smartcard mode supports ONLY 0.5/1.5 and
+                    // recommends 1.5 for both TX and RX — the old rewrite
+                    // to a 1.0 stop bit was outside ST's contract. Guard
+                    // time is expressed via GTPR ONLY, driven by the ATR's
+                    // TC1 (absent → ISO default N=2): the values come from
+                    // the shared, host-tested builder
+                    // (`smartcard_common::t1_usart_framing`) — never
+                    // computed inline here.
+                    let (_stop, gt) =
+                        crate::smartcard_common::t1_usart_framing(params.guard_time_n);
                     let psc = self.usart.gtpr().read().bits() & 0xFF;
                     self.usart
                         .gtpr()
-                        .write(|w| unsafe { w.bits((1u16 << 8) | psc) });
+                        .write(|w| unsafe { w.bits((gt << 8) | psc) });
                     defmt::info!(
-                        "T=1: IFSC={}, STOP=1bit, GT=1, CR2=0x{:04X}",
+                        "T=1: IFSC={}, STOP=1.5, GT={}, CR2=0x{:04X}",
                         self.ifsc,
+                        gt,
                         self.usart.cr2().read().bits()
                     );
                     match do_ifs_negotiation_t1(self) {
@@ -518,8 +549,9 @@ impl SmartcardUart {
         self.ifsc = 32;
         self.t1_ns = 0;
         // Restore USART to ATR convention for next cold reset:
-        // 1.5 stop bits (CR2 STOP=11), 16 ETU guard time (GTPR GT=16),
-        // ATR-default baud (a PPS session may have raised it).
+        // 1.5 stop bits (CR2 STOP=11), 16 ETU guard time (GTPR GT=16,
+        // `smartcard_common::T0_GUARD_TIME_ETU`), ATR-default baud (a PPS
+        // session may have raised it).
         self.pps_speedup_active = false;
         self.reset_baud_default();
         self.usart
@@ -528,7 +560,7 @@ impl SmartcardUart {
         let psc = self.usart.gtpr().read().bits() & 0xFF;
         self.usart
             .gtpr()
-            .write(|w| unsafe { w.bits((16u16 << 8) | psc) });
+            .write(|w| unsafe { w.bits((crate::smartcard_common::T0_GUARD_TIME_ETU << 8) | psc) });
     }
 
     /// Clear USART error flags (ORE/PE/FE). Reading DR clears ORE per STM32 ref manual.
