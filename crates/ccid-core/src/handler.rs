@@ -2429,6 +2429,66 @@ mod contact_profile_tests {
         assert!(!core.take_parameters_accepted());
     }
 
+    /// #137 invariant, at the layer that owns the GetParameters echo:
+    /// for EVERY T=1 parameter set this core can put on the wire, the
+    /// shared reader first-byte policy covers the advertised BWT — or
+    /// saturates at the documented 5 s ceiling (the forced
+    /// no-time-extension decision; see
+    /// `ccid_protocol::atr::T1_FIRST_BYTE_MAX_MS`). Both BWI sources
+    /// are unchecked nibbles 0..=15: the ATR-derived echo and the
+    /// host-SetParameters verbatim echo.
+    #[test]
+    fn get_parameters_echo_bwi_always_covered_by_first_byte_policy() {
+        use ccid_protocol::atr::{t1_bwt_ms, t1_first_byte_timeout_ms};
+
+        const BAUDS: [u32; 4] = [9_600, 10_752, 12_903, 125_000];
+
+        fn check(bwi: u8) {
+            for baud in BAUDS {
+                let bwt = t1_bwt_ms(bwi, baud);
+                let fb = t1_first_byte_timeout_ms(bwi, baud);
+                if bwt <= ccid_protocol::atr::T1_FIRST_BYTE_MAX_MS {
+                    assert!(
+                        fb >= bwt,
+                        "bwi={bwi} baud={baud}: first-byte {fb} < advertised BWT {bwt}"
+                    );
+                } else {
+                    assert_eq!(
+                        fb,
+                        ccid_protocol::atr::T1_FIRST_BYTE_MAX_MS,
+                        "bwi={bwi} baud={baud}: above-cap BWT must saturate"
+                    );
+                }
+            }
+        }
+
+        let mut core = new_core(true, &T1_ATR_BWI3_CWI7, false);
+        power_on(&mut core, 1);
+        let mut resp = [0u8; 271];
+
+        // ATR-derived echo (TB3 = BWI 3 / CWI 7 → 0x37)
+        let len = core.process_command(&build(PC_TO_RDR_GET_PARAMETERS, 2, [0; 3], &[]), &mut resp);
+        let (_, _, _, _, data) = parse(&resp[..len]);
+        assert_eq!(data.len(), 7);
+        assert_eq!(data[3], 0x37);
+        check(data[3] >> 4);
+
+        // Host-supplied echo: every BWI nibble is accepted and echoed
+        // verbatim — the reader must stay as patient as each one it
+        // advertises (or saturate knowingly).
+        for bwi in 0u8..=15 {
+            let params: [u8; 7] = [0x11, 0x00, 0x00, (bwi << 4) | 5, 0x00, 0xFE, 0x00];
+            let len = core.process_command(
+                &build(PC_TO_RDR_SET_PARAMETERS, 3, [1, 0, 0], &params),
+                &mut resp,
+            );
+            let (_, _, status, _, data) = parse(&resp[..len]);
+            assert_eq!(status & 0xC0, 0, "bwi={bwi} accepted");
+            assert_eq!(data, params, "bwi={bwi} echoed verbatim");
+            check(data[3] >> 4);
+        }
+    }
+
     #[test]
     fn set_parameters_invalid_length_answers_slot_status_07() {
         let mut core = new_core(true, &T0_ATR, false);
