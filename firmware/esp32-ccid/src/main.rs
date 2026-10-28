@@ -80,12 +80,18 @@ use core::convert::Infallible;
     feature = "backend-pn532",
     not(feature = "backend-mfrc522")
 ))]
+use esp32_ccid::{ccid_handler::CcidHandler, nfc::NfcDriver, pn532_driver::Pn532NfcDriver};
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "backend-pn532",
+    not(feature = "backend-mfrc522")
+))]
 use esp_idf_hal::{
     delay::FreeRtos,
     gpio::{self, AnyIOPin, PinDriver},
     peripherals::Peripherals,
     spi::{self, SpiDeviceDriver},
-    uart::{self, UartDriver, config::DataBits, config::FlowControl, config::StopBits},
+    uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
     units::Hertz,
 };
 #[cfg(all(
@@ -94,12 +100,6 @@ use esp_idf_hal::{
     not(feature = "backend-mfrc522")
 ))]
 use esp_idf_sys::EspError;
-#[cfg(all(
-    any(target_arch = "xtensa", target_arch = "riscv32"),
-    feature = "backend-pn532",
-    not(feature = "backend-mfrc522")
-))]
-use esp32_ccid::{ccid_handler::CcidHandler, nfc::NfcDriver, pn532_driver::Pn532NfcDriver};
 
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
@@ -127,7 +127,7 @@ use esp_idf_hal::{delay::FreeRtos, peripherals::Peripherals, units::Hertz};
 ))]
 use esp_idf_hal::{
     gpio::AnyIOPin,
-    uart::{self, UartDriver, config::DataBits, config::FlowControl, config::StopBits},
+    uart::{self, config::DataBits, config::FlowControl, config::StopBits, UartDriver},
 };
 #[cfg(all(
     any(target_arch = "xtensa", target_arch = "riscv32"),
