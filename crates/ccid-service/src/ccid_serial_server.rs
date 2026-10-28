@@ -658,7 +658,7 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
 
     /// Parser holds a partial frame (diagnostics/tests).
     pub fn parser_is_mid_frame(&self) -> bool {
-        self.parser.is_mid_frame()
+        self.parser.mid_frame()
     }
 
     /// Read-idle path: poll card presence if the interval elapsed.
@@ -669,7 +669,7 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
         // fire when no further bytes come, so a stray SYNC wedges the
         // parser in WaitCtrl for seconds. The idle tick is the only other
         // witness — drop a stalled partial frame here.
-        if self.parser.is_mid_frame()
+        if self.parser.mid_frame()
             && now_ticks.wrapping_sub(self.last_byte_tick)
                 > Self::INTER_BYTE_STALL_TICKS
         {
