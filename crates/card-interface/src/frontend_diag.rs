@@ -52,22 +52,32 @@ pub enum FrontendHealth {
 ///
 /// Deliberately coarse: driver error enums are backend-specific (and
 /// some carry hardware detail); this is the common vocabulary the
-/// serving kernel and HIL probes read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// serving kernel and HIL probes read. #257 error-model pass:
+/// `Display`/`core::error::Error` derived (additive — this enum is the
+/// natural target vocabulary when the NfcError twins collapse, still
+/// P5-sequenced).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FrontendErrorKind {
     /// No error recorded since the last success.
+    #[error("no error")]
     None,
     /// Driver not initialized (or init failed).
+    #[error("driver not initialized")]
     NotInitialized,
     /// Bus-level failure (I2C NAK, SPI fault, bus wedged).
+    #[error("bus-level failure")]
     Bus,
     /// Operation timed out (controller unresponsive).
+    #[error("operation timed out")]
     Timeout,
     /// Protocol-level failure (framing, CRC, bad version).
+    #[error("protocol-level failure")]
     Protocol,
     /// No card present for a card-requiring operation.
+    #[error("no card present")]
     NoCard,
     /// Buffer too small for the exchanged data.
+    #[error("buffer too small")]
     BufferOverflow,
 }
 
@@ -133,6 +143,35 @@ pub trait FrontendDiagnostics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #257 error-model pass lock: the additive Display strings are
+    /// part of the log vocabulary now — byte-locked. (`to_string` via
+    /// an explicit import: the crate is no_std, the std prelude is not
+    /// injected in test builds.)
+    #[test]
+    fn frontend_error_kind_display_strings_are_locked() {
+        use std::string::ToString as _;
+        assert_eq!(FrontendErrorKind::None.to_string(), "no error");
+        assert_eq!(
+            FrontendErrorKind::NotInitialized.to_string(),
+            "driver not initialized"
+        );
+        assert_eq!(FrontendErrorKind::Bus.to_string(), "bus-level failure");
+        assert_eq!(
+            FrontendErrorKind::Timeout.to_string(),
+            "operation timed out"
+        );
+        assert_eq!(
+            FrontendErrorKind::Protocol.to_string(),
+            "protocol-level failure"
+        );
+        assert_eq!(FrontendErrorKind::NoCard.to_string(), "no card present");
+        assert_eq!(
+            FrontendErrorKind::BufferOverflow.to_string(),
+            "buffer too small"
+        );
+        let _: &dyn core::error::Error = &FrontendErrorKind::Bus;
+    }
 
     #[test]
     fn ok_snapshot_is_healthy_with_zero_counters() {

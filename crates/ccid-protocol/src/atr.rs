@@ -181,6 +181,90 @@ pub fn t1_bwt_ms(bwi: u8, baud: u32) -> u32 {
     ms.min(u32::MAX as u64) as u32
 }
 
+/// Reader first-byte patience floor for a T=1 exchange (#137): the
+/// historical pre-derivation value — BWTs below it (BWI 0-2 at bench
+/// bauds) still wait 500 ms, preserving the bench-proven #132
+/// turnaround margin.
+pub const T1_FIRST_BYTE_FLOOR_MS: u32 = 500;
+
+/// Reader first-byte patience ceiling for a T=1 exchange (#137).
+///
+/// THE CAP IS A FORCED, TESTED DECISION, not an assumption: the reader
+/// waits at least the BWT it advertises (GetParameters echo) for every
+/// BWI whose BWT fits under this ceiling. Above it the reader
+/// saturates and is LESS patient than advertised — the cross-over sits
+/// at BWI = 6 for the 10752 default baud (BWT 5716 ms) and at 9600 —
+/// accepted because a single-threaded reader cannot block its
+/// serve loop for multi-second/minute BWTs without CCID time-extension
+/// signaling, and time extension is an explicit #137 NON-GOAL ("no
+/// CCID time-extension signaling without a separate design pass").
+/// The invariant tests below break loudly if the formula or the cap
+/// moves; re-derive against the reference, never delete them.
+pub const T1_FIRST_BYTE_MAX_MS: u32 = 5_000;
+
+/// First-prologue-byte wait policy for a T=1 exchange (#137): the
+/// advertised BWT (`t1_bwt_ms`) at the CURRENT wire baud, floored and
+/// capped per the constants above. Single definition — the STM32
+/// USART relay calls this instead of re-deriving.
+pub fn t1_first_byte_timeout_ms(bwi: u8, baud: u32) -> u32 {
+    t1_bwt_ms(bwi, baud).clamp(T1_FIRST_BYTE_FLOOR_MS, T1_FIRST_BYTE_MAX_MS)
+}
+
+/// Character wait time within a T=1 block, in milliseconds: CWT =
+/// (2^CWI + 11) etu (ISO 7816-3 §11.6.4, triangulated in
+/// docs/T1_BEST_PRACTICES.md §2.4: default CWI 13 ≈ 727 ms at the
+/// 11290 reference baud, CWI 0 → 12 etu ≈ 1.06 ms; "CWT is *smaller*
+/// than BWT — a slow-but-alive card between bytes is a WTX case, not
+/// a CWT violation"). Ceiling division — same at-least-as-patient
+/// contract as `t1_bwt_ms`.
+pub fn t1_cwt_ms(cwi: u8, baud: u32) -> u32 {
+    if baud == 0 {
+        return T1_INTER_BYTE_FLOOR_MS;
+    }
+    let cwt_etu: u64 = (1u64 << (cwi as u32 & 0x0F)) + 11;
+    let ms = (cwt_etu * 1_000).div_ceil(baud as u64);
+    ms.min(u32::MAX as u64) as u32
+}
+
+/// Reader inter-byte patience floor for a T=1 exchange (#137): the
+/// bench-proven #132 flat value — ~47× margin over a default-class
+/// CWT (≈ 1-4 ms), so low-CWI cards keep today's exact timing.
+pub const T1_INTER_BYTE_FLOOR_MS: u32 = 50;
+
+/// Inter-byte wait policy for a T=1 exchange (#137): the advertised
+/// CWT (`t1_cwt_ms`) floored at the historical 50 ms and capped at the
+/// same 5 s ceiling as the first-byte wait. More inter-byte patience
+/// never corrupts a block — it only delays the truncation error on a
+/// genuinely dead card; LESS patience than the advertised CWT would
+/// time out legal high-CWI cards mid-block.
+pub fn t1_inter_byte_timeout_ms(cwi: u8, baud: u32) -> u32 {
+    t1_cwt_ms(cwi, baud).clamp(T1_INTER_BYTE_FLOOR_MS, T1_FIRST_BYTE_MAX_MS)
+}
+
+/// T=0 work waiting time, in milliseconds: WWT = WI × 960 etu
+/// (ISO 7816-3 §8.1/§10.2, quoted by osmo-ccid-firmware
+/// `ccid_common/iso7816_3.c`: "WT = WI x 960 x (Fi / f(max)) where WI
+/// is encoded in TC2 in the ATR (10 if absent) […] after reset WT is
+/// 9600 ETU"). WI = 0 is invalid per the reference and is mapped to
+/// the ISO default 10 here (the contact T=0 parameter echo carries
+/// WI = 0 meaning "default"). Ceiling division like the T=1 helpers.
+///
+/// #137 documentation duty: the STM32 T=0 procedure timeout is a flat
+/// 5000 ms today — that covers the legal WWT for WI ≤ 56 at the 10752
+/// default baud (893 ms at the WI=10 default), i.e. the flat value is
+/// a conservative over-wait for every bench-realistic card. Deriving
+/// it instead (fail faster on mute T=0 cards) is bench-gated on the
+/// F469 slot and deliberately not changed without hardware proof.
+pub fn t0_wwt_ms(wi: u8, baud: u32) -> u32 {
+    if baud == 0 {
+        return 5_000;
+    }
+    let wi = if wi == 0 { 10u64 } else { wi as u64 };
+    let wwt_etu = wi * 960;
+    let ms = (wwt_etu * 1_000).div_ceil(baud as u64);
+    ms.min(u32::MAX as u64) as u32
+}
+
 /// The negotiated T=1 timing fields of a CCID §6.1.7
 /// abProtocolDataStructure (T=1): byte 3 packs BWI (high) | CWI (low),
 /// byte 5 is bIFSC. Single reference-locked home for the layout — used
@@ -471,6 +555,110 @@ mod tests {
         assert!(t1_bwt_ms(5, 11_290) > t1_bwt_ms(4, 11_290));
         assert!(t1_bwt_ms(15, 11_290) > t1_bwt_ms(4, 11_290));
         assert_eq!(t1_bwt_ms(4, 0), 5_000);
+    }
+
+    #[test]
+    fn t1_cwt_ms_matches_iso_7816_3_formula() {
+        // CWT = (2^CWI + 11) etu (§11.6.4). CWI=0 → 12 etu ≈ 1.06 ms at
+        // the 11290 reference baud → 2 ms ceiling-rounded; CWI=5 (the
+        // G-05 synthetic TB3) → 43 etu ≈ 3.8 ms → 4; CWI=13 (the ATR
+        // parser default) → 8203 etu ≈ 726.6 ms → 727.
+        assert_eq!(t1_cwt_ms(0, 11_290), 2);
+        assert_eq!(t1_cwt_ms(5, 11_290), 4);
+        assert_eq!(t1_cwt_ms(13, 11_290), 727);
+        assert_eq!(t1_cwt_ms(0, 10_752), 2);
+        assert_eq!(t1_cwt_ms(13, 0), T1_INTER_BYTE_FLOOR_MS);
+    }
+
+    #[test]
+    fn t1_inter_byte_policy_floors_at_the_bench_proven_50ms() {
+        // Low-CWI cards keep the exact #132-era timing: the derived CWT
+        // (a few ms) floors at the historical 50 ms.
+        assert_eq!(t1_inter_byte_timeout_ms(0, 11_290), 50);
+        assert_eq!(t1_inter_byte_timeout_ms(5, 10_752), 50);
+        // High-CWI cards: the reader stays at least as patient as the
+        // CWT it advertises — CWI=13 ≈ 727 ms at 11290, CWI=15 at 9600
+        // ≈ 3.4 s (still under the 5 s cap).
+        assert_eq!(t1_inter_byte_timeout_ms(13, 11_290), 727);
+        assert_eq!(t1_inter_byte_timeout_ms(15, 9_600), 3_415);
+        // Never less patient than the raw CWT, never above the cap.
+        for cwi in 0u8..=15 {
+            for baud in [9_600u32, 10_752, 11_290, 38_400, 125_000] {
+                let cwt = t1_cwt_ms(cwi, baud);
+                let ib = t1_inter_byte_timeout_ms(cwi, baud);
+                assert!(ib >= cwt, "cwi={cwi} baud={baud}: {ib} < CWT {cwt}");
+                assert!(ib <= T1_FIRST_BYTE_MAX_MS);
+                assert!(ib >= T1_INTER_BYTE_FLOOR_MS);
+            }
+        }
+    }
+
+    /// THE #137 INVARIANT, forced explicitly: for every BWI the reader
+    /// can advertise or echo (ATR TB3 nibble and SetParameters raw[3]
+    /// high nibble are both unchecked 0..=15) and every realistic wire
+    /// baud, the first-byte wait covers the advertised BWT — except
+    /// where the documented 5 s ceiling saturates it (no time
+    /// extension, the issue's NON-GOAL). If this test breaks, the cap
+    /// decision moved: re-derive against ISO 7816-3 §11.6.2.1 and
+    /// re-make it consciously.
+    #[test]
+    fn t1_first_byte_timeout_covers_advertised_bwt_or_saturates_explicitly() {
+        let bauds = [9_600u32, 10_752, 11_290, 12_903, 38_400, 125_000];
+        for bwi in 0u8..=15 {
+            for baud in bauds {
+                let bwt = t1_bwt_ms(bwi, baud);
+                let fb = t1_first_byte_timeout_ms(bwi, baud);
+                assert!(fb >= T1_FIRST_BYTE_FLOOR_MS);
+                if bwt <= T1_FIRST_BYTE_MAX_MS {
+                    assert!(
+                        fb >= bwt,
+                        "bwi={bwi} baud={baud}: first-byte {fb} < advertised BWT {bwt}"
+                    );
+                } else {
+                    assert_eq!(
+                        fb, T1_FIRST_BYTE_MAX_MS,
+                        "bwi={bwi} baud={baud}: above-cap BWT must saturate at the ceiling"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Locks the exact cap cross-over at the bench-relevant bauds so a
+    /// formula or ceiling change cannot move the advertised-patience
+    /// boundary silently (the #137 close-out audit note: the test must
+    /// FORCE the cap decision, not assume it).
+    #[test]
+    fn t1_first_byte_cap_cross_over_is_pinned() {
+        // Cherry default 10752 (4 MHz / 372): BWI=5 → 2859 ms (covered),
+        // BWI=6 → 5716 ms (saturates at 5000).
+        assert_eq!(t1_bwt_ms(5, 10_752), 2_859);
+        assert_eq!(t1_first_byte_timeout_ms(5, 10_752), 2_859);
+        assert_eq!(t1_bwt_ms(6, 10_752), 5_716);
+        assert_eq!(t1_first_byte_timeout_ms(6, 10_752), 5_000);
+        // 11290 reference baud: same shape one BWI later.
+        assert_eq!(t1_first_byte_timeout_ms(6, 11_290), 5_000);
+        // PPS-speed 125000: BWI=9 (491531 etu ≈ 3932 ms) stays covered;
+        // BWI=10 (983051 etu ≈ 7864 ms) saturates.
+        assert_eq!(t1_first_byte_timeout_ms(9, 125_000), 3_933);
+        assert_eq!(t1_first_byte_timeout_ms(10, 125_000), 5_000);
+    }
+
+    #[test]
+    fn t0_wwt_ms_matches_osmo_iso_7816_reference() {
+        // WWT = WI × 960 etu; WI defaults to 10 (9600 etu ≈ 893 ms at
+        // the 10752 default baud). osmo iso7816_3.c: "after reset WT
+        // is 9600 ETU"; WI=0 is invalid → mapped to the default.
+        assert_eq!(t0_wwt_ms(10, 10_752), 893);
+        assert_eq!(t0_wwt_ms(10, 11_290), 851);
+        assert_eq!(t0_wwt_ms(1, 11_290), 86);
+        assert_eq!(t0_wwt_ms(0, 11_290), t0_wwt_ms(10, 11_290));
+        assert_eq!(t0_wwt_ms(0, 0), 5_000);
+        // Documented margin vs the flat 5000 ms procedure timeout: the
+        // flat value covers the legal WWT up to WI=56 at 10752 (covered
+        // exactly at the boundary) and stops covering at WI=57.
+        assert_eq!(t0_wwt_ms(56, 10_752), 5_000);
+        assert_eq!(t0_wwt_ms(57, 10_752), 5_090);
     }
 
     #[test]

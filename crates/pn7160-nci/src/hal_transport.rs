@@ -42,10 +42,13 @@ const IRQ_WAIT_BUDGET_MS: u32 = 200;
 /// Pure embedded-hal link failure vocabulary — deliberately coarse
 /// (the driver-level diagnostics classify through
 /// `card_interface::FrontendErrorKind` one layer up, in the firmware).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// #257 error-model pass: `Display`/`core::error::Error` derived —
+/// additive only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum HalLinkError {
     /// The controller did not ACK the post-VEN-rise probe (chip mute,
     /// wrong address strap, or dead bus).
+    #[error("controller did not ACK the post-VEN-rise probe")]
     NoAckAfterVenCycle,
 }
 

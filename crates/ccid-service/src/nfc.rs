@@ -20,18 +20,26 @@ impl From<NfcError> for FrontendErrorKind {
     }
 }
 
-/// NFC driver error types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// NFC driver error types (#257 error-model pass: `Display`/
+/// `core::error::Error` derived from the variant docs — additive, no
+/// variant or behavior change; the twin-collapse itself stays
+/// P5-sequenced).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum NfcError {
     /// Driver has not been initialized
+    #[error("driver not initialized")]
     NotInitialized,
     /// No NFC card is present
+    #[error("no NFC card present")]
     NoCard,
     /// Communication error with NFC controller
+    #[error("communication error with the NFC controller")]
     CommunicationError,
     /// Operation timed out
+    #[error("operation timed out")]
     Timeout,
     /// Buffer overflow during data transfer
+    #[error("buffer overflow during data transfer")]
     BufferOverflow,
 }
 
@@ -437,6 +445,27 @@ impl FrontendDiagnostics for MockNfcDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #257 error-model pass lock: the additive Display strings,
+    /// byte-locked (the twins themselves stay P5-sequenced).
+    #[test]
+    fn nfc_error_display_strings_are_locked() {
+        assert_eq!(
+            NfcError::NotInitialized.to_string(),
+            "driver not initialized"
+        );
+        assert_eq!(NfcError::NoCard.to_string(), "no NFC card present");
+        assert_eq!(
+            NfcError::CommunicationError.to_string(),
+            "communication error with the NFC controller"
+        );
+        assert_eq!(NfcError::Timeout.to_string(), "operation timed out");
+        assert_eq!(
+            NfcError::BufferOverflow.to_string(),
+            "buffer overflow during data transfer"
+        );
+        let _: &dyn core::error::Error = &NfcError::Timeout;
+    }
 
     #[test]
     fn test_mock_card_present() {

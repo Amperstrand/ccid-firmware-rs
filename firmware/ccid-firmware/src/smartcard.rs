@@ -15,7 +15,7 @@ use crate::smartcard_common::{
     transmit_apdu_t0, verify_atr_tck, Atr, AtrParams, SmartcardConfig, SmartcardError, SmartcardIo,
     DEFAULT_TA1, SC_ATR_MAX_LEN,
 };
-use ccid_protocol::atr::t1_bwt_ms;
+use ccid_protocol::atr::{t1_first_byte_timeout_ms, t1_inter_byte_timeout_ms};
 
 use crate::t1_engine::T1Transport;
 use ccid_firmware_rs::dwt_watchdog::DwtWatchdog;
@@ -56,6 +56,11 @@ pub struct SmartcardUart {
     /// BWI of the active T=1 card (ATR TB3 high nibble; parser default 4) —
     /// drives the first-prologue-byte wait via `t1_first_byte_timeout_ms`.
     t1_bwi: u8,
+    /// CWI of the active T=1 card (ATR TB3 low nibble; parser default
+    /// 13) — drives the inter-byte wait via
+    /// `t1_inter_byte_timeout_ms` (#137: derived from the negotiated
+    /// parameters, floored at the historical 50 ms).
+    t1_cwi: u8,
     pclk1_hz: u32,
     card_clk_hz: u32,
     /// True while the wire runs at a PPS-negotiated baud above the ATR
@@ -96,6 +101,7 @@ impl SmartcardUart {
             ifsc: 32,
             t1_ns: 0,
             t1_bwi: 4,
+            t1_cwi: 13,
             pclk1_hz: pclk1,
             card_clk_hz: 0,
             pps_speedup_active: false,
@@ -402,6 +408,7 @@ impl SmartcardUart {
                 defmt::info!("ATR len={} hex={=[u8]:x}", self.atr.len, atr_slice);
                 let params = parse_atr(&self.atr.raw[..self.atr.len]);
                 self.t1_bwi = params.bwi;
+                self.t1_cwi = params.cwi;
                 self.protocol = detect_protocol_from_atr(&self.atr.raw[..self.atr.len]);
                 defmt::info!("Detected protocol T={} from ATR", self.protocol);
 
@@ -685,7 +692,10 @@ impl SmartcardUart {
                         if total_len == 1 {
                             frx_cyc = stamp.elapsed_cycles();
                         }
-                        timeout_ms = 50;
+                        // #137: inter-byte patience is CWT-derived
+                        // (floored at the historical 50 ms) — same
+                        // policy as the block body below.
+                        timeout_ms = self.t1_inter_byte_timeout_ms();
                     }
                     // #132/H1: a first-byte timeout is an honest error.
                     // Returning Ok(0) here once handed libccid an empty
@@ -701,7 +711,7 @@ impl SmartcardUart {
             let expected =
                 t1_block_total_len(&response[..3], response.len()).unwrap_or(response.len());
             while total_len < expected {
-                match self.receive_byte_timeout(50) {
+                match self.receive_byte_timeout(self.t1_inter_byte_timeout_ms()) {
                     Ok(byte) => {
                         response[total_len] = byte;
                         total_len += 1;
@@ -749,8 +759,28 @@ impl SmartcardUart {
             }
         }
 
+        // #342: a zero-byte read is a mute exchange, not a short
+        // success — the same honest-error contract as the T=1 prologue
+        // path above (#132/H1) and the F746 bitbang guard (b1e685a).
+        // An Ok(0) here once reset the wrapper's failure streak on a
+        // mute card, so the self-healing re-init never fired.
+        if total_len == 0 {
+            defmt::warn!("transmit_raw: mute exchange (0 bytes) — reporting timeout");
+            return Err(SmartcardError::Timeout);
+        }
+
         defmt::debug!("transmit_raw: RX {} bytes", total_len);
         Ok(total_len)
+    }
+
+    /// Current wire baud: the PPS-negotiated rate when the speed-up is
+    /// active, else the ATR-default clock/divisor rate.
+    fn wire_baud(&self) -> u32 {
+        if self.pps_speedup_active && self.negotiated_baud > 0 {
+            self.negotiated_baud
+        } else {
+            self.card_clk_hz / self.config.default_etu.max(1)
+        }
     }
 
     /// First-prologue-byte wait budget for a T=1 exchange: the card's BWT
@@ -759,13 +789,20 @@ impl SmartcardUart {
     /// procedure timeout. We echo BWI to the host in GetParameters, so the
     /// reader must stay at least as patient as the window it advertises
     /// (#132: a hardcoded 500 ms raced legal BWT-class answers).
+    /// Policy lives in `ccid_protocol::atr::t1_first_byte_timeout_ms`
+    /// (#137) — the invariant tests there lock it.
     fn t1_first_byte_timeout_ms(&self) -> u32 {
-        let baud = if self.pps_speedup_active && self.negotiated_baud > 0 {
-            self.negotiated_baud
-        } else {
-            self.card_clk_hz / self.config.default_etu.max(1)
-        };
-        t1_bwt_ms(self.t1_bwi, baud).clamp(500, 5_000)
+        t1_first_byte_timeout_ms(self.t1_bwi, self.wire_baud())
+    }
+
+    /// Inter-byte wait for a T=1 block body: the card's CWT (ISO
+    /// 7816-3 §11.6.4) at the current wire baud, floored at the
+    /// bench-proven 50 ms and capped at the 5 s ceiling (#137: the
+    /// negotiated CWI finally drives it — CWI=13 cards legally space
+    /// bytes ~727 ms apart at the default baud, which the old flat
+    /// 50 ms could cut off mid-block).
+    fn t1_inter_byte_timeout_ms(&self) -> u32 {
+        t1_inter_byte_timeout_ms(self.t1_cwi, self.wire_baud())
     }
 
     pub fn receive_byte_timeout(&mut self, timeout_ms: u32) -> Result<u8, SmartcardError> {

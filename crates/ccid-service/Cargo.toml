@@ -18,5 +18,6 @@ card-interface = { path = "../card-interface" }
 ccid-core = { path = "../ccid-core" }
 ccid-protocol = { path = "../ccid-protocol" }
 ccid-transport-serial = { path = "../ccid-transport-serial" }
+thiserror = { version = "2", default-features = false }
 heapless = "0.9"
 log = "0.4"

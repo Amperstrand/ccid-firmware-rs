@@ -296,6 +296,21 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             let protocol = self.core.current_protocol();
             self.core.driver_mut().driver.set_protocol(protocol);
         }
+
+        // #342: surface driver self-healing re-inits inline. A re-init
+        // tore down and re-powered the card MID-SESSION — the session
+        // state both sides hold is invalidated (ATR + negotiated
+        // parameters on ours, T=1 link state on the host's). Consume
+        // the driver's latch so the CCID layer knows it happened: the
+        // 0xD0 reinit word refreshes immediately instead of waiting
+        // for the next presence poll (check_card_change). Wire-clean
+        // by construction — this is the pull-diagnostics doctrine, no
+        // unsolicited bytes ever leave the reader.
+        if self.core.driver_mut().driver.take_reinit_pending() {
+            ccid_warn!("CCID: driver self-healing re-init fired (card session reset mid-session)");
+            let count = self.core.driver_mut().driver.reinit_count();
+            self.core.diagnostics_mut().reinit_count = count;
+        }
     }
 
     fn delegate_to_core(&mut self) {
@@ -997,6 +1012,56 @@ mod escape_diag_fold_tests {
         let diag = escape_d0(&mut h);
         assert!(diag.card_present, "cache-fed presence still answers");
         assert_eq!(diag.apdu_tx_count, 0);
+    }
+
+    #[test]
+    fn driver_reinit_event_refreshes_reinit_word_inline() {
+        // #342: a driver self-healing re-init fires mid-session (the
+        // mock latches it exactly as the real F469 wrapper does when
+        // the failure streak reaches REINIT_THRESHOLD). The CCID layer
+        // must consume the event on the command dispatch it rides on:
+        // the 0xD0 reinit word refreshes immediately instead of
+        // waiting for the next presence poll (check_card_change is
+        // what normally copies driver reinit_count into diagnostics).
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new()
+                .card_present(true)
+                .with_atr(&[0x3B, 0x00])
+                .with_transmit_apdu_error(),
+            CHERRY,
+        );
+        h.set_rx_data(&frame(PC_TO_RDR_ICC_POWER_ON, 1, &[]));
+        h.handle_message();
+        let _ = h.take_response();
+        assert_eq!(h.diagnostics().reinit_count, 0);
+
+        // The failing exchange during which the wrapper's threshold
+        // logic fired the re-init — latched before dispatch returns,
+        // as on real hardware.
+        h.core.driver_mut().driver.set_reinit_event(1);
+        h.set_rx_data(&frame(
+            PC_TO_RDR_XFR_BLOCK,
+            2,
+            &[0x00, 0xC0, 0x00, 0x00, 0x00],
+        ));
+        h.handle_message();
+        let (len, resp) = h.take_response();
+        // The triggering exchange itself still answers honestly: a
+        // FAILED DataBlock (the jnasmartcardio-safe shape), untouched
+        // by the event surfacing.
+        assert_eq!(resp[0], RDR_TO_PC_DATABLOCK);
+        assert_eq!(len, 10, "empty DataBlock payload");
+        assert_ne!(
+            resp[7] & (COMMAND_STATUS_FAILED << 6),
+            0,
+            "the failing exchange reports FAILED"
+        );
+
+        let diag = escape_d0(&mut h);
+        assert_eq!(
+            diag.reinit_count, 1,
+            "reinit word refreshed inline, not at the next presence poll"
+        );
     }
 }
 

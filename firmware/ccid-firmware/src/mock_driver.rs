@@ -33,6 +33,11 @@ pub struct MockSmartcardDriver {
     /// card_present (models a driver whose live hardware view differs
     /// from the polled presence cache — the F746 presence-pin case).
     diag_card_present: Option<bool>,
+    /// #342 test seam: models the real wrapper's self-healing latch —
+    /// `reinit_count` is the 0xD0 word, `reinit_pending` is the inline
+    /// event the CCID layer consumes after command dispatch.
+    reinit_count: u32,
+    reinit_pending: bool,
     call_log: [MockCall; MAX_CALL_LOG],
     call_log_len: usize,
 }
@@ -67,6 +72,8 @@ impl MockSmartcardDriver {
             power_on_should_fail: false,
             transmit_apdu_should_fail: false,
             diag_card_present: None,
+            reinit_count: 0,
+            reinit_pending: false,
             call_log: [MockCall::PowerOff; MAX_CALL_LOG],
             call_log_len: 0,
         }
@@ -127,6 +134,14 @@ impl MockSmartcardDriver {
     pub fn with_diag_card_present(mut self, present: bool) -> Self {
         self.diag_card_present = Some(present);
         self
+    }
+
+    /// #342: simulate a driver self-healing re-init having fired (the
+    /// real F469 wrapper latches this inside its threshold logic when
+    /// the streak reaches REINIT_THRESHOLD).
+    pub fn set_reinit_event(&mut self, count: u32) {
+        self.reinit_count = count;
+        self.reinit_pending = true;
     }
 
     pub fn call_log(&self) -> &[MockCall] {
@@ -237,5 +252,13 @@ impl SmartcardDriver for MockSmartcardDriver {
         if let Some(present) = self.diag_card_present {
             base.card_present = present;
         }
+    }
+
+    fn reinit_count(&self) -> u32 {
+        self.reinit_count
+    }
+
+    fn take_reinit_pending(&mut self) -> bool {
+        core::mem::replace(&mut self.reinit_pending, false)
     }
 }

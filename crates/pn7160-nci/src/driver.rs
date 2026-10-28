@@ -7,12 +7,20 @@
 use super::{reader, reader::ExchangeOutcome, Transport, STATUS_OK};
 use reader::DiscoverNtf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// #257 error-model pass: `Display`/`core::error::Error` derived —
+/// additive, no variant or behavior change (the stringly-`&'static
+/// str` lib.rs APIs stay untouched, P5-sequenced).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("PN7160 bring-up failed: {0}")]
     BringUp(&'static str),
+    #[error("PN7160 select failed: {0}")]
     Select(&'static str),
+    #[error("no card present")]
     NoCard,
+    #[error("exchange with the card failed")]
     ExchangeFailed,
+    #[error("buffer too small")]
     BufferTooSmall,
 }
 
@@ -823,6 +831,27 @@ mod tests {
         NTF_RF_INTF_ACTIVATED, OID_CORE_INIT, OID_CORE_RESET, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
         OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
     };
+
+    /// #257 error-model pass lock: the additive Display strings,
+    /// byte-locked.
+    #[test]
+    fn driver_error_display_strings_are_locked() {
+        assert_eq!(
+            Error::BringUp("ven cycle").to_string(),
+            "PN7160 bring-up failed: ven cycle"
+        );
+        assert_eq!(
+            Error::Select("no ntf").to_string(),
+            "PN7160 select failed: no ntf"
+        );
+        assert_eq!(Error::NoCard.to_string(), "no card present");
+        assert_eq!(
+            Error::ExchangeFailed.to_string(),
+            "exchange with the card failed"
+        );
+        assert_eq!(Error::BufferTooSmall.to_string(), "buffer too small");
+        let _: &dyn core::error::Error = &Error::NoCard;
+    }
 
     // A realistic ISO-DEP ATS (per ISO 14443-4: TL, T0, TA1, TB1)
     // Proper ATS: TL=5, T0=0x75, TA1=0x77, TB1=0x81, TC1=0x02

@@ -198,6 +198,9 @@ dependencies = [
 [[package]]
 name = "card-interface"
 version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "cargo-platform"
@@ -282,6 +285,7 @@ name = "ccid-pcsc-host"
 version = "0.1.0"
 dependencies = [
  "pcsc",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -298,6 +302,7 @@ dependencies = [
  "ccid-transport-serial",
  "heapless 0.9.2",
  "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -306,6 +311,7 @@ version = "0.1.0"
 dependencies = [
  "ccid-protocol",
  "heapless 0.9.2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1337,6 +1343,7 @@ dependencies = [
  "iso14443",
  "log",
  "mfrc522",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1556,6 +1563,7 @@ dependencies = [
  "esp-idf-sys",
  "heapless 0.9.2",
  "log",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

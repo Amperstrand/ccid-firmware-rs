@@ -34,11 +34,18 @@ pub enum FrameEvent {
     Error(FrameError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Framing-layer failure vocabulary of the GemPC serial parser
+/// (#257 error-model pass: `Display`/`core::error::Error` derived —
+/// additive, no variant or behavior change).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FrameError {
+    #[error("frame LRC mismatch")]
     InvalidLrc,
+    #[error("invalid control byte")]
     InvalidCtrl,
+    #[error("frame exceeds buffer capacity")]
     Overflow,
+    #[error("peer NAKed the frame")]
     NakReceived,
 }
 
@@ -283,6 +290,21 @@ impl Default for FrameParser {
 mod tests {
     use super::*;
     use std::vec::Vec as StdVec;
+
+    /// #257 error-model pass lock: the additive Display strings,
+    /// byte-locked (they ride logs and test-failure output).
+    #[test]
+    fn frame_error_display_strings_are_locked() {
+        use std::string::ToString as _;
+        assert_eq!(FrameError::InvalidLrc.to_string(), "frame LRC mismatch");
+        assert_eq!(FrameError::InvalidCtrl.to_string(), "invalid control byte");
+        assert_eq!(
+            FrameError::Overflow.to_string(),
+            "frame exceeds buffer capacity"
+        );
+        assert_eq!(FrameError::NakReceived.to_string(), "peer NAKed the frame");
+        let _: &dyn core::error::Error = &FrameError::InvalidLrc;
+    }
 
     fn header_with_payload_len(message_type: u8, payload_len: u32) -> [u8; 10] {
         [
