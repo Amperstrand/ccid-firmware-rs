@@ -128,8 +128,10 @@ CC = os.environ.get("CC", "cc")
 
 
 def _cc(source: str, out: Path, extra=()):
+    # Codex P2 on #486: split CC — it may be a wrapper with arguments.
+    import shlex
     return subprocess.run(
-        [CC, "-shared", "-fPIC", "-o", str(out), str(source), *extra],
+        [*shlex.split(CC), "-shared", "-fPIC", "-o", str(out), str(source), *extra],
         capture_output=True, text=True)
 
 
@@ -160,9 +162,13 @@ def _pcsc_prereq_ok(workdir: Path) -> bool:
     probe = workdir / "prereq.c"
     probe.write_text("#include <ifdhandler.h>\n#include <reader.h>\n"
                      "int main(void) { return 0; }\n")
+    # Codex P2 on #486: CC may be a wrapper WITH arguments
+    # ("ccache gcc -std=c11"); pass it to the argv list split, not whole.
+    import shlex
     try:
-        probe_rc = subprocess.run([CC, "-fsyntax-only", *flags, str(probe)],
-                                  capture_output=True).returncode
+        probe_rc = subprocess.run(
+            [*shlex.split(CC), "-fsyntax-only", *flags, str(probe)],
+            capture_output=True).returncode
     except OSError:
         return False
     return probe_rc == 0
