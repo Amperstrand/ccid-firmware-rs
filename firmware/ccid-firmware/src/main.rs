@@ -276,6 +276,10 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         self.uart.set_clock_and_rate(clock_hz, rate_bps)
     }
 
+    fn xfr_error_class(&self, err: &Self::Error) -> card_interface::XfrErrorKind {
+        smartcard_common::smartcard_error_class(err)
+    }
+
     fn reinit_count(&self) -> u32 {
         self.heal.reinit_count()
     }
@@ -351,6 +355,10 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.bitbang.set_clock_and_rate(clock_hz, rate_bps)
+    }
+
+    fn xfr_error_class(&self, err: &Self::Error) -> card_interface::XfrErrorKind {
+        smartcard_common::smartcard_error_class(err)
     }
 
     /// #344: the Escape 0xD0 answer backed by the bit-bang state —

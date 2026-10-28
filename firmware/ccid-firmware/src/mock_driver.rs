@@ -1,4 +1,5 @@
 use crate::driver::SmartcardDriver;
+use card_interface::XfrErrorKind;
 
 #[derive(Debug, Clone)]
 pub struct MockError(pub &'static str);
@@ -29,6 +30,10 @@ pub struct MockSmartcardDriver {
     raw_response_idx: usize,
     power_on_should_fail: bool,
     transmit_apdu_should_fail: bool,
+    /// #136 test seam: class `xfr_error_class` reports for
+    /// transmit-apdu errors (models a frontend that can classify its
+    /// failures — e.g. the SmartcardError parity arm).
+    transmit_error_class: XfrErrorKind,
     /// #344 test seam: when set, the 0xD0 diagnostics fold stamps this
     /// card_present (models a driver whose live hardware view differs
     /// from the polled presence cache — the F746 presence-pin case).
@@ -71,6 +76,7 @@ impl MockSmartcardDriver {
             raw_response_idx: 0,
             power_on_should_fail: false,
             transmit_apdu_should_fail: false,
+            transmit_error_class: XfrErrorKind::Unclassified,
             diag_card_present: None,
             reinit_count: 0,
             reinit_pending: false,
@@ -125,6 +131,13 @@ impl MockSmartcardDriver {
 
     pub fn with_transmit_apdu_error(mut self) -> Self {
         self.transmit_apdu_should_fail = true;
+        self
+    }
+
+    /// #136: classify the transmit-apdu error (drives the core's
+    /// error-map table → CCID bError).
+    pub fn with_transmit_error_class(mut self, class: XfrErrorKind) -> Self {
+        self.transmit_error_class = class;
         self
     }
 
@@ -246,6 +259,10 @@ impl SmartcardDriver for MockSmartcardDriver {
     ) -> core::result::Result<(u32, u32), Self::Error> {
         self.log(MockCall::SetClockAndRate { clock_hz, rate_bps });
         Ok((clock_hz, rate_bps))
+    }
+
+    fn xfr_error_class(&self, _err: &Self::Error) -> XfrErrorKind {
+        self.transmit_error_class
     }
 
     fn diagnostics(&self, base: &mut ccid_core::Diagnostics) {

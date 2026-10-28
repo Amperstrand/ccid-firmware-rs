@@ -101,6 +101,24 @@ format = "markdown"
 file = "reference/CCID/src/ccid.h"
 comment_marker = "CCID_DEFS"
 
+# PC/SC ↔ CCID translation layer (ifdhandler.c): the host-side
+# parameter/timeout decisions driven by our descriptors and ATRs
+# (#136 — BWT/readTimeout computation, TPDU exchange-level routing).
+[sources.IFDHANDLER]
+format = "markdown"
+file = "reference/CCID/src/ifdhandler.c"
+comment_marker = "IFDHANDLER"
+
+# osmo's slot state machine (CCID_SLOT_FSM): the free-software
+# reference for contact-slot failure shapes — the WTIME_EXP → FAILED
+# DataBlock + ICC_MUTE shape the #136 error-map table's Mute entry
+# cites (ccid_gen_data_block(ccid_seq, CCID_CMD_STATUS_FAILED,
+# CCID_ERR_ICC_MUTE, ...)).
+[sources.OSMO_FSM]
+format = "markdown"
+file = "reference/osmo-ccid-firmware/ccid_common/ccid_slot_fsm.c"
+comment_marker = "OSMO_FSM"
+
 [sources.PCSCD]
 format = "markdown"
 file = "reference/pcsc-lite/src/pcscd.h.in"

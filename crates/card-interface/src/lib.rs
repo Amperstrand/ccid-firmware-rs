@@ -11,6 +11,33 @@ pub struct PresenceState {
     pub present: bool,
 }
 
+/// Transport-neutral classification of a failed card exchange, the
+/// vocabulary the CCID error-map table consumes (issue #136).
+///
+/// Same design rule as [`FrontendErrorKind`]: driver error enums are
+/// backend-specific; this is the coarse common vocabulary the CCID
+/// handler layer reads. The mapping class → CCID bError lives in
+/// ccid-core (`xfr_failure_b_error`, every entry reference-cited).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XfrErrorKind {
+    /// Received byte failed ISO 7816-3 parity — the byte is corrupt,
+    /// the exchange cannot be trusted.
+    Parity,
+    /// Receive overrun — bytes were lost (host too slow / stream
+    /// shredded); the stream is desynchronized.
+    Overrun,
+    /// Card did not answer within the waiting-time budget (BWT-class).
+    Timeout,
+    /// Card powered but not answering at all (mute) — osmo WTIME_EXP
+    /// semantics, where the reader deactivates the card.
+    Mute,
+    /// Reader-side electrical/driver failure (no card signal class).
+    Hardware,
+    /// Driver error the backend cannot classify — keeps the historical
+    /// fold-everything behavior (see the error-map table).
+    Unclassified,
+}
+
 pub trait CardBackend {
     type Error: core::fmt::Debug;
 
@@ -22,6 +49,14 @@ pub trait CardBackend {
         command: &[u8],
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error>;
+
+    /// Classify a failed [`CardBackend::transmit_apdu`] error for the
+    /// CCID error-map table (#136). Default: [`XfrErrorKind::Unclassified`]
+    /// — backends with a concrete error enum override this so the
+    /// reference-correct bError (e.g. parity → 0xFD) reaches the host.
+    fn xfr_error_class(&self, _err: &Self::Error) -> XfrErrorKind {
+        XfrErrorKind::Unclassified
+    }
 
     /// Count of driver-level reinitializations since boot (self-healing
     /// after consecutive failures), surfaced through diagnostics
@@ -185,7 +220,7 @@ impl CardBackend for MockCardBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::{CardBackend, MockCardBackend, MockError, PresenceState};
+    use super::{CardBackend, MockCardBackend, MockError, PresenceState, XfrErrorKind};
 
     #[test]
     fn test_mock_power_on_writes_atr() {
@@ -274,5 +309,35 @@ mod tests {
             PresenceState { present: true },
             PresenceState { present: false }
         );
+    }
+
+    #[test]
+    fn test_xfr_error_default_classification_is_unclassified() {
+        // The default CardBackend seam must fold to Unclassified so
+        // unmodified backends keep the historical error shape (#136:
+        // behavior-preserving default).
+        let mut backend = MockCardBackend::new(true, &[0x3B, 0x00], &[0x90, 0x00]);
+        let mut response = [0u8; 8];
+        let err = backend
+            .transmit_apdu(&[0x00, 0x84, 0x00, 0x00], &mut response)
+            .unwrap_err();
+        assert_eq!(backend.xfr_error_class(&err), XfrErrorKind::Unclassified);
+    }
+
+    #[test]
+    fn test_xfr_error_kinds_are_distinct() {
+        let kinds = [
+            XfrErrorKind::Parity,
+            XfrErrorKind::Overrun,
+            XfrErrorKind::Timeout,
+            XfrErrorKind::Mute,
+            XfrErrorKind::Hardware,
+            XfrErrorKind::Unclassified,
+        ];
+        for (i, a) in kinds.iter().enumerate() {
+            for (j, b) in kinds.iter().enumerate() {
+                assert_eq!(a == b, i == j);
+            }
+        }
     }
 }

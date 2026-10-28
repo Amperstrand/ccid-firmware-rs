@@ -26,6 +26,16 @@ pub trait SmartcardDriver {
         _clock_hz: u32,
         _rate_bps: u32,
     ) -> core::result::Result<(u32, u32), Self::Error>;
+
+    /// Classify a failed exchange for the CCID error-map table (#136,
+    /// forwarded by `SmartcardCoreAdapter` into
+    /// `CardBackend::xfr_error_class`). Concrete frontends with a
+    /// known error enum override this so parity surfaces as CCID
+    /// bError 0xFD; the default keeps the historical fold.
+    fn xfr_error_class(&self, _err: &Self::Error) -> card_interface::XfrErrorKind {
+        card_interface::XfrErrorKind::Unclassified
+    }
+
     /// Driver-level self-healing re-init count, surfaced through the
     /// core's 0xD0 diagnostics snapshot (card-interface
     /// `CardBackend::reinit_count` semantics). Drivers without

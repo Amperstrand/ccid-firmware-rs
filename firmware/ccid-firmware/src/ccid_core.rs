@@ -80,6 +80,14 @@ impl<D: SmartcardDriver> CardBackend for SmartcardCoreAdapter<D> {
         self.driver.transmit_apdu(command, response)
     }
 
+    fn xfr_error_class(&self, err: &Self::Error) -> card_interface::XfrErrorKind {
+        // Forward to the concrete frontend's classification (#136):
+        // SmartcardWrapper matches on SmartcardError so parity reaches
+        // the core's error-map table as XfrErrorKind::Parity (→ CCID
+        // bError 0xFD).
+        self.driver.xfr_error_class(err)
+    }
+
     fn reinit_count(&self) -> u32 {
         self.driver.reinit_count()
     }
@@ -1062,6 +1070,80 @@ mod escape_diag_fold_tests {
             diag.reinit_count, 1,
             "reinit word refreshed inline, not at the next presence poll"
         );
+    }
+}
+
+#[cfg(test)]
+mod xfr_error_map_tests {
+    //! #136: the classification chain end-to-end on the firmware
+    //! wrapper — mock class → SmartcardCoreAdapter forward →
+    //! ccid-core error-map table → DataBlock bError byte. The table
+    //! itself is byte-pinned in ccid-core; these lock the wiring.
+
+    use super::*;
+    use card_interface::XfrErrorKind;
+    use ccid_protocol::types::CCID_ERR_XFR_PARITY_ERROR;
+
+    const CHERRY: u16 = 0x046A;
+
+    fn frame(msg_type: u8, seq: u8, payload: &[u8]) -> std::vec::Vec<u8> {
+        let mut f = std::vec::Vec::with_capacity(10 + payload.len());
+        f.push(msg_type);
+        f.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        f.push(0); // slot
+        f.push(seq);
+        f.extend_from_slice(&[0, 0, 0]); // bSpecific(3)
+        f.extend_from_slice(payload);
+        f
+    }
+
+    fn powered_on_handler(
+        class: XfrErrorKind,
+    ) -> CcidMessageHandler<crate::mock_driver::MockSmartcardDriver> {
+        let mut h = CcidMessageHandler::new(
+            crate::mock_driver::MockSmartcardDriver::new()
+                .card_present(true)
+                .with_atr(&[0x3B, 0x00])
+                .with_transmit_apdu_error()
+                .with_transmit_error_class(class),
+            CHERRY,
+        );
+        h.set_rx_data(&frame(PC_TO_RDR_ICC_POWER_ON, 1, &[]));
+        h.handle_message();
+        let _ = h.take_response();
+        h
+    }
+
+    fn xfr_b_error(h: &mut CcidMessageHandler<crate::mock_driver::MockSmartcardDriver>) -> u8 {
+        h.set_rx_data(&frame(PC_TO_RDR_XFR_BLOCK, 2, &[0x00, 0xA4, 0x04, 0x00]));
+        h.handle_message();
+        let (len, resp) = h.take_response();
+        assert_eq!(resp[0], RDR_TO_PC_DATABLOCK, "always a DataBlock");
+        assert_eq!(len, 10, "honest dwLength=0 on failure");
+        resp[8]
+    }
+
+    #[test]
+    fn parity_class_surfaces_as_berror_0xfd() {
+        let mut h = powered_on_handler(XfrErrorKind::Parity);
+        assert_eq!(xfr_b_error(&mut h), 0xFD);
+    }
+
+    #[test]
+    fn timeout_class_keeps_berror_0xf0() {
+        let mut h = powered_on_handler(XfrErrorKind::Timeout);
+        assert_eq!(xfr_b_error(&mut h), 0xF0);
+    }
+
+    #[test]
+    fn unclassified_class_keeps_historical_fold() {
+        let mut h = powered_on_handler(XfrErrorKind::Unclassified);
+        assert_eq!(xfr_b_error(&mut h), 0xF0);
+    }
+
+    #[test]
+    fn parity_maps_through_the_constant_not_a_literal() {
+        assert_eq!(CCID_ERR_XFR_PARITY_ERROR, 0xFD);
     }
 }
 

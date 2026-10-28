@@ -1,0 +1,43 @@
+{
+  "reader": "ACR1252 reference (sample, synthetic bytes)",
+  "card": "J3R180 sample",
+  "firmware_rev": "sample",
+  "captured_at": "2026-10-28T00:01:00Z",
+  "exchanges": [
+    {
+      "name": "SELECT_ISD",
+      "command": "00a4040007a000000151000000",
+      "response": "6f0c8410a0000001510000000d2f016f0c50154f594d02009000"
+    },
+    {
+      "name": "GET_DATA_CPLC",
+      "command": "80ca9f7f00",
+      "response": "9f7f2a05094732037f090b7325039000"
+    },
+    {
+      "name": "INIT_UPDATE",
+      "command": "8050000008e1e2e3e4e5e6e7e8",
+      "response": "000003e1e2e3e4e5e6e7e8d1d2d3d4d5d6d7d8030402f0a29000",
+      "random_fields": [
+        {
+          "field": "host challenge",
+          "side": "command",
+          "offset": 5,
+          "length": 8
+        },
+        {
+          "field": "card challenge",
+          "side": "response",
+          "offset": 3,
+          "length": 8
+        },
+        {
+          "field": "card cryptogram",
+          "side": "response",
+          "offset": 11,
+          "length": 8
+        }
+      ]
+    }
+  ]
+}
