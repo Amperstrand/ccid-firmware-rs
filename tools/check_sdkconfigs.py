@@ -86,12 +86,51 @@ def sets_any(text: str, keys) -> str | None:
     return None
 
 
+# Issue #446: the xtensa .full files carried a dead absolute
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME (an old bench box's
+# /home/ubuntu/... path) SHADOWED by a later bare-name assignment —
+# inert in kconfig's last-wins processing, but a landmine for any tool
+# (or reader) that takes the first occurrence, and pure confusion for
+# humans. Two universal rules lock the class:
+#  - the filename must be BARE (no path separators — the file is
+#    delivered into the embuild project dir by the ESP_IDF_GLOB_PARTCSV_*
+#    injection; see .cargo/config.toml and build.sh);
+#  - partition-table keys are assigned at most once (the duplicate WAS
+#    the hiding place).
+PARTITION_KEYS = (
+    "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME",
+    "CONFIG_PARTITION_TABLE_FILENAME",
+)
+
+
+def check_partition_table(name: str, text: str) -> list[str]:
+    errs = []
+    for key in PARTITION_KEYS:
+        assignments = re.findall(rf'^{key}="([^"]*)"$', text, re.M)
+        if len(assignments) > 1:
+            errs.append(
+                f"{name}: {key} assigned {len(assignments)}x "
+                f"({assignments}) — exactly one assignment (the "
+                "duplicate-shadowing class of #446)"
+            )
+        for value in assignments:
+            if "/" in value or value != Path(value).name:
+                errs.append(
+                    f"{name}: {key} must be a BARE csv filename, got "
+                    f"{value!r} (#446: the csv arrives via the "
+                    "ESP_IDF_GLOB_PARTCSV injection, not via a path)"
+                )
+    return errs
+
+
 def check_config(name: str) -> list[str]:
     path = CFG_DIR / name
     if not path.is_file():
         return [f"{name}: missing (stale gate entry — update tools/check_sdkconfigs.py)"]
     text = path.read_text()
     errs = []
+
+    errs.extend(check_partition_table(name, text))
 
     uart_choice = sets_any(text, UART_CONSOLE_CHOICES)
 
