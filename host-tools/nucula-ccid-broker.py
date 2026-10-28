@@ -270,11 +270,21 @@ class PowerOffShim:
         # "lone SYNC", deterministic 2/2): a stray SYNC buffered with no
         # follow-up fuses with the NEXT probe frame into a bogus
         # "sane-length complete" anchor at the stale byte — both frames
-        # desync and the reader reads dead for seconds. Host frames never
-        # pause mid-frame: bytes arriving after an idle gap are a NEW
-        # frame, so a partial that survived the gap is garbage — drop it.
+        # desync and the reader reads dead for seconds.
+        #
+        # Why an idle gap can only precede a NEW frame (Codex P1 on #483,
+        # reference-first): the host-side GemPC driver frames and emits
+        # each command in a SINGLE write() — reference/CCID/src/
+        # ccid_serial.c WriteSerial builds SYNC+CTRL+CCID+LRC in
+        # low_level_buffer and issues one write(serialDevice.fd, ...)
+        # per command. Application-layer mid-frame pauses therefore do
+        # not exist; any delivery-level split of that write is kernel
+        # scheduling (us-ms scale). The cutoff sits two orders above the
+        # 274-byte 115200 wire time (~24 ms) and scheduling noise, and
+        # 18x below the observed 4.56 s wedge; env-tunable for the bench.
         now = time.monotonic()
-        if self.buf and now - self.last_rx > 0.05:
+        cutoff = float(os.environ.get("BROKER_FRAME_GAP_S", "0.25"))
+        if self.buf and now - self.last_rx > cutoff:
             self.buf = bytearray()
         self.last_rx = now
         self.buf += data
