@@ -458,6 +458,29 @@ static int nuc_transact_locked(nuc_ctx *c, const unsigned char *req, size_t req_
 /* Convenience: build + transact + bSeq echo check (CCID 6.2-1; the
  * firmware regression-locks it). 0 ok / -1 transport. */
 static int nuc_resp_cmd_failed(const unsigned char *resp);
+static uint32_t nuc_resp_payload_len(const unsigned char *resp);
+
+/* An interim CCID time-extension frame comes in EITHER shape:
+ *  - CCID Rev 1.1 6.2-2 SlotStatus: bmCommandStatus=0 (still
+ *    processing), our bSeq;
+ *  - the firmware's actual wire form (ccid_serial_server build_frame,
+ *    CCID 6.1.4): RDR_to_PC_DATA_BLOCK, dwLength=0, bStatus bit 0x80
+ *    (time extension requested), our bSeq — the response-type-
+ *    preserving interim for XfrBlock commands. A FINAL DataBlock never
+ *    matches: it carries the payload (>= 2 for an executed APDU).
+ * Issue #472: the loop used to accept only the SlotStatus shape, so
+ * every real firmware interim ended the wait and the still-valid
+ * exchange classified IFD_COMMUNICATION_ERROR. */
+static int nuc_is_time_extension(const unsigned char *resp, unsigned char seq)
+{
+    if (resp[NUC_MSG_SEQ] != seq || nuc_resp_cmd_failed(resp))
+        return 0;
+    if (resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_SLOT_STATUS)
+        return 1;
+    return resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_DATA_BLOCK
+        && nuc_resp_payload_len(resp) == 0
+        && (resp[NUC_MSG_STATUS] & 0x80) != 0;
+}
 
 static int nuc_command(unsigned char type, unsigned char spec0,
                        const unsigned char *payload, uint32_t plen,
@@ -485,9 +508,7 @@ static int nuc_command(unsigned char type, unsigned char spec0,
                       || type == NUC_PC_TO_RDR_ESCAPE);
     for (int ext = 0;
          rc == 0 && may_extend && ext < 64
-         && resp[NUC_MSG_TYPE] == NUC_RDR_TO_PC_SLOT_STATUS
-         && !nuc_resp_cmd_failed(resp)
-         && resp[NUC_MSG_SEQ] == seq;
+         && nuc_is_time_extension(resp, seq);
          ext++) {
         int n2 = nuc_recv_frame_locked(&g_ctx, resp);
         if (n2 <= 0) {
@@ -512,7 +533,12 @@ static int nuc_command(unsigned char type, unsigned char spec0,
 
 static int nuc_resp_cmd_failed(const unsigned char *resp)
 {
-    return (resp[NUC_MSG_STATUS] & 0xC0) != 0; /* bmCommandStatus [7:6] */
+    /* bmCommandStatus [7:6] (CCID Rev 1.1 6.1.6): 00 = processed,
+     * 01 = failed, 10 = TIME EXTENSION REQUESTED, 11 = RFU. Only 01 is
+     * a failure — the old "!= 0" predicate collapsed the firmware's
+     * 0x80|icc time-extension interims (ccid_serial_server build_frame)
+     * into failures, which is the decode side of issue #472. */
+    return (resp[NUC_MSG_STATUS] & 0xC0) == 0x40;
 }
 
 static int nuc_resp_icc_absent(const unsigned char *resp)
