@@ -59,23 +59,31 @@ jobs:
           # (machine-class heartbeat). This repo's own runs first; the
           # kali-live-headless CI lane — same VM, pushed frequently —
           # bootstraps the signal for repos that never ran self-hosted.
-          # Every failure path degrades to hosted, never to a hang.
+          # NOTE: gh api has no --argjson (that flag killed probe v2
+          # silently); the cutoff is a validated integer, so it is
+          # interpolated. Every failure path degrades to hosted AND says
+          # why — a silent probe is indistinguishable from "offline".
           cutoff=$(date -u -d '24 hours ago' +%s)
+          case "$cutoff" in ''|*[!0-9]*) echo "::error::bad cutoff"; exit 1 ;; esac
           saw_legion() {
-            local repo=$1 runs run
-            runs=$(gh api "repos/$repo/actions/runs?per_page=$2" \
-              --argjson cutoff "$cutoff" \
-              --jq '.workflow_runs[]
-                    | select(.status == "completed")
+            local repo=$1 pages=$2 runs run verdict
+            runs=$(gh api "repos/$repo/actions/runs?per_page=$pages" \
+              --jq ".workflow_runs[]
+                    | select(.status == \"completed\")
                     | select((.updated_at | fromdateiso8601) > $cutoff)
-                    | .id' 2>/dev/null || true)
+                    | .id" 2>&1) || {
+              echo "::notice::probe $repo listing failed: $(printf '%s' "$runs" | tail -1)"
+              return 1
+            }
             for run in $runs; do
-              if gh api "repos/$repo/actions/runs/$run/jobs" \
-                   --jq 'any(.jobs[]; ((.runner_name // "") | startswith("legion-")))' \
-                   2>/dev/null | grep -qx true; then
+              verdict=$(gh api "repos/$repo/actions/runs/$run/jobs" \
+                --jq 'any(.jobs[]; ((.runner_name // "") | startswith("legion-")))' 2>/dev/null || true)
+              if [ "$verdict" = true ]; then
+                echo "::notice::probe $repo: run $run executed on a legion-* runner"
                 return 0
               fi
             done
+            echo "::notice::probe $repo: no legion-* job within 24h"
             return 1
           }
           if saw_legion "${{ github.repository }}" 15 \
