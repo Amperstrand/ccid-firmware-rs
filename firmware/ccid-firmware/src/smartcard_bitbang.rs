@@ -444,13 +444,19 @@ impl SmartcardBitbang {
         let parity_high = self.io_is_high();
 
         let total_ones = byte.count_ones() + if parity_high { 1 } else { 0 };
-        // ISO 7816-3: EVEN parity — total 1s should be even. Warn if not.
+        // ISO 7816-3: EVEN parity — total 1s must be even. A mismatch
+        // means a corrupted byte: never deliver it (a flipped bit in a
+        // T=1 prologue/EDC shreds the block stream; in T=0 it
+        // fabricates procedure bytes). Fail as ParityError so the
+        // error-map table answers CCID bError 0xFD (IFD_PARITY_ERROR
+        // on the host, which owns the retry ladder) — issue #136.
         if !total_ones.is_multiple_of(2) {
             defmt::warn!(
                 "RX parity error: byte=0x{:02X} parity={}",
                 byte,
                 parity_high
             );
+            return Err(SmartcardError::ParityError);
         }
 
         Self::delay_until(t0.wrapping_add(etu * (11 + if self.protocol == 1 { 0 } else { 1 })));

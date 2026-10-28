@@ -37,7 +37,7 @@ use crate::params::default_params;
 use crate::pps::is_pps_request;
 use crate::response::{write_data_block, write_message, write_slot_status};
 use crate::secure::{PinModifyParams, PinResult, PinVerifyParams, SecureState};
-use card_interface::{PresenceState, SlotDriver};
+use card_interface::{PresenceState, SlotDriver, XfrErrorKind};
 use ccid_protocol::atr::{
     di_from_ta1_low, fi_from_ta1_high, parse_atr, t1_bwi_cwi_ifsc, AtrParams,
 };
@@ -45,16 +45,98 @@ use ccid_protocol::status::build_bstatus;
 use ccid_protocol::types::{
     CcidHeader, SlotState, CCID_ERR_CARD_TIMEOUT, CCID_ERR_CMD_ABORTED, CCID_ERR_CMD_NOT_SUPPORTED,
     CCID_ERR_CMD_SLOT_BUSY, CCID_ERR_HW_ERROR, CCID_ERR_ICC_MUTE, CCID_ERR_PIN_CANCELLED,
-    CCID_ERR_PIN_TIMEOUT, CCID_HEADER_SIZE, COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR,
-    ICC_STATUS_NO_ICC, ICC_STATUS_PRESENT_ACTIVE, ICC_STATUS_PRESENT_INACTIVE, PC_TO_RDR_ABORT,
-    PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS, PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF,
-    PC_TO_RDR_ICC_POWER_ON, PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SECURE, PC_TO_RDR_SET_PARAMETERS,
-    PC_TO_RDR_XFR_BLOCK, RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS,
+    CCID_ERR_PIN_TIMEOUT, CCID_ERR_XFR_OVERRUN, CCID_ERR_XFR_PARITY_ERROR, CCID_HEADER_SIZE,
+    COMMAND_STATUS_FAILED, COMMAND_STATUS_NO_ERROR, ICC_STATUS_NO_ICC, ICC_STATUS_PRESENT_ACTIVE,
+    ICC_STATUS_PRESENT_INACTIVE, PC_TO_RDR_ABORT, PC_TO_RDR_ESCAPE, PC_TO_RDR_GET_PARAMETERS,
+    PC_TO_RDR_GET_SLOT_STATUS, PC_TO_RDR_ICC_POWER_OFF, PC_TO_RDR_ICC_POWER_ON,
+    PC_TO_RDR_RESET_PARAMETERS, PC_TO_RDR_SECURE, PC_TO_RDR_SET_PARAMETERS, PC_TO_RDR_XFR_BLOCK,
+    RDR_TO_PC_DATABLOCK, RDR_TO_PC_ESCAPE, RDR_TO_PC_PARAMETERS,
 };
 
 /// GemPC Twin serial convention (not a CCID Rev 1.1 Table 6.2-2 code):
 /// XfrBlock against a present-but-inactive slot.
 pub const ICC_NOT_ACTIVE: u8 = 0x05;
+
+// The XfrBlock failure error-map table (issue #136): driver error
+// class → CCID bError, every entry pinned to what the HOST driver
+// actually does with that byte. The authority is libccid's
+// `CCID_Receive` FAILED-status switch — the exact code path every
+// pcscd/libccidtwin session runs on our DataBlock answers:
+//
+// LIBCCID: switch (cmd[ERROR_OFFSET]) ...
+// LIBCCID: case 0xEF:	/* cancel */ ...
+// LIBCCID: rx_buffer[0]= 0x64;
+// LIBCCID: rx_buffer[1]= 0x01; ...
+// LIBCCID: case 0xF0:	/* timeout */ ...
+// LIBCCID: rx_buffer[0]= 0x64;
+// LIBCCID: rx_buffer[1]= 0x00; ...
+// LIBCCID: case 0xFD:	/* Parity error during exchange */ ...
+// LIBCCID: return IFD_PARITY_ERROR; ...
+// LIBCCID: case 0xFE:	/* Card absent or mute */ ...
+// LIBCCID: if (2 == (cmd[STATUS_OFFSET] & 0x02)) /* No ICC */ ...
+// LIBCCID: return IFD_ICC_NOT_PRESENT; ...
+// LIBCCID: else ...
+// LIBCCID: return IFD_COMMUNICATION_ERROR; ...
+// LIBCCID: default: ...
+// LIBCCID: return IFD_COMMUNICATION_ERROR;
+
+// (`reference/CCID/src/commands.c` `CCID_Receive`, upstream CCID
+// 1.7.1-8 @ 1a0f75d.) Host consequences per entry:
+// | class        | bError | libccid result              | pcscd/host effect |
+// |--------------|--------|-----------------------------|-------------------|
+// | Parity       | 0xFD   | IFD_PARITY_ERROR            | T=0/T=1 engine error path — the HOST owns the retry ladder (reader-role doctrine) |
+// | Overrun      | 0xFC   | (default) comm error        | SCardTransmit fails; host re-syncs |
+// | Timeout      | 0xF0   | synthesizes SW `64 00`      | clean card error the whole host stack reports (jnasmartcardio-safe) |
+// | Mute         | 0xFE   | ICC-not-present / comm err  | card-mute error (osmo WTIME_EXP shape) |
+// | Hardware     | 0xFB   | (default) comm error        | SCardTransmit fails |
+// | Unclassified | 0xF0   | synthesizes SW `64 00`      | historical fold-everything shape (behavior-preserving default) |
+pub fn xfr_failure_b_error(kind: XfrErrorKind) -> u8 {
+    match kind {
+        // Wire corruption the reader detected but cannot repair:
+        // answer with the code libccid turns into IFD_PARITY_ERROR so
+        // the host protocol engine (owner of T=0/T=1 retries) takes
+        // over — never fold this into 0xF0, which would synthesize a
+        // SW 64 00 "card answered negatively" the card never sent.
+        // LIBCCID: case 0xFD:	/* Parity error during exchange */
+        // LIBCCID: 	return IFD_PARITY_ERROR;
+        XfrErrorKind::Parity => CCID_ERR_XFR_PARITY_ERROR,
+        // Lost bytes (ORE-class): the stream is shredded, honest error.
+        // Falls into the libccid default arm → IFD_COMMUNICATION_ERROR
+        // (SCardTransmit fails, host re-syncs) — no SW synthesis.
+        // LIBCCID: default:
+        // LIBCCID: 	return IFD_COMMUNICATION_ERROR;
+        XfrErrorKind::Overrun => CCID_ERR_XFR_OVERRUN,
+        // Card timed out inside the waiting-time budget: the shape the
+        // #132 fix bench-proved through pcscd — libccid synthesizes
+        // SW 64 00 and returns IFD_SUCCESS, so the whole host stack
+        // (pcscd, pyscard, GlobalPlatformPro) reports a clean card
+        // error instead of a driver crash (jnasmartcardio position(-2),
+        // gp #307).
+        // LIBCCID: case 0xF0:	/* timeout */
+        // LIBCCID: 	rx_buffer[0]= 0x64;
+        // LIBCCID: 	rx_buffer[1]= 0x00;
+        // LIBCCID: ...
+        // LIBCCID: 	return IFD_SUCCESS;
+        XfrErrorKind::Timeout => CCID_ERR_CARD_TIMEOUT,
+        // Card mute: what osmo-ccid-firmware answers on waiting-time
+        // expiry (deactivate + FAILED DataBlock with ICC_MUTE) — the
+        // free-software reference for the same hardware situation.
+        // With the ICC-present status bit libccid maps this to
+        // IFD_COMMUNICATION_ERROR.
+        // OSMO_FSM: resp = ccid_gen_data_block(cs, ss->seq, CCID_CMD_STATUS_FAILED, CCID_ERR_ICC_MUTE, 0, 0);
+        XfrErrorKind::Mute => CCID_ERR_ICC_MUTE,
+        // Reader-side electrical/driver failure: honest hardware error.
+        // LIBCCID: default:
+        // LIBCCID: 	return IFD_COMMUNICATION_ERROR;
+        XfrErrorKind::Hardware => CCID_ERR_HW_ERROR,
+        // Backends that cannot classify keep the bench-proven fold:
+        // 0xF0 → SW 64 00 (same host behavior as Timeout; chosen
+        // deliberately over a hardware-error fold so unmodified
+        // drivers cannot regress pcscd sessions — see the #132
+        // honest-error contract discussion).
+        XfrErrorKind::Unclassified => CCID_ERR_CARD_TIMEOUT,
+    }
+}
 
 /// Reader-family flavor knobs where the contact (USB, Short-APDU) and
 /// contactless serial (GemPC Twin) handlers historically differ in wire
@@ -747,24 +829,30 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 &self.tx_buf[..resp_len],
                 response,
             ),
-            Err(_) => {
-                // Card timeout or protocol error. libccid maps a FAILED
-                // DataBlock by bError (commands.c L1605-L1638): 0xF0 →
-                // synthesizes SW 64 00 (clean card error the whole host
-                // stack — pcscd, pyscard, GlobalPlatformPro — reports
-                // instead of crashing on position(-2) jnasmartcardio
-                // bug, gp issue #307); any other failed code →
-                // IFD_COMMUNICATION_ERROR. A SlotStatus here instead of
-                // a DataBlock is valid CCID but jnasmartcardio's
-                // transmit path 0-byte SW-strip is the documented
-                // crash shape — always answer XfrBlock with a
-                // DataBlock.
+            Err(e) => {
+                // Card exchange failure → bError via the error-map
+                // table (`xfr_failure_b_error`, every entry cited):
+                // parity surfaces as 0xFD (IFD_PARITY_ERROR on the
+                // host), timeout/unclassified as 0xF0. libccid maps a
+                // FAILED DataBlock by bError (commands.c CCID_Receive
+                // switch, the `case 0xEF`/`0xF0`/`0xFD`/`0xFE` arms):
+                // 0xF0 → synthesizes SW 64 00 (clean card error the
+                // whole host stack — pcscd, pyscard, GlobalPlatformPro
+                // — reports instead of crashing on position(-2)
+                // jnasmartcardio bug, gp issue #307); 0xFD →
+                // IFD_PARITY_ERROR (the host engine's retry ladder);
+                // any other failed code → IFD_COMMUNICATION_ERROR. A
+                // SlotStatus here instead of a DataBlock is valid CCID
+                // but jnasmartcardio's transmit path 0-byte SW-strip
+                // is the documented crash shape — always answer
+                // XfrBlock with a DataBlock.
+                let b_error = xfr_failure_b_error(self.nfc.xfr_error_class(&e));
                 write_data_block(
                     header.slot,
                     header.seq,
                     ICC_STATUS_PRESENT_ACTIVE,
                     COMMAND_STATUS_FAILED,
-                    CCID_ERR_CARD_TIMEOUT,
+                    b_error,
                     0,
                     &[],
                     response,
@@ -1016,28 +1104,32 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 &self.tx_buf[..resp_len],
                 response,
             ),
-            Err(_) => {
-                // Card timeout or death mid-exchange — same convention as
-                // the contact arm above (#152): FAILED DataBlock +
-                // bError 0xF0 (card timeout) + honest dwLength=0.
-                // libccid's CCID_Receive maps this exact shape to a
-                // host-side synthesized SW 64 00 + IFD_SUCCESS
-                // (reference/CCID/src/commands.c "case 0xF0: rx_buffer
-                // 64 00, *rx_length=2") so direct TPDU consumers get a
-                // clean status word instead of empty data — the
-                // GlobalPlatformPro ByteBuffer crash class (gp #307).
-                // The old bError 0xFB (hw error) fell into CCID_Receive's
-                // `default:` → IFD_COMMUNICATION_ERROR. The T=1-armed
-                // serial route never exposes this frame (the endpoint
-                // re-frames the payload — see ccid_handler.rs #152
-                // synthesis).
+            Err(e) => {
+                // Card timeout or death mid-exchange — same convention
+                // as the contact arm above (#152), routed through the
+                // shared error-map table: NFC frontends don't override
+                // `xfr_error_class` (ISO 14443 handles block recovery
+                // below us), so the class is Unclassified → FAILED
+                // DataBlock + bError 0xF0 (card timeout) + honest
+                // dwLength=0. libccid's CCID_Receive maps this exact
+                // shape to a host-side synthesized SW 64 00 +
+                // IFD_SUCCESS (reference/CCID/src/commands.c "case
+                // 0xF0: rx_buffer 64 00, *rx_length=2") so direct TPDU
+                // consumers get a clean status word instead of empty
+                // data — the GlobalPlatformPro ByteBuffer crash class
+                // (gp #307). The old bError 0xFB (hw error) fell into
+                // CCID_Receive's `default:` → IFD_COMMUNICATION_ERROR.
+                // The T=1-armed serial route never exposes this frame
+                // (the endpoint re-frames the payload — see
+                // ccid_handler.rs #152 synthesis).
+                let b_error = xfr_failure_b_error(self.nfc.xfr_error_class(&e));
                 self.slot_state = SlotState::PresentInactive;
                 write_message(
                     RDR_TO_PC_DATABLOCK,
                     header.slot,
                     header.seq,
                     build_bstatus(COMMAND_STATUS_FAILED, self.current_icc_status()),
-                    CCID_ERR_CARD_TIMEOUT,
+                    b_error,
                     0,
                     &[],
                     response,
@@ -2213,6 +2305,8 @@ mod contact_profile_tests {
         apdu_response: Vec<u8>,
         power_off_count: u32,
         fail_transmit: bool,
+        /// #136: what `xfr_error_class` answers for transmit errors.
+        transmit_class: XfrErrorKind,
     }
 
     impl ContactDriver {
@@ -2223,6 +2317,7 @@ mod contact_profile_tests {
                 apdu_response: Vec::from([0x90u8, 0x00]),
                 power_off_count: 0,
                 fail_transmit: false,
+                transmit_class: XfrErrorKind::Unclassified,
             }
         }
     }
@@ -2262,6 +2357,10 @@ mod contact_profile_tests {
             }
             response[..self.apdu_response.len()].copy_from_slice(&self.apdu_response);
             Ok(self.apdu_response.len())
+        }
+
+        fn xfr_error_class(&self, _err: &Self::Error) -> XfrErrorKind {
+            self.transmit_class
         }
     }
 
@@ -2496,7 +2595,9 @@ mod contact_profile_tests {
         let (mt, _, status, err, data) = parse(&resp[..len]);
         // DataBlock (never SlotStatus — the jnasmartcardio 0-byte
         // SW-strip crash, gp #307), FAILED + 0xF0: libccid synthesizes
-        // SW 64 00 host-side — the clean card-timeout shape.
+        // SW 64 00 host-side — the clean card-timeout shape. The mock's
+        // default class is Unclassified → the fold keeps this shape
+        // (#136 behavior-preserving default).
         assert_eq!(mt, RDR_TO_PC_DATABLOCK);
         assert_eq!(
             status,
@@ -2505,6 +2606,73 @@ mod contact_profile_tests {
         assert_eq!(err, CCID_ERR_CARD_TIMEOUT);
         assert!(data.is_empty());
         assert_eq!(core.slot_state(), SlotState::PresentActive);
+    }
+
+    #[test]
+    fn xfr_block_parity_failure_answers_datablock_berror_0xfd() {
+        // #136: a classified parity failure must surface as CCID
+        // bError 0xFD — libccid's CCID_Receive `case 0xFD` turns this
+        // into IFD_PARITY_ERROR so the HOST T=0/T=1 engine owns the
+        // retry. Folding parity into 0xF0 would synthesize a fake
+        // SW 64 00 "card answered negatively" for a wire corruption
+        // the card never sent.
+        let mut core = new_core(true, &T0_ATR, false);
+        power_on(&mut core, 1);
+        core.driver_mut().fail_transmit = true;
+        core.driver_mut().transmit_class = XfrErrorKind::Parity;
+        let mut resp = [0u8; 271];
+        let len = core.process_command(
+            &build(PC_TO_RDR_XFR_BLOCK, 2, [0; 3], &[0x00, 0xA4, 0x04, 0x00]),
+            &mut resp,
+        );
+        let (mt, _, status, err, data) = parse(&resp[..len]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(
+            status,
+            COMMAND_STATUS_FAILED << 6 | ICC_STATUS_PRESENT_ACTIVE
+        );
+        assert_eq!(err, CCID_ERR_XFR_PARITY_ERROR);
+        assert_eq!(err, 0xFD);
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn xfr_block_mute_failure_answers_datablock_berror_0xfe() {
+        // The osmo ccid_slot_fsm.c WTIME_EXP shape: FAILED DataBlock
+        // with ICC_MUTE (see the error-map table's OSMO_FSM quote).
+        let mut core = new_core(true, &T0_ATR, false);
+        power_on(&mut core, 1);
+        core.driver_mut().fail_transmit = true;
+        core.driver_mut().transmit_class = XfrErrorKind::Mute;
+        let mut resp = [0u8; 271];
+        let len = core.process_command(
+            &build(PC_TO_RDR_XFR_BLOCK, 2, [0; 3], &[0x00, 0xA4, 0x04, 0x00]),
+            &mut resp,
+        );
+        let (mt, _, _, err, _) = parse(&resp[..len]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(err, CCID_ERR_ICC_MUTE);
+    }
+
+    #[test]
+    fn xfr_error_map_table_pins_every_entry() {
+        // The #136 error-map table, byte-pinned. Values are CCID Rev
+        // 1.1 Table 6.2-2 codes; the host consequences per entry are
+        // documented on `xfr_failure_b_error` (libccid CCID_Receive
+        // switch quotes).
+        use XfrErrorKind::*;
+        assert_eq!(xfr_failure_b_error(Parity), CCID_ERR_XFR_PARITY_ERROR);
+        assert_eq!(xfr_failure_b_error(Parity), 0xFD);
+        assert_eq!(xfr_failure_b_error(Overrun), CCID_ERR_XFR_OVERRUN);
+        assert_eq!(xfr_failure_b_error(Overrun), 0xFC);
+        assert_eq!(xfr_failure_b_error(Timeout), CCID_ERR_CARD_TIMEOUT);
+        assert_eq!(xfr_failure_b_error(Timeout), 0xF0);
+        assert_eq!(xfr_failure_b_error(Mute), CCID_ERR_ICC_MUTE);
+        assert_eq!(xfr_failure_b_error(Mute), 0xFE);
+        assert_eq!(xfr_failure_b_error(Hardware), CCID_ERR_HW_ERROR);
+        assert_eq!(xfr_failure_b_error(Hardware), 0xFB);
+        assert_eq!(xfr_failure_b_error(Unclassified), CCID_ERR_CARD_TIMEOUT);
+        assert_eq!(xfr_failure_b_error(Unclassified), 0xF0);
     }
 
     #[test]

@@ -127,6 +127,24 @@ mod arm {
         HardwareError,
     }
 
+    /// Classify a SmartcardError for the CCID error-map table (#136).
+    /// Shared by both frontends' SmartcardWrapper impls (USART F469 and
+    /// bitbang F746 — same error enum). Only positively-known classes
+    /// are distinguished; everything else stays Unclassified so the
+    /// core's table keeps the bench-proven fold (bError 0xF0).
+    pub fn smartcard_error_class(e: &SmartcardError) -> card_interface::XfrErrorKind {
+        match e {
+            // The wire corrupted a byte (USART PE flag / bitbang even
+            // parity mismatch) — must surface as CCID bError 0xFD so
+            // libccid's CCID_Receive returns IFD_PARITY_ERROR and the
+            // host protocol engine owns the retry.
+            SmartcardError::ParityError => card_interface::XfrErrorKind::Parity,
+            // BWT-class no-answer: 0xF0 → host-synthesized SW 64 00.
+            SmartcardError::Timeout => card_interface::XfrErrorKind::Timeout,
+            _ => card_interface::XfrErrorKind::Unclassified,
+        }
+    }
+
     impl From<Infallible> for SmartcardError {
         fn from(_: Infallible) -> Self {
             SmartcardError::HardwareError

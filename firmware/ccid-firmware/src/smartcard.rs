@@ -783,8 +783,27 @@ impl SmartcardUart {
                 return Err(SmartcardError::ProtocolError);
             }
             if (sr & (1 << 5)) != 0 {
+                // SR.PE (bit 0) set alongside RXNE: the byte failed
+                // ISO 7816-3 even parity — the DATA register holds a
+                // corrupted byte. Never deliver it (a flipped bit in a
+                // T=1 prologue/EDC shreds the block stream; in T=0 it
+                // fabricates procedure bytes). Fail the exchange as
+                // ParityError so the error-map table answers CCID
+                // bError 0xFD and libccid returns IFD_PARITY_ERROR —
+                // the HOST owns the retry ladder (issue #136,
+                // reader-role doctrine).
+                if (sr & 0x01) != 0 {
+                    // Read DR to clear the flag before failing.
+                    let _ = self.usart.dr().read().dr().bits();
+                    defmt::warn!("USART parity error — failing exchange");
+                    return Err(SmartcardError::ParityError);
+                }
                 let byte = self.usart.dr().read().dr().bits() as u8;
-                if (sr & 0x07) != 0 {
+                if (sr & 0x06) != 0 {
+                    // FE/NF: byte delivered, but flagged noisy —
+                    // logged for bench decomposition (no honest error
+                    // class for these yet; the T=1 LRC/EDC catches
+                    // actual corruption downstream).
                     defmt::warn!("USART err SR=0x{:04X} byte=0x{:02X}", sr, byte);
                 }
                 return Ok(byte);

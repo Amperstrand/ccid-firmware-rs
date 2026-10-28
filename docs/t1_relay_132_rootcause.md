@@ -466,3 +466,59 @@ boundary.
 | H4 SetDataRate mid-session | #4 | #4 unchanged — libccid trigger conditions in `ifdhandler.c` are untracked; keep the capture check |
 | H5 stop-bit/GT config | #5 | **folded into H2** as the electrical mechanism (A.3) — violation confirmed |
 | H6 in-buffer permutation | #6 residual | #6, further weakened: `t1_xcv` truncation removes the tail-stitch variants |
+
+## A.7 H4 settled from the vendored `ifdhandler.c` (#136, 2026-10-28)
+
+`reference/CCID` (submodule @ 1a0f75d, upstream CCID 1.7.1-8) now carries
+`src/ifdhandler.c` — the file A.5/A.6 listed as an untracked gap ("libccid
+trigger conditions untracked"). Reading it settles H4 without bench time:
+
+**1. libccid never generates PPS for our Cherry profile.** The PPS gate in
+`IFDHSetProtocolParameters` (`reference/CCID/src/ifdhandler.c:980-1009`):
+
+```c
+/* Automatic PPS made by the ICC? */
+if ((! (ccid_desc->dwFeatures & CCID_CLASS_AUTO_PPS_CUR))
+	/* TA2 absent: negotiable mode */
+	&& (! atr.ib[1][ATR_INTERFACE_BYTE_TA].present))
+{
+	...
+	if (((pps[1] & 0x0F) != default_protocol) || (PPS_HAS_PPS1(pps)))
+	{
+		...
+		if (PPS_Exchange(reader_index, pps, &len, &pps[2]) != PPS_OK)
+```
+
+Cherry dwFeatures `0x000100BA` includes `CCID_CLASS_AUTO_PPS_CUR`
+(`0x00000080`, `ccid.h:189`) → the gate is FALSE → `PPS_Exchange` is never
+called → **no PPS ever rides XfrBlock to this reader** (the PPS requests we
+DO see answered with an echo come from that same dwFeatures claim — the
+host trusts the reader to have done it; our echo answers any non-libccid
+sender). H4's "bench scripts are a plausible sender" caveat stands, but
+stock pcscd/libccid is exonerated by source.
+
+**2. What libccid DOES run against a TPDU-level T=1 reader after
+SetParameters** (`ifdhandler.c:1186-1211`): the openct T=1 engine on the
+HOST — IFSC from ATR TA3 (`t1_set_param(t1, IFD_PROTOCOL_T1_IFSC, ifsc)`),
+and because we deliberately do NOT advertise `CCID_CLASS_AUTO_IFSD`
+(`0x00000040`→`0x00000400`, `ccid.h:190` — see device_profile
+`test_cherry_st2100_features_no_auto_ifsd`), the host runs
+`t1_negotiate_ifsd(t1, 0, ccid_desc->dwMaxIFSD)` — S(IFS request/response)
+blocks ride through our transparent pipe. Consistent with the §0 model-B
+map and the #330 endpoint-reset findings.
+
+**3. The host's readTimeout is computed from OUR GetParameters echo**
+(`ifdhandler.c:1091-1107`): `readTimeout = T1_card_timeout(f, d, param[2]
+/* BWI */, param[3] /* CWI */, ...)` (+5 min for "cards needing it") — the
+BWI we echo in GetParameters directly sets how long the host waits before
+declaring US dead. Our `t1_bwt_ms` clamp band [500 ms, 5 s] sits inside
+the host's budget at every BWI we can echo (BWI 4 ⇒ ~1.36 s at
+default Fi/Di).
+
+**4. `SetDataRateAndClockFrequency` senders**: over the whole vendored
+libccid tree, `PC_to_RDR_SetDataRateAndClockFrequency` (`0x73`,
+`ccid.h:230`) has **no sender** — no `CmdXfrBlock`/`IFDHControl` path
+constructs it (the only `0x73` bytes in `ifdhandler.c` are unrelated
+SECODER APDU constants, L1071/L1939). Stock pcscd/libccid can therefore
+NEVER trigger H4; a `0x73` on a capture can only come from custom host
+tooling talking raw CCID.
