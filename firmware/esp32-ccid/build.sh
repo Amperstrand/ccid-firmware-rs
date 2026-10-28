@@ -580,6 +580,18 @@ if [ -n "${FLASH_PORT}" ]; then
         echo "error: bootloader.bin not found under ${TARGET_DIR}/${TRIPLE}/${PROFILE}/build — refusing to flash without it (#442: app-only flashes keep stale bootloaders alive)" >&2
         exit 1
     fi
+    # Codex P1 on #490: the bootloader offset is CHIP-FAMILY-derived,
+    # never guessed — esp32 boots it from 0x1000, esp32c3/s3/c2 from
+    # 0x0 (design §4.4 check 7; tools/hil/make_bundle.py
+    # BOOTLOADER_OFFSETS is the canonical table). An unconditional
+    # 0x1000 write on a C3 overwrites part of the real bootloader
+    # while leaving its first sector stale — unbootable until a
+    # correctly addressed recovery flash.
+    case "${CHIP}" in
+        esp32)   BOOTLOADER_OFFSET="0x1000" ;;
+        esp32c3|esp32s3|esp32c2) BOOTLOADER_OFFSET="0x0" ;;
+        *) echo "error: unknown chip '${CHIP}' — no bootloader-offset rule (#490; see tools/hil/make_bundle.py BOOTLOADER_OFFSETS)" >&2; exit 1 ;;
+    esac
     # Codex review on #82: writing ota_0 while otadata still points at
     # ota_1 leaves the bootloader on the OLD image after a "successful"
     # flash. Erasing otadata resets boot selection to the first valid
@@ -596,7 +608,7 @@ if [ -n "${FLASH_PORT}" ]; then
     # Never a hand-rolled esptool sequence on a bench reader port.
     ESP_FLASH_TOOL="${SCRIPT_DIR}/../../tests/hardware/labgrid/esp32_flash.py"
     ESP_FLASH_ARGS=(--port "${FLASH_PORT}" --chip "${CHIP}" --baud "${FLASH_BAUD}"
-        --image 0x1000="${BOOTLOADER_BIN}"
+        --image "${BOOTLOADER_OFFSET}=${BOOTLOADER_BIN}"
         --image 0x8000="${PART_TABLE}" --image "${FLASH_OFFSET}=${IMAGE}"
         --erase "${OTADATA_OFFSET}=0x2000")
     if [ -f "${SCRIPT_DIR}/../../tests/hardware/labgrid/exporter-ai-legion-nfc.yaml" ]; then
