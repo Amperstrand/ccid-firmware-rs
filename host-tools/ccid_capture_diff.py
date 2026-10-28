@@ -96,7 +96,11 @@ def mask_spans(name: str, exchange: dict) -> dict[str, list[tuple[int, int]]]:
             )
         offset = decl.get("offset")
         length = decl.get("length")
-        if not isinstance(offset, int) or not isinstance(length, int) or length < 1:
+        # Codex P2 on #493: reject NEGATIVE offsets too — python slicing
+        # would silently mask from the END of the buffer instead of
+        # failing, producing wrong-but-green diffs.
+        if not isinstance(offset, int) or not isinstance(length, int) \
+                or offset < 0 or length < 1:
             raise CaptureError(f"{name}: random field {decl.get('field')!r} needs offset+length")
         buf = parse_hex(name, side, exchange.get(side, ""))
         if offset + length > len(buf):
