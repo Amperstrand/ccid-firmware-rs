@@ -60,10 +60,17 @@ LRC = XOR of all preceding bytes (including SYNC and CTRL). Host commands are
 **The 87-case fuzz battery** (`conformance_battery.py::fuzz_battery`): 7 fixed
 malformed cases (bad LRC, truncated header, no-SYNC garbage, SYNC+garbage,
 oversized dwLength, lone SYNC, NAK ctrl frame) + 80 seeded-random rounds = 87
-cases per reader, each followed by a valid GetSlotStatus resync proof. Run
+cases per reader, each followed by a valid GetSlotStatus resync proof — the
+probe window is the settle-gated `exchange()` read (idle reads are counted only
+AFTER `settle` seconds, hard cap `settle + 1.5 s`; the resync probes pass
+`settle=0.6`, `conformance_battery.py::exchange()` — wired in #107/f035d9c,
+which closed the PR #94 finding that `exchange()` ignored its `settle`
+parameter, so the "generous probe timing" below is established by
+construction, not assumed). Run
 against BOTH bench readers (nucula `pn7160-ccid`, m5stick MFRC522): nucula
 87/87; m5stick 86/87 — the one flagged case (truncated header `03 06 65 01`)
-recovers with a valid response under generous probe timing, so it is suspected
+recovers with a valid response under that settle-gated probe timing, so it is
+suspected
 to be a battery timing false positive, not a parser stall (later **confirmed**
 a false positive — issue #89 closed via the #107 reader-retirement forensics).
 
