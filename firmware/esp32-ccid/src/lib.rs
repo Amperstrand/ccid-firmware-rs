@@ -20,6 +20,7 @@ pub mod ccid_fuzz;
 pub use ccid_service::ccid_handler;
 pub use ccid_service::ccid_serial_server;
 pub use ccid_service::ccid_types;
+pub use ccid_service::cdc_burst;
 pub use ccid_service::frontend;
 pub use ccid_service::nfc;
 pub use ccid_service::t1;

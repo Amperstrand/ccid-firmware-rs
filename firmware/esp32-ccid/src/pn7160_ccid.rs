@@ -13,10 +13,36 @@ use esp_idf_hal::usb_serial::{config::Config as UsbConfig, UsbSerialDriver};
 use esp_idf_sys::link_patches;
 
 use crate::ccid_handler::CcidHandler;
-use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows, ServeAction};
+use crate::ccid_serial_server::{CcidSerialServer, ResponseWindows};
+use crate::cdc_burst::{BurstReadError, BurstWire, CdcBurstServe};
 
 const UART_RX_TIMEOUT_MS: u32 = 100;
 const CARD_POLL_INTERVAL_MS: u32 = 500;
+
+/// USB-CDC adapter for the host-testable burst serve loop (issue
+/// #119): the driver's read returns whatever its ring holds up to
+/// `buf.len()` (the CDC-class contract, see `cdc_burst`), so one call
+/// delivers a whole burst — the loop logic itself lives in
+/// `ccid-service` behind mock-transport unit tests.
+struct CdcWire<'a, 'd> {
+    usb: &'a mut UsbSerialDriver<'d>,
+}
+
+impl BurstWire for CdcWire<'_, '_> {
+    fn read_burst(&mut self, buf: &mut [u8], timeout_ticks: u32) -> Result<usize, BurstReadError> {
+        self.usb
+            .read(buf, timeout_ticks)
+            .map_err(|_| BurstReadError)
+    }
+
+    fn write_frame(&mut self, bytes: &[u8]) -> bool {
+        // 100 ms write timeout at the driver tick rate — the value the
+        // retired inline loop used.
+        self.usb
+            .write(bytes, esp_idf_hal::delay::TickType::new_millis(100).ticks())
+            .is_ok()
+    }
+}
 
 #[link_section = ".rodata"]
 static _BUILD_TAG: &[u8] = b"pn7160-ccid-v3";
@@ -152,19 +178,6 @@ pub fn run() -> ! {
         response_windows,
         unsafe { esp_idf_sys::xTaskGetTickCount() },
     );
-    // Issue #119: burst reads. The old 1-byte buffer cost one usb.read
-    // call PER BYTE (13 calls for a 13-byte GetSlotStatus frame, ~23 ms
-    // each → flat ~300 ms/command). 64 bytes = one full-speed CDC bulk
-    // packet; usb.read returns whatever the driver ring holds (up to the
-    // buffer length), so a whole frame lands in one call.
-    let mut burst_buf = [0u8; 64];
-    let timeout_ticks = TickType::new_millis(UART_RX_TIMEOUT_MS as u64).ticks();
-    // #153 arrival floor (Codex round 2 on #158): bytes queued in the
-    // CDC ring during a blocking handler are returned by the NEXT read
-    // — anchor them at the tick of the last dispatch, never at the
-    // drain-time read. An empty read proves the ring idle and raises
-    // the floor.
-    let mut arrival_floor = unsafe { esp_idf_sys::xTaskGetTickCount() };
 
     // Purge boot-log bytes so CCID starts clean
     esp_idf_hal::delay::FreeRtos::delay_ms(500);
@@ -177,71 +190,46 @@ pub fn run() -> ! {
     }
     log::warn!("pn7160-ccid: CCID loop starting");
 
+    // Issue #119: burst reads (66109dd) — the old 1-byte buffer cost
+    // one usb.read call PER BYTE (13 calls for a 13-byte GetSlotStatus
+    // frame → the flat ~300 ms/command the battery measured). 64 bytes
+    // = one full-speed CDC bulk packet; usb.read returns whatever the
+    // driver ring holds, so a whole frame lands in one call. The loop
+    // (burst feed, #153/#168 arrival-floor discipline, inline response
+    // flush, snapshot stop) lives in ccid-service (`cdc_burst`),
+    // host-tested with mock transports — this main only supplies the
+    // wire adapter, the tick source, and the wire-quiet hook (BLE
+    // drain).
+    let mut serve = CdcBurstServe::new(
+        server,
+        unsafe { esp_idf_sys::xTaskGetTickCount() },
+        "gempc-cdc",
+    );
+    let mut burst_buf = [0u8; 64];
+    let read_timeout_ticks = TickType::new_millis(UART_RX_TIMEOUT_MS as u64).ticks();
+    // BLE drain runs at the wire-quiet points (post-response, idle);
+    // no-op in non-ble builds.
+    #[cfg(feature = "ble")]
+    let mut on_quiet = || {
+        if let Some(ble) = ble_console.as_ref() {
+            ble.drain();
+        }
+    };
+    #[cfg(not(feature = "ble"))]
+    let mut on_quiet = || {};
+
     loop {
-        match usb.read(&mut burst_buf, timeout_ticks) {
-            Ok(n) if n > 0 => {
-                // One read = one burst: every byte in it shares the
-                // floor captured before it.
-                let read_end = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                let floor = arrival_floor;
-                for &byte in &burst_buf[..n] {
-                    let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                    if server.feed_byte(byte, now) == ServeAction::Respond {
-                        // #153: the frame may have queued behind the
-                        // previous handler — anchor it at the burst's
-                        // arrival floor before judging expiry, then drop
-                        // responses that outlived the host's read window
-                        // instead of poisoning the stream.
-                        server.refresh_host_deadline(floor);
-                        let post = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                        if server.response_expired(post) {
-                            server.record_late_response();
-                            continue;
-                        }
-                        let write_timeout = TickType::new_millis(100).ticks();
-                        // GemPC Twin: echo the received frame, then the
-                        // response. #294 WS2: the OTA serve proof fires
-                        // only when BOTH frames went out — a failed CDC
-                        // write is not serve evidence (the old `let _`
-                        // shape ignored the failure).
-                        let sent = usb.write(server.echo(), write_timeout).is_ok()
-                            && usb.write(server.response(), write_timeout).is_ok();
-                        if sent {
-                            ccid_service::ota_validity::note_serve_evidence("gempc-cdc");
-                        }
-                        #[cfg(feature = "ble")]
-                        if let Some(ble) = ble_console.as_ref() {
-                            ble.drain();
-                        }
-                        // Dump-and-retrieve: escape 0xD1 ack went out — panic
-                        // now so the panic handler writes the flash coredump.
-                        if server.take_snapshot_request() {
-                            panic!("escape 0xD1: diagnostic snapshot requested");
-                        }
-                    }
-                }
-                // Codex round 3 on #168: the floor may only advance on
-                // evidence the queue drained. A SHORT read could not
-                // fill the buffer — plausibly drained at read return, so
-                // later bytes are fresh. A FULL read may leave older
-                // queued bytes behind (retries piling during a handler
-                // past one burst): the floor must stay put or their
-                // arrivals would be overstated.
-                if n < burst_buf.len() {
-                    arrival_floor = read_end;
-                }
-            }
-            _ => {
-                // Read idle — background card poll; the empty read also
-                // proves the ring drained: later bytes are fresh.
-                let now = unsafe { esp_idf_sys::xTaskGetTickCount() };
-                arrival_floor = now;
-                server.poll_if_due(now);
-                #[cfg(feature = "ble")]
-                if let Some(ble) = ble_console.as_ref() {
-                    ble.drain();
-                }
-            }
+        let outcome = serve.serve_once(
+            &mut CdcWire { usb: &mut usb },
+            &mut burst_buf,
+            read_timeout_ticks,
+            || unsafe { esp_idf_sys::xTaskGetTickCount() },
+            &mut on_quiet,
+        );
+        // Dump-and-retrieve: the 0xD1 ack is on the wire — panic now
+        // so the panic handler writes the flash coredump.
+        if outcome.snapshot_requested {
+            panic!("escape 0xD1: diagnostic snapshot requested");
         }
     }
 }
