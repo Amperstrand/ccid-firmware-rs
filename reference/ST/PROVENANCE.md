@@ -55,11 +55,14 @@ the conservative choice documented in `smartcard_common.rs`.
 | Item | Value |
 |---|---|
 | Upstream | https://github.com/STMicroelectronics/stm32-mw-usb-device |
-| Pin (commit) | see `stm32-mw-usb-device/PROVENANCE` block below |
-| License | see file headers |
-| Vendored files | `Class/CCID/Inc/*.h` (trimmed) |
+| Pin (commit) | `2df324bd60d4b0bb27404fd70b1c089b467f0e09` (master, 2026-04-08) |
+| License | ST Liberty/Apache-style SLA0044-class ("terms in the LICENSE file in the root directory"); file headers kept verbatim — quote-only, never compiled, consistent with the class-1 policy |
+| Vendored files | `Class/CCID/Inc/` — all five headers (usbd_ccid.h, usbd_ccid_cmd.h, usbd_ccid_if_template.h, usbd_ccid_sc_if_template.h, usbd_ccid_smartcard_template.h) · `Class/CCID/Src/usbd_ccid.c` TRIMMED (bulk-OUT state machine + ZLP handling + EP open) · `Class/CCID/Src/usbd_ccid_smartcard_template.c` (full T=0/T=1 engine reference) |
 
 What we quote from it (specquotes marker `ST_CCID`): the USB Device Library
-CCID class template — descriptor field values, bulk endpoint/ZLP handling
-and the T=0/T=1 smartcard-interface template state machine that the #138
-audit table compares our implementation against.
+CCID class template — descriptor field defaults (`USBD_CCID_DEFAULT_CLOCK_FREQ`,
+`USBD_CCID_DEFAULT_DATA_RATE`, `CCID_VOLTAGE_SUPP`, `EXCHANGE_LEVEL_FEATURE =
+TPDU_EXCHANGE`, `CCID_MAX_BLOCK_SIZE_HEADER`), the bulk-OUT transfer state
+machine's short-packet / exact-MaxPcktLen / ZLP handling, and the T=0/T=1
+smartcard-interface template state machine that `docs/CCID_DESCRIPTOR_AUDIT.md`
+compares our implementation against.

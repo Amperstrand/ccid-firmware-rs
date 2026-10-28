@@ -20,6 +20,13 @@ use ccid_protocol::types::{
     REQUEST_GET_CLOCK_FREQUENCIES, REQUEST_GET_DATA_RATES, SUBCLASS_NONE,
 };
 
+// #138 audit: the profile consts behind this array are compared
+// field-by-field against the readers/*.txt authorities AND ST's USB
+// Device Library CCID template in docs/CCID_DESCRIPTOR_AUDIT.md. ST's
+// template picks TPDU exchange for its own reader too:
+//
+// ST_CCID: #define EXCHANGE_LEVEL_FEATURE                               TPDU_EXCHANGE
+//
 // CCID_SPEC: /* Identifies the length of type of subordinate descriptors of a CCID device
 // * Table 5.1-1 Smart Card Device Class descriptors */
 // struct usb_ccid_class_descriptor {
@@ -199,6 +206,12 @@ impl<'bus, Bus: UsbBus, D: SmartcardDriver> CcidClass<'bus, Bus, D> {
             Ok(n) => {
                 self.tx_offset += n;
                 if self.tx_offset >= tx_data.len() {
+                    // #138 audit verdict (docs/CCID_DESCRIPTOR_AUDIT.md §3):
+                    // exact-multiple completions MUST be terminated with a
+                    // ZLP — ST's template treats a received ZLP as the idle
+                    // transition on the host side, and libccid's only
+                    // ZLP-related fixup (ccid.c GEMPCTWIN/GEMPCKEY/DELLSCRK
+                    // bcdDevice 2.00) does not touch our three identities.
                     if tx_data.len() % PACKET_SIZE == 0 {
                         self.needs_zlp = true;
                     }

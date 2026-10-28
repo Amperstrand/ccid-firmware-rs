@@ -149,3 +149,12 @@ comment_marker = "ST_HAL_C"
 format = "markdown"
 file = "reference/osmo-ccid-firmware/sysmoOCTSIM/config/hpl_sercom_config.h"
 comment_marker = "OSMO_7816"
+
+# ST USB Device Library CCID class (issue #138, quote-only vendored under
+# reference/ST/): what a commercial STM32 CCID reader implements —
+# descriptor defaults, TPDU exchange-level choice, message-length ceiling,
+# and the bulk-OUT short-packet/exact-length/ZLP transfer state machine.
+[sources.ST_CCID]
+format = "markdown"
+file = "reference/ST/stm32-mw-usb-device/Class/CCID/Inc/usbd_ccid.h"
+comment_marker = "ST_CCID"
