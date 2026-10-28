@@ -665,7 +665,6 @@ fn main() {
     #[cfg(feature = "board-nucula")]
     let nfc_binding = esp32_ccid::board_ctor::NfcBusBinding::from_board(&boards::NUCULA);
 
-
     let (mfrc522_frontend, mfrc522_boot_ok) =
         esp32_ccid::board_ctor::mfrc522::bring_up(nfc_binding);
 
