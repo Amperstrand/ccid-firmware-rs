@@ -2,16 +2,17 @@
 # Automatically generated file. DO NOT EDIT.
 # Espressif IoT Development Framework (ESP-IDF) 5.2.3 Project Configuration
 #
-# ESP32-C3 BLE bench config (issue #66) — WARNING, currently blocked:
-# the full Bluedroid bring-up chain completes (controller init, GATT
-# service, adv + scan-rsp data), but this C3 controller/bench combo
-# deterministically rejects LE Set Advertising Parameters with Command
-# Disallowed (0x0c) at esp_ble_gap_start_advertising, so the device
-# never becomes discoverable. BLE_42 on / BLE_50 off are already
-# encoded (each fixed an earlier failure). NOT sufficient (bench
-# 2026-10-09): BLE_50 off, adv/scan-rsp split, canonical IDF event
-# chaining. No build.sh board consumes this file; kept for the next
-# attempt (AGENTS.md "BLE Debug Console" > C3 traps).
+# ESP32-C3 BLE bench config (issue #66): CCID stays on the USB-CDC
+# wire, firmware logs ride NUS GATT notifications (ble_console.rs).
+# Consumed by build.sh `c3-ccid-ble` (feature/config pairing is gated
+# by tools/check_sdkconfigs.py). The 2026-10-09 "0x0c Command
+# Disallowed" advertising wall is CLOSED (D-3,
+# docs/DECISION_REGISTER.md — closed by the esp-idf-svc 0.53 /
+# esp-idf-hal 0.47 generation bump; both boards advertise,
+# bench-verified 2026-10-16). BLE_42 on / BLE_50 off remain
+# load-bearing C3 traps (AGENTS.md "C3/Bluedroid sdkconfig traps").
+# Still open on #66: bench verification of central connect + NUS
+# log delivery (needs a flash window).
 #
 CONFIG_SOC_ADC_SUPPORTED=y
 CONFIG_SOC_DEDICATED_GPIO_SUPPORTED=y
