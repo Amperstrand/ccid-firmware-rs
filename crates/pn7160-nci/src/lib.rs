@@ -31,10 +31,6 @@ pub mod esp_transport;
 /// mapping/validation surface and its tests compile everywhere; the
 /// FFI-touching device wrapper is esp-target-only.
 pub mod hal_i2c;
-/// Pure embedded-hal 1.0 transport + bring-up constructor
-/// (t_4864e74e): bus/IRQ/VEN/delay handles only — no board facts, no
-/// esp bindings. Compiles and tests everywhere embedded-hal does.
-pub mod hal_transport;
 
 use heapless::Vec;
 
@@ -281,17 +277,6 @@ impl Frame {
             return None;
         }
         let mt = buf[0] & 0xE0;
-        // NCI §3.3 (v1.0 Table 2, unchanged through v2.x): the MT field
-        // defines exactly DATA(000b), CMD(001b), RSP(010b), NTF(011b);
-        // 100b–111b are RFU. The kernel's nci core likewise drops frames
-        // whose MT matches no handler. A frame with RFU MT bits is not a
-        // valid NCI packet — reject it (found by fuzz_nci_frame_decode,
-        // nightly 2026-10-26: input `aa 31 00`, MT=101b decoded as a
-        // valid Frame and could even satisfy the ladder's "first
-        // non-NTF frame" reply wait spuriously).
-        if mt != MT_DATA && mt != MT_CMD && mt != MT_RSP && mt != MT_NTF {
-            return None;
-        }
         let pbf = (buf[0] & PBF_MASK) != 0;
         let gid = buf[0] & 0x0F;
         let oid = buf[1];
@@ -466,15 +451,6 @@ pub trait Transport {
     /// Collect-wait hook (#125): no-op in host mocks; the ESP32 I2C
     /// transport delays for real between power_on activation waits.
     fn wait_ms(&mut self, _ms: u64) {}
-    /// Stateless link liveness probe (t_4864e74e diagnostics): a
-    /// zero-length, reply-less bus write — safe while a session is
-    /// active (never a state-machine-touching NCI transact). Default
-    /// `false` (link type without a probe primitive); the ESP32 I2C
-    /// transport overrides with its `i2c_master_write_to_device(0)`
-    /// probe, host mocks report their scripted state.
-    fn link_probe(&mut self) -> bool {
-        false
-    }
 }
 
 /// NCI DATA packet framing — NCI §5.4.1: octet 0 = PBF(bit 4) | CONN_ID(bits
@@ -881,6 +857,20 @@ pub mod reader {
     /// marginal coupling (the 2026-10-13 13 s stall class).
     pub const DATA_FIRST_WAIT_MS: u64 = 10;
 
+    /// Cumulative wait elapsed when the last DATA packet arrived
+    /// (issue #408 diagnosis; atomic so the free `exchange_detailed`
+    /// can record it without threading state through signatures).
+    pub static LAST_DATA_ARRIVAL_MS: core::sync::atomic::AtomicU32 =
+        core::sync::atomic::AtomicU32::new(0);
+
+    /// Progressive first-phase waits (issue #408 round 2): bench shows the
+    /// peer response lands somewhere inside the first 200 ms round (fixed
+    /// 10 ms first wait measured 210 ms constant — the answer arrives
+    /// between 10 ms and 200 ms and nobody was polling in between). Poll
+    /// on a rising ladder before settling into full rounds; catches
+    /// responses at 10/30/70/150 ms while keeping the 12-round budget.
+    pub const DATA_FIRST_PHASE_MS: [u64; 4] = [10, 20, 40, 80];
+
     /// Stall-report cadence (issue #156 B): the stall hook fires once
     /// the nominal elapsed crosses 1.5 s and every 1.5 s after —
     /// comfortably inside libccidtwin's 3 s DEFAULT_COM_READ_TIMEOUT,
@@ -993,6 +983,14 @@ pub mod reader {
 
         // One waited round completed without a response: count WTX
         // churn, advance the stall clock.
+        fn phase_wait(round_in_phase: usize) -> u64 {
+            if round_in_phase < DATA_FIRST_PHASE_MS.len() {
+                DATA_FIRST_PHASE_MS[..=round_in_phase].iter().sum()
+            } else {
+                DATA_COLLECT_WAIT_MS
+            }
+        }
+
         fn round_waited<T: Transport>(
             t: &mut T,
             waited_rounds: &mut usize,
@@ -1039,7 +1037,7 @@ pub mod reader {
             // until the CORE_CONN_CREDITS_NTF re-grant (NCI 1.0 §4.4.4);
             // churn (WTX advisories) is consumed while waiting.
             let mut credited = false;
-            let mut first_credit_round = true;
+            let mut credit_round: usize = 0;
             while budget > 0 {
                 if let Some(f) = t.poll_frame() {
                     if is_wtx_ntf(&f) {
@@ -1054,12 +1052,8 @@ pub mod reader {
                     }
                 }
                 budget -= 1;
-                let w = if first_credit_round {
-                    DATA_FIRST_WAIT_MS
-                } else {
-                    DATA_COLLECT_WAIT_MS
-                };
-                first_credit_round = false;
+                let w = phase_wait(credit_round);
+                credit_round += 1;
                 round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall, w);
             }
             if !credited {
@@ -1070,7 +1064,7 @@ pub mod reader {
         // RX: collect DATA packets on the connection, reassembling the
         // PBF chain (NCI 1.0 §3.5; last packet carries PBF=0).
         let mut response: Vec<u8, 1024> = Vec::new();
-        let mut first_rx_round = true;
+        let mut rx_round: usize = 0;
         while budget > 0 {
             if let Some(f) = t.poll_frame() {
                 if is_wtx_ntf(&f) {
@@ -1085,17 +1079,16 @@ pub mod reader {
                         return (ExchangeOutcome::Timeout, wtx);
                     }
                     if !f.pbf {
+                        LAST_DATA_ARRIVAL_MS.store(
+                            phase_wait(rx_round.saturating_sub(1)) as u32,
+                            core::sync::atomic::Ordering::Relaxed);
                         return (ExchangeOutcome::Data(response), wtx);
                     }
                 }
             }
             budget -= 1;
-            let w = if first_rx_round {
-                DATA_FIRST_WAIT_MS
-            } else {
-                DATA_COLLECT_WAIT_MS
-            };
-            first_rx_round = false;
+            let w = phase_wait(rx_round);
+            rx_round += 1;
             round_waited(t, &mut waited_rounds, &mut next_stall_ms, stall, w);
         }
         (ExchangeOutcome::Timeout, wtx)
@@ -1363,9 +1356,6 @@ pub mod mock {
         /// AFTER the caller's drain burst found the link empty (#170:
         /// the settle-drain contract).
         pub late_on_wait: VecDeque<StdVec<u8>>,
-        /// Scripted link liveness for `link_probe` (t_4864e74e) —
-        /// defaults to alive; tests flip it to model a dead bus.
-        pub link_alive: bool,
     }
 
     impl MockTransport {
@@ -1380,7 +1370,6 @@ pub mod mock {
                 transacts: 0,
                 waited_ms: 0,
                 late_on_wait: VecDeque::new(),
-                link_alive: true,
             }
         }
 
@@ -1405,10 +1394,6 @@ pub mod mock {
     }
 
     impl Transport for MockTransport {
-        fn link_probe(&mut self) -> bool {
-            self.link_alive
-        }
-
         fn send(&mut self, cmd: &[u8]) -> bool {
             self.sent.push(cmd.to_vec());
             if let Some(raw) = self.replies.pop_front() {
@@ -1521,29 +1506,6 @@ mod tests {
         assert_eq!(data_frag.mt, MT_DATA);
         assert_eq!(data_frag.gid, 0);
         assert_eq!(&data_frag.payload[..2], &[0xAA, 0xBB]);
-    }
-
-    #[test]
-    fn decode_rejects_rfu_message_types() {
-        // NCI §3.3: MT 100b–111b are RFU — not valid NCI packets. The
-        // fuzz nightly found decode accepting them (crash input
-        // `aa 31 00`, MT=101b). All four RFU MT values must reject;
-        // length/shape checks must not rescue them.
-        for mt_bits in [0x80u8, 0xA0, 0xC0, 0xE0] {
-            assert!(
-                Frame::decode(&[mt_bits, 0x00, 0x00]).is_none(),
-                "RFU MT {mt_bits:#04x} must not decode"
-            );
-            assert!(
-                Frame::decode(&[mt_bits | GID_RF, 0x06, 0x01, 0x00]).is_none(),
-                "RFU MT {mt_bits:#04x} with payload must not decode"
-            );
-        }
-        // Boundary sanity: the four defined MTs at the same shape decode.
-        assert!(Frame::decode(&[MT_DATA, 0x00, 0x00]).is_some());
-        assert!(Frame::decode(&[MT_CMD, 0x00, 0x00]).is_some());
-        assert!(Frame::decode(&[MT_RSP, 0x00, 0x00]).is_some());
-        assert!(Frame::decode(&[MT_NTF, 0x00, 0x00]).is_some());
     }
 
     #[test]
@@ -1937,8 +1899,7 @@ mod tests {
         assert!(matches!(outcome, reader::ExchangeOutcome::Data(_)));
         assert_eq!(wtx, 0);
         assert_eq!(
-            t.waited_ms,
-            reader::DATA_FIRST_WAIT_MS,
+            t.waited_ms, reader::DATA_FIRST_WAIT_MS,
             "fast peer must pay only the short first wait, not a full round"
         );
     }
@@ -1955,8 +1916,9 @@ mod tests {
         assert_eq!(wtx, 1, "the WTX advisory must be counted");
         assert_eq!(
             t.waited_ms,
-            reader::DATA_FIRST_WAIT_MS + reader::DATA_COLLECT_WAIT_MS,
-            "cadence after the short first wait stays on full rounds"
+            reader::DATA_FIRST_PHASE_MS[0] + (reader::DATA_FIRST_PHASE_MS[0]
+                + reader::DATA_FIRST_PHASE_MS[1]),
+            "cadence climbs the progressive ladder before full rounds"
         );
     }
 

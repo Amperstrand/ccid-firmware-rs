@@ -19,7 +19,7 @@ SLUG="${REPO:-$(git -C "$ROOT" remote get-url origin 2>/dev/null | sed -E 's#.*g
 [ -n "$SLUG" ] || { echo "pr-stamps-status: cannot derive the GitHub slug" >&2; exit 2; }
 command -v gh >/dev/null 2>&1 || { echo "pr-stamps-status: gh required" >&2; exit 2; }
 
-prs="$(gh pr list -R "$SLUG" --state open --json number,title,headRefOid --limit 100 \
+prs="$(gh pr list -R "$SLUG" --state open --json number,title,headRefOid --limit 300 \
     --jq '.[] | [.number, .headRefOid, .title] | @tsv')" || exit 2
 [ -n "$prs" ] || { echo "no open PRs on $SLUG"; exit 0; }
 
