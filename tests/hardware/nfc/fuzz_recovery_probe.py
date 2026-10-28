@@ -25,7 +25,9 @@ One serial connection per reader for the whole run: the nucula's
 USB-Serial/JTAG CDC dislikes rapid open/close cycles (readiness-without-
 data errors — AGENTS.md nucula failure modes).
 
-Direct serial access: pcscd must be stopped. The script manages it.
+Direct serial access: pcscd must be stopped. The script manages it —
+and acquires the DUT labgrid places first (nucula-c3, m5stick) so it
+cannot race concurrent HIL/bolty/micronuts sessions (issue #338).
 
 Usage:
     python3 tests/hardware/nfc/fuzz_recovery_probe.py [--iters 25] [--quick]
@@ -43,9 +45,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from conformance_battery import (  # noqa: E402
     CTRL_ACK,
+    LABGRID_PLACES,
     MSG_GET_SLOT_STATUS,
     SYNC,
     frame,
+    labgrid_acquire,
+    labgrid_release,
     lrc,
     pcscd_start,
     pcscd_stop,
@@ -113,9 +118,36 @@ def find_response(buf: bytes, seq: int):
 class Port:
     """Persistent serial connection with one CDC-recovery reopen."""
 
+    @staticmethod
+    def _open(port: str):
+        """Safe opener — the conformance battery's Reader pattern.
+
+        DTR-latch rule (AGENTS.md nucula failure modes; Codex P1 on
+        #107, issue #338): pyserial asserts DTR/RTS at open; on the
+        nucula CDC that latches boot:0x5 ROM download mode on the next
+        reset. Deassert both lines BEFORE open (and again after — a PTY
+        surface fails the ioctls with ENOTTY, tolerated per #305).
+        8N2 per the GemPC-Twin framing sibling fix: at the 8N1 default
+        the m5stick UART sees framing errors and answers nothing
+        (battery Reader comment, found 2026-10-20 while instrumenting
+        #330) — fix-all-siblings applied here.
+        """
+        s = serial.Serial(port=None, baudrate=115200,
+                          timeout=POLL_INTERVAL_S, stopbits=2)
+        s.port = port
+        s.dtr = False
+        s.rts = False
+        s.open()
+        try:
+            s.setDTR(False)
+            s.setRTS(False)
+        except OSError:
+            pass
+        return s
+
     def __init__(self, name: str):
         self.name = name
-        self.s = serial.Serial(resolve(name), 115200, timeout=POLL_INTERVAL_S)
+        self.s = self._open(resolve(name))
 
     def reopen(self):
         try:
@@ -123,7 +155,7 @@ class Port:
         except Exception:
             pass
         time.sleep(0.5)
-        self.s = serial.Serial(resolve(self.name), 115200, timeout=POLL_INTERVAL_S)
+        self.s = self._open(resolve(self.name))
         self.s.reset_input_buffer()
 
     def recovery_latency(self, case: bytes) -> tuple[float | None, int]:
@@ -167,51 +199,66 @@ def main() -> int:
 
     stalls = 0
     ports: dict[str, Port] = {}
-    pcscd_stop()
+    # Labgrid bench doctrine (AGENTS.md; Codex P1 on #107, issue #338):
+    # acquire the DUT places BEFORE stopping pcscd or opening ports —
+    # concurrent HIL/bolty/micronuts sessions cannot be raced by this
+    # long-running probe. Partial acquisition releases what was held
+    # and aborts (battery main() semantics).
+    places = [LABGRID_PLACES[name] for name in ("nucula", "m5stick")]
+    acquired = labgrid_acquire(places)
+    if len(acquired) != len(places):
+        labgrid_release(acquired)  # release exactly what was held
+        print("could not acquire both DUT places — another session "
+              "holds the bench; retry when free")
+        return 2
     try:
-        for name in ("nucula", "m5stick"):
-            ports[name] = Port(name)
-        for rname, port in ports.items():
-            print(f"== {rname} ({port.s.port})")
-            for cname, raw in cases:
-                latencies: list[float] = []
-                junks: list[int] = []
-                no_recovery = 0
-                for _ in range(args.iters):
-                    try:
-                        lat, junk = port.recovery_latency(raw)
-                    except serial.SerialException:
-                        port.reopen()  # nucula CDC readiness quirk — one clean cycle
+        pcscd_stop()
+        try:
+            for name in ("nucula", "m5stick"):
+                ports[name] = Port(name)
+            for rname, port in ports.items():
+                print(f"== {rname} ({port.s.port})")
+                for cname, raw in cases:
+                    latencies: list[float] = []
+                    junks: list[int] = []
+                    no_recovery = 0
+                    for _ in range(args.iters):
                         try:
                             lat, junk = port.recovery_latency(raw)
                         except serial.SerialException:
-                            lat, junk = None, 0
-                    if lat is None:
-                        no_recovery += 1
+                            port.reopen()  # nucula CDC readiness quirk — one clean cycle
+                            try:
+                                lat, junk = port.recovery_latency(raw)
+                            except serial.SerialException:
+                                lat, junk = None, 0
+                        if lat is None:
+                            no_recovery += 1
+                        else:
+                            latencies.append(lat)
+                            junks.append(junk)
+                    if latencies:
+                        line = (f"  {cname:20s} n={len(latencies):3d} "
+                                f"min={min(latencies):.2f}s med={statistics.median(latencies):.2f}s "
+                                f"p95={pct(latencies, 0.95):.2f}s max={max(latencies):.2f}s "
+                                f"junk-ahead-max={max(junks)}B")
                     else:
-                        latencies.append(lat)
-                        junks.append(junk)
-                if latencies:
-                    line = (f"  {cname:20s} n={len(latencies):3d} "
-                            f"min={min(latencies):.2f}s med={statistics.median(latencies):.2f}s "
-                            f"p95={pct(latencies, 0.95):.2f}s max={max(latencies):.2f}s "
-                            f"junk-ahead-max={max(junks)}B")
-                else:
-                    line = f"  {cname:20s} n=0 — NO RECOVERY in any iteration"
-                if no_recovery:
-                    line += f" NO-RECOVERY={no_recovery}"
-                over_cap = sum(1 for l in latencies if l > BATTERY_HARD_CAP_S)
-                if over_cap:
-                    line += f" OVER-CAP={over_cap}"
-                stalls += no_recovery + over_cap
-                print(line)
+                        line = f"  {cname:20s} n=0 — NO RECOVERY in any iteration"
+                    if no_recovery:
+                        line += f" NO-RECOVERY={no_recovery}"
+                    over_cap = sum(1 for l in latencies if l > BATTERY_HARD_CAP_S)
+                    if over_cap:
+                        line += f" OVER-CAP={over_cap}"
+                    stalls += no_recovery + over_cap
+                    print(line)
+        finally:
+            for port in ports.values():
+                try:
+                    port.s.close()
+                except Exception:
+                    pass
+            pcscd_start()
     finally:
-        for port in ports.values():
-            try:
-                port.s.close()
-            except Exception:
-                pass
-        pcscd_start()
+        labgrid_release(acquired)
 
     if stalls:
         print(f"\nVERDICT: REAL STALL — {stalls} recoveries exceeded the "
