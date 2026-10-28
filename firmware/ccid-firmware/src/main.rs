@@ -171,13 +171,9 @@ enum AppMode {
 }
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
-const REINIT_THRESHOLD: u8 = 3;
-
-#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 struct SmartcardWrapper {
     uart: SmartcardUart,
-    consecutive_failures: u8,
-    reinit_count: u32,
+    heal: ccid_firmware_rs::selfhealing::FailureTracker,
 }
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
@@ -185,8 +181,39 @@ impl SmartcardWrapper {
     fn new(uart: SmartcardUart) -> Self {
         Self {
             uart,
-            consecutive_failures: 0,
-            reinit_count: 0,
+            heal: ccid_firmware_rs::selfhealing::FailureTracker::new(),
+        }
+    }
+
+    /// Record one transmit outcome in the self-healing streak and run
+    /// the threshold action when it fires (power cycle + re-activation).
+    /// #342: `Ok(0)` is failure-class — a mute exchange must accumulate
+    /// the streak, never reset it — and is reported to the CCID layer
+    /// as an honest error (the #132/H1 contract: an empty "success"
+    /// once handed libccid a DataBlock while the card's legal answer
+    /// was still in flight).
+    fn track_transmit(
+        &mut self,
+        result: core::result::Result<usize, SmartcardError>,
+    ) -> core::result::Result<usize, SmartcardError> {
+        use ccid_firmware_rs::selfhealing::Outcome;
+
+        let outcome = match &result {
+            Ok(0) => Outcome::Mute,
+            Ok(_) => Outcome::Success,
+            Err(_) => Outcome::Failure,
+        };
+        if self.heal.record(outcome) {
+            defmt::warn!(
+                "SmartcardWrapper: re-init triggered (reinit_count={})",
+                self.heal.reinit_count()
+            );
+            self.uart.power_off();
+            let _ = self.uart.power_on();
+        }
+        match result {
+            Ok(0) => Err(SmartcardError::Timeout),
+            other => other,
         }
     }
 }
@@ -198,14 +225,16 @@ impl CcidSmartcardDriver for SmartcardWrapper {
     fn power_on(&mut self) -> core::result::Result<&[u8], Self::Error> {
         // A fresh card session must not inherit the previous session's
         // failure streak (Codex review #36: one early failure in a new
-        // session would otherwise trigger a hidden cold reset).
-        self.consecutive_failures = 0;
+        // session would otherwise trigger a hidden cold reset). The
+        // pending re-init latch survives — only the CCID layer's
+        // take_reinit_pending consumes it (#342).
+        self.heal.session_start();
         let atr = self.uart.power_on()?;
         Ok(&atr.raw[..atr.len])
     }
 
     fn power_off(&mut self) {
-        self.consecutive_failures = 0;
+        self.heal.session_start();
         self.uart.power_off()
     }
 
@@ -218,26 +247,8 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         command: &[u8],
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error> {
-        match self.uart.transmit_apdu(command, response) {
-            Ok(n) => {
-                self.consecutive_failures = 0;
-                Ok(n)
-            }
-            Err(e) => {
-                self.consecutive_failures = self.consecutive_failures.saturating_add(1);
-                if self.consecutive_failures >= REINIT_THRESHOLD {
-                    self.reinit_count = self.reinit_count.saturating_add(1);
-                    self.consecutive_failures = 0;
-                    defmt::warn!(
-                        "SmartcardWrapper: re-init triggered (reinit_count={})",
-                        self.reinit_count
-                    );
-                    self.uart.power_off();
-                    let _ = self.uart.power_on();
-                }
-                Err(e)
-            }
-        }
+        let result = self.uart.transmit_apdu(command, response);
+        self.track_transmit(result)
     }
 
     fn transmit_raw(
@@ -245,7 +256,8 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         data: &[u8],
         response: &mut [u8],
     ) -> core::result::Result<usize, Self::Error> {
-        self.uart.transmit_raw(data, response)
+        let result = self.uart.transmit_raw(data, response);
+        self.track_transmit(result)
     }
 
     fn set_protocol(&mut self, protocol: u8) {
@@ -265,7 +277,15 @@ impl CcidSmartcardDriver for SmartcardWrapper {
     }
 
     fn reinit_count(&self) -> u32 {
-        self.reinit_count
+        self.heal.reinit_count()
+    }
+
+    /// #342: the inline re-init event — consumed by the CCID layer
+    /// after command dispatch (ccid_core.rs handle_message), which
+    /// refreshes the 0xD0 reinit word immediately instead of waiting
+    /// for the next presence poll.
+    fn take_reinit_pending(&mut self) -> bool {
+        self.heal.take_reinit_pending()
     }
 }
 

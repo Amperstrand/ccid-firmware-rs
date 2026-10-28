@@ -749,6 +749,16 @@ impl SmartcardUart {
             }
         }
 
+        // #342: a zero-byte read is a mute exchange, not a short
+        // success — the same honest-error contract as the T=1 prologue
+        // path above (#132/H1) and the F746 bitbang guard (b1e685a).
+        // An Ok(0) here once reset the wrapper's failure streak on a
+        // mute card, so the self-healing re-init never fired.
+        if total_len == 0 {
+            defmt::warn!("transmit_raw: mute exchange (0 bytes) — reporting timeout");
+            return Err(SmartcardError::Timeout);
+        }
+
         defmt::debug!("transmit_raw: RX {} bytes", total_len);
         Ok(total_len)
     }

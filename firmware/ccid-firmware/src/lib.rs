@@ -37,6 +37,7 @@ pub mod driver;
 pub mod dwt_watchdog;
 pub mod pinpad;
 pub mod protocol_unit;
+pub mod selfhealing;
 
 // Host-only spec-path characterization tests (issue #53) — never compiled
 // into firmware builds.

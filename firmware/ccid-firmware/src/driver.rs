@@ -33,6 +33,16 @@ pub trait SmartcardDriver {
     fn reinit_count(&self) -> u32 {
         0
     }
+    /// Consume the pending self-healing re-init event (issue #342):
+    /// true exactly once after a re-init tore down and re-powered the
+    /// card mid-session. The CCID layer polls this after command
+    /// dispatch — the card session (ATR, negotiated parameters, T=1
+    /// link state) was invalidated and the session-owning layer must
+    /// not stay silent about it. Drivers without self-healing never
+    /// latch it.
+    fn take_reinit_pending(&mut self) -> bool {
+        false
+    }
     /// Fold driver-known state into the Escape 0xD0 diagnostics
     /// snapshot (issue #344).
     ///

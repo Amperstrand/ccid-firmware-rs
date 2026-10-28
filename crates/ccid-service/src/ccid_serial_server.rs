@@ -670,8 +670,7 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
         // parser in WaitCtrl for seconds. The idle tick is the only other
         // witness — drop a stalled partial frame here.
         if self.parser.mid_frame()
-            && now_ticks.wrapping_sub(self.last_byte_tick)
-                > Self::INTER_BYTE_STALL_TICKS
+            && now_ticks.wrapping_sub(self.last_byte_tick) > Self::INTER_BYTE_STALL_TICKS
         {
             self.parser.reset();
         }
@@ -1215,8 +1214,10 @@ mod tests {
         );
         // the next complete GetSlotStatus parses and is answered
         let frame = command_frame(PC_TO_RDR_GET_SLOT_STATUS, 1);
-        assert_eq!(feed_frame(&mut server, &frame, t0 + 60),
-                   ServeAction::Respond);
+        assert_eq!(
+            feed_frame(&mut server, &frame, t0 + 60),
+            ServeAction::Respond
+        );
     }
 
     fn idle_poll_fires_once_per_interval() {
