@@ -225,6 +225,14 @@ impl FrameParser {
         !matches!(self.state, ParserState::WaitSync)
     }
 
+    /// True when a partial frame is buffered (any state past WaitSync).
+    /// The serial serve loop uses this to drop stalled partial frames
+    /// from the read-idle tick path (bench 2026-10-28: a lone SYNC byte
+    /// otherwise wedges the reader until further bytes arrive).
+    pub fn is_mid_frame(&self) -> bool {
+        !matches!(self.state, ParserState::WaitSync)
+    }
+
     pub fn reset(&mut self) {
         self.received_frame.clear();
         self.reset_state();
