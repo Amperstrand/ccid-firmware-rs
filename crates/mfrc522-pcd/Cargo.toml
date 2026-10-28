@@ -15,7 +15,9 @@ mfrc522 = { git = "https://github.com/Amperstrand/mfrc522-rs.git", rev = "e9ced1
 embedded-hal = "=1.0.0"
 log = "=0.4.29"
 
-[target.'cfg(target_arch = "xtensa")'.dependencies]
+# #447: both embedded archs (esp32 xtensa + esp32c3 riscv32) — bus
+# recovery is arch-neutral and the nucula path needs it too.
+[target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
 # Pinned to match the workspace firmware crates so a single esp-idf-sys
 # instance is shared across the dependency graph.
 esp-idf-sys = "0.38"

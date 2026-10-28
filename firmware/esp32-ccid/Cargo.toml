@@ -32,7 +32,9 @@ board-m5stick = []
 # pinned; never hand-typed). Console is the ROM USB-Serial/JTAG CDC;
 # there is no UART bridge.
 board-nucula = []
-backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp"]
+# #447: bus recovery is arch-neutral (esp_idf_sys gpio_* only) and the
+# nucula PN7160 needs SDA-stuck clock-out just like the MFRC522 boards —
+backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp", "dep:mfrc522-pcd"]
 pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
 # Bench network facilities — the surfaces an untrusted network must never
 # reach (#219, D-8): the TCP OTA flash server (:3232), the UDP netlog
