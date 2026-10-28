@@ -537,9 +537,17 @@ impl SmartcardUart {
                     // TC1 (absent → ISO default N=2): the values come from
                     // the shared, host-tested builder
                     // (`smartcard_common::t1_usart_framing`) — never
-                    // computed inline here.
+                    // computed inline here. The builder is VALUE-semantics
+                    // (GT = N, 255 -> 0; Codex P1 on #496), so the ATR-side
+                    // absent-TC1 default N=2 is substituted HERE, at the
+                    // caller that knows the distinction.
+                    let n_atr = if params.guard_time_n == 0 {
+                        crate::smartcard_common::GUARD_TIME_DEFAULT_N as u8
+                    } else {
+                        params.guard_time_n
+                    };
                     let (_stop, gt) =
-                        crate::smartcard_common::t1_usart_framing(params.guard_time_n);
+                        crate::smartcard_common::t1_usart_framing(n_atr);
                     let psc = self.usart.gtpr().read().bits() & 0xFF;
                     self.usart
                         .gtpr()
