@@ -10,6 +10,9 @@ tmp/
 # …except the flash-bundle test fixtures: tiny SYNTHETIC images the
 # golden-manifest test needs on a fresh clone (t_7a2ec5c3).
 !tests/tools/fixtures/**/*.bin
+# …and the #143 CCID descriptor fixtures (54-byte text hex, generated
+# from the device-profile consts and freshness-locked by the Rust suite).
+!tests/tools/fixtures/ccid/*.hex
 
 # Logs and debug output
 *.log

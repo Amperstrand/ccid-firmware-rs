@@ -767,4 +767,60 @@ mod tests {
             assert_eq!((desc[48], desc[49]), profile.get_lcd_layout());
         }
     }
+
+    /// #143 descriptor fixtures: the committed hex files under
+    /// `tests/tools/fixtures/ccid/` are GENERATED from these profile
+    /// consts (single source of truth — never hand-edited) and consumed
+    /// by the host python port of libccid's parse.c checker
+    /// (`tests/tools/test_ccid_parse_fixture.py`). Each file is the full
+    /// 54-byte CCID class descriptor as it appears inside the USB
+    /// interface: `[bLength=0x36, bDescriptorType=0x21]` + the 52-byte
+    /// payload from `ccid_descriptor()` (parse.c reads exactly this
+    /// layout — `device_descriptor[0]`/`[1]` are bLength/bDescriptorType,
+    /// fields start at bcdCCID).
+    ///
+    /// Regenerate with `GEN_CCID_FIXTURES=1 cargo test -p ccid-firmware-rs
+    /// descriptor_fixtures` after a deliberate profile change. The
+    /// default mode asserts freshness: fixture drift against the consts
+    /// is a test failure, so the python gate always checks the bytes we
+    /// actually ship.
+    #[test]
+    fn descriptor_fixtures_match_profile_consts() {
+        let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/tools/fixtures/ccid");
+        let generate = std::env::var("GEN_CCID_FIXTURES").is_ok();
+
+        for (name, profile) in [
+            (
+                "cherry-smartterminal-st2xxx",
+                PROFILE_CHERRY_SMARTTERMINAL_ST2XXX,
+            ),
+            ("gemalto-idbridge-ct30", PROFILE_GEMALTO_IDBRIDGE_CT30),
+            ("gemalto-idbridge-k30", PROFILE_GEMALTO_IDBRIDGE_K30),
+        ] {
+            let mut full = std::vec![0x36u8, 0x21];
+            full.extend_from_slice(&profile.ccid_descriptor());
+            let path = fixture_dir.join(format!("{name}.hex"));
+            let hex: String = full.iter().map(|b| format!("{b:02x}")).collect();
+
+            if generate {
+                std::fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+                std::fs::write(&path, format!("{hex}\n")).expect("write fixture");
+                eprintln!("GEN_CCID_FIXTURES: wrote {}", path.display());
+            } else {
+                let committed = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!(
+                        "read {}: {e} (run GEN_CCID_FIXTURES=1 cargo test to create)",
+                        path.display()
+                    )
+                });
+                assert_eq!(
+                    committed.trim(),
+                    hex,
+                    "committed fixture {} drifted from the profile consts — regenerate with GEN_CCID_FIXTURES=1 (never hand-edit)",
+                    path.display()
+                );
+            }
+        }
+    }
 }
