@@ -174,7 +174,15 @@ def main():
 
         for i in range(args.probes):
             rsp = exchange_or_reconnect(sock_ref, CASE2_APDU, f"post[{i}]")
-            if looks_like_wedge(rsp, atr):
+            if rsp is None:
+                # Codex P2 on #487: a failed post-probe exchange (dead
+                # socket, failed reconnect) is an UNSUCCESSFUL outcome,
+                # not a pass — the repro must not print CLEAN over a
+                # lost board.
+                print(f"POST-PROBE LOST: post[{i}] no response — marking "
+                      f"unsuccessful")
+                clean = False
+            elif looks_like_wedge(rsp, atr):
                 print(f"WEDGE: post[{i}] served ATR bytes with garbage SW "
                       f"{rsp[-2:].hex(' ')}")
                 clean = False
