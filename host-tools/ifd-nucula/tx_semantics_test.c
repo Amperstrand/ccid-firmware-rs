@@ -67,6 +67,7 @@ enum {
     STEP_BAD_SEQ,
     STEP_CMD_FAILED_PRESENT,
     STEP_TIME_EXTENSION,
+    STEP_TIME_EXTENSION_DATABLOCK,
     STEP_WRONG_TYPE
 };
 
@@ -237,6 +238,42 @@ static void fb_serve_conn(struct fake_board *fb, int fd, int step)
         unsigned char interim[NUC_MAX_FRAME];
         size_t ilen = nuc_build_request(
             interim, NUC_RDR_TO_PC_SLOT_STATUS, frame[NUC_MSG_SEQ], 0,
+            (const unsigned char *)"", 0);
+        if (ilen == 0 || write(fd, interim, ilen) != (ssize_t)ilen) {
+            close(fd);
+            return;
+        }
+        unsigned char answer[NUC_MAX_FRAME];
+        size_t alen = nuc_build_request(
+            answer, NUC_RDR_TO_PC_DATA_BLOCK, frame[NUC_MSG_SEQ], 0,
+            (const unsigned char *)"\x90\x00", 2);
+        if (alen != 0)
+            (void)!write(fd, answer, alen);
+        close(fd);
+        return;
+    }
+    case STEP_TIME_EXTENSION_DATABLOCK: {
+        /* Issue #472: the firmware's ACTUAL interim (ccid_serial_server
+         * build_frame, CCID 6.1.4) — DataBlock-typed, dwLength=0,
+         * bStatus 0x80|icc, our bSeq — then the real answer. Pre-fix
+         * the driver only waited out SlotStatus-shaped interims and
+         * classified this exchange IFD_COMMUNICATION_ERROR. */
+        unsigned char frame[NUC_MAX_FRAME];
+        if (fb_read_frame(fd, frame) <= 0) {
+            close(fd);
+            return;
+        }
+        pthread_mutex_lock(&fb->lock);
+        fb->frames_complete++;
+        pthread_mutex_unlock(&fb->lock);
+        int n = NUC_MSG_PAYLOAD + (int)nuc_resp_payload_len(frame) + 1;
+        if (write(fd, frame, (size_t)n) != n) {
+            close(fd);
+            return;
+        }
+        unsigned char interim[NUC_MAX_FRAME];
+        size_t ilen = nuc_build_request(
+            interim, NUC_RDR_TO_PC_DATA_BLOCK, frame[NUC_MSG_SEQ], 0x80,
             (const unsigned char *)"", 0);
         if (ilen == 0 || write(fd, interim, ilen) != (ssize_t)ilen) {
             close(fd);
@@ -617,6 +654,18 @@ int main(void)
         check(rxlen == 2 && rx[0] == 0x90 && rx[1] == 0x00,
               "time-extension: final DataBlock payload delivered");
         check(g_frames_complete(&fb) == 1, "time-extension: no resend");
+
+        /* #472: the firmware's DataBlock-typed 6.1.4 interim must be
+         * waited out exactly like the 6.2-2 SlotStatus interim */
+        reset_between(&fb);
+        r = ifd_transmit_once(&fb, STEP_TIME_EXTENSION_DATABLOCK, rx,
+                              sizeof(rx), &rxlen);
+        wait_conns(&fb, 1);
+        check(r == IFD_SUCCESS,
+              "datablock-interim: exchange still succeeds");
+        check(rxlen == 2 && rx[0] == 0x90 && rx[1] == 0x00,
+              "datablock-interim: final DataBlock payload delivered");
+        check(g_frames_complete(&fb) == 1, "datablock-interim: no resend");
 
         /* wrong bSeq: correlation failure — error, and the poisoned
          * connection must be dropped (next command reconnects) */
