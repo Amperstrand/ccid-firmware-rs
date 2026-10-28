@@ -19,33 +19,20 @@
 
 #![forbid(unsafe_code)]
 
-use core::fmt;
-
 pub const SW_OK: u16 = 0x9000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
+    #[error("pcsc transport: {0}")]
     Transport(&'static str),
+    #[error("card status word {0:04X}")]
     Sw(u16),
     /// `apdu()` refuses data longer than a short-APDU Lc can encode —
     /// a silent `as u8` wrap would emit Lc=0 followed by the data,
     /// which cards parse as an extended-length header (Codex #169).
+    #[error("apdu data {0} bytes exceeds short-APDU Lc (255)")]
     DataTooLong(usize),
 }
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Transport(m) => write!(f, "pcsc transport: {m}"),
-            Error::Sw(sw) => write!(f, "card status word {sw:04X}"),
-            Error::DataTooLong(n) => {
-                write!(f, "apdu data {n} bytes exceeds short-APDU Lc (255)")
-            }
-        }
-    }
-}
-
-impl std::error::Error for Error {}
 
 /// Build a short APDU in the bench-verified case form.
 ///
@@ -144,6 +131,23 @@ impl PcscCard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #257 thiserror conversion lock: the derived Display must stay
+    /// byte-identical to the hand-rolled strings it replaced (hosts
+    /// match on these).
+    #[test]
+    fn error_display_strings_are_locked() {
+        assert_eq!(
+            Error::Transport("port gone").to_string(),
+            "pcsc transport: port gone"
+        );
+        assert_eq!(Error::Sw(0x6985).to_string(), "card status word 6985");
+        assert_eq!(
+            Error::DataTooLong(300).to_string(),
+            "apdu data 300 bytes exceeds short-APDU Lc (255)"
+        );
+        let _: &dyn std::error::Error = &Error::Sw(0x9000);
+    }
 
     #[test]
     fn empty_data_is_case2_header_plus_le() {

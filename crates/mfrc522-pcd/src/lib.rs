@@ -99,26 +99,17 @@ impl DelayNs for FnDelay {
 ///
 /// [`Mfrc522Error`] remains the [`PcdTransceiver::Error`] associated type for
 /// backward compatibility; use [`Error::from`] to convert.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error<E> {
+    #[error("MFRC522 communication error: {0:?}")]
     Communication(E),
+    #[error("MFRC522 timeout")]
     Timeout,
+    #[error("MFRC522 protocol error")]
     Protocol,
+    #[error("MFRC522 buffer overflow")]
     BufferOverflow,
 }
-
-impl<E: core::fmt::Debug> core::fmt::Display for Error<E> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Error::Communication(e) => write!(f, "MFRC522 communication error: {e:?}"),
-            Error::Timeout => write!(f, "MFRC522 timeout"),
-            Error::Protocol => write!(f, "MFRC522 protocol error"),
-            Error::BufferOverflow => write!(f, "MFRC522 buffer overflow"),
-        }
-    }
-}
-
-impl<E: core::fmt::Debug> core::error::Error for Error<E> {}
 
 impl<E> From<Mfrc522Error<E>> for Error<E> {
     fn from(e: Mfrc522Error<E>) -> Self {
@@ -421,6 +412,25 @@ mod tests {
         clippy::indexing_slicing,
         clippy::string_slice
     )]
+
+    /// #257 thiserror conversion lock: the derived Display must stay
+    /// byte-identical to the hand-rolled strings it replaced.
+    #[test]
+    fn error_display_strings_are_locked() {
+        use super::Error;
+        use alloc::string::ToString as _;
+        assert_eq!(
+            Error::<u8>::Communication(7).to_string(),
+            "MFRC522 communication error: 7"
+        );
+        assert_eq!(Error::<u8>::Timeout.to_string(), "MFRC522 timeout");
+        assert_eq!(Error::<u8>::Protocol.to_string(), "MFRC522 protocol error");
+        assert_eq!(
+            Error::<u8>::BufferOverflow.to_string(),
+            "MFRC522 buffer overflow"
+        );
+        let _: &dyn core::error::Error = &Error::<u8>::Timeout;
+    }
 
     use super::*;
     use alloc::vec::Vec;
