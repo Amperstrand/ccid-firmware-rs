@@ -24,9 +24,12 @@
 //!   [`CcidHandlerCore::take_card_reset`] /
 //!   [`CcidHandlerCore::take_parameters_accepted`] events and
 //!   [`CcidHandlerCore::apdu_pipeline`]
-//! - Escape vendor sets — the GemPC serial conventions live here for the
-//!   serial profile; the STM32 wrapper keeps its Gemalto/0xD0-driver
-//!   diagnostics escapes local (vendor/transport flavor)
+//! - Escape vendor sets — the GemPC serial conventions (0x02 identity,
+//!   0xD1 snapshot, 0x01-01-01 sync) live here for the serial profile,
+//!   profile-gated off for contact (track I, #121); the shared 0xD0
+//!   diagnostics answer lives here with the optional #344 driver fold
+//!   ([`CcidHandlerCore::with_diagnostics_fold`]); the STM32 wrapper
+//!   keeps its Gemalto 0x6A + vendor gating local (vendor flavor)
 //! - IccClock / SetDataRateAndClockFrequency — smartcard-USART specifics,
 //!   driven directly by the STM32 wrapper
 //! - PIN-pad UI (STM32 `pinpad`) — the PIN-result→APDU exchange itself
@@ -218,6 +221,12 @@ pub struct CcidHandlerCore<D: SlotDriver, P: ReaderProfile = SerialNfcProfile> {
     /// ATR-derived parameter source (contact profile); refreshed on each
     /// successful IccPowerOn.
     atr_params: AtrParams,
+    /// #344 driver-known-state overlay for the Escape 0xD0 answer:
+    /// drivers whose live view is fresher than the polled cache (the
+    /// F746 bit-bang wrapper's presence pin) fold it in AT ANSWER TIME.
+    /// `None` = the cached snapshot answers as-is (default; the ESP32
+    /// wrapper and the pre-fold F469 shape).
+    diagnostics_fold: Option<fn(&D, &mut Diagnostics)>,
     _profile: core::marker::PhantomData<P>,
 }
 
@@ -253,6 +262,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             secure_state: SecureState::Idle,
             host_params: None,
             atr_params: AtrParams::default(),
+            diagnostics_fold: None,
             _profile: core::marker::PhantomData,
         };
         // Sync recovery history at construction (Codex reviews on #46/#42):
@@ -260,6 +270,16 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         // the handler existed; without this the first 0xD0 query reports 0.
         handler.diagnostics.reinit_count = handler.nfc.reinit_count();
         handler
+    }
+
+    /// #344 driver-diagnostics fold: overlay driver-known state onto the
+    /// Escape 0xD0 answer at ANSWER TIME (the polled cache only refreshes
+    /// on a presence poll). The fold must ADD its state — resetting
+    /// core-owned counters (apdu_tx/rx, uptime) is the #268 failure mode;
+    /// the firmware's fold tests pin the contract. Inert unless installed.
+    pub fn with_diagnostics_fold(mut self, fold: fn(&D, &mut Diagnostics)) -> Self {
+        self.diagnostics_fold = Some(fold);
+        self
     }
 
     /// Escape 0xD1 arms a diagnostic snapshot: the response is acked, the
@@ -1295,8 +1315,17 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
     // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
         if payload.first() == Some(&0xD0) {
+            // Live core counters + the optional driver-known-state fold
+            // (#344): the STM32 wrapper's F746 presence-pin overlay,
+            // applied at answer time. Default (no fold installed) is
+            // byte-identical to the cached snapshot the ESP32 answers
+            // with — pinned by tests on both profiles.
+            let mut diag = self.diagnostics;
+            if let Some(fold) = self.diagnostics_fold {
+                fold(&self.nfc, &mut diag);
+            }
             let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
-            self.diagnostics.to_bytes(&mut diag_buf);
+            diag.to_bytes(&mut diag_buf);
             return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,
@@ -1309,35 +1338,61 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
-        // Dump-and-retrieve debugging: ack, then the serve loop panics with
-        // a marker reason after this response goes out — the panic handler
-        // writes the flash coredump (retrieve + decode: AGENTS.md).
-        if payload.first() == Some(&0xD1) {
-            self.diagnostic_snapshot_requested = true;
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[0xD1],
-                response,
-            );
-        }
+        // The serial/GemPC escape table below (0xD1 snapshot, 0x02
+        // firmware identity, 0x01-01-01 sync notifications) is the
+        // GemPC-Twin serial surface: the contact profile never answered
+        // these pre-port (its wrapper rejected everything but 0xD0 and
+        // its Gemalto 0x6A), so they are profile-gated to keep the
+        // delegated contact wire byte-identical (track I, #121).
+        if !P::CONTACT {
+            // Dump-and-retrieve debugging: ack, then the serve loop panics with
+            // a marker reason after this response goes out — the panic handler
+            // writes the flash coredump (retrieve + decode: AGENTS.md).
+            if payload.first() == Some(&0xD1) {
+                self.diagnostic_snapshot_requested = true;
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    &[0xD1],
+                    response,
+                );
+            }
 
-        // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
-        if payload.first() == Some(&0x02) {
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                self.firmware_version,
-                response,
-            );
+            // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
+            if payload.first() == Some(&0x02) {
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    self.firmware_version,
+                    response,
+                );
+            }
+
+            // CCID_SERIAL: perform a command to configure GemPC Twin reader card movement
+            // * notification to synchronous mode: the card movement is notified _after_
+            // * the host command and _before_ the reader answer
+            // CCID_SERIAL: unsigned char tx_buffer[] = { 0x01, 0x01, 0x01};
+            if payload.starts_with(&[0x01, 0x01, 0x01]) {
+                self.sync_notifications = true;
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    &[0x01, 0x01, 0x01],
+                    response,
+                );
+            }
         }
 
         // libccid's ccid_open_hack_post() sends Escape{0x1F, 0x02} to
@@ -1347,7 +1402,8 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         // firmware does NOT implement APDU exchange level (T=1 stays
         // firmware-terminated), so a success ack would silently change the
         // host's framing expectations. A failed escape leaves the driver at
-        // TPDU level, which is the level we actually speak.
+        // TPDU level, which is the level we actually speak. Profile-neutral:
+        // the contact wrapper rejected it with the identical bytes pre-port.
         if payload == [0x1F, 0x02] {
             return write_message(
                 RDR_TO_PC_ESCAPE,
@@ -1357,24 +1413,6 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 0,
                 CCID_ERR_CMD_NOT_SUPPORTED,
                 &[],
-                response,
-            );
-        }
-
-        // CCID_SERIAL: perform a command to configure GemPC Twin reader card movement
-        // * notification to synchronous mode: the card movement is notified _after_
-        // * the host command and _before_ the reader answer
-        // CCID_SERIAL: unsigned char tx_buffer[] = { 0x01, 0x01, 0x01};
-        if payload.starts_with(&[0x01, 0x01, 0x01]) {
-            self.sync_notifications = true;
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[0x01, 0x01, 0x01],
                 response,
             );
         }
@@ -2461,6 +2499,9 @@ mod contact_profile_tests {
         transmit_class: XfrErrorKind,
         /// Track I exchange tests: the exact APDU bytes the card saw.
         last_apdu: Vec<u8>,
+        /// #344 fold tests: driver-known presence, fresher than the
+        /// polled cache (the F746 presence-pin seam).
+        diag_card_present: Option<bool>,
     }
 
     impl ContactDriver {
@@ -2473,6 +2514,7 @@ mod contact_profile_tests {
                 fail_transmit: false,
                 transmit_class: XfrErrorKind::Unclassified,
                 last_apdu: Vec::new(),
+                diag_card_present: None,
             }
         }
     }
@@ -3301,5 +3343,79 @@ mod contact_profile_tests {
         assert_eq!(&data[..2], &[0x90, 0x00]);
         assert_eq!(core.diagnostics().apdu_tx_count, 1);
         assert_eq!(core.diagnostics().apdu_rx_count, 1);
+    }
+
+    // ---- Escape 0xD0 + the profile-gated serial escape table
+    // ---- (track I, #121): the delegated contact escape surface.
+
+    #[test]
+    fn escape_d0_answers_live_counters_with_driver_fold() {
+        // The cache starts ABSENT (constructed with no card); the
+        // driver's live view says a card IS in — the fold must back
+        // card_present in the answer while keeping core counters.
+        let mut core: Core =
+            CcidHandlerCore::with_profile(ContactDriver::new(false, &T0_ATR), b"core", false)
+                .with_diagnostics_fold(|drv, diag| {
+                    if let Some(p) = drv.diag_card_present {
+                        diag.card_present = p;
+                    }
+                });
+        core.driver_mut().present = true; // card lands between polls
+        core.driver_mut().diag_card_present = Some(true);
+
+        let mut resp = [0u8; 271];
+        let n = core.process_command(
+            &build(PC_TO_RDR_ESCAPE, 0x42, [0, 0, 0], &[0xD0]),
+            &mut resp,
+        );
+        let (mt, seq, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_ESCAPE);
+        assert_eq!(seq, 0x42);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        let diag = Diagnostics::from_bytes(&data[..Diagnostics::SERIALIZED_SIZE]).expect("decode");
+        assert!(diag.card_present, "the fold backs the driver's live view");
+        assert_eq!(diag.apdu_tx_count, 0, "core counters survive the fold");
+    }
+
+    #[test]
+    fn escape_d0_without_fold_answers_the_cached_snapshot() {
+        // Default (no fold installed): byte-identical to the pre-fold
+        // core answer — the ESP32 shape.
+        let mut core = new_core(false, &T0_ATR, false);
+        let mut resp = [0u8; 271];
+        let n = core.process_command(
+            &build(PC_TO_RDR_ESCAPE, 0x43, [0, 0, 0], &[0xD0]),
+            &mut resp,
+        );
+        let (mt, _, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_ESCAPE);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        let diag = Diagnostics::from_bytes(&data[..Diagnostics::SERIALIZED_SIZE]).expect("decode");
+        assert!(!diag.card_present, "no fold: the polled cache answers");
+    }
+
+    #[test]
+    fn escape_serial_table_rejected_on_contact_profile() {
+        // 0x02 (identity), 0xD1 (snapshot), 0x01-01-01 (sync) are the
+        // GemPC-Twin SERIAL surface — the contact wrapper rejected them
+        // pre-port, so the delegated contact table must too.
+        let mut core = new_core(false, &T0_ATR, false);
+        let mut resp = [0u8; 271];
+        for (seq, payload) in [
+            (0x51u8, &[0x02u8][..]),
+            (0x52, &[0xD1][..]),
+            (0x53, &[0x01, 0x01, 0x01][..]),
+        ] {
+            let n =
+                core.process_command(&build(PC_TO_RDR_ESCAPE, seq, [0, 0, 0], payload), &mut resp);
+            let (mt, _, status, err, _) = parse(&resp[..n]);
+            assert_eq!(mt, RDR_TO_PC_ESCAPE, "seq {seq}");
+            assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6, "seq {seq}");
+            assert_eq!(err, CCID_ERR_CMD_NOT_SUPPORTED, "seq {seq}");
+        }
+        assert!(!core.take_snapshot_request(), "0xD1 never arms on contact");
+        assert!(!core.sync_notifications(), "sync never arms on contact");
     }
 }

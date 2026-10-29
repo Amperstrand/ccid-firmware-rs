@@ -139,7 +139,13 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 },
                 b"",
                 vendor_id == PIN_PAD_VENDOR_ID,
-            ),
+            )
+            .with_diagnostics_fold(|adapter, diag| {
+                // #344: driver-known state overlays the core counters at
+                // answer time (the F746 bit-bang wrapper stamps its live
+                // presence pin; the fold is additive by contract).
+                adapter.driver.diagnostics(diag);
+            }),
             rx_buffer: [0u8; MAX_CCID_MESSAGE_LENGTH],
             rx_len: 0,
             tx_buffer: [0u8; MAX_CCID_MESSAGE_LENGTH],
@@ -514,50 +520,24 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
     // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
     // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
+    //
+    // The 0xD0 diagnostics answer and the unknown-escape rejection
+    // delegate to the core's contact escape table (track I, #121): the
+    // core owns the 28-byte serialization and applies this wrapper's
+    // #344 driver fold (installed in new()). Firmware-local: the
+    // Gemalto 0x6A firmware-features arm and the vendor gate —
+    // non-Gemalto profiles (Cherry) answer ONLY the 0xD0 escape,
+    // exactly the pre-port surface.
     fn handle_escape(&mut self, seq: u8) {
         let data_len = self.declared_length();
-
-        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0xD0 {
-            ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
-            // Live counters from the shared core handler (apdu_tx/rx are
-            // counted there around every card exchange) — #268 defect 2:
-            // this used to read the SmartcardDriver trait stub, which on
-            // the F469 only filled reinit_count + card_present, so the
-            // HIL saw apdu_tx=0/apdu_rx=0/uptime=0 after real exchanges.
-            let mut diag = *self.core.diagnostics();
-            // #344: driver-known state overlays the core's counters —
-            // the F746 bit-bang wrapper stamps its live presence-pin
-            // card_present (the cached snapshot only refreshes on a
-            // presence poll). The default trait fold is a no-op, so
-            // F469/mock behavior is byte-identical.
-            self.driver_mut().diagnostics(&mut diag);
-            let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
-            diag.to_bytes(&mut diag_buf);
-            self.tx_len = write_message(
-                RDR_TO_PC_ESCAPE,
-                0,
-                seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status()),
-                0,
-                0,
-                &diag_buf,
-                &mut self.tx_buffer,
-            );
-            return;
-        }
-
+        let first = if data_len >= 1 {
+            Some(self.rx_buffer[CCID_HEADER_SIZE])
+        } else {
+            None
+        };
         let is_gemalto = self.vendor_id == 0x08E6;
 
-        if !is_gemalto {
-            ccid_debug!(
-                "CCID: ESCAPE rejected for non-Gemalto vendor 0x{:04X}",
-                self.vendor_id
-            );
-            self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            return;
-        }
-
-        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
+        if is_gemalto && first == Some(0x6A) {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
             // libccid accepts the firmware-features answer ONLY when its
             // length is exactly sizeof(struct GEMALTO_FIRMWARE_FEATURES)
@@ -605,13 +585,31 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 &firmware_features,
                 &mut self.tx_buffer,
             );
-        } else {
+            return;
+        }
+
+        // Non-Gemalto vendors: everything except 0xD0 is rejected (the
+        // pre-port Cherry surface — 0x02/0xD1/sync escapes never answered).
+        if !is_gemalto && first != Some(0xD0) {
             ccid_debug!(
-                "CCID: ESCAPE unknown command 0x{:02X}",
-                self.rx_buffer[CCID_HEADER_SIZE]
+                "CCID: ESCAPE rejected for non-Gemalto vendor 0x{:04X}",
+                self.vendor_id
             );
             self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            return;
         }
+
+        // 0xD0 (all vendors) and Gemalto unknown payloads delegate to
+        // the core: the contact escape table answers 0xD0 with the
+        // live counters + driver fold and rejects the rest in the
+        // identical Escape shape send_err_resp produced.
+        if first == Some(0xD0) {
+            ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
+            // #268 defect 2 history: apdu_tx/rx are counted in the core
+            // around every card exchange; #344: the driver fold overlays
+            // driver-known state (F746 live presence pin) at answer time.
+        }
+        self.delegate_to_core();
     }
 
     pub fn is_pin_entry_active(&self) -> bool {
