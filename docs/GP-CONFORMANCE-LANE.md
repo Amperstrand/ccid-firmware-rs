@@ -380,7 +380,7 @@ wall, `docs/t1_relay_132_rootcause.md` §0):
 | Observation | Verdict |
 |---|---|
 | R-block / S(RESYNC) / retransmissions in the libccid trace before the auth failure | comm-class (H1/H2/H3 family) — the "mismatch" was a recovered-but-misassociated or paraphrased exchange |
-| Byte diff in KDD/seq inside a block libccid ACCEPTED (valid LRC, no R-blocks) | LRC-invisible corruption — escalate per READER CLASS (Codex P1 on #500): **ESP32 readers** → Escape 0xD1 coredump during a read-only repro, audit the transport path; **STM32/Cherry** → 0xD1/0xD0 escapes are NOT supported by `ccid_core.rs::handle_escape` (CMD_NOT_SUPPORTED) — capture via defmt over RTT/SWD per AGENTS.md (ESP32-only workflow rule), audit the USB driver path |
+| Byte diff in KDD/seq inside a block libccid ACCEPTED (valid LRC, no R-blocks) | LRC-invisible corruption — escalate per READER CLASS (Codex P1 on #500): **ESP32 readers** → Escape 0xD1 coredump during a read-only repro, audit the transport path; **STM32/Cherry** → Escape 0xD0 diagnostics ARE supported (`ccid_core.rs::handle_escape` answers the 28-byte counters — capture them, the runbook's evidence steps rely on them); 0xD1 coredump alone is CMD_NOT_SUPPORTED — for deep capture use defmt over RTT/SWD per AGENTS.md, and audit the USB driver path |
 | Exact gp error string (§2.4) | name it in the report — three distinct evidence classes |
 | `Rx timeout`/`frx` >500 ms stamps in RTT during INIT_UPDATE | H1 timing reproduction — receive-layer fix, no further auth needed |
 
