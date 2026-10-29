@@ -276,13 +276,23 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
             // Issue #54: escape-negotiated baud switch. The ack is now
             // FULLY clocked out at the old baud (wait_tx_done above) —
             // the ack-before-switch flush, same discipline as the 0xD1
-            // ack-before-panic. A failed switch leaves the link at the
-            // current rate: the host's next open re-negotiates from
-            // 115200 by construction (ccid_serial.c OpenSerialByName
-            // runs per connection), so no retry machinery here.
+            // ack-before-panic. Codex P2 on #498: switch ONLY when the
+            // complete exchange (echo + notify + response + drain)
+            // actually reached the wire — `sent` false means the host
+            // may never have seen the ACK, and switching anyway splits
+            // the link rates. The request is CONSUMED either way (an
+            // aborted negotiation must not fire on a later exchange).
+            // A failed switch leaves the link at the current rate: the
+            // host's next open re-negotiates from 115200 by
+            // construction (ccid_serial.c OpenSerialByName runs per
+            // connection), so no retry machinery here.
             if let Some(baud) = server.handler_mut().take_baud_change() {
-                if let Err(e) = uart.change_baudrate(baud) {
-                    log::error!("baud switch to {} failed: {:?} — link unchanged", baud, e);
+                if sent {
+                    if let Err(e) = uart.change_baudrate(baud) {
+                        log::error!("baud switch to {} failed: {:?} — link unchanged", baud, e);
+                    }
+                } else {
+                    log::error!("baud change to {} discarded: ack not fully on the wire", baud);
                 }
             }
             if sent {

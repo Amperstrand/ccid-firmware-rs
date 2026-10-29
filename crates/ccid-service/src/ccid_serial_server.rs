@@ -801,6 +801,12 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidSerialServer<D> {
         self.resp_len = 0;
         self.late_drop_count += 1;
         let _ = self.handler.take_snapshot_request();
+        // Codex P2 on #498: a pending baud negotiation dies with its
+        // response — leaving it latched would switch the UART on the
+        // NEXT successfully served (unrelated) command while the host
+        // never saw the negotiation ACK. Same class as the 0xD1 cancel
+        // above.
+        let _ = self.handler.take_baud_change();
     }
 
     /// Responses discarded for exceeding the host read window (#153).
