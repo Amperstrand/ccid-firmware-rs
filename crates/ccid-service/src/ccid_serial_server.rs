@@ -1226,6 +1226,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn idle_poll_fires_once_per_interval() {
         let mut server = server_with(true);
 
