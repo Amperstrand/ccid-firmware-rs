@@ -294,19 +294,24 @@ stage 3 spends exactly **one**. Total: ≤1.
 
 ### 3.0 Pre-flight gates (all stages)
 
-1. **No-blind-INIT_UPDATE guard** — before any stage 3 decision, the
+1. **Place acquisition FIRST** (Codex P1 on #500, AGENTS.md
+   acquire-before-hardware): `flock /tmp/amperstrand-bench.lock` held for
+   the whole experiment, THEN `labgrid-client -p stm32-ccid acquire` —
+   BEFORE any `--execute` invocation. `gp_probe.py` does NOT acquire a
+   place itself; an un-acquired probe can hit a reader another session
+   holds and a SELECT ISD invalidates that session's exchanges. Retain
+   ownership through the whole stage; every pcscd stop/start under
+   `flock /run/lock/bench-pcscd.lock`; reader picked by STABLE identity
+   (`--reader "...(ST2XXX-001)..."`, index resolved fresh).
+2. **No-blind-INIT_UPDATE guard** — before any stage 3 decision, the
    card must be ledger-identified:
    `python3 host-tools/gp_probe.py --dry-run` (offline check), then on
    hardware with `--execute` (SELECT ISD + GET DATA CPLC only) and match
    the CPLC against §1.2. Unregistered CPLC → STOP; a new card needs an
    owner ruling on ONE fingerprint single (the #155 framing), never an
    improvised `gp -l`.
-2. **Seat check**: cards move (HOP-1) — verify the EXPECTED card's CPLC
+3. **Seat check**: cards move (HOP-1) — verify the EXPECTED card's CPLC
    through the reader you are about to test, not the last-seen seat.
-3. **Place + pcscd discipline**: `labgrid-client -p stm32-ccid acquire`;
-   every pcscd stop/start under `flock /run/lock/bench-pcscd.lock`
-   (AGENTS.md bench rules); reader picked by STABLE identity
-   (`--reader "...(ST2XXX-001)..."`, index resolved fresh).
 4. **Baseline the counters**: CCID Escape 0xD0 before/after every stage
    (`apdu_tx`/`apdu_rx` must balance — relay-transparent evidence).
 
