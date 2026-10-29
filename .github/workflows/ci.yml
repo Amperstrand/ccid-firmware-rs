@@ -9,9 +9,18 @@ on:
   # seconds-cheap job, not a matrix. Every merge still verifies on the
   # push-to-main leg below; schedule + dispatch unchanged. Open PRs opt
   # in by adding the `ci-run` label.
+  #
+  # #482 (2026-10-28): `labeled`-only was NOT enough — pushes AFTER the
+  # label (synchronize) never re-triggered, so the run pinned a STALE head
+  # SHA and the merge head shipped unverified (#474: labeled, no family
+  # jobs on the merge head; #452: never labeled, zero runs). synchronize
+  # is added back; the `changes` job below all-falses every family for
+  # PRs WITHOUT the `ci-run` label (any action), so an unlabeled push
+  # still costs only the seconds-cheap filter job, preserving #366's
+  # opt-in cost envelope.
   pull_request:
     branches: [main]
-    types: [labeled]
+    types: [labeled, synchronize]
   # Nightly full-matrix lane: secondary-tier legs that PRs no longer build
   # would bitrot silently (toolchain/IDF drift) — 03:00 UTC rebuilds BOTH
   # tiers (the changes job defaults every family to true on schedule).
@@ -46,21 +55,23 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      # Label gate (owner decision #366, 2026-10-21): the pull_request
-      # trigger only fires on label additions. A labeled event that is NOT
-      # the `ci-run` label forces every family false — the whole matrix
-      # skips (job-level if => skipped => success for branch protection;
-      # ci-ok still aggregates green). Push events have no
-      # github.event.label, so the guard is action-scoped, not
-      # event-name-scoped.
+      # Label gate (owner decision #366, 2026-10-21): PR CI is opt-in via
+      # the `ci-run` label. Any PR event (labeled with a different label,
+      # or synchronize without the label — #482) that does not carry the
+      # label forces every family false — the whole matrix skips
+      # (job-level if => skipped => success for branch protection; ci-ok
+      # still aggregates green) at the cost of this one seconds-cheap job.
+      # A PR WITH the label (label added, or any later synchronize per the
+      # #482 fix) falls through to the paths-filter outputs, so the check
+      # always pins the CURRENT head SHA.
       # schedule/workflow_dispatch: paths-filter diffs against a base with
       # no changes for those events and would silence the whole run
       # (PostHog CI lesson: paths filters must not silence scheduled runs)
       # — default every family to true instead; the per-tier job gates
       # decide how much of the matrix a dispatched run builds.
-      stm32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event.action == 'labeled' && github.event.label.name != 'ci-run') && 'false' || steps.filter.outputs.stm32 }}
-      esp32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event.action == 'labeled' && github.event.label.name != 'ci-run') && 'false' || steps.filter.outputs.esp32 }}
-      lint: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event.action == 'labeled' && github.event.label.name != 'ci-run') && 'false' || steps.filter.outputs.lint }}
+      stm32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.stm32 }}
+      esp32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.esp32 }}
+      lint: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.lint }}
     steps:
       - uses: actions/checkout@v5
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
