@@ -520,14 +520,15 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
     // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
     // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
-
-    // The 0xD0 diagnostics answer and the unknown-escape rejection
-    // delegate to the core's contact escape table (track I, #121): the
-    // core owns the 28-byte serialization and applies this wrapper's
-    // #344 driver fold (installed in new()). Firmware-local: the
-    // Gemalto 0x6A firmware-features arm and the vendor gate —
-    // non-Gemalto profiles (Cherry) answer ONLY the 0xD0 escape,
-    // exactly the pre-port surface.
+    /*
+     * The 0xD0 diagnostics answer and the unknown-escape rejection
+     * delegate to the core's contact escape table (track I, #121): the
+     * core owns the 28-byte serialization and applies this wrapper's
+     * #344 driver fold (installed in new()). Firmware-local: the
+     * Gemalto 0x6A firmware-features arm and the vendor gate —
+     * non-Gemalto profiles (Cherry) answer ONLY the 0xD0 escape,
+     * exactly the pre-port surface.
+     */
     fn handle_escape(&mut self, seq: u8) {
         let data_len = self.declared_length();
         let first = if data_len >= 1 {
