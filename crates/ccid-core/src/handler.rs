@@ -29,14 +29,20 @@
 //!   diagnostics escapes local (vendor/transport flavor)
 //! - IccClock / SetDataRateAndClockFrequency — smartcard-USART specifics,
 //!   driven directly by the STM32 wrapper
-//! - PIN-pad UI and the PIN-result→APDU exchange (STM32 `pinpad`)
+//! - PIN-pad UI (STM32 `pinpad`) — the PIN-result→APDU exchange itself
+//!   lives here (track I, issue #121:
+//!   [`CcidHandlerCore::complete_pin_verify_exchange`] /
+//!   [`CcidHandlerCore::complete_pin_modify_exchange`])
 //! - Escape 0xD1 snapshot panic — the wrapper acks, the serve loop panics
 
 use crate::diagnostics::Diagnostics;
 use crate::params::default_params;
 use crate::pps::is_pps_request;
 use crate::response::{write_data_block, write_message, write_slot_status};
-use crate::secure::{PinModifyParams, PinResult, PinVerifyParams, SecureState};
+use crate::secure::{
+    ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, SecureState,
+    VerifyApduBuilder,
+};
 use card_interface::{PresenceState, SlotDriver, XfrErrorKind};
 use ccid_protocol::atr::{
     di_from_ta1_low, fi_from_ta1_high, parse_atr, t1_bwi_cwi_ifsc, AtrParams,
@@ -395,6 +401,115 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         );
         self.secure_state = SecureState::Idle;
         len
+    }
+
+    /// PIN-verify result exchange — the tail of the §6.1.11 surface,
+    /// moved from the STM32 wrapper (issue #121 track I): build the
+    /// VERIFY APDU from the host-supplied §6.1.11 template + the
+    /// entered buffer, transmit through the counted seam (#276: PIN
+    /// exchanges must advance the Escape 0xD0 apdu counters exactly
+    /// like XfrBlock traffic) and write the RDR_to_PC_DataBlock via
+    /// [`Self::complete_pin_entry`]. Failure mapping is the wrapper's
+    /// pre-port shape, pinned by the firmware suite: a card-transmit
+    /// failure answers Cancelled (0xEF), an APDU-build rejection
+    /// answers InvalidLength (0xEB).
+    pub fn complete_pin_verify_exchange(
+        &mut self,
+        seq: u8,
+        result: PinResult,
+        buffer: PinBuffer,
+        params: &PinVerifyParams,
+        response: &mut [u8],
+    ) -> usize {
+        match result {
+            PinResult::Success => {
+                let ascii_pin = buffer.to_ascii();
+                let pin_len = buffer.len();
+                let builder = VerifyApduBuilder::from_template(
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                );
+                match builder.build(&ascii_pin[..pin_len]) {
+                    Ok(apdu) => {
+                        // Card-answer scratch: same 261-byte budget the
+                        // wrapper kept as a field; a transient stack
+                        // frame is no worse than the pre-port resp_copy.
+                        let mut card_resp = [0u8; 261];
+                        match self.transmit_counted(&apdu[..5 + pin_len], &mut card_resp) {
+                            Ok(resp_len) => self.complete_pin_entry(
+                                seq,
+                                PinResult::Success,
+                                Some(&card_resp[..resp_len]),
+                                response,
+                            ),
+                            Err(_) => {
+                                self.complete_pin_entry(seq, PinResult::Cancelled, None, response)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.complete_pin_entry(seq, PinResult::InvalidLength, None, response)
+                    }
+                }
+            }
+            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                self.complete_pin_entry(seq, result, None, response)
+            }
+        }
+    }
+
+    /// PIN-modify result exchange — the §6.1.12 twin of
+    /// [`Self::complete_pin_verify_exchange`] (issue #121 track I):
+    /// build the CHANGE REFERENCE DATA APDU (old + new PIN at the
+    /// host-supplied insertion offsets), transmit counted, complete.
+    pub fn complete_pin_modify_exchange(
+        &mut self,
+        seq: u8,
+        result: PinResult,
+        old_buffer: PinBuffer,
+        new_buffer: PinBuffer,
+        params: &PinModifyParams,
+        response: &mut [u8],
+    ) -> usize {
+        match result {
+            PinResult::Success => {
+                let old_pin = old_buffer.to_ascii();
+                let old_len = old_buffer.len();
+                let new_pin = new_buffer.to_ascii();
+                let new_len = new_buffer.len();
+                let builder = ModifyApduBuilder::from_template(
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                    params.old_pin_offset as usize,
+                    params.new_pin_offset as usize,
+                );
+                match builder.build(&old_pin[..old_len], &new_pin[..new_len]) {
+                    Ok(apdu) => {
+                        let mut card_resp = [0u8; 261];
+                        let apdu_len = 5 + old_len + new_len;
+                        match self.transmit_counted(&apdu[..apdu_len], &mut card_resp) {
+                            Ok(resp_len) => self.complete_pin_entry(
+                                seq,
+                                PinResult::Success,
+                                Some(&card_resp[..resp_len]),
+                                response,
+                            ),
+                            Err(_) => {
+                                self.complete_pin_entry(seq, PinResult::Cancelled, None, response)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.complete_pin_entry(seq, PinResult::InvalidLength, None, response)
+                    }
+                }
+            }
+            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                self.complete_pin_entry(seq, result, None, response)
+            }
+        }
     }
 
     /// Refresh time-varying diagnostic fields. Called from the firmware's
@@ -2344,6 +2459,8 @@ mod contact_profile_tests {
         fail_transmit: bool,
         /// #136: what `xfr_error_class` answers for transmit errors.
         transmit_class: XfrErrorKind,
+        /// Track I exchange tests: the exact APDU bytes the card saw.
+        last_apdu: Vec<u8>,
     }
 
     impl ContactDriver {
@@ -2355,6 +2472,7 @@ mod contact_profile_tests {
                 power_off_count: 0,
                 fail_transmit: false,
                 transmit_class: XfrErrorKind::Unclassified,
+                last_apdu: Vec::new(),
             }
         }
     }
@@ -2386,12 +2504,14 @@ mod contact_profile_tests {
 
         fn transmit_apdu(
             &mut self,
-            _command: &[u8],
+            command: &[u8],
             response: &mut [u8],
         ) -> Result<usize, Self::Error> {
             if self.fail_transmit {
                 return Err(ContactError::Transmit);
             }
+            self.last_apdu.clear();
+            self.last_apdu.extend_from_slice(command);
             response[..self.apdu_response.len()].copy_from_slice(&self.apdu_response);
             Ok(self.apdu_response.len())
         }
@@ -3019,5 +3139,167 @@ mod contact_profile_tests {
         d[15] = 2;
         d[19..23].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
         d
+    }
+
+    // ---- PIN-result exchanges (track I, issue #121): the §6.1.11/12
+    // ---- tails moved from the STM32 wrapper. These lock the APDU the
+    // ---- card actually receives, the DataBlock answer and the #276
+    // ---- counter accounting — the firmware `secure_counter_tests`
+    // ---- run the same contracts through the wrapper delegation.
+
+    fn pin_buffer(digits: &[u8]) -> PinBuffer {
+        let mut b = PinBuffer::new(8);
+        for &d in digits {
+            assert!(b.push(d));
+        }
+        b
+    }
+
+    fn armed_verify() -> (Core, u8, PinVerifyParams) {
+        let mut core = new_core(true, &T0_ATR, true);
+        power_on(&mut core, 1);
+        let mut resp = [0u8; 271];
+        let mut payload = [0x00u8].to_vec();
+        payload.extend_from_slice(&pin_verify_probe());
+        let len = core.process_command(
+            &build(PC_TO_RDR_SECURE, 0x55, [0, 0, 0], &payload),
+            &mut resp,
+        );
+        assert_eq!(len, 0, "Secure verify defers its response");
+        let (seq, params) = core.take_secure_params().expect("armed");
+        (core, seq, params)
+    }
+
+    #[test]
+    fn pin_verify_exchange_sends_template_apdu_and_answers_card_sw() {
+        let (mut core, seq, params) = armed_verify();
+        let mut resp = [0u8; 271];
+
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            &params,
+            &mut resp,
+        );
+
+        // The card saw the reader-built VERIFY APDU: template head
+        // `00 20 00 81` + Lc 6 + ASCII "123456".
+        assert_eq!(
+            core.driver().last_apdu,
+            [0x00, 0x20, 0x00, 0x81, 0x06, b'1', b'2', b'3', b'4', b'5', b'6']
+        );
+        // DataBlock carries the card SW, counters advance (#276).
+        let (mt, s, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(s, 0x55);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        assert_eq!(&data[..2], &[0x90, 0x00]);
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 1);
+    }
+
+    #[test]
+    fn pin_verify_exchange_transmit_failure_answers_cancelled() {
+        let (mut core, seq, params) = armed_verify();
+        core.driver_mut().fail_transmit = true;
+        let mut resp = [0u8; 271];
+
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            &params,
+            &mut resp,
+        );
+
+        let (_, _, status, err, data) = parse(&resp[..n]);
+        assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6);
+        assert_eq!(err, CCID_ERR_PIN_CANCELLED);
+        assert!(data.is_empty());
+        // The attempt reached the card seam: tx counted, rx not.
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 0);
+    }
+
+    #[test]
+    fn pin_verify_exchange_build_failure_answers_invalid_length() {
+        let (mut core, seq, params) = armed_verify();
+        let mut resp = [0u8; 271];
+
+        // 3 digits: below the builder's user-PIN floor (6) — the APDU
+        // build rejects and the answer maps to InvalidLength (0xEB).
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3]),
+            &params,
+            &mut resp,
+        );
+
+        let (_, _, status, err, _) = parse(&resp[..n]);
+        assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6);
+        assert_eq!(err, CCID_ERR_CMD_ABORTED);
+        assert_eq!(core.diagnostics().apdu_tx_count, 0, "no card transmit");
+    }
+
+    #[test]
+    fn pin_verify_exchange_non_success_results_answer_directly() {
+        let (mut core, seq, params) = armed_verify();
+        let mut resp = [0u8; 271];
+
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Cancelled,
+            pin_buffer(&[]),
+            &params,
+            &mut resp,
+        );
+        let (_, _, status, err, _) = parse(&resp[..n]);
+        assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6);
+        assert_eq!(err, CCID_ERR_PIN_CANCELLED);
+        assert_eq!(core.diagnostics().apdu_tx_count, 0);
+    }
+
+    #[test]
+    fn pin_modify_exchange_sends_change_apdu_and_answers_card_sw() {
+        let mut core = new_core(true, &T0_ATR, true);
+        power_on(&mut core, 1);
+        let mut resp = [0u8; 271];
+        let mut payload = [0x01u8].to_vec();
+        payload.extend_from_slice(&pin_modify_probe());
+        let len = core.process_command(
+            &build(PC_TO_RDR_SECURE, 0x66, [0, 0, 0], &payload),
+            &mut resp,
+        );
+        assert_eq!(len, 0);
+        let (seq, params) = core.take_secure_modify_params().expect("armed");
+
+        let n = core.complete_pin_modify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[9, 9, 9, 9, 9, 9]),
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            &params,
+            &mut resp,
+        );
+
+        // CHANGE REFERENCE DATA: head `00 24 00 81`, Lc 12, old then new.
+        assert_eq!(
+            core.driver().last_apdu,
+            [
+                0x00, 0x24, 0x00, 0x81, 0x0C, b'9', b'9', b'9', b'9', b'9', b'9', b'1', b'2', b'3',
+                b'4', b'5', b'6'
+            ]
+        );
+        let (mt, s, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(s, 0x66);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        assert_eq!(&data[..2], &[0x90, 0x00]);
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 1);
     }
 }
