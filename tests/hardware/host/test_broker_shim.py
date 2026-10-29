@@ -12,7 +12,20 @@ import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parents[3]))
+
+# The broker host-tool imports pyserial at module level (it owns real
+# serial ports on the bench); collection-time import must stay optional
+# so the python-collect exit-code gate stays green on hosts without
+# pyserial while bench/dev hosts (which have it) run the suite for real.
+try:
+    import serial  # noqa: F401
+except ModuleNotFoundError:
+    pytest.skip("pyserial not installed (bench-only host tool)",
+                allow_module_level=True)
+
 spec = importlib.util.spec_from_file_location(
     "broker", Path(__file__).parents[3] / "host-tools" / "nucula-ccid-broker.py")
 broker = importlib.util.module_from_spec(spec)
