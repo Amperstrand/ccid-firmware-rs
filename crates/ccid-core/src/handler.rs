@@ -24,19 +24,28 @@
 //!   [`CcidHandlerCore::take_card_reset`] /
 //!   [`CcidHandlerCore::take_parameters_accepted`] events and
 //!   [`CcidHandlerCore::apdu_pipeline`]
-//! - Escape vendor sets — the GemPC serial conventions live here for the
-//!   serial profile; the STM32 wrapper keeps its Gemalto/0xD0-driver
-//!   diagnostics escapes local (vendor/transport flavor)
+//! - Escape vendor sets — the GemPC serial conventions (0x02 identity,
+//!   0xD1 snapshot, 0x01-01-01 sync) live here for the serial profile,
+//!   profile-gated off for contact (track I, #121); the shared 0xD0
+//!   diagnostics answer lives here with the optional #344 driver fold
+//!   ([`CcidHandlerCore::with_diagnostics_fold`]); the STM32 wrapper
+//!   keeps its Gemalto 0x6A + vendor gating local (vendor flavor)
 //! - IccClock / SetDataRateAndClockFrequency — smartcard-USART specifics,
 //!   driven directly by the STM32 wrapper
-//! - PIN-pad UI and the PIN-result→APDU exchange (STM32 `pinpad`)
+//! - PIN-pad UI (STM32 `pinpad`) — the PIN-result→APDU exchange itself
+//!   lives here (track I, issue #121:
+//!   [`CcidHandlerCore::complete_pin_verify_exchange`] /
+//!   [`CcidHandlerCore::complete_pin_modify_exchange`])
 //! - Escape 0xD1 snapshot panic — the wrapper acks, the serve loop panics
 
 use crate::diagnostics::Diagnostics;
 use crate::params::default_params;
 use crate::pps::is_pps_request;
 use crate::response::{write_data_block, write_message, write_slot_status};
-use crate::secure::{PinModifyParams, PinResult, PinVerifyParams, SecureState};
+use crate::secure::{
+    ModifyApduBuilder, PinBuffer, PinModifyParams, PinResult, PinVerifyParams, SecureState,
+    VerifyApduBuilder,
+};
 use card_interface::{PresenceState, SlotDriver, XfrErrorKind};
 use ccid_protocol::atr::{
     di_from_ta1_low, fi_from_ta1_high, parse_atr, t1_bwi_cwi_ifsc, AtrParams,
@@ -212,6 +221,12 @@ pub struct CcidHandlerCore<D: SlotDriver, P: ReaderProfile = SerialNfcProfile> {
     /// ATR-derived parameter source (contact profile); refreshed on each
     /// successful IccPowerOn.
     atr_params: AtrParams,
+    /// #344 driver-known-state overlay for the Escape 0xD0 answer:
+    /// drivers whose live view is fresher than the polled cache (the
+    /// F746 bit-bang wrapper's presence pin) fold it in AT ANSWER TIME.
+    /// `None` = the cached snapshot answers as-is (default; the ESP32
+    /// wrapper and the pre-fold F469 shape).
+    diagnostics_fold: Option<fn(&D, &mut Diagnostics)>,
     _profile: core::marker::PhantomData<P>,
 }
 
@@ -247,6 +262,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             secure_state: SecureState::Idle,
             host_params: None,
             atr_params: AtrParams::default(),
+            diagnostics_fold: None,
             _profile: core::marker::PhantomData,
         };
         // Sync recovery history at construction (Codex reviews on #46/#42):
@@ -254,6 +270,16 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         // the handler existed; without this the first 0xD0 query reports 0.
         handler.diagnostics.reinit_count = handler.nfc.reinit_count();
         handler
+    }
+
+    /// #344 driver-diagnostics fold: overlay driver-known state onto the
+    /// Escape 0xD0 answer at ANSWER TIME (the polled cache only refreshes
+    /// on a presence poll). The fold must ADD its state — resetting
+    /// core-owned counters (apdu_tx/rx, uptime) is the #268 failure mode;
+    /// the firmware's fold tests pin the contract. Inert unless installed.
+    pub fn with_diagnostics_fold(mut self, fold: fn(&D, &mut Diagnostics)) -> Self {
+        self.diagnostics_fold = Some(fold);
+        self
     }
 
     /// Escape 0xD1 arms a diagnostic snapshot: the response is acked, the
@@ -395,6 +421,115 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         );
         self.secure_state = SecureState::Idle;
         len
+    }
+
+    /// PIN-verify result exchange — the tail of the §6.1.11 surface,
+    /// moved from the STM32 wrapper (issue #121 track I): build the
+    /// VERIFY APDU from the host-supplied §6.1.11 template + the
+    /// entered buffer, transmit through the counted seam (#276: PIN
+    /// exchanges must advance the Escape 0xD0 apdu counters exactly
+    /// like XfrBlock traffic) and write the RDR_to_PC_DataBlock via
+    /// [`Self::complete_pin_entry`]. Failure mapping is the wrapper's
+    /// pre-port shape, pinned by the firmware suite: a card-transmit
+    /// failure answers Cancelled (0xEF), an APDU-build rejection
+    /// answers InvalidLength (0xEB).
+    pub fn complete_pin_verify_exchange(
+        &mut self,
+        seq: u8,
+        result: PinResult,
+        buffer: PinBuffer,
+        params: &PinVerifyParams,
+        response: &mut [u8],
+    ) -> usize {
+        match result {
+            PinResult::Success => {
+                let ascii_pin = buffer.to_ascii();
+                let pin_len = buffer.len();
+                let builder = VerifyApduBuilder::from_template(
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                );
+                match builder.build(&ascii_pin[..pin_len]) {
+                    Ok(apdu) => {
+                        // Card-answer scratch: same 261-byte budget the
+                        // wrapper kept as a field; a transient stack
+                        // frame is no worse than the pre-port resp_copy.
+                        let mut card_resp = [0u8; 261];
+                        match self.transmit_counted(&apdu[..5 + pin_len], &mut card_resp) {
+                            Ok(resp_len) => self.complete_pin_entry(
+                                seq,
+                                PinResult::Success,
+                                Some(&card_resp[..resp_len]),
+                                response,
+                            ),
+                            Err(_) => {
+                                self.complete_pin_entry(seq, PinResult::Cancelled, None, response)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.complete_pin_entry(seq, PinResult::InvalidLength, None, response)
+                    }
+                }
+            }
+            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                self.complete_pin_entry(seq, result, None, response)
+            }
+        }
+    }
+
+    /// PIN-modify result exchange — the §6.1.12 twin of
+    /// [`Self::complete_pin_verify_exchange`] (issue #121 track I):
+    /// build the CHANGE REFERENCE DATA APDU (old + new PIN at the
+    /// host-supplied insertion offsets), transmit counted, complete.
+    pub fn complete_pin_modify_exchange(
+        &mut self,
+        seq: u8,
+        result: PinResult,
+        old_buffer: PinBuffer,
+        new_buffer: PinBuffer,
+        params: &PinModifyParams,
+        response: &mut [u8],
+    ) -> usize {
+        match result {
+            PinResult::Success => {
+                let old_pin = old_buffer.to_ascii();
+                let old_len = old_buffer.len();
+                let new_pin = new_buffer.to_ascii();
+                let new_len = new_buffer.len();
+                let builder = ModifyApduBuilder::from_template(
+                    params.apdu_template[0],
+                    params.apdu_template[2],
+                    params.apdu_template[3],
+                    params.old_pin_offset as usize,
+                    params.new_pin_offset as usize,
+                );
+                match builder.build(&old_pin[..old_len], &new_pin[..new_len]) {
+                    Ok(apdu) => {
+                        let mut card_resp = [0u8; 261];
+                        let apdu_len = 5 + old_len + new_len;
+                        match self.transmit_counted(&apdu[..apdu_len], &mut card_resp) {
+                            Ok(resp_len) => self.complete_pin_entry(
+                                seq,
+                                PinResult::Success,
+                                Some(&card_resp[..resp_len]),
+                                response,
+                            ),
+                            Err(_) => {
+                                self.complete_pin_entry(seq, PinResult::Cancelled, None, response)
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        self.complete_pin_entry(seq, PinResult::InvalidLength, None, response)
+                    }
+                }
+            }
+            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
+                self.complete_pin_entry(seq, result, None, response)
+            }
+        }
     }
 
     /// Refresh time-varying diagnostic fields. Called from the firmware's
@@ -1180,8 +1315,17 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
     // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
     fn handle_escape(&mut self, header: &CcidHeader, payload: &[u8], response: &mut [u8]) -> usize {
         if payload.first() == Some(&0xD0) {
+            // Live core counters + the optional driver-known-state fold
+            // (#344): the STM32 wrapper's F746 presence-pin overlay,
+            // applied at answer time. Default (no fold installed) is
+            // byte-identical to the cached snapshot the ESP32 answers
+            // with — pinned by tests on both profiles.
+            let mut diag = self.diagnostics;
+            if let Some(fold) = self.diagnostics_fold {
+                fold(&self.nfc, &mut diag);
+            }
             let mut diag_buf = [0u8; Diagnostics::SERIALIZED_SIZE];
-            self.diagnostics.to_bytes(&mut diag_buf);
+            diag.to_bytes(&mut diag_buf);
             return write_message(
                 RDR_TO_PC_ESCAPE,
                 header.slot,
@@ -1194,35 +1338,61 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
-        // Dump-and-retrieve debugging: ack, then the serve loop panics with
-        // a marker reason after this response goes out — the panic handler
-        // writes the flash coredump (retrieve + decode: AGENTS.md).
-        if payload.first() == Some(&0xD1) {
-            self.diagnostic_snapshot_requested = true;
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[0xD1],
-                response,
-            );
-        }
+        // The serial/GemPC escape table below (0xD1 snapshot, 0x02
+        // firmware identity, 0x01-01-01 sync notifications) is the
+        // GemPC-Twin serial surface: the contact profile never answered
+        // these pre-port (its wrapper rejected everything but 0xD0 and
+        // its Gemalto 0x6A), so they are profile-gated to keep the
+        // delegated contact wire byte-identical (track I, #121).
+        if !P::CONTACT {
+            // Dump-and-retrieve debugging: ack, then the serve loop panics with
+            // a marker reason after this response goes out — the panic handler
+            // writes the flash coredump (retrieve + decode: AGENTS.md).
+            if payload.first() == Some(&0xD1) {
+                self.diagnostic_snapshot_requested = true;
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    &[0xD1],
+                    response,
+                );
+            }
 
-        // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
-        if payload.first() == Some(&0x02) {
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                self.firmware_version,
-                response,
-            );
+            // CCID_SERIAL: tx_buffer[0] = 0x02; // get reader firmware
+            if payload.first() == Some(&0x02) {
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    self.firmware_version,
+                    response,
+                );
+            }
+
+            // CCID_SERIAL: perform a command to configure GemPC Twin reader card movement
+            // * notification to synchronous mode: the card movement is notified _after_
+            // * the host command and _before_ the reader answer
+            // CCID_SERIAL: unsigned char tx_buffer[] = { 0x01, 0x01, 0x01};
+            if payload.starts_with(&[0x01, 0x01, 0x01]) {
+                self.sync_notifications = true;
+                return write_message(
+                    RDR_TO_PC_ESCAPE,
+                    header.slot,
+                    header.seq,
+                    build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
+                    0,
+                    0,
+                    &[0x01, 0x01, 0x01],
+                    response,
+                );
+            }
         }
 
         // libccid's ccid_open_hack_post() sends Escape{0x1F, 0x02} to
@@ -1232,7 +1402,8 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         // firmware does NOT implement APDU exchange level (T=1 stays
         // firmware-terminated), so a success ack would silently change the
         // host's framing expectations. A failed escape leaves the driver at
-        // TPDU level, which is the level we actually speak.
+        // TPDU level, which is the level we actually speak. Profile-neutral:
+        // the contact wrapper rejected it with the identical bytes pre-port.
         if payload == [0x1F, 0x02] {
             return write_message(
                 RDR_TO_PC_ESCAPE,
@@ -1242,24 +1413,6 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
                 0,
                 CCID_ERR_CMD_NOT_SUPPORTED,
                 &[],
-                response,
-            );
-        }
-
-        // CCID_SERIAL: perform a command to configure GemPC Twin reader card movement
-        // * notification to synchronous mode: the card movement is notified _after_
-        // * the host command and _before_ the reader answer
-        // CCID_SERIAL: unsigned char tx_buffer[] = { 0x01, 0x01, 0x01};
-        if payload.starts_with(&[0x01, 0x01, 0x01]) {
-            self.sync_notifications = true;
-            return write_message(
-                RDR_TO_PC_ESCAPE,
-                header.slot,
-                header.seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.current_icc_status()),
-                0,
-                0,
-                &[0x01, 0x01, 0x01],
                 response,
             );
         }
@@ -2344,6 +2497,11 @@ mod contact_profile_tests {
         fail_transmit: bool,
         /// #136: what `xfr_error_class` answers for transmit errors.
         transmit_class: XfrErrorKind,
+        /// Track I exchange tests: the exact APDU bytes the card saw.
+        last_apdu: Vec<u8>,
+        /// #344 fold tests: driver-known presence, fresher than the
+        /// polled cache (the F746 presence-pin seam).
+        diag_card_present: Option<bool>,
     }
 
     impl ContactDriver {
@@ -2355,6 +2513,8 @@ mod contact_profile_tests {
                 power_off_count: 0,
                 fail_transmit: false,
                 transmit_class: XfrErrorKind::Unclassified,
+                last_apdu: Vec::new(),
+                diag_card_present: None,
             }
         }
     }
@@ -2386,12 +2546,14 @@ mod contact_profile_tests {
 
         fn transmit_apdu(
             &mut self,
-            _command: &[u8],
+            command: &[u8],
             response: &mut [u8],
         ) -> Result<usize, Self::Error> {
             if self.fail_transmit {
                 return Err(ContactError::Transmit);
             }
+            self.last_apdu.clear();
+            self.last_apdu.extend_from_slice(command);
             response[..self.apdu_response.len()].copy_from_slice(&self.apdu_response);
             Ok(self.apdu_response.len())
         }
@@ -3019,5 +3181,241 @@ mod contact_profile_tests {
         d[15] = 2;
         d[19..23].copy_from_slice(&[0x00, 0x24, 0x00, 0x81]);
         d
+    }
+
+    // ---- PIN-result exchanges (track I, issue #121): the §6.1.11/12
+    // ---- tails moved from the STM32 wrapper. These lock the APDU the
+    // ---- card actually receives, the DataBlock answer and the #276
+    // ---- counter accounting — the firmware `secure_counter_tests`
+    // ---- run the same contracts through the wrapper delegation.
+
+    fn pin_buffer(digits: &[u8]) -> PinBuffer {
+        let mut b = PinBuffer::new(8);
+        for &d in digits {
+            assert!(b.push(d));
+        }
+        b
+    }
+
+    fn armed_verify() -> (Core, u8, PinVerifyParams) {
+        let mut core = new_core(true, &T0_ATR, true);
+        power_on(&mut core, 1);
+        let mut resp = [0u8; 271];
+        let mut payload = [0x00u8].to_vec();
+        payload.extend_from_slice(&pin_verify_probe());
+        let len = core.process_command(
+            &build(PC_TO_RDR_SECURE, 0x55, [0, 0, 0], &payload),
+            &mut resp,
+        );
+        assert_eq!(len, 0, "Secure verify defers its response");
+        let (seq, params) = core.take_secure_params().expect("armed");
+        (core, seq, params)
+    }
+
+    #[test]
+    fn pin_verify_exchange_sends_template_apdu_and_answers_card_sw() {
+        let (mut core, seq, params) = armed_verify();
+        let mut resp = [0u8; 271];
+
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            &params,
+            &mut resp,
+        );
+
+        // The card saw the reader-built VERIFY APDU: template head
+        // `00 20 00 81` + Lc 6 + ASCII "123456".
+        assert_eq!(
+            core.driver().last_apdu,
+            [0x00, 0x20, 0x00, 0x81, 0x06, b'1', b'2', b'3', b'4', b'5', b'6']
+        );
+        // DataBlock carries the card SW, counters advance (#276).
+        let (mt, s, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(s, 0x55);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        assert_eq!(&data[..2], &[0x90, 0x00]);
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 1);
+    }
+
+    #[test]
+    fn pin_verify_exchange_transmit_failure_answers_cancelled() {
+        let (mut core, seq, params) = armed_verify();
+        core.driver_mut().fail_transmit = true;
+        let mut resp = [0u8; 271];
+
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            &params,
+            &mut resp,
+        );
+
+        let (_, _, status, err, data) = parse(&resp[..n]);
+        assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6);
+        assert_eq!(err, CCID_ERR_PIN_CANCELLED);
+        assert!(data.is_empty());
+        // The attempt reached the card seam: tx counted, rx not.
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 0);
+    }
+
+    #[test]
+    fn pin_verify_exchange_build_failure_answers_invalid_length() {
+        let (mut core, seq, params) = armed_verify();
+        let mut resp = [0u8; 271];
+
+        // 3 digits: below the builder's user-PIN floor (6) — the APDU
+        // build rejects and the answer maps to InvalidLength (0xEB).
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[1, 2, 3]),
+            &params,
+            &mut resp,
+        );
+
+        let (_, _, status, err, _) = parse(&resp[..n]);
+        assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6);
+        assert_eq!(err, CCID_ERR_CMD_ABORTED);
+        assert_eq!(core.diagnostics().apdu_tx_count, 0, "no card transmit");
+    }
+
+    #[test]
+    fn pin_verify_exchange_non_success_results_answer_directly() {
+        let (mut core, seq, params) = armed_verify();
+        let mut resp = [0u8; 271];
+
+        let n = core.complete_pin_verify_exchange(
+            seq,
+            PinResult::Cancelled,
+            pin_buffer(&[]),
+            &params,
+            &mut resp,
+        );
+        let (_, _, status, err, _) = parse(&resp[..n]);
+        assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6);
+        assert_eq!(err, CCID_ERR_PIN_CANCELLED);
+        assert_eq!(core.diagnostics().apdu_tx_count, 0);
+    }
+
+    #[test]
+    fn pin_modify_exchange_sends_change_apdu_and_answers_card_sw() {
+        let mut core = new_core(true, &T0_ATR, true);
+        power_on(&mut core, 1);
+        let mut resp = [0u8; 271];
+        let mut payload = [0x01u8].to_vec();
+        payload.extend_from_slice(&pin_modify_probe());
+        let len = core.process_command(
+            &build(PC_TO_RDR_SECURE, 0x66, [0, 0, 0], &payload),
+            &mut resp,
+        );
+        assert_eq!(len, 0);
+        let (seq, params) = core.take_secure_modify_params().expect("armed");
+
+        let n = core.complete_pin_modify_exchange(
+            seq,
+            PinResult::Success,
+            pin_buffer(&[9, 9, 9, 9, 9, 9]),
+            pin_buffer(&[1, 2, 3, 4, 5, 6]),
+            &params,
+            &mut resp,
+        );
+
+        // CHANGE REFERENCE DATA: head `00 24 00 81`, Lc 12, old then new.
+        assert_eq!(
+            core.driver().last_apdu,
+            [
+                0x00, 0x24, 0x00, 0x81, 0x0C, b'9', b'9', b'9', b'9', b'9', b'9', b'1', b'2', b'3',
+                b'4', b'5', b'6'
+            ]
+        );
+        let (mt, s, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(s, 0x66);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        assert_eq!(&data[..2], &[0x90, 0x00]);
+        assert_eq!(core.diagnostics().apdu_tx_count, 1);
+        assert_eq!(core.diagnostics().apdu_rx_count, 1);
+    }
+
+    // ---- Escape 0xD0 + the profile-gated serial escape table
+    // ---- (track I, #121): the delegated contact escape surface.
+
+    #[test]
+    fn escape_d0_answers_live_counters_with_driver_fold() {
+        // The cache starts ABSENT (constructed with no card); the
+        // driver's live view says a card IS in — the fold must back
+        // card_present in the answer while keeping core counters.
+        let mut core: Core =
+            CcidHandlerCore::with_profile(ContactDriver::new(false, &T0_ATR), b"core", false)
+                .with_diagnostics_fold(|drv, diag| {
+                    if let Some(p) = drv.diag_card_present {
+                        diag.card_present = p;
+                    }
+                });
+        core.driver_mut().present = true; // card lands between polls
+        core.driver_mut().diag_card_present = Some(true);
+
+        let mut resp = [0u8; 271];
+        let n = core.process_command(
+            &build(PC_TO_RDR_ESCAPE, 0x42, [0, 0, 0], &[0xD0]),
+            &mut resp,
+        );
+        let (mt, seq, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_ESCAPE);
+        assert_eq!(seq, 0x42);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        let diag = Diagnostics::from_bytes(&data[..Diagnostics::SERIALIZED_SIZE]).expect("decode");
+        assert!(diag.card_present, "the fold backs the driver's live view");
+        assert_eq!(diag.apdu_tx_count, 0, "core counters survive the fold");
+    }
+
+    #[test]
+    fn escape_d0_without_fold_answers_the_cached_snapshot() {
+        // Default (no fold installed): byte-identical to the pre-fold
+        // core answer — the ESP32 shape.
+        let mut core = new_core(false, &T0_ATR, false);
+        let mut resp = [0u8; 271];
+        let n = core.process_command(
+            &build(PC_TO_RDR_ESCAPE, 0x43, [0, 0, 0], &[0xD0]),
+            &mut resp,
+        );
+        let (mt, _, status, err, data) = parse(&resp[..n]);
+        assert_eq!(mt, RDR_TO_PC_ESCAPE);
+        assert_eq!(status & 0xC0, 0);
+        assert_eq!(err, 0);
+        let diag = Diagnostics::from_bytes(&data[..Diagnostics::SERIALIZED_SIZE]).expect("decode");
+        assert!(!diag.card_present, "no fold: the polled cache answers");
+    }
+
+    #[test]
+    fn escape_serial_table_rejected_on_contact_profile() {
+        // 0x02 (identity), 0xD1 (snapshot), 0x01-01-01 (sync) are the
+        // GemPC-Twin SERIAL surface — the contact wrapper rejected them
+        // pre-port, so the delegated contact table must too.
+        let mut core = new_core(false, &T0_ATR, false);
+        let mut resp = [0u8; 271];
+        for (seq, payload) in [
+            (0x51u8, &[0x02u8][..]),
+            (0x52, &[0xD1][..]),
+            (0x53, &[0x01, 0x01, 0x01][..]),
+        ] {
+            let n =
+                core.process_command(&build(PC_TO_RDR_ESCAPE, seq, [0, 0, 0], payload), &mut resp);
+            let (mt, _, status, err, _) = parse(&resp[..n]);
+            assert_eq!(mt, RDR_TO_PC_ESCAPE, "seq {seq}");
+            assert_eq!(status & 0xC0, COMMAND_STATUS_FAILED << 6, "seq {seq}");
+            assert_eq!(err, CCID_ERR_CMD_NOT_SUPPORTED, "seq {seq}");
+        }
+        assert!(!core.take_snapshot_request(), "0xD1 never arms on contact");
+        assert!(!core.sync_notifications(), "sync never arms on contact");
     }
 }

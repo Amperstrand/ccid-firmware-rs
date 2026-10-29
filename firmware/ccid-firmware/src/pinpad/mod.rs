@@ -7,8 +7,9 @@
 //! - Touchscreen-based pinpad UI (embedded-graphics)
 //!
 //! The CCID §6.1.11/12 wire structures (PinVerifyParams, PinModifyParams,
-//! PinResult, PinBuffer) live in the shared `ccid-core` secure module
-//! (DRY phase 2) and are re-exported here for path compatibility.
+//! PinResult, PinBuffer) AND the reader-built VERIFY/CHANGE APDU builders
+//! live in the shared `ccid-core` secure module (DRY phase 2 / #121
+//! track I) and are re-exported here for path compatibility.
 #![allow(dead_code)]
 #![allow(unused_imports)]
 //!

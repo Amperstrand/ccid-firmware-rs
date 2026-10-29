@@ -3,8 +3,10 @@
 //!
 //! Command dispatch, slot lifecycle, bStatus assembly, the contact
 //! parameter model (ATR-derived + host-supplied echo with libccid quirk
-//! validation), the XfrBlock pipeline and the PC_to_RDR_Secure PIN
-//! surface live in `ccid_core::handler::CcidHandlerCore<ContactProfile>`;
+//! validation), the XfrBlock pipeline, the PC_to_RDR_Secure PIN surface
+//! AND its result→VERIFY/CHANGE APDU exchanges (track I, #121:
+//! `complete_pin_verify_exchange` / `complete_pin_modify_exchange`) live
+//! in `ccid_core::handler::CcidHandlerCore<ContactProfile>`;
 //! this module keeps what is genuinely firmware-local:
 //!
 //! - the USB bulk framing state (feed/message_ready/take_response,
@@ -12,13 +14,14 @@
 //! - the vendor/transport escape set (0xD0 driver diagnostics, Gemalto
 //!   0x6A firmware features)
 //! - the smartcard-USART specifics (IccClock, SetDataRateAndClockFrequency)
-//! - the display-feature PIN-result → VERIFY/CHANGE APDU exchange
+//! - the display-feature PIN-entry UI + the result deferral seam
+//!   (set/process pair)
 //!
 //! Wire behavior is byte-identical to the pre-port `CcidMessageHandler`
 //! (firmware host suites + ccid-core contact-profile tests pin it).
 
 use crate::driver::SmartcardDriver;
-use crate::pinpad::{ModifyApduBuilder, PinBuffer, PinResult, PinVerifyParams, VerifyApduBuilder};
+use crate::pinpad::{PinBuffer, PinResult, PinVerifyParams};
 use ::ccid_core::handler::{CcidHandlerCore, ContactProfile};
 use ::ccid_core::response::{write_message, write_slot_status};
 use card_interface::{CardBackend, PresenceState, SlotDriver};
@@ -113,7 +116,6 @@ pub struct CcidMessageHandler<D: SmartcardDriver> {
     tx_len: usize,
     cmd_busy: bool,
     vendor_id: u16,
-    response_buffer: [u8; 261],
     uptime: crate::dwt_watchdog::DwtUptime,
     pin_result_pending: Option<(u8, PinResult, PinBuffer, PinVerifyParams)>,
     pin_modify_result_pending: Option<(
@@ -137,14 +139,19 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 },
                 b"",
                 vendor_id == PIN_PAD_VENDOR_ID,
-            ),
+            )
+            .with_diagnostics_fold(|adapter, diag| {
+                // #344: driver-known state overlays the core counters at
+                // answer time (the F746 bit-bang wrapper stamps its live
+                // presence pin; the fold is additive by contract).
+                adapter.driver.diagnostics(diag);
+            }),
             rx_buffer: [0u8; MAX_CCID_MESSAGE_LENGTH],
             rx_len: 0,
             tx_buffer: [0u8; MAX_CCID_MESSAGE_LENGTH],
             tx_len: 0,
             cmd_busy: false,
             vendor_id,
-            response_buffer: [0u8; 261],
             uptime: crate::dwt_watchdog::DwtUptime::new(UPTIME_CLOCK_HZ),
             pin_result_pending: None,
             pin_modify_result_pending: None,
@@ -513,50 +520,24 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
     // CCID_SPEC: /* Section 6.1.8 */ struct ccid_pc_to_rdr_escape {
     // struct ccid_header hdr; uint8_t abRFU[3]; uint8_t abData[0]; }
     // __attribute__ ((packed)); /* Response: RDR_to_PC_Escape */
+    //
+    // The 0xD0 diagnostics answer and the unknown-escape rejection
+    // delegate to the core's contact escape table (track I, #121): the
+    // core owns the 28-byte serialization and applies this wrapper's
+    // #344 driver fold (installed in new()). Firmware-local: the
+    // Gemalto 0x6A firmware-features arm and the vendor gate —
+    // non-Gemalto profiles (Cherry) answer ONLY the 0xD0 escape,
+    // exactly the pre-port surface.
     fn handle_escape(&mut self, seq: u8) {
         let data_len = self.declared_length();
-
-        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0xD0 {
-            ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
-            // Live counters from the shared core handler (apdu_tx/rx are
-            // counted there around every card exchange) — #268 defect 2:
-            // this used to read the SmartcardDriver trait stub, which on
-            // the F469 only filled reinit_count + card_present, so the
-            // HIL saw apdu_tx=0/apdu_rx=0/uptime=0 after real exchanges.
-            let mut diag = *self.core.diagnostics();
-            // #344: driver-known state overlays the core's counters —
-            // the F746 bit-bang wrapper stamps its live presence-pin
-            // card_present (the cached snapshot only refreshes on a
-            // presence poll). The default trait fold is a no-op, so
-            // F469/mock behavior is byte-identical.
-            self.driver_mut().diagnostics(&mut diag);
-            let mut diag_buf = [0u8; ::ccid_core::Diagnostics::SERIALIZED_SIZE];
-            diag.to_bytes(&mut diag_buf);
-            self.tx_len = write_message(
-                RDR_TO_PC_ESCAPE,
-                0,
-                seq,
-                build_bstatus(COMMAND_STATUS_NO_ERROR, self.get_icc_status()),
-                0,
-                0,
-                &diag_buf,
-                &mut self.tx_buffer,
-            );
-            return;
-        }
-
+        let first = if data_len >= 1 {
+            Some(self.rx_buffer[CCID_HEADER_SIZE])
+        } else {
+            None
+        };
         let is_gemalto = self.vendor_id == 0x08E6;
 
-        if !is_gemalto {
-            ccid_debug!(
-                "CCID: ESCAPE rejected for non-Gemalto vendor 0x{:04X}",
-                self.vendor_id
-            );
-            self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
-            return;
-        }
-
-        if data_len >= 1 && self.rx_buffer[CCID_HEADER_SIZE] == 0x6A {
+        if is_gemalto && first == Some(0x6A) {
             ccid_debug!("CCID: GET_FIRMWARE_FEATURES ESCAPE (0x6A)");
             // libccid accepts the firmware-features answer ONLY when its
             // length is exactly sizeof(struct GEMALTO_FIRMWARE_FEATURES)
@@ -604,13 +585,31 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
                 &firmware_features,
                 &mut self.tx_buffer,
             );
-        } else {
+            return;
+        }
+
+        // Non-Gemalto vendors: everything except 0xD0 is rejected (the
+        // pre-port Cherry surface — 0x02/0xD1/sync escapes never answered).
+        if !is_gemalto && first != Some(0xD0) {
             ccid_debug!(
-                "CCID: ESCAPE unknown command 0x{:02X}",
-                self.rx_buffer[CCID_HEADER_SIZE]
+                "CCID: ESCAPE rejected for non-Gemalto vendor 0x{:04X}",
+                self.vendor_id
             );
             self.send_err_resp(PC_TO_RDR_ESCAPE, seq, CCID_ERR_CMD_NOT_SUPPORTED);
+            return;
         }
+
+        // 0xD0 (all vendors) and Gemalto unknown payloads delegate to
+        // the core: the contact escape table answers 0xD0 with the
+        // live counters + driver fold and rejects the rest in the
+        // identical Escape shape send_err_resp produced.
+        if first == Some(0xD0) {
+            ccid_debug!("CCID: DIAGNOSTICS ESCAPE (0xD0)");
+            // #268 defect 2 history: apdu_tx/rx are counted in the core
+            // around every card exchange; #344: the driver fold overlays
+            // driver-known state (F746 live presence pin) at answer time.
+        }
+        self.delegate_to_core();
     }
 
     pub fn is_pin_entry_active(&self) -> bool {
@@ -684,61 +683,17 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             params.max_len
         );
 
-        match result {
-            PinResult::Success => {
-                let ascii_pin = buffer.to_ascii();
-                let pin_len = buffer.len();
-
-                ccid_debug!(
-                    "CCID: Building APDU - CLA={:02X}, P1={:02X}, P2={:02X}, pin_len={}",
-                    params.apdu_template[0],
-                    params.apdu_template[2],
-                    params.apdu_template[3],
-                    pin_len
-                );
-
-                let builder = VerifyApduBuilder::from_template(
-                    params.apdu_template[0],
-                    params.apdu_template[2],
-                    params.apdu_template[3],
-                );
-
-                match builder.build(&ascii_pin[..pin_len]) {
-                    Ok(apdu) => {
-                        let apdu_len = 5 + pin_len;
-                        ccid_debug!("CCID: Transmitting APDU, len={}", apdu_len);
-                        match self
-                            .core
-                            .transmit_counted(&apdu[..apdu_len], &mut self.response_buffer)
-                        {
-                            Ok(resp_len) => {
-                                ccid_info!("CCID: Card responded, len={}", resp_len);
-                                let mut resp_copy: [u8; 261] = [0u8; 261];
-                                resp_copy[..resp_len]
-                                    .copy_from_slice(&self.response_buffer[..resp_len]);
-                                self.complete_pin_entry(
-                                    seq,
-                                    PinResult::Success,
-                                    Some(&resp_copy[..resp_len]),
-                                );
-                            }
-                            Err(_) => {
-                                ccid_warn!("CCID: Card transmit failed");
-                                self.complete_pin_entry(seq, PinResult::Cancelled, None);
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        ccid_warn!("CCID: APDU build failed");
-                        self.complete_pin_entry(seq, PinResult::InvalidLength, None);
-                    }
-                }
-            }
-            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
-                ccid_debug!("CCID: PIN entry failed with {}", result.as_str());
-                self.complete_pin_entry(seq, result, None);
-            }
-        }
+        // §6.1.11 tail lives in the shared core (#121 track I): APDU
+        // build + counted transmit + DataBlock completion, byte-identical
+        // to the pre-port wrapper exchange (pinned by the firmware suite
+        // and the core's exchange tests).
+        self.tx_len = self.core.complete_pin_verify_exchange(
+            seq,
+            result,
+            buffer,
+            &params,
+            &mut self.tx_buffer,
+        );
     }
 
     pub fn set_pin_modify_result(
@@ -774,66 +729,16 @@ impl<D: SmartcardDriver> CcidMessageHandler<D> {
             params.max_len
         );
 
-        match result {
-            PinResult::Success => {
-                let old_pin = old_buffer.to_ascii();
-                let old_len = old_buffer.len();
-                let new_pin = new_buffer.to_ascii();
-                let new_len = new_buffer.len();
-
-                ccid_debug!(
-                    "CCID: Building CHANGE REFERENCE DATA APDU - CLA={:02X}, P1={:02X}, P2={:02X}, old_len={}, new_len={}",
-                    params.apdu_template[0],
-                    params.apdu_template[2],
-                    params.apdu_template[3],
-                    old_len,
-                    new_len
-                );
-
-                let builder = ModifyApduBuilder::from_template(
-                    params.apdu_template[0],
-                    params.apdu_template[2],
-                    params.apdu_template[3],
-                    params.old_pin_offset as usize,
-                    params.new_pin_offset as usize,
-                );
-
-                match builder.build(&old_pin[..old_len], &new_pin[..new_len]) {
-                    Ok(apdu) => {
-                        let apdu_len = 5 + old_len + new_len;
-                        ccid_debug!("CCID: Transmitting CHANGE APDU, len={}", apdu_len);
-                        match self
-                            .core
-                            .transmit_counted(&apdu[..apdu_len], &mut self.response_buffer)
-                        {
-                            Ok(resp_len) => {
-                                ccid_info!("CCID: Card responded to CHANGE, len={}", resp_len);
-                                let mut resp_copy: [u8; 261] = [0u8; 261];
-                                resp_copy[..resp_len]
-                                    .copy_from_slice(&self.response_buffer[..resp_len]);
-                                self.complete_pin_entry(
-                                    seq,
-                                    PinResult::Success,
-                                    Some(&resp_copy[..resp_len]),
-                                );
-                            }
-                            Err(_) => {
-                                ccid_warn!("CCID: Card transmit failed for CHANGE");
-                                self.complete_pin_entry(seq, PinResult::Cancelled, None);
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        ccid_warn!("CCID: CHANGE APDU build failed");
-                        self.complete_pin_entry(seq, PinResult::InvalidLength, None);
-                    }
-                }
-            }
-            PinResult::Cancelled | PinResult::Timeout | PinResult::InvalidLength => {
-                ccid_debug!("CCID: PIN modify entry failed with {}", result.as_str());
-                self.complete_pin_entry(seq, result, None);
-            }
-        }
+        // §6.1.12 tail lives in the shared core (#121 track I) — same
+        // delegation contract as the verify exchange above.
+        self.tx_len = self.core.complete_pin_modify_exchange(
+            seq,
+            result,
+            old_buffer,
+            new_buffer,
+            &params,
+            &mut self.tx_buffer,
+        );
     }
 
     fn send_slot_status(&mut self, seq: u8, cmd_status: u8, icc_status: u8, error: u8) {

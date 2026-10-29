@@ -98,7 +98,11 @@ pub fn t1_usart_framing(guard_time_n: u8) -> (u16, u16) {
     // is the ISO reduced-guard-time request (GT=0), not "use default".
     // (ATR TC1-ABSENT defaults are the CALLER's concern — substitute
     // N=2 there before calling; see the ATR call sites.)
-    let gt = if guard_time_n == 255 { 0 } else { guard_time_n as u16 };
+    let gt = if guard_time_n == 255 {
+        0
+    } else {
+        guard_time_n as u16
+    };
     (CR2_STOP_SMARTCARD_1_5, gt)
 }
 
