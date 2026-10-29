@@ -292,7 +292,10 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
                         log::error!("baud switch to {} failed: {:?} — link unchanged", baud, e);
                     }
                 } else {
-                    log::error!("baud change to {} discarded: ack not fully on the wire", baud);
+                    log::error!(
+                        "baud change to {} discarded: ack not fully on the wire",
+                        baud
+                    );
                 }
             }
             if sent {

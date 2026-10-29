@@ -546,8 +546,7 @@ impl SmartcardUart {
                     } else {
                         params.guard_time_n
                     };
-                    let (_stop, gt) =
-                        crate::smartcard_common::t1_usart_framing(n_atr);
+                    let (_stop, gt) = crate::smartcard_common::t1_usart_framing(n_atr);
                     let psc = self.usart.gtpr().read().bits() & 0xFF;
                     self.usart
                         .gtpr()
