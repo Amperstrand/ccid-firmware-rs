@@ -100,6 +100,7 @@ CCID_SERVICE_ALLOWED_DEPS = {
     "ccid-core",
     "ccid-protocol",
     "ccid-transport-serial",
+    "thiserror",
     "heapless",
     "log",
 }
