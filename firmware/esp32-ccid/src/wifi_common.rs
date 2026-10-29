@@ -66,11 +66,14 @@ pub fn station_bring_up(
 /// t_a0ebcf54 (boards-as-data): the typed gpio4/5/6/7 this used to
 /// hand-type are gone — NFC construction flows through the GENERATED
 /// `boards::NUCULA` table via `board_ctor`.
-#[cfg(feature = "backend-pn7160")]
 /// Boot observability (2026-10-28 wifi-vpcd reset hunt): the reboots
 /// under investigation write no coredump and no panic line, so the ONLY
 /// discriminator is the ROM reset reason. esp-idf exposes it after the
 /// fact; log it on every boot so bench-netlog carries it.
+/// UNGATED by design: every wifi frontend (pn7160 AND mfrc522) logs it.
+/// (CI-red fix: this insertion originally sat BETWEEN the
+/// backend-pn7160 cfg below and bring_up — stealing the gate so mfrc522
+/// builds lost the helper while compiling the pn7160-only bring_up.)
 pub fn log_reset_reason() {
     let r = unsafe { esp_idf_sys::esp_reset_reason() };
     let name = match r {
@@ -89,6 +92,7 @@ pub fn log_reset_reason() {
     log::warn!("boot: reset reason {} ({})", r, name);
 }
 
+#[cfg(feature = "backend-pn7160")]
 pub fn bring_up() -> (String, Pn7160NfcDriver<EspPn7160Transport>) {
     let peripherals = Peripherals::take().expect("peripherals already taken");
     let nvs = EspDefaultNvsPartition::take().expect("nvs partition");
