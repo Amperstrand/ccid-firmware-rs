@@ -308,10 +308,19 @@ def execute_probes(reader_substr: str, *, allow_get_status: bool,
                     print("  CPLC response is not a 9F7F BER-TLV — unreadable")
                     failures += 1
                 else:
-                    fields = parse_cplc(value.hex())
-                    print(f"  CPLC registry key: {fields['registry_key']} "
-                          f"(identity {fields['identity_hex'][:16]}…)")
-                    atr_out.append(fields)
+                    # Codex P2 on #500: a structurally valid TLV with a
+                    # short body must FAIL the verdict, never raise past
+                    # the JSON-writing block — the malformed capture is
+                    # exactly what a corruption investigation needs kept.
+                    try:
+                        fields = parse_cplc(value.hex())
+                    except ValueError as e:
+                        print(f"  CPLC decode FAILED ({e}) — raw kept in capture")
+                        failures += 1
+                    else:
+                        print(f"  CPLC registry key: {fields['registry_key']} "
+                              f"(identity {fields['identity_hex'][:16]}…)")
+                        atr_out.append(fields)
     finally:
         try:
             conn.disconnect()
@@ -348,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="write a ccid_capture_diff.py-compatible capture")
     parser.add_argument("--parse-cplc", metavar="HEX",
                         help="offline: decode a CPLC 9F7F VALUE hex")
+    parser.add_argument("--verbose", action="store_true",
+                        help="per-exchange hex dumps on stdout (quiet by default)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="accepted for runbook compatibility; probe is "
+                             "read-only and hardware access requires --execute "
+                             "(dry-run IS the default behavior)")
     parser.add_argument("--parse-init-update", metavar="HEX",
                         help="offline: decode a CAPTURED INITIALIZE UPDATE "
                              "response hex (never sends one)")
