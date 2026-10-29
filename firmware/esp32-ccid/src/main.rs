@@ -273,6 +273,28 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
                     e
                 })
                 .is_ok();
+            // Issue #54: escape-negotiated baud switch. The ack is now
+            // FULLY clocked out at the old baud (wait_tx_done above) —
+            // the ack-before-switch flush, same discipline as the 0xD1
+            // ack-before-panic. Codex P2 on #498: switch ONLY when the
+            // complete exchange (echo + notify + response + drain)
+            // actually reached the wire — `sent` false means the host
+            // may never have seen the ACK, and switching anyway splits
+            // the link rates. The request is CONSUMED either way (an
+            // aborted negotiation must not fire on a later exchange).
+            // A failed switch leaves the link at the current rate: the
+            // host's next open re-negotiates from 115200 by
+            // construction (ccid_serial.c OpenSerialByName runs per
+            // connection), so no retry machinery here.
+            if let Some(baud) = server.handler_mut().take_baud_change() {
+                if sent {
+                    if let Err(e) = uart.change_baudrate(baud) {
+                        log::error!("baud switch to {} failed: {:?} — link unchanged", baud, e);
+                    }
+                } else {
+                    log::error!("baud change to {} discarded: ack not fully on the wire", baud);
+                }
+            }
             if sent {
                 ccid_service::ota_validity::note_serve_evidence("gempc-uart");
             }
@@ -322,11 +344,16 @@ fn serve_byte<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostic
 ))]
 fn serve_uart<D: esp32_ccid::nfc::NfcDriver + card_interface::FrontendDiagnostics>(
     uart: &UartDriver,
-    handler: esp32_ccid::ccid_handler::CcidHandler<D>,
+    mut handler: esp32_ccid::ccid_handler::CcidHandler<D>,
     mut on_read_idle_extra: impl FnMut(),
 ) -> ! {
     use esp32_ccid::ccid_serial_server::CcidSerialServer;
 
+    // Issue #54: UART0 is the one transport with a switchable link
+    // baud — opt the handler into the [0x05, code] escape (USB-CDC /
+    // SPP / TCP never enable it; their baud escapes answer
+    // CMD_NOT_SUPPORTED honestly).
+    handler.enable_baud_escape();
     let poll_interval_ticks =
         esp_idf_hal::delay::TickType::new_millis(CARD_POLL_INTERVAL_MS).ticks() as u32;
     // #153/#181 windows in TICKS — the tick rate is 100 Hz in

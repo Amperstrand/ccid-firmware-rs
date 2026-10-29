@@ -49,6 +49,49 @@ fn push_card_presence(present: bool) {
 // GEMPC: idVendor: 0x08E6 iManufacturer: Gemplus idProduct: 0x3437 iProduct: USB SmartCard Reader
 const FIRMWARE_VERSION: &[u8] = b"GemPC Twin ESP32 1.0\0";
 
+/// Issue #54: escape-negotiated link baud switch. Escape payload
+/// `[0x05, code]` asks the reader to move the serial link to
+/// `BAUD_TABLE[code]`; the reader ACKs at the CURRENT baud (payload
+/// `[0x05, code, baud u32-LE]`) and latches the switch for the serve
+/// loop, which executes it only after the ack fully clocked out
+/// (ack-before-switch, same flush discipline as the 0xD1
+/// ack-before-panic). Modeled on the ONLY speed negotiation in
+/// libccid's serial driver — GemCoreSIMPro2's 9600→115200 dance:
+/// probe at the current speed, `CmdEscape {0x01, 0x10, 0x20}`, host
+/// pauses 250 ms, host `cfsetspeed` (reference/CCID/src/ccid_serial.c,
+/// OpenSerialByName GEMCORESIMPRO2 arm). Stock libccidtwin ends that
+/// function in a hardcoded `cfsetspeed(B115200)` for every serial
+/// reader, so this escape stays INERT against pcscd until an upstream
+/// speed knob lands (issue #54 host-side ceiling) — direct-serial
+/// tooling exercises it today.
+pub const ESCAPE_SET_BAUD: u8 = 0x05;
+
+/// Issue #54 baud codes: `BAUD_TABLE[code - 0]` → baud rate. Index 0
+/// is the link default (115200 — a re-negotiation back to it is legal
+/// and self-heals a half-switched link); the tail covers the issue's
+/// 921600 target and the FTDI FT232 ceiling (3 Mbaud). ESP32 UART
+/// tolerates all of these; the HOST bridge is the real constraint.
+pub const BAUD_TABLE: [(u8, u32); 9] = [
+    (0x00, 115_200),
+    (0x01, 230_400),
+    (0x02, 460_800),
+    (0x03, 576_000),
+    (0x04, 921_600),
+    (0x05, 1_000_000),
+    (0x06, 1_500_000),
+    (0x07, 2_000_000),
+    (0x08, 3_000_000),
+];
+
+/// Resolve a #54 baud code to its rate (`None` = unknown code → the
+/// escape answers CMD_NOT_SUPPORTED and the link stays put).
+pub fn baud_from_code(code: u8) -> Option<u32> {
+    BAUD_TABLE
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, baud)| *baud)
+}
+
 /// Card-timeout status word, the SW libccid synthesizes host-side for
 /// bError 0xF0 (reference/CCID/src/commands.c CCID_Receive "case 0xF0").
 /// ONE definition for every failure path that answers a dead card —
@@ -63,6 +106,14 @@ pub struct CcidHandler<D: NfcDriver + FrontendDiagnostics> {
     /// the transition detector's memory (t_4864e74e: health changes are
     /// LOGGED once per transition, never per poll).
     last_frontend_health: Option<FrontendHealth>,
+    /// #54: baud escapes are answered only on transports with a
+    /// switchable link baud (the UART mains opt in; USB-CDC/SPP/TCP
+    /// fall through to the core's CMD_NOT_SUPPORTED — an honest "no
+    /// baud to switch" instead of an ack that does nothing).
+    baud_escape_enabled: bool,
+    /// #54: the latched baud from an accepted `[0x05, code]` escape —
+    /// consumed once by the serve loop AFTER the ack clocked out.
+    pending_baud_change: Option<u32>,
 }
 
 impl<D: NfcDriver + FrontendDiagnostics> CcidHandler<D> {
@@ -72,7 +123,23 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidHandler<D> {
             t1: T1Endpoint::new(),
             t1_armed: false,
             last_frontend_health: None,
+            baud_escape_enabled: false,
+            pending_baud_change: None,
         }
+    }
+
+    /// #54: opt the transport into the `[0x05, code]` baud-switch
+    /// escape (call once from the UART serve path, before serving).
+    pub fn enable_baud_escape(&mut self) {
+        self.baud_escape_enabled = true;
+    }
+
+    /// #54: the baud latched by an accepted baud-switch escape — takes
+    /// it exactly once (the serve loop executes the switch only after
+    /// the ack is fully on the wire; a failed switch leaves the latch
+    /// consumed — the host's re-open re-negotiates from 115200 anyway).
+    pub fn take_baud_change(&mut self) -> Option<u32> {
+        self.pending_baud_change.take()
     }
 
     /// Escape 0xD2 (issue #120): serve-loop stamp of the command
@@ -287,6 +354,66 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidHandler<D> {
                     &payload,
                     response,
                 );
+            }
+            // Escape [0x05, code] (issue #54): escape-negotiated link
+            // baud switch, answered ONLY on opted-in transports (UART
+            // mains — `enable_baud_escape`). Success ACKs at the
+            // CURRENT baud with [0x05, code, baud u32-LE] and latches
+            // the rate for the serve loop (`take_baud_change`), which
+            // switches after the ack clocked out — the GemCoreSIMPro2
+            // dance shape (ccid_serial.c: probe → CmdEscape → pause →
+            // cfsetspeed), not its bytes. Wrong length or unknown code
+            // is an explicit failed escape (link stays put); a
+            // non-opted transport falls through to the core's
+            // CMD_NOT_SUPPORTED.
+            if header.message_type == PC_TO_RDR_ESCAPE
+                && self.baud_escape_enabled
+                && ccid_msg.get(CCID_HEADER_SIZE) == Some(&ESCAPE_SET_BAUD)
+            {
+                let code = ccid_msg.get(CCID_HEADER_SIZE + 1).copied();
+                let accepted = if header.length == 2 {
+                    code.and_then(baud_from_code)
+                } else {
+                    None
+                };
+                match accepted {
+                    Some(baud) => {
+                        self.pending_baud_change = Some(baud);
+                        let payload: Vec<u8> = [ESCAPE_SET_BAUD, code.unwrap_or(0)]
+                            .iter()
+                            .copied()
+                            .chain(baud.to_le_bytes())
+                            .collect();
+                        return write_message(
+                            RDR_TO_PC_ESCAPE,
+                            header.slot,
+                            header.seq,
+                            build_bstatus(
+                                COMMAND_STATUS_NO_ERROR,
+                                self.core.slot_state().icc_status(),
+                            ),
+                            0,
+                            0,
+                            &payload,
+                            response,
+                        );
+                    }
+                    None => {
+                        return write_message(
+                            RDR_TO_PC_ESCAPE,
+                            header.slot,
+                            header.seq,
+                            build_bstatus(
+                                COMMAND_STATUS_FAILED,
+                                self.core.slot_state().icc_status(),
+                            ),
+                            0,
+                            CMD_NOT_SUPPORTED,
+                            &[],
+                            response,
+                        );
+                    }
+                }
             }
         }
 
@@ -886,6 +1013,123 @@ mod tests {
             "no WTX backend: core's Escape-typed rejection"
         );
         assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+    }
+
+    // --- Issue #54: escape-negotiated link baud switch ---
+
+    #[test]
+    fn escape_baud_switch_acks_at_current_baud_and_latches_once() {
+        // GREAT EXPECTATION (issue #54 wire contract — do not "fix"
+        // without re-reading the ccid_serial.c GemCoreSIMPro2 arm this
+        // is modeled on): the ACK to [0x05, code] echoes the subcommand
+        // byte, the accepted code and the resolved rate u32-LE, at the
+        // CURRENT baud — the serve loop switches only after this frame
+        // clocked out. 921600 = 0x000E1000.
+        let mut handler = new_handler(false);
+        handler.enable_baud_escape();
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 50, &[ESCAPE_SET_BAUD, 0x04]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(header.specific[0] & 0xC0, 0x00, "command status OK");
+        assert_eq!(
+            payload,
+            [0x05, 0x04, 0x00, 0x10, 0x0E, 0x00],
+            "code echoed + 921600 u32-LE"
+        );
+        assert_eq!(handler.take_baud_change(), Some(921_600));
+        assert_eq!(handler.take_baud_change(), None, "one-shot latch");
+    }
+
+    #[test]
+    fn escape_baud_switch_default_code_returns_the_link_rate() {
+        // Code 0x00 re-negotiates the default — a half-switched link
+        // self-heals without a replug.
+        let mut handler = new_handler(false);
+        handler.enable_baud_escape();
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 51, &[ESCAPE_SET_BAUD, 0x00]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (_, payload) = parse_response(&response[..len]);
+
+        assert_eq!(
+            u32::from_le_bytes(payload[2..6].try_into().unwrap()),
+            115_200
+        );
+        assert_eq!(handler.take_baud_change(), Some(115_200));
+    }
+
+    #[test]
+    fn escape_baud_switch_without_opt_in_falls_through_to_core() {
+        // Non-opted transports (USB-CDC, SPP, TCP — no link baud to
+        // switch) get the core's honest CMD_NOT_SUPPORTED, and nothing
+        // latches.
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 52, &[ESCAPE_SET_BAUD, 0x04]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(header.specific[0] & 0xC0, 0x40, "command status failed");
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+        assert!(payload.is_empty());
+        assert_eq!(handler.take_baud_change(), None, "nothing latched");
+    }
+
+    #[test]
+    fn escape_baud_switch_unknown_code_rejected_without_latch() {
+        let mut handler = new_handler(false);
+        handler.enable_baud_escape();
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 53, &[ESCAPE_SET_BAUD, 0x7F]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, _) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(header.specific[1], CMD_NOT_SUPPORTED);
+        assert_eq!(handler.take_baud_change(), None, "link stays put");
+    }
+
+    #[test]
+    fn escape_baud_switch_wrong_length_rejected() {
+        // Both a bare [0x05] and a trailing-garbage [0x05, code, extra]
+        // are rejected: the negotiation payload is exactly 2 bytes.
+        let mut handler = new_handler(false);
+        handler.enable_baud_escape();
+        for (seq, payload) in [
+            (54u8, &[ESCAPE_SET_BAUD][..]),
+            (55u8, &[ESCAPE_SET_BAUD, 0x04, 0x99][..]),
+        ] {
+            let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, seq, payload);
+            let mut response = [0u8; 271];
+            let len = handler.process_command(&cmd, &mut response);
+            let (header, _) = parse_response(&response[..len]);
+            assert_eq!(header.specific[1], CMD_NOT_SUPPORTED, "seq {seq}");
+        }
+        assert_eq!(handler.take_baud_change(), None);
+    }
+
+    #[test]
+    fn baud_table_codes_are_unique_and_cover_the_issue_targets() {
+        // The #54 ladder: 115200 default, 921600 first target, 3 Mbaud
+        // FTDI ceiling. Codes unique by construction of the lookup.
+        let rates: Vec<u32> = BAUD_TABLE.iter().map(|(_, r)| *r).collect();
+        assert!(rates.contains(&115_200));
+        assert!(rates.contains(&921_600), "the issue's first target");
+        assert!(rates.contains(&3_000_000), "FTDI FT232 ceiling");
+        let codes: Vec<u8> = BAUD_TABLE.iter().map(|(c, _)| *c).collect();
+        let mut sorted = codes.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(codes.len(), sorted.len(), "codes unique");
+        assert_eq!(baud_from_code(0x09), None, "past the table: unknown");
     }
 
     #[test]

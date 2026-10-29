@@ -26,6 +26,7 @@
 pub mod ccid_handler;
 pub mod ccid_serial_server;
 pub mod ccid_types;
+pub mod cdc_burst;
 pub mod frontend;
 pub mod nfc;
 pub mod ota_validity;

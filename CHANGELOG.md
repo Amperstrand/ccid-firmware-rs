@@ -1,5 +1,32 @@
 ## [Unreleased]
 
+### Changed — #119: CDC burst serve loop extracted to ccid-service (host-tested)
+
+- The nucula CDC main's burst-read loop (66109dd) moved to
+  `crates/ccid-service/src/cdc_burst.rs` (`CdcBurstServe` + `BurstWire`
+  transport seam, the SppPump precedent): read-burst → per-byte feed
+  with the #153/#168 arrival-floor discipline → inline echo/response
+  flush → answer-or-silence → #294 WS2 OTA evidence → escape 0xD1
+  snapshot stop. 10 new mock-transport host tests lock the wire
+  behavior (whole/split/multi-frame bursts, echoA,respA,echoB,respB
+  ordering, floor short/full/idle rules, late-drop, write-failure gate
+  semantics). `pn7160_ccid.rs` reduces to the wire adapter + tick
+  source + BLE-drain hook; byte-identical wire behavior.
+
+### Added — #54: escape-negotiated UART baud switch (firmware side)
+
+- New escape `[0x05, code]` (codes 0x00–0x08 → 115200–3 Mbaud,
+  `BAUD_TABLE`): ACK at the CURRENT baud (`[0x05, code, baud u32-LE]`),
+  the UART serve loop switches only after the ACK clocked out
+  (ack-before-switch, the 0xD1 flush discipline) — the GemCoreSIMPro2
+  negotiation shape from `ccid_serial.c:840-858`. UART mains opt in
+  (`enable_baud_escape`); USB-CDC/SPP/TCP answer CMD_NOT_SUPPORTED
+  (no link baud to switch). Inert against stock pcscd — libccidtwin
+  hardcodes `cfsetspeed(B115200)` (`ccid_serial.c:860-863`, verbatim
+  quote in docs/TRANSPORT_HOST_DRIVERS.md §3.1) — the host ceiling is
+  documented honestly; the firmware half is ready for the upstream
+  speed-knob ask.
+
 ### Fixed — pn7160-nci: Frame::decode accepted RFU message types (fuzz find)
 
 - Found by the (now working) Fuzz Nightly on its first real run:
