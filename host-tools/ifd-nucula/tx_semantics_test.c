@@ -68,6 +68,7 @@ enum {
     STEP_CMD_FAILED_PRESENT,
     STEP_TIME_EXTENSION,
     STEP_TIME_EXTENSION_DATABLOCK,
+    STEP_TIME_EXTENSION_CHAIN,
     STEP_WRONG_TYPE
 };
 
@@ -126,6 +127,50 @@ static int fb_read_frame(int fd, unsigned char *out)
         out[NUC_MSG_PAYLOAD + dlen] = lrc;
         return (int)(NUC_MSG_PAYLOAD + dlen + 1);
     }
+}
+
+/* The firmware's EXACT interim time-extension wire bytes (#472).
+ *
+ * Reference-locked byte-for-byte against the emitter this driver
+ * serves — crates/ccid-service/src/ccid_serial_server.rs
+ * time_extension::build_frame — and its own reference-locked unit
+ * test (time_extension_tests::interim_frame_bytes_reference_locked):
+ *
+ *   [0]  0x03  GemPC SYNC
+ *   [1]  0x06  CTRL_ACK
+ *   [2]  0x80  RDR_to_PC_DataBlock — CCID Rev 1.1 §6.1.4: the interim
+ *              KEEPS the in-flight XfrBlock's response type
+ *   [3..6]  0  dwLength = 0 (LE) — empty DataBlock
+ *   [7]  0     bSlot
+ *   [8]  seq   bSeq — the in-flight XfrBlock's
+ *   [9]  0x80  bStatus: bmCommandStatus 0b10 = time extension requested
+ *              (CCID 6.1.6) | bmICCStatus 0 = present+active
+ *   [10] 0x02  bError: BWT units requested (BWT_UNIT_MULTIPLIER = 2;
+ *              libccidtwin grows its read timeout by this per frame,
+ *              commands.c CCID_Receive)
+ *   [11] 0     bClockStatus
+ *   [12] LRC   XOR of the 12 preceding bytes (calculate_lrc)
+ *
+ * Deliberately NOT built with nuc_build_request: that is the DRIVER's
+ * builder and writes bError = 0 — synthesizing the mock with the code
+ * under test is exactly the mock-models-the-driver shape #472 flags.
+ * Wire size is the firmware's FRAME_SIZE = 13. */
+static size_t fw_time_extension_frame(unsigned char *out, unsigned char seq)
+{
+    out[0] = NUC_SYNC;
+    out[1] = NUC_CTRL_ACK;
+    out[2] = NUC_RDR_TO_PC_DATA_BLOCK;
+    out[3] = 0;
+    out[4] = 0;
+    out[5] = 0;
+    out[6] = 0;    /* dwLength = 0 (LE) */
+    out[7] = 0;    /* bSlot */
+    out[8] = seq;  /* bSeq — the in-flight XfrBlock's */
+    out[9] = 0x80; /* bStatus: time extension | ICC present+active */
+    out[10] = 0x02; /* bError: 2 BWT units requested */
+    out[11] = 0;    /* bClockStatus */
+    out[12] = nuc_lrc(out, 12);
+    return 13;
 }
 
 /* echo the ORIGINAL frame byte-exact, then answer with one crafted RDR
@@ -253,11 +298,12 @@ static void fb_serve_conn(struct fake_board *fb, int fd, int step)
         return;
     }
     case STEP_TIME_EXTENSION_DATABLOCK: {
-        /* Issue #472: the firmware's ACTUAL interim (ccid_serial_server
-         * build_frame, CCID 6.1.4) — DataBlock-typed, dwLength=0,
-         * bStatus 0x80|icc, our bSeq — then the real answer. Pre-fix
-         * the driver only waited out SlotStatus-shaped interims and
-         * classified this exchange IFD_COMMUNICATION_ERROR. */
+        /* Issue #472: the firmware's ACTUAL interim — the exact
+         * build_frame bytes (fw_time_extension_frame, byte-locked
+         * against ccid_serial_server's reference-locked unit test),
+         * then the real answer. Pre-fix the driver only waited out
+         * SlotStatus-shaped interims and classified this exchange
+         * IFD_COMMUNICATION_ERROR. */
         unsigned char frame[NUC_MAX_FRAME];
         if (fb_read_frame(fd, frame) <= 0) {
             close(fd);
@@ -272,9 +318,8 @@ static void fb_serve_conn(struct fake_board *fb, int fd, int step)
             return;
         }
         unsigned char interim[NUC_MAX_FRAME];
-        size_t ilen = nuc_build_request(
-            interim, NUC_RDR_TO_PC_DATA_BLOCK, frame[NUC_MSG_SEQ], 0x80,
-            (const unsigned char *)"", 0);
+        size_t ilen = fw_time_extension_frame(interim,
+                                              frame[NUC_MSG_SEQ]);
         if (ilen == 0 || write(fd, interim, ilen) != (ssize_t)ilen) {
             close(fd);
             return;
@@ -285,6 +330,51 @@ static void fb_serve_conn(struct fake_board *fb, int fd, int step)
             (const unsigned char *)"\x90\x00", 2);
         if (alen != 0)
             (void)!write(fd, answer, alen);
+        close(fd);
+        return;
+    }
+    case STEP_TIME_EXTENSION_CHAIN: {
+        /* #472 full-chain regression: TWO XfrBlocks on ONE
+         * connection; the first is answered echo -> TWO firmware
+         * interims (the stall hook fires once per BWT elapse) ->
+         * final DataBlock, the second echo -> final. If the driver
+         * mis-consumes any interim, the leftover frame poisons the
+         * NEXT transaction: its echo read gets the stale final ->
+         * echo mismatch -> AMBIGUOUS + eject. */
+        for (int cmd = 0; cmd < 2; cmd++) {
+            unsigned char frame[NUC_MAX_FRAME];
+            if (fb_read_frame(fd, frame) <= 0) {
+                close(fd);
+                return;
+            }
+            pthread_mutex_lock(&fb->lock);
+            fb->frames_complete++;
+            pthread_mutex_unlock(&fb->lock);
+            int n = NUC_MSG_PAYLOAD + (int)nuc_resp_payload_len(frame) + 1;
+            if (write(fd, frame, (size_t)n) != n) {
+                close(fd);
+                return;
+            }
+            if (cmd == 0) {
+                for (int i = 0; i < 2; i++) {
+                    unsigned char interim[NUC_MAX_FRAME];
+                    size_t ilen = fw_time_extension_frame(
+                        interim, frame[NUC_MSG_SEQ]);
+                    if (write(fd, interim, ilen) != (ssize_t)ilen) {
+                        close(fd);
+                        return;
+                    }
+                }
+            }
+            unsigned char answer[NUC_MAX_FRAME];
+            size_t alen = nuc_build_request(
+                answer, NUC_RDR_TO_PC_DATA_BLOCK, frame[NUC_MSG_SEQ], 0,
+                (const unsigned char *)"\x90\x00", 2);
+            if (alen == 0 || write(fd, answer, alen) != (ssize_t)alen) {
+                close(fd);
+                return;
+            }
+        }
         close(fd);
         return;
     }
@@ -666,6 +756,58 @@ int main(void)
         check(rxlen == 2 && rx[0] == 0x90 && rx[1] == 0x00,
               "datablock-interim: final DataBlock payload delivered");
         check(g_frames_complete(&fb) == 1, "datablock-interim: no resend");
+
+        /* #472 full-chain regression: XfrBlock -> extension
+         * DataBlock(s) -> final DataBlock returns the FINAL frame's
+         * payload with rc=0, and the NEXT transaction on the SAME
+         * connection is not poisoned (pre-fix, the interim ended the
+         * wait early, the real final frame stayed in flight, and the
+         * next echo read stale bytes -> AMBIGUOUS + eject). */
+        reset_between(&fb);
+        {
+            int steps[] = { STEP_TIME_EXTENSION_CHAIN, STEP_NONE };
+            arm_board(&fb, steps, 2);
+            pthread_mutex_lock(&g_ctx.lock);
+            unsigned char seq0 = g_ctx.seq;
+            pthread_mutex_unlock(&g_ctx.lock);
+
+            rc = nuc_command(NUC_PC_TO_RDR_XFR_BLOCK, 0, apdu, sizeof(apdu),
+                             resp, &rn);
+            check(rc == NUC_TX_OK,
+                  "ext-chain: stalled XfrBlock completes (TX_OK)");
+            check(rn == NUC_MSG_PAYLOAD + 3
+                      && resp[NUC_MSG_PAYLOAD] == 0x90
+                      && resp[NUC_MSG_PAYLOAD + 1] == 0x00,
+                  "ext-chain: the FINAL frame's payload delivered (9000)");
+            check(resp[NUC_MSG_SEQ] == seq0,
+                  "ext-chain: final answers the stalled command's bSeq");
+
+            pthread_mutex_lock(&g_ctx.lock);
+            int fd1 = g_ctx.fd;
+            pthread_mutex_unlock(&g_ctx.lock);
+            check(fd1 >= 0, "ext-chain: connection alive after interims");
+
+            rc = nuc_command(NUC_PC_TO_RDR_XFR_BLOCK, 0, apdu, sizeof(apdu),
+                             resp, &rn);
+            wait_conns(&fb, 1);
+            check(rc == NUC_TX_OK,
+                  "ext-chain: NEXT transaction not poisoned (TX_OK)");
+            check(rn == NUC_MSG_PAYLOAD + 3
+                      && resp[NUC_MSG_PAYLOAD] == 0x90
+                      && resp[NUC_MSG_PAYLOAD + 1] == 0x00,
+                  "ext-chain: next transaction's payload delivered");
+            check(resp[NUC_MSG_SEQ] == (unsigned char)(seq0 + 1),
+                  "ext-chain: next bSeq is seq+1 (counter clean)");
+
+            pthread_mutex_lock(&g_ctx.lock);
+            int fd2 = g_ctx.fd;
+            pthread_mutex_unlock(&g_ctx.lock);
+            check(fd2 == fd1, "ext-chain: same connection reused (no eject)");
+            check(g_frames_complete(&fb) == 2,
+                  "ext-chain: exactly two frames, no resend");
+            check(g_conns_done(&fb) == 1,
+                  "ext-chain: both transactions on ONE connection");
+        }
 
         /* wrong bSeq: correlation failure — error, and the poisoned
          * connection must be dropped (next command reconnects) */
