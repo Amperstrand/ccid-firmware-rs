@@ -710,6 +710,27 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         let presence = self.nfc.poll_card_presence();
         self.diagnostics.card_present = presence.present;
         self.diagnostics.reinit_count = self.nfc.reinit_count();
+
+        // #444 (bench 2026-10-23, deaf-after-~7-cycles soft wedge): a
+        // driver can tear down an active session MID-EXCHANGE (the RF
+        // error path clears the session and parks the lifecycle) while
+        // the card STAYS coupled — presence never flaps, so the slot
+        // would sit stale-PresentActive with a dead session and the
+        // host would error-loop against it until ITS OWN restart (the
+        // observed pcscd-reinit-only recovery). Detect the
+        // active-to-inactive-without-removal transition and treat it as
+        // a card reset: PresentInactive + the card-reset event
+        // (transport glue disarms protocol routes off it — the serial
+        // T=1 endpoint holds ns/chain state for the dead session's
+        // conversation) + a change event so the host reconnects through
+        // the standard power-on path instead of hammering transacts.
+        if self.slot_state == SlotState::PresentActive && presence.present {
+            self.slot_state = SlotState::PresentInactive;
+            self.presence_state = presence;
+            self.card_reset_event = true;
+            return Some(true);
+        }
+
         if presence.present != self.presence_state.present {
             self.presence_state = presence;
             if presence.present {

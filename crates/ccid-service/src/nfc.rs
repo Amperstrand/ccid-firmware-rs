@@ -349,6 +349,15 @@ impl MockNfcDriver {
             self.session_active = false;
         }
     }
+
+    /// Test instrumentation (#444): model a driver that tears down its
+    /// active session MID-EXCHANGE (the RF error path: session cleared,
+    /// lifecycle parked inactive) while the card STAYS coupled —
+    /// presence does not flap. `set_card_present(false)` is the wrong
+    /// shape for that scenario.
+    pub fn set_session_active(&mut self, active: bool) {
+        self.session_active = active;
+    }
 }
 
 impl NfcDriver for MockNfcDriver {
