@@ -18,15 +18,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # nfc/, the probe's di
 
 # python-collect minimal-env guard (test_conformance_battery.py pattern,
 # #361 review P1): the probe imports conformance_battery at module level,
-# which imports pyserial — stub it when absent.
+# which imports pyserial — stub it when absent, then DO NOT LEAK the stub
+# (a bare ModuleType carries __spec__=None, which makes sibling modules'
+# importlib.util.find_spec("serial") RAISE and breaks their collection —
+# main went red exactly this way once: python-collect 2026-10-30).
+_stubbed_serial = False
 try:
     import serial  # noqa: F401, E402
 except ModuleNotFoundError:
     import types as _types
 
     sys.modules["serial"] = _types.ModuleType("serial")
+    _stubbed_serial = True
 
 import fwt_arm_probe as probe  # noqa: E402
+
+if _stubbed_serial:
+    del sys.modules["serial"]
 
 
 class FwtFormulaTests(unittest.TestCase):
