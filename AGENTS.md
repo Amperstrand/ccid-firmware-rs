@@ -598,6 +598,18 @@ main, schedule, dispatch `full-matrix`, or a PR labeled `ci-full-matrix` —
 never blocking ordinary PRs; `ci-ok` aggregates the primary tier only,
 owner directive 2026-10-17 "a secondary rot must never block all merges"):
 
+**MERGE RULE for firmware/feature-composition-touching PRs (2026-10-29,
+the #398 lesson): PR CI proves the primary tier ONLY.** Before merging a
+PR that touches firmware sources, feature sets, sdkconfigs, or build
+dispatch, fire the secondary tier AT THE PR HEAD: dispatch the CI workflow
+on the PR branch with `full-matrix=true` (or add `ci-full-matrix` FIRST
+then re-add `ci-run` LAST so both events fire). Local xtensa `cargo check`
+with the exact CI feature combos is the offline substitute — but the
+dispatched run is authoritative and its result belongs in the merge
+evidence comment. #398 landed with three secondary legs red because
+nobody ran them at the head; the push-to-main run caught it (as designed)
+— at the cost of a red main and two repair PRs.
+
 | Job | Tier | Purpose | Commands |
 |---|---|---|---|
 | `changes` | — | paths-filter (PR) / all-true (schedule + dispatch) — decides which families run | dorny/paths-filter |
