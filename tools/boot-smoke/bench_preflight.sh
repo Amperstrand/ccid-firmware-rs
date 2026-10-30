@@ -34,6 +34,24 @@ PY
 # --- the quiesce target exists on this host ---
 systemctl cat nucula-ccid-broker.service >/dev/null 2>&1 && echo "PASS  nucula-ccid-broker unit" || { echo "FAIL  nucula-ccid-broker unit unknown"; fail=1; }
 
+# --- operator kill-switch (skip-with-notice; see bench_window.sh) ---
+MARKER=/tmp/amperstrand-bench-ci.disabled
+if [ -e "$MARKER" ]; then
+    echo "NOTICE: bench CI disabled by operator — $(cat "$MARKER" 2>/dev/null || echo 'no reason given')"
+    echo "BENCH-CI-SKIPPED (operator) — preflight passes trivially; the window step will skip"
+    echo "BOOT-SMOKE-PREFLIGHT-OK"
+    exit 0
+fi
+
+# --- labgrid coordinator reachable + the DUT place exists (the CI queue) ---
+if command -v labgrid-client >/dev/null 2>&1 \
+   && timeout 15 labgrid-client -p "${BENCH_PLACE:-nucula-c3}" show >/dev/null 2>&1; then
+    echo "PASS  labgrid place '${BENCH_PLACE:-nucula-c3}' visible (reservation queue available)"
+else
+    echo "FAIL  labgrid coordinator unreachable or place '${BENCH_PLACE:-nucula-c3}' missing — bench_window.sh cannot queue"
+    fail=1
+fi
+
 # --- the cross-project bench lock is free right now (peek, don't hold) ---
 if flock -n /tmp/amperstrand-bench.lock -c true 2>/dev/null; then
     echo "PASS  bench flock free"
