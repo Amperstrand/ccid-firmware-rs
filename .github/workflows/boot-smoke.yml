@@ -244,18 +244,22 @@ jobs:
           sha256sum -c partition-table.bin.sha256
           cat manifest.json
 
-      - name: Flash PR image + boot check + wire probe (one flock window)
-        # One bench-flock window for the whole flash+probe sequence
-        # (README "Bench coordination" layer 1). esp32_flash.py owns the
-        # pcscd flock dance internally; the outer flock is the
-        # CROSS-PROJECT exclusion. Its DEFAULT boot_check
-        # (boot_check_no_conflict) is the #278 CONFLICT veto; gempc_smoke
-        # then proves the SERVE loop on the wire (stopbits 1 = USB-CDC,
-        # the nucula c3) including the Escape 0xD0 uptime liveness.
+      - name: Flash PR image + boot check + wire probe (one bench window)
+        # ONE serialized window for the whole flash+probe sequence via
+        # bench_window.sh (docs/HIL-CI-PRACTICES.md §2): labgrid
+        # reservation (queue for humans+CI alike) -> place lock ->
+        # cross-project flock, released on every exit path. The
+        # operator marker /tmp/amperstrand-bench-ci.disabled turns the
+        # whole window into a green skip-with-notice.
+        # esp32_flash.py owns the pcscd flock dance internally; its
+        # DEFAULT boot_check (boot_check_no_conflict) is the #278
+        # CONFLICT veto; gempc_smoke then proves the SERVE loop on the
+        # wire (stopbits 1 = USB-CDC, the nucula c3) including the
+        # Escape 0xD0 uptime liveness.
         run: |
-          exec 9>/tmp/amperstrand-bench.lock
-          flock 9
-          echo "# bench flock held (fd 9) for flash+probe"
+          PAYLOAD=$(mktemp /tmp/boot-smoke-flash.XXXXXX.sh)
+          cat >"$PAYLOAD" <<'EOS'
+          set -e
           python3 tests/hardware/labgrid/esp32_flash.py \
             --port "$NUCULA_PORT" \
             --chip esp32c3 \
@@ -267,6 +271,9 @@ jobs:
             --quiesce-unit nucula-ccid-broker
           python3 tests/hardware/labgrid/gempc_smoke.py \
             --port "$NUCULA_PORT" --stopbits 1 --uptime
+          EOS
+          chmod +x "$PAYLOAD"
+          bash tools/boot-smoke/bench_window.sh "$PAYLOAD"
 
       - name: RESTORE known-good ($KNOWN_GOOD_IMAGE_REF) on red
         # known-good-state doctrine: a failed gate must never leave the
@@ -278,8 +285,9 @@ jobs:
         # handled inside esp32_flash.py's CLI).
         if: always() && (failure() || cancelled())
         run: |
-          exec 9>/tmp/amperstrand-bench.lock
-          flock 9
+          PAYLOAD=$(mktemp /tmp/boot-smoke-restore.XXXXXX.sh)
+          cat >"$PAYLOAD" <<'EOS'
+          set -e
           RESTORE_DIR="$(mktemp -d /tmp/boot-smoke-restore.XXXXXX)"
           git fetch origin "${KNOWN_GOOD_IMAGE_REF}" --depth=1
           git worktree add "$RESTORE_DIR" "${KNOWN_GOOD_IMAGE_REF}"
@@ -298,6 +306,9 @@ jobs:
           python3 tests/hardware/labgrid/gempc_smoke.py \
             --port "$NUCULA_PORT" --stopbits 1 --uptime
           git worktree remove --force "$RESTORE_DIR"
+          EOS
+          chmod +x "$PAYLOAD"
+          bash tools/boot-smoke/bench_window.sh "$PAYLOAD"
 
       - name: Record bench state (history + summary)
         if: always()
