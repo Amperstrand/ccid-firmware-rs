@@ -242,3 +242,36 @@ preset name). Decision point is M3, not before.
 *Register discipline: new load-bearing decisions get an entry HERE with an
 authority pointer and triggers; when a trigger fires, edit the entry and the
 authority in the same session — the #110 rule applies to decisions too.*
+
+## D-13: dev-fleet OTA signing — Ed25519 software chain, dual-host keys, recovery never locked
+
+**Authority**: owner directive 2026-10-30 on #494's open decision (field-tier
+OTA signature scheme).
+
+**Decision**:
+1. **Ed25519 software verification** is the fleet signature scheme — bolty's
+   existing verify-before-commit chain (`docs/BOOTLOADER_OTA_PRACTICES.md`
+   §2/§3) is the reference implementation; ccid's OTA2 32-byte token remains
+   the bench floor until its signature upgrade (the audit's M-gap "before
+   field exposure").
+2. **Keys we control, redundantly available**: the private key lives on BOTH
+   ai-legion and ai-legion-small — either host alone can sign, so no single
+   host failure locks us out. Locations: `/root/src/keys/ota-field-ed25519.{key,pub}`
+   (key mode 0600; sha256 `93c45232596f99af…` / pub `e2d87585e5da55c0…`).
+   ai-legion-small copy PENDING: host dark since ~2026-10-24 (SSH banner
+   timeout); distribute when reachable:
+   `scp /root/src/keys/ota-field-ed25519.* root@ai-legion-small:/root/src/keys/`
+3. **HARD NO — lockout class**: NO eFuse secure boot, NO secure_version /
+   anti-rollback burning, NO mechanism that disables USB/serial recovery.
+   These are development units, not production: recovery must stay open
+   unconditionally. `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` is allowed (a
+   software slot-revert; serial flash always recovers) — key-escrow lockouts
+   are not.
+
+**Evidence**: audit §4 (anti-rollback eFuses OFF on bench already);
+bolty Ed25519 chain in production use on HTTP-pull; ccid #461 serve-proven
+mark-valid as the self-test half of the rollback contract.
+
+**Change triggers**: a production (non-dev) hardware tier existing → reopen
+secure-boot and anti-rollback for THAT tier only, with a key ceremony and
+escrow; dev units keep this decision unchanged.
