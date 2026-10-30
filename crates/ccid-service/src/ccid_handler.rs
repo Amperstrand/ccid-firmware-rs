@@ -224,6 +224,18 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidHandler<D> {
     /// into serving.
     pub fn check_card_change(&mut self) -> Option<bool> {
         let changed = self.core.check_card_change();
+        // #444: the core latches the card-reset event for a session
+        // lost WITHOUT removal (active-to-inactive transition — the RF
+        // mid-exchange teardown). Disarm the T=1 route HERE, at event
+        // time: process_command consumes the event only AFTER routing a
+        // command, and the host's first post-event probe is pcscd's PPS
+        // (`FF 01 FE`) which must echo as PPS, not feed the stale armed
+        // endpoint (the #345 PPS-probe-kills-session shape — same
+        // disarm, new trigger).
+        if self.core.take_card_reset() {
+            self.t1.reset();
+            self.t1_armed = false;
+        }
         push_card_presence(self.core.diagnostics().card_present);
         changed
     }
@@ -1674,6 +1686,86 @@ mod tests {
             &[0xFF, 0x01, 0xFE],
             "PPS must echo before SetParameters"
         );
+    }
+
+    #[test]
+    fn session_loss_without_removal_disarms_t1_and_notifies() {
+        // #444 (bench 2026-10-23, deaf-after-~7-cycles soft wedge): a
+        // mid-exchange RF failure clears the driver session while the
+        // card STAYS coupled — presence never flaps. Before the fix the
+        // slot sat stale-PresentActive with a dead session, the armed
+        // T=1 endpoint kept the dead conversation's counters, and pcscd
+        // error-looped until ITS OWN restart (whose SetParameters was
+        // the only endpoint reset that ever fired — the recovery
+        // signature of the original report). Now: exactly one change
+        // event, PresentInactive, and the T=1 route disarmed at EVENT
+        // time (before the host's post-event PPS probe).
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+        let mut response = [0u8; 512];
+
+        // Arm the T=1 route and advance the endpoint counters past the
+        // first exchange (the #330 preamble).
+        let sp = build_set_parameters_cmd(0, 40, 1, &DEFAULT_T1_PARAMS);
+        let _ = handler.process_command(&sp, &mut response);
+        assert!(handler.t1_armed);
+
+        let mut ib = Vec::new();
+        ib.extend_from_slice(&[0x00, 0x00, 0x04, 0x00, 0xA4, 0x00, 0x00]);
+        let mut x = 0u8;
+        for &b in &ib {
+            x ^= b;
+        }
+        ib.push(x);
+        let payload = xfr_and_drive_wtx(&mut handler, 41, &ib);
+        assert_eq!(payload[1] & 0x80, 0x00);
+        assert_ne!(handler.t1_debug_ns(), (0, 0));
+
+        // Mid-exchange session death, card STILL on the coil.
+        handler.driver_mut().set_session_active(false);
+        assert_eq!(
+            handler.check_card_change(),
+            Some(true),
+            "#444: session loss without removal is a card event"
+        );
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
+        assert!(!handler.t1_armed, "T=1 route disarmed at event time");
+        assert_eq!(handler.t1_debug_ns(), (0, 0), "endpoint counters zeroed");
+
+        // No event storm while the card sits inactive-but-coupled.
+        assert_eq!(handler.check_card_change(), None);
+
+        // The host's reconnect path, in pcscd's real order: IccPowerOn
+        // re-activates the still-coupled card, THEN the PPS probe
+        // echoes as PPS (direct path — the stale armed endpoint is
+        // gone; SetParameters re-arms fresh).
+        let on = build_ccid_cmd(PC_TO_RDR_ICC_POWER_ON, 0, 2, &[]);
+        let len = handler.process_command(&on, &mut response);
+        let (hdr, _pl) = parse_response(&response[..len]);
+        assert_eq!(hdr.message_type, RDR_TO_PC_DATABLOCK);
+        assert_eq!(handler.slot_state(), SlotState::PresentActive);
+
+        let pps = build_ccid_cmd(PC_TO_RDR_XFR_BLOCK, 0, 3, &[0xFF, 0x01, 0xFE]);
+        let len = handler.process_command(&pps, &mut response);
+        let (_header, pl) = parse_response(&response[..len]);
+        assert_eq!(pl, &[0xFF, 0x01, 0xFE], "PPS must echo after session loss");
+    }
+
+    #[test]
+    fn session_loss_then_removal_still_reports_absent() {
+        // The #444 transition must not swallow a later REAL removal:
+        // presence bookkeeping continues from the (still-present) state
+        // the session-loss branch recorded.
+        let mut handler = new_handler_with_uid(true);
+        power_on(&mut handler);
+
+        handler.driver_mut().set_session_active(false);
+        assert_eq!(handler.check_card_change(), Some(true));
+        assert_eq!(handler.slot_state(), SlotState::PresentInactive);
+
+        handler.driver_mut().set_card_present(false);
+        assert_eq!(handler.check_card_change(), Some(false));
+        assert_eq!(handler.slot_state(), SlotState::Absent);
     }
 
     #[test]
