@@ -258,9 +258,10 @@ OTA signature scheme).
    ai-legion and ai-legion-small — either host alone can sign, so no single
    host failure locks us out. Locations: `/root/src/keys/ota-field-ed25519.{key,pub}`
    (key mode 0600; sha256 `93c45232596f99af…` / pub `e2d87585e5da55c0…`).
-   ai-legion-small copy PENDING: host dark since ~2026-10-24 (SSH banner
-   timeout); distribute when reachable:
-   `scp /root/src/keys/ota-field-ed25519.* root@ai-legion-small:/root/src/keys/`
+   ai-legion-small copy DONE (2026-10-30): the "dark host" was a dead
+   `proxyjump openwrt` (WAN hop) in ai-legion's ssh config — the direct
+   LAN route works and is now the config; key+pub installed at
+   /root/src/keys/ with sha256 fingerprints verified identical on both hosts.
 3. **HARD NO — lockout class**: NO eFuse secure boot, NO secure_version /
    anti-rollback burning, NO mechanism that disables USB/serial recovery.
    These are development units, not production: recovery must stay open
