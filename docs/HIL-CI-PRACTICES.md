@@ -81,17 +81,22 @@ https://docs.github.com/en/actions/reference/security/secure-use
    main.
 5. **Timeouts everywhere**: 1h per MR hard cap; jobs killed release their boards.
 6. **Be kind to shared farms**: serialize merges through a queue (Mesa's Marge bot) so
-   hardware tests don't stampede; delay stress/soak jobs to off-hours. **Here**: GitHub
-   environment `concurrency` already serializes bench jobs; keep soak/nightly on schedule,
-   never on PRs.
+   hardware tests don't stampede; delay stress/soak jobs to off-hours. **Here**: the
+   workflow's `concurrency:` group is PER-PR (`boot-smoke-${{ pr.number }}`) — it collapses
+   re-pushes within one PR, NOT runs across PRs; cross-run bench exclusion is exactly the
+   flock (and, post-adoption, the labgrid reservation) in section 2. Keep soak/nightly on
+   schedule, never on PRs.
 
 ## 5. The trust anchors (both non-negotiable, both already ours)
 
 - **Forced-red demonstration**: a gate that has never failed is decoration — the broken
   fixture run (#278 i2c-CONFLICT signature) proves the veto works end-to-end. Pending on
   the runner checklist (#466).
-- **KNOWN_GOOD restore + uptime-monotonic probe after every flash**: the bench is never
-  left on a PR image; the restore itself is verified. (Landed in #415.)
+- **KNOWN_GOOD restore + uptime-monotonic probe on red**: restore is
+  FAILURE-ONLY (`if: always() && (failure() || cancelled())`) — a green run leaves the
+  bench on the PR image deliberately (that image is the candidate); a red or cancelled
+  run never leaves a bad image serving, and the restore itself is verified. (Landed in
+  #415.)
 
 ## 6. Actionable deltas for our rig (ranked)
 
