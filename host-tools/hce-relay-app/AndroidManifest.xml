@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.amperstrand.benchrelay"
+    android:versionCode="1"
+    android:versionName="0.1.0">
+
+    <uses-sdk android:minSdkVersion="19" android:targetSdkVersion="34" />
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application android:label="Bench HCE Relay" android:icon="@android:drawable/sym_def_app_icon">
+        <!-- #529: the phone is an RF modem; the card brain lives on the
+             bench host. Registers for the GP ISD AID (category "other",
+             no payment-default interference with the boltcard HCE
+             apps already installed on the bench phone). -->
+        <!-- Shell-kickable owner of the relay socket (the NFC stack
+             binds the HCE service lazily): adb shell am
+             start-foreground-service -n
+             com.amperstrand.benchrelay/.RelayKickstartService -->
+        <service
+            android:name=".RelayKickstartService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="bench test instrument: NFC card-emulation relay socket" />
+        </service>
+        <service
+            android:name=".RelayApduService"
+            android:exported="true"
+            android:permission="android.permission.BIND_NFC_SERVICE">
+            <intent-filter>
+                <action android:name="android.nfc.cardemulation.action.HOST_APDU_SERVICE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.nfc.cardemulation.host_apdu_service"
+                android:resource="@xml/apdus" />
+        </service>
+    </application>
+</manifest>
