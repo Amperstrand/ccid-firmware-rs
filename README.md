@@ -256,3 +256,5 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
 - CCID protocol handling: `firmware/ccid-firmware/src/ccid.rs`
 - Unit-testable protocol helpers: `firmware/ccid-firmware/src/protocol_unit.rs` (re-exports the shared `ccid-protocol` crate; the crate's own test suites are the authoritative ones)
 - Pinout: `PINOUT.md`
+
+<!-- ci(#482) proof phase A: docs-only selectivity leg — no family paths touched -->
