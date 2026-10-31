@@ -73,7 +73,7 @@ jobs:
             # legs queue forever on a label no live runner serves
             # (2026-10-31: ccid fuzz queued 16h while the box was healthy).
             local repo=$1 pages=$2 runs run verdict
-            runs=$(gh api "repos/$repo/actions/runs?per_page=$pages&status=completed" \
+            runs=$(gh api "repos/$repo/actions/runs?per_page=$pages&status=completed&event=workflow_dispatch" \
               --jq '.workflow_runs[].id' 2>/dev/null) || return 1
             for run in $runs; do
               verdict=$(gh api "repos/$repo/actions/runs/$run/jobs" \
