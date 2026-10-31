@@ -309,6 +309,22 @@ impl<I2C: I2c> Mfrc522Transceiver<I2C> {
         Ok(())
     }
 
+    /// Raw timer-register READBACK for the Escape 0xD3 append (#519):
+    /// `[TMode, TPrescaler, TReloadHi, TReloadLo]` as the hardware
+    /// actually holds them. This is the on-wire #180 fingerprint — the
+    /// 12-bit prescaler `((TMode & 0x0F) << 8) | TPrescaler` is 0xA9
+    /// under the pre-#464 fixed arming and 0x101/0x201 for FWI 13/14
+    /// post-fix, INDEPENDENT of what the caller requested (the
+    /// `configured_fwt_ms` cache is the request, this is the silicon).
+    pub fn timer_registers(&mut self) -> Result<[u8; 4], Mfrc522Error<I2C::Error>> {
+        Ok([
+            self.mfrc522.read_register(Register::TModeReg)?,
+            self.mfrc522.read_register(Register::TPrescalerReg)?,
+            self.mfrc522.read_register(Register::TReloadRegHigh)?,
+            self.mfrc522.read_register(Register::TReloadRegLow)?,
+        ])
+    }
+
     pub fn enable_hw_crc(&mut self) -> Result<(), Mfrc522Error<I2C::Error>> {
         self.mfrc522
             .rmw_register(Register::TxModeReg, |v| v | 0x80)?;
