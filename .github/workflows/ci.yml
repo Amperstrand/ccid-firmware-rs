@@ -18,9 +18,23 @@ on:
   # PRs WITHOUT the `ci-run` label (any action), so an unlabeled push
   # still costs only the seconds-cheap filter job, preserving #366's
   # opt-in cost envelope.
+  #
+  # #482 recurrence fix (2026-10-31; original blind-merge class seen on
+  # #452/#474, RECURRED as #512/#516 after #502): `labeled`+`synchronize`
+  # still let a never-labeled PR merge with ZERO ci.yml runs — `opened`
+  # was missing from types, and an unlabeled run all-falses every family
+  # so the REQUIRED ci-ok aggregated GREEN over skipped jobs (#512:
+  # tests-only, python-collect break shipped, merged via --admin; #516:
+  # same, 17s after open). Three seams, #366's envelope intact:
+  #   1. opened/reopened types — ci-ok exists from PR creation, so the
+  #      required check can actually gate;
+  #   2. `changes` exposes the UNGATED pr-family-touched verdict;
+  #   3. ci-ok FAILS on family-path PRs without `ci-run` (blind-merge
+  #      gate below) — add the label or narrow the diff. Docs-only PRs
+  #      stay green and unlabeled (selectivity unchanged).
   pull_request:
     branches: [main]
-    types: [labeled, synchronize]
+    types: [opened, synchronize, reopened, labeled]
   # Nightly full-matrix lane: secondary-tier legs that PRs no longer build
   # would bitrot silently (toolchain/IDF drift) — 03:00 UTC rebuilds BOTH
   # tiers (the changes job defaults every family to true on schedule).
@@ -72,6 +86,11 @@ jobs:
       stm32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.stm32 }}
       esp32: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.esp32 }}
       lint: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.lint }}
+      # #482: UNGATED paths verdict for ci-ok's blind-merge gate — true
+      # when the PR diff touches ANY family path set, regardless of
+      # label. Distinguishes "unlabeled but family-touching" (ci-ok must
+      # fail) from "no family paths" (green, no label needed).
+      pr-family-touched: ${{ github.event_name == 'pull_request' && (steps.filter.outputs.stm32 == 'true' || steps.filter.outputs.esp32 == 'true' || steps.filter.outputs.lint == 'true') && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v5
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
@@ -100,6 +119,10 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - '.github/workflows/ci.yml'
+              # #482: boards-as-data SSOT — build compositions resolve
+              # through this file (tools/products.py), so a products-only
+              # change must re-verify builds (was: no family matched).
+              - 'products.toml'
             esp32:
               - 'firmware/esp32-ccid/**'
               - 'crates/**'
@@ -107,6 +130,8 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - '.github/workflows/ci.yml'
+              # #482: same boards-as-data rationale as stm32 above.
+              - 'products.toml'
             lint:
               - 'firmware/ccid-firmware/**/*.rs'
               - 'firmware/esp32-ccid/**/*.rs'
@@ -966,6 +991,20 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
+      # #482 blind-merge gate: a PR touching family paths without the
+      # `ci-run` label skipped every family job above, which the
+      # aggregate step alone would report GREEN (#452/#474/#512/#516
+      # class). Fail closed — add the label (runs the families at the
+      # current head) or narrow the diff. Docs-only PRs never reach
+      # this step and stay green unlabeled.
+      - name: Blind-merge gate (#482)
+        if: >-
+          github.event_name == 'pull_request' &&
+          !contains(github.event.pull_request.labels.*.name, 'ci-run') &&
+          needs.changes.outputs.pr-family-touched == 'true'
+        run: |
+          echo "::error::PR touches family CI paths without the ci-run label — family jobs were skipped and this merge would be blind (#482). Add the ci-run label to run them, or narrow the diff to non-family paths."
+          exit 1
       - name: All required jobs succeeded or skipped
         run: |
           results='${{ toJSON(needs.*.result) }}'
