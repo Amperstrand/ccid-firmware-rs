@@ -852,6 +852,16 @@ and large enough (≥ 12 KB; 16 KB is the recommended value).
 
 ## Known-Good Bench State (2026-10-09, re-verified 2026-10-12)
 
+**STATE 2026-10-31 — the current tested surface** (supersedes the 2026-10-20 block below until the next stamp):
+
+- **#408 CLOSED** (fix verified on hw): nucula APDU latency median 78.2 ms n=30 (was 400 ms constant) through pcscd→wifi-vpcd with the S20 coupled.
+- **m5stick re-stamped GREEN on main 766c762a** (then again with #531's 0xD3 append, merged as 7656b71b4): #490 flash recipe + wire boot check + full battery PASS. **#519/#531 merged** — the 0xD3 payload now carries a raw timer readback `[TMode,TPrescaler,TReloadHi,TReloadLo]`; card-less bench-proven (`80 a9 0f a0` = idle 100 ms). The #444 session-loss fix is on hardware; #444 re-soak awaits the S20 → m5stick coil move.
+- **c3 data link VERIFIED working** (the 10-29 "power-only" blocker is stale); nucula runs the wifi-vpcd image serving `Nucula VPCD wifi67` slots. S20 HCE confirmed coupled to its coil.
+- **#529 phone-as-virtual-card**: place/remove verbs PROVEN via software (`svc nfc disable/enable` ≈ 10 s / 30 s, identical ATR). Relay app + host brain built (draft PR #532; phone↔host link proven). Reader-side dispatch blocked by S20 quirks (system-level 6999 interception of non-payment SELECTs — phone-originated, NOT firmware-synthesized: vpcd error path is 6400/absent per `vpcd.rs:445`; dev.boltcard.hce registers A000000151 as a PREFIX AID; app/routing changes burn the ISO-DEP session → nucula cached-ATR echo = stale-session signature). Full map on #529.
+- **F469 Cherry + ST-LINK ABSENT again** (the 10-17 reattached state regressed — STM32 HIL legs dormant until replugged). ACR1252 lives on ai-legion-small; bench_inventory updated accordingly (direct-to-main, 2026-10-31).
+- **#472 host-side VERIFIED COMPLETE** (`make check` ALL PASS incl. DataBlock-shaped extension legs); hardware leg = first use of the #529 `--delay-ms` instrument.
+- **Disk: ~21G free on the 937G fs (92%)** — cargo-target is only 74G of it; the mass is elsewhere + a 59-branch worktree farm exists only on this host (host_hygiene ACTION list — owner coordination item).
+
 **STATE 2026-10-20 (night) — the current tested surface.** The matrix
 below is historical context; this block is the live truth until the
 next stamp:
