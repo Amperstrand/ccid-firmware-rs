@@ -22,6 +22,15 @@ KNOB="CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK"
 CFG="firmware/esp32-ccid/sdkconfig.full"
 
 git fetch origin main --quiet
+
+# Codex P2 (#530): refuse a dirty tree — `git switch -C` would carry
+# unrelated staged/unstaged changes onto the fixture branch and the
+# commit below would swallow them (a safety fixture must be exact).
+if ! git diff --cached --quiet || ! git diff --quiet; then
+    echo "FATAL: working tree or index is dirty — commit or stash first; the fixture commit must contain exactly one knob flip" >&2
+    exit 2
+fi
+
 git switch -C "${BRANCH}" "${BASE}"
 
 if ! grep -q "^${KNOB}=y$" "${CFG}"; then
