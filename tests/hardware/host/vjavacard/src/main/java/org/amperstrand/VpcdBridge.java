@@ -157,7 +157,14 @@ public final class VpcdBridge {
             byte[] msg = new byte[len];
             if (len > 0 && readFully(in, msg) < len) return;
             if (len == 1) {
-                if (msg[0] == 0x04 || msg[0] == 0x02) {
+                // vpcd protocol table (frankmorgner.github.io/vsmartcard,
+                // "Creating a Virtual Smart Card"): ONLY Get ATR (0x04) is
+                // answered. RESET (0x02) is a one-way announcement — pcscd
+                // follows it unconditionally with Get ATR, so answering here
+                // queues an extra ATR that desyncs the next transmit's
+                // status word (same SW=1084 class as bolty-rs #226; Codex
+                // P1 on #509 — sibling fixed with the firmware).
+                if (msg[0] == 0x04) {
                     send(out, ATR);
                 }
                 if (msg[0] == 0x00) {
