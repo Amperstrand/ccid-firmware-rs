@@ -522,6 +522,19 @@ if [ "${DRY_RUN}" -eq 0 ]; then
     done
 fi
 
+# #527: embuild silently ignores a RELATIVE ESP_IDF_SDKCONFIG (falls back
+# to sdkconfig.defaults — green build, wrong config). build.sh itself
+# always passes an absolute path, but fail loudly if an operator override
+# ever slips a relative one through.
+case "${SDKCONFIG}" in
+    /*) ;;
+    *)
+        warn "ESP_IDF_SDKCONFIG must be an ABSOLUTE path (got '${SDKCONFIG}')"
+        warn "embuild silently ignores relative paths and builds the DEFAULT profile (#527)"
+        exit 1
+        ;;
+esac
+
 run env RUSTUP_TOOLCHAIN="${TOOLCHAIN}" ESP_IDF_SDKCONFIG="${SDKCONFIG}" \
     cargo build --target "${TRIPLE}" --ignore-rust-version "${RELEASE_ARGS[@]}" "${FEATURE_ARGS[@]}"
 
