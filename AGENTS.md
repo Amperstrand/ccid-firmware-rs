@@ -2264,6 +2264,16 @@ cargo build --target riscv32imc-esp-espidf --no-default-features \
   --features pn7160-bringup,pn7160-verdict-b
 ```
 
+### ⚠️ `ESP_IDF_SDKCONFIG` must be ABSOLUTE — relative paths are silently ignored (#527)
+
+embuild resolves a relative `ESP_IDF_SDKCONFIG` against the embuild
+project dir, fails to find it, and **silently falls back to
+`sdkconfig.defaults`** — the build goes green against the DEFAULT
+profile (observed: `partitions.csv`/singleapp instead of
+`CUSTOM=y`+`partitions-ota.csv`) with zero warnings. Always export an
+absolute path (`$PWD/...` as above). build.sh rejects a relative
+override loudly.
+
 ### ⚠️ Global target-dir: set `CARGO_WORKSPACE_DIR` or the IDF pin is ignored
 
 This machine's `~/.cargo/config.toml` pins `target-dir = /root/.cargo-target`
