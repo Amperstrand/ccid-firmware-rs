@@ -724,7 +724,15 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
         // T=1 endpoint holds ns/chain state for the dead session's
         // conversation) + a change event so the host reconnects through
         // the standard power-on path instead of hammering transacts.
-        if self.slot_state == SlotState::PresentActive && presence.present {
+        //
+        // CONTACT-PROFILE GATE (Codex P1 on #513): the STM32 contact
+        // adapter's session_active() is DELIBERATELY always-false
+        // (presence is the card-detect GPIO, ccid_core.rs) — without
+        // this gate every healthy post-IccPowerOn presence poll would
+        // read as a lost session, demote the card to PresentInactive,
+        // and fail all following XfrBlocks with ICC_MUTE. The
+        // transition is only meaningful on session-aware NFC profiles.
+        if !P::CONTACT && self.slot_state == SlotState::PresentActive && presence.present {
             self.slot_state = SlotState::PresentInactive;
             self.presence_state = presence;
             self.card_reset_event = true;
@@ -2679,6 +2687,43 @@ mod contact_profile_tests {
         assert_eq!(err, 0);
         assert_eq!(data, T1_ATR_BWI3_CWI7);
         assert_eq!(core.current_protocol(), 1);
+    }
+
+    #[test]
+    fn always_false_session_liveness_does_not_demote_active_card() {
+        // Codex P1 on #513: the #444 session-loss transition must NOT
+        // fire on the contact profile — ContactDriver's session_active()
+        // is deliberately always-false (presence = card-detect GPIO),
+        // so without the profile gate every post-IccPowerOn presence
+        // poll read as a lost session, demoted the healthy card to
+        // PresentInactive, and the following XfrBlocks failed with
+        // ICC_MUTE.
+        let mut core = new_core(true, &T1_ATR_BWI3_CWI7, false);
+        power_on(&mut core, 1);
+        assert_eq!(core.slot_state(), SlotState::PresentActive);
+        // IccPowerOn latches the card-reset event by design — consume
+        // it like transport glue does, so the poll assertions below
+        // prove presence polls do not RE-latch it.
+        assert!(core.take_card_reset());
+
+        // The card stays inserted; presence polls must be a no-event.
+        for _ in 0..3 {
+            assert_eq!(core.check_card_change(), None);
+        }
+        assert_eq!(
+            core.slot_state(),
+            SlotState::PresentActive,
+            "contact presence poll must not demote an active card"
+        );
+        assert!(
+            !core.take_card_reset(),
+            "no NEW card-reset event from always-false session liveness"
+        );
+
+        // Removal still works through the presence flap.
+        core.driver_mut().present = false;
+        assert_eq!(core.check_card_change(), Some(false));
+        assert_eq!(core.slot_state(), SlotState::Absent);
     }
 
     #[test]
