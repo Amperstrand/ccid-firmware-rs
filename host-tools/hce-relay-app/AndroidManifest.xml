@@ -13,9 +13,10 @@
 
     <application android:label="Bench HCE Relay" android:icon="@android:drawable/sym_def_app_icon">
         <!-- #529: the phone is an RF modem; the card brain lives on the
-             bench host. Registers for the GP ISD AID (category "other",
-             no payment-default interference with the boltcard HCE
-             apps already installed on the bench phone). -->
+             bench host. Registered as a PAYMENT service (Samsung answers
+             CATEGORY_OTHER SELECTs at system level — never dispatched);
+             AID routing + the payment-default dance live in res/xml/apdus.xml
+             and RUNBOOK.md. -->
         <!-- Shell-kickable owner of the relay socket (the NFC stack
              binds the HCE service lazily): adb shell am
              start-foreground-service -n
