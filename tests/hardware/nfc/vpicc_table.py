@@ -10,6 +10,11 @@ client_loop): every message = 2-byte big-endian length + payload.
 Driver→card messages are either 1-byte controls (0x00 OFF, 0x01 ON,
 0x02 RESET, 0x04 ATR) or a full C-APDU. Card answers: ATR control →
 the ATR bytes (empty = ICC absent); APDU → the R-APDU from the table.
+OFF/ON/RESET are answered with TRUE silence — per the official
+protocol table (frankmorgner.github.io/vsmartcard → "Creating a
+Virtual Smart Card") only Get ATR and APDUs get responses; see the
+note in TableVpicc._handle for why answering RESET corrupts the
+stream and why a 0-length reply is worse still.
 
 Self-marking doctrine (#261): every FCI/data answer carries the
 'VPICC-TABLE' marker and synthetic filler (A5A5/5A5A) so no trace can
@@ -133,17 +138,37 @@ class TableVpicc(threading.Thread):
 
     def _handle(self, sock: socket.socket, msg: bytes) -> None:
         if len(msg) == 1:
-            # Controls: RESET and ATR want the ATR back; ON/OFF get a
-            # 0-length ack (the stock driver expects a reply to every
-            # control — silence only works on our patched driver).
-            if msg[0] in (0x02, 0x04):
-                # RESET and ATR want the ATR back.
+            # Official vpcd protocol table (frankmorgner.github.io/
+            # vsmartcard, "Creating a Virtual Smart Card"): ONLY Get
+            # ATR (0x04) and APDUs are answered; OFF/ON/RESET are
+            # one-way announcements — "No Response". pcscd follows a
+            # RESET unconditionally with a Get ATR (ifd-vpcd.c
+            # IFDHPowerICC → IFDHGetCapabilities), so answering RESET
+            # emits one extra ATR; the Get ATR consumes it, the real
+            # ATR goes stale in the TCP stream (the protocol has no
+            # message correlation — ordering only), and the next
+            # transmit delivers ATR tail bytes as its status word —
+            # the SW=1084 class, literally the tail of DEFAULT_ATR
+            # here (bolty-rs #226: the driver was never buggy, the
+            # responder was).
+            #
+            # Silence must be TRUE silence, never a 0-length frame:
+            # 0-length is the protocol's "ICC absent" answer — the
+            # next Get ATR reads it as a 0-byte ATR → "Virtual ICC
+            # removed" → the driver ejects the slot.
+            #
+            # Deployment order: driver builds that CONSUME a RESET
+            # reply (Amperstrand/vsmartcard
+            # amperstrand/vpcd-response-desync-fix, the *-vjc.so on
+            # ai-legion) stall per RESET against this silence (2 s
+            # with the #326 SO_RCVTIMEO patch, forever on stock
+            # upstream). Hosts must run libifdvpcd-amperstrand.so
+            # (upstream 93286a90 + #326 patch) BEFORE this silence
+            # ships.
+            if msg[0] == 0x04:  # Get ATR — the only answered control
                 self._send(sock, self.atr)
                 self.answered_probe.set()
-            # OFF and ON get NO reply — mirror the firmware client
-            # exactly: an empty ack here de-syncs the driver's next
-            # ATR probe (read as 0-length = ICC absent → eject → the
-            # slot dies for good). Fire-and-forget, like vpcd.rs.
+            # OFF / ON / RESET: true silence per spec
             return
         self.apdus_seen.append(msg)
         self._send(sock, answer(self.table, msg))

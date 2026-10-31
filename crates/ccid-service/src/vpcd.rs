@@ -9,7 +9,13 @@
 //!   All messages: 2-byte big-endian length prefix + payload.
 //!   Control messages (payload = exactly 1 byte, vpcd.h):
 //!     0x00 = OFF, 0x01 = ON, 0x02 = RESET, 0x04 = ATR
-//!   ATR and RESET expect responses; ON/OFF are fire-and-forget.
+//!   Per the official protocol table (frankmorgner.github.io/vsmartcard,
+//!   "Creating a Virtual Smart Card") ONLY ATR is answered (with the ATR
+//!   bytes, empty = ICC absent); OFF/ON/RESET are one-way announcements —
+//!   pcscd follows a RESET unconditionally with a Get ATR
+//!   (ifd-vpcd.c IFDHPowerICC → IFDHGetCapabilities), so answering RESET
+//!   leaves a stale ATR in the uncorrelated TCP stream and the next
+//!   transmit returns ATR tail bytes as its status word (bolty-rs #226).
 //!   APDU exchange: payload = full C-APDU → response = full R-APDU (incl SW).
 //!   0-length response = "ICC absent": the driver ejects + re-polls. Used
 //!   deliberately for no-card / failed power; never for APDU errors (those
@@ -409,22 +415,28 @@ fn handle_message<D: NfcDriver + FrontendDiagnostics>(
                 None // fire-and-forget
             }
             VPCD_CTRL_RESET => {
+                // Spec: RESET is a one-way announcement — the answer the
+                // host wants arrives via the Get ATR that pcscd sends
+                // unconditionally next (see protocol note in the module
+                // docs). Answering here desyncs the driver's TCP stream
+                // (bolty-rs #226); a 0-length answer would instead signal
+                // "ICC absent" and eject the slot.
                 handler.driver_mut().power_off();
                 let mut atr = [0u8; 64];
                 match handler.driver_mut().power_on(&mut atr) {
                     Ok(len) => {
                         *cached_atr = atr[..len].to_vec();
-                        log::warn!("vpcd: RESET ctrl → ATR ({} B)", len);
-                        Some(atr[..len].to_vec())
+                        log::warn!("vpcd: RESET ctrl → silent (ATR cached, {len} B)");
                     }
                     Err(_) => {
-                        // #360 review (P2): failed re-activation
-                        // invalidates — never serve the pre-RESET ATR.
+                        // Failed re-activation invalidates — never serve
+                        // the pre-RESET ATR. The following Get ATR sees
+                        // the cleared cache and answers "absent".
                         cached_atr.clear();
-                        log::warn!("vpcd: RESET ctrl → power_on FAILED → empty");
-                        Some(Vec::new()) // reset failed → "no card"
+                        log::warn!("vpcd: RESET ctrl → power_on FAILED (silent)");
                     }
                 }
+                None // true silence per the protocol table
             }
             other => {
                 log::warn!("vpcd: unknown ctrl 0x{:02x}", other);
@@ -1027,11 +1039,14 @@ mod tests {
         assert_eq!(resp, atr_b, "card swap must not serve card A's stale ATR");
     }
 
-    /// #360 review (P2), RESET half: a successful RESET re-activation
-    /// refreshes the cache; a failed one invalidates it instead of
-    /// leaving the pre-RESET ATR armed.
+    /// #360 review (P2) cache semantics + vpcd spec conformance
+    /// (bolty-rs #226 root cause): RESET is a one-way announcement —
+    /// it must stay SILENT (a reply desyncs the driver's uncorrelated
+    /// TCP stream; an empty reply would eject the slot) while still
+    /// refreshing the cache on success and invalidating it on failure;
+    /// the host reads the outcome via the Get ATR that follows.
     #[test]
-    fn reset_refreshes_or_invalidates_cached_atr() {
+    fn reset_is_silent_and_refreshes_or_invalidates_cached_atr() {
         let atr_b = vec![0x3b, 0x02, 0xff];
         let driver = ScriptedDriver {
             response: Vec::new(),
@@ -1052,20 +1067,24 @@ mod tests {
             &[VPCD_CTRL_RESET],
             &mut rx_buf,
             &mut cached_atr,
-        )
-        .expect("RESET must answer");
-        assert_eq!(resp, atr_b);
+        );
+        assert!(
+            resp.is_none(),
+            "RESET must be true silence per the protocol table"
+        );
         assert_eq!(cached_atr, atr_b, "successful RESET must refresh the cache");
 
-        // atrs now empty → the re-activation fails: ICC-absent + clear
+        // atrs now empty → the re-activation fails: cache cleared, still silent
         let resp = handle_message(
             &mut handler,
             &[VPCD_CTRL_RESET],
             &mut rx_buf,
             &mut cached_atr,
-        )
-        .expect("RESET must answer");
-        assert!(resp.is_empty());
+        );
+        assert!(
+            resp.is_none(),
+            "failed RESET must also be silent — never a 0-length reply (that means ICC absent)"
+        );
         assert!(
             cached_atr.is_empty(),
             "failed RESET must invalidate the stale cache"
