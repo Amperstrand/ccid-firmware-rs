@@ -1,3 +1,5 @@
+// ci(#482) proof phase B: one-line comment under crates/ (family path)
+
 //! no_std NCI protocol core for the PN7160 NFC controller.
 //!
 //! Reader-mode bring-up ladder and wire framing, ported from the proven C
