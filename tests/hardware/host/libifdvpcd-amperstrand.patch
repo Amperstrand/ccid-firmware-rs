@@ -1,5 +1,5 @@
 diff --git a/virtualsmartcard/src/vpcd/vpcd.c b/virtualsmartcard/src/vpcd/vpcd.c
-index 371daa3..560a0f2 100644
+index 371daa3..e04c7c1 100644
 --- a/virtualsmartcard/src/vpcd/vpcd.c
 +++ b/virtualsmartcard/src/vpcd/vpcd.c
 @@ -58,6 +58,11 @@ typedef WORD uint16_t;
@@ -14,7 +14,27 @@ index 371daa3..560a0f2 100644
  static ssize_t sendall(SOCKET sock, const void *buffer, size_t size);
  static ssize_t recvall(SOCKET sock, void *buffer, size_t size);
  
-@@ -383,7 +388,9 @@ ssize_t vicc_transmit(struct vicc_ctx *ctx,
+@@ -267,6 +272,19 @@ static ssize_t recvFromVICC(struct vicc_ctx *ctx, unsigned char **buffer)
+ 
+     /* receive size of message on 2 bytes */
+     r = recvall(ctx->client_sock, &size, sizeof size);
++    if (r == 0) {
++        /* AMPERSTRAND FIX (EOF-eject): a 0-byte size read is the peer
++         * CLOSING (EOF), not a zero-length answer — a zero-length answer
++         * is a COMPLETE 2-byte 0x0000 frame. Converting EOF to -1 makes
++         * vicc_transmit eject the dead socket immediately, so the next
++         * accept can happen; without this a departed vpicc can wedge the
++         * single-peer slot: recv()==0 reads as "absent" (never an error),
++         * and once pcscd's EH stops probing a slot it marked dead no
++         * further send ever fires the EPIPE eject path (observed twice on
++         * the bench 2026-10-30: CLOSE-WAIT until a pcscd restart). */
++        errno = ECONNRESET;
++        return -1;
++    }
+     if (r < sizeof size)
+         return r;
+ 
+@@ -383,7 +401,9 @@ ssize_t vicc_transmit(struct vicc_ctx *ctx,
          unlock(ctx->io_lock);
      }
  
@@ -25,7 +45,7 @@ index 371daa3..560a0f2 100644
          vicc_eject(ctx);
  
      return r;
-@@ -408,8 +415,21 @@ int vicc_connect(struct vicc_ctx *ctx, long secs, long usecs)
+@@ -408,8 +428,21 @@ int vicc_connect(struct vicc_ctx *ctx, long secs, long usecs)
      if (ctx->client_sock == INVALID_SOCKET)
          /* not connected */
          return 0;
