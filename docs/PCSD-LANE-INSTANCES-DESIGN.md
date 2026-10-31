@@ -1,8 +1,10 @@
 # PC/SC lane instances — frozen system instance + private serial-DUT instances
 
-**Status: DRAFT PROPOSAL — zero bench verification yet.** Every mechanism
-below is source- or man-page-cited; every behavioral claim about the bench
-itself is a TODO (§9). Kanban: `t_937eee48`.
+**Status: PARTIALLY BENCH-VERIFIED 2026-10-31 — §7 steps 1-5 executed on the
+ai-legion bench (see §9 FREEZE RESULT); remaining: TODO-6 + lane-consumer
+flips.** Mechanisms are source- or man-page-cited; behavioral claims carry
+their bench evidence inline. Kanban: `t_937eee48` (design), `t_fe356d5c`
+(the wedge issue this resolves).
 
 - Author lane: 2026-10-21, branch `docs/pcscd-lane-instances`.
 - Scope: host-side pcscd management on the ai-legion bench (192.168.13.208).
@@ -396,7 +398,37 @@ Non-breakage worth stating: STM32 USB HIL suites, the perf baselines
 against ACR/CardMan, and every USB-reader test keep working with NO env
 and NO code change — the system instance keeps those readers.
 
-## 9. Verification TODO (all bench-gated; none done)
+## 9. Verification TODO
+
+> **FREEZE RESULT (2026-10-31 ~20:38 CET, supervisor window — §7 steps 1-5
+> executed):** system instance FROZEN to USB-only under
+> `/run/lock/bench-pcscd.lock` (guard checks: bench flock free, labgrid `who`
+> showed zero acquired reader places, no vpicc/monitors running). All
+> non-USB entries moved to `/etc/reader.conf.d.lanes/{m5stick,nucula,
+> boltcard,vjavacard,nr7101-modem}/` (full backups:
+> `/root/reader-conf-backup/pre-modemifd-retire-20261031/` and
+> `.../pre-freeze-20261031/`); `/etc/reader.conf.d/` now holds only
+> `libccidtwin` (reference comments, per §4.1). Template units installed
+> verbatim from §4.2 (`pcscd-lane@.{socket,service}`, `systemd-analyze
+> verify` clean, nothing enabled). Post-freeze system instance serves
+> exactly `OMNIKEY AG CardMan 3121 00 00` (the only USB reader attached
+> tonight; Cherrys/ACR detached). Drills below were run THROUGH THE UNITS.
+> Operational findings: (a) the vpcd IFD slots LISTEN inside pcscd — port
+> exclusivity means a lane instance cannot serve a vpcd reader while the
+> system instance still carries its config; the freeze must precede vpcd
+> lane drills (the m5stick serial port has the same exclusivity). (b)
+> `vjavacard.bak-20261030` sitting in the config dir was parsed as a live
+> entry — every vpcd reader was listed TWICE pre-freeze; the .bak is parked
+> in the backup dir. (c) plain manual `pcscd -f` coexistence hits the
+> single-instance guard (§3) — the socket-activation route (units) is the
+> supported one, as designed. (d) unit-file gotcha for future strace
+> drills: `%f` is ALWAYS a systemd specifier — a drop-in ExecStart needs
+> no percent at all (`-e trace=file`, hardcode the instance name in a
+> per-instance drop-in). (e) the M5Stick CCID DUT's USB serial device
+> (by-id `usb-Hades2001_M5stack_49D6163EBE-…`) vanished from the host
+> between 14:38 and 20:38 the same day (a different M5 serial converter,
+> `81528A13B6`, is present) — the m5stick lane is hardware-blocked until
+> it returns; its config entry was dead weight in the system instance.
 
 > **PILOT RESULT (2026-10-21, ad-hoc mechanism — not the template
 > units):** TODO-1/TODO-2 cores proven by the wifi-vpcd lane under fire.
@@ -422,27 +454,63 @@ and NO code change — the system instance keeps those readers.
   client connect with the env → instance serves exactly
   `M5stick GemPC (MFRC522) 00 00`, connect+ATR+SELECT round-trips
   (the §4.5 smoke).
-- [ ] **TODO-2**: while the lane instance is UP, the system instance
+  **2026-10-31: UNITS-VERIFIED on the vjavacard lane** —
+  `systemctl start pcscd-lane@vjavacard.socket` + client with
+  `PCSCLITE_CSOCK_NAME=/run/pcscd-lane-vjavacard.comm` serves exactly
+  `vJavaCard sim 00 00/00 01`. The m5stick leg is hardware-blocked
+  (DUT's USB device absent, finding (e) above); ATR/SELECT round-trip
+  not exercised tonight (needs the vpicc bridge side).
+- [x] **TODO-2**: while the lane instance is UP, the system instance
   still serves USB readers to env-less clients (two daemons, one host —
   the §3 socket-activation claims on the installed 2.0.3).
-- [ ] **TODO-3**: lane flash-window drill: stop lane units under the
+  **2026-10-31: both halves** — pilot proved lane-under-fire; freeze
+  night proved system-side: with `pcscd-lane@vjavacard` UP and holding
+  port 35973, the system instance simultaneously served CardMan to
+  env-less `pcsc_scan`.
+- [x] **TODO-3**: lane flash-window drill: stop lane units under the
   lane lock, `flash_esp32`-style port ownership on the FTDI, restart;
   assert the system instance never dropped a reader (the headline win,
   measured).
-- [ ] **TODO-4**: strace/usbmon-style proof that the lane instance
+  **2026-10-31: isolation half measured** — stopping
+  `pcscd-lane@vjavacard.{service,socket}` left the system instance's
+  CardMan service uninterrupted (reader list identical before/during/
+  after); lane restarted and served again. The FTDI flash leg itself
+  not exercised (m5stick absent) — fold into the first real m5stick
+  flash window.
+- [x] **TODO-4**: strace/usbmon-style proof that the lane instance
   with the filter env NEVER opens a USB CCID device node while a
   Cherry/ACR/CardMan is present (the RFAddReader-early-return reading,
   §3 — source-read, not yet bench-proven).
-- [ ] **TODO-5**: post-freeze: system instance lists USB readers only;
+  **2026-10-31: bench-proven** — strace (1396-line capture, drop-in
+  ExecStart) of the lane daemon from start: ZERO `/dev/bus/usb` opens
+  while CardMan was present; the same daemon's journal shows the
+  refusal path firing: `RFAddReader() Reader name "OMNIKEY AG CardMan
+  3121" contains "OMNIKEY": ignored` + `HPAddDevice() Failed adding
+  USB device`. Source-read claim confirmed empirically.
+- [x] **TODO-5**: post-freeze: system instance lists USB readers only;
   `gpg --card-status` via scdaemon on a USB reader no longer wedges on
   vpcd/modemifd (t_fe356d5c regression check).
+  **2026-10-31: PASS** — post-freeze listing = CardMan only (USB);
+  fresh-GNUPGHOME `gpg --card-status` returns in 0 s (clean "No such
+  device") — the t_fe356d5c wedge class is structurally removed from
+  the system instance (all vpcd listeners gone from it).
 - [ ] **TODO-6**: USB-reader HIL suite green with no env change
   (`pytest tests/hardware/labgrid/test_ccid_hil.py -v --hil`).
-- [ ] **TODO-7**: pid-file hazard drill: kill -9 a lane instance,
+  **2026-10-31: hardware-gated** — no card in the CardMan slot and the
+  ACR1252 is detached tonight; run when a USB reader carries a card.
+- [x] **TODO-7**: pid-file hazard drill: kill -9 a lane instance,
   observe marker/pid state, restart via units only; document the
   observed (not predicted) recovery.
-- [ ] **TODO-8**: `--auto-exit` behavior: idle lane instance exits at
+  **2026-10-31: observed** — kill -9 leaves the service in `failed`
+  (no Restart=; expected) with the socket still listening; the NEXT
+  client connect re-activates cleanly and the reader serves again.
+  Recovery = "just connect"; no pid-file cleanup needed (lane sockets
+  live under /run, kernel-owned).
+- [x] **TODO-8**: `--auto-exit` behavior: idle lane instance exits at
   ~60 s and re-activates on the next connect (stock-unit parity).
+  **2026-10-31: observed** — idle lane service went `inactive` within
+  70 s of the last client disconnect; next connect re-activated and
+  served.
 
 ## 10. Open questions
 
