@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 """FWT-arming probe for the m5stick MFRC522 CCID reader (bolty #180 evidence).
 
-Reads the reader's ARMED frame-wait timer through Escape 0xD3 (issue
-#120's probe payload: [total_us, reads, configured_fwt_ms] LE) and
-compares it against the FWI a card's ATS/ATR advertises — the on-wire
-fingerprint of the #180 fix class:
+Reads the reader's timer state through Escape 0xD3 (issue #120's probe
+payload: [total_us, reads, configured_fwt_ms] LE, plus — since the #519
+repair — a 4-byte RAW timer readback [TMode, TPrescaler, TReloadHi,
+TReloadLo]) and compares the HARDWARE-armed period against the FWI a
+card's ATS/ATR advertises — the on-wire fingerprint of the #180 fix
+class:
 
-  PRE-FIX  fw (fixed 0xA9 prescaler): configured_fwt_ms caps at 1638 —
-           an FWI 13/14 card (FWT 2483/4957 ms) times out early.
-  POST-FIX fw (ccid PR #464): configured_fwt_ms == the FWI-derived FWT
-           (2483 / 4957 for FWI 13/14); values <= 1638 ms are
-           byte-identical on both fw generations (no fingerprint).
+  PRE-FIX  fw (fixed 0xA9 prescaler): the readback shows prescaler
+           0xA9 and an armed period capped at 1638 ms — an FWI 13/14
+           card (FWT 2483/4957 ms) times out early.
+  POST-FIX fw (ccid PR #464): the readback shows the FWI-derived
+           prescaler (0x101 / 0x201 for FWI 13/14) and an armed period
+           covering the advertised FWT.
+  Word 3 (configured_fwt_ms) is the REQUESTED-timeout cache — both
+  firmware generations report the FWI-derived request there, so it is
+  NOT a fingerprint; without the readback (#519) the verdict is
+  INCONCLUSIVE, never "fixed".
 
 Two transports:
   pcscd (default; safe while the reader serves pcscd): SCardControl
@@ -22,7 +29,7 @@ Two transports:
 Card legs are gated on a card being on the coil: with a card (pcscd
 path) the probe connects, parses TB(1) BWI from the T=1 ATR, then reads
 0xD3 and checks armed-vs-advertised.  Without a card it still proves
-the plumbing and reports the idle armed FWT.
+the plumbing and reports the idle arming.
 
 Usage:
   python3 fwt_arm_probe.py                  # pcscd path, baseline + card if present
@@ -89,30 +96,58 @@ def fwi_from_atr(atr: bytes):
 
 def _feature_ioctl(feat_tlv: bytes, want_tag: int):
     """Walk the Part10 CM_IOCTL_GET_FEATURE_REQUEST TLV
-    (tag u8, len u8 == 4, value u32 ioctl LE) — return the ioctl for
-    want_tag, None when absent."""
+    (tag u8, len u8 == 4, value u32 ioctl) — return the ioctl for
+    want_tag, None when absent. The value is BIG ENDIAN: pinned
+    reference reference/pcsc-lite/src/PCSC/reader.h:164 ("This value
+    is always in BIG ENDIAN format as documented in PCSC v2 part 10
+    ch 2.2 page 2") — #519 P1: the LE decode byte-swapped the ioctl
+    on every little-endian host."""
     i = 0
     while i + 2 <= len(feat_tlv):
         tag, ln = feat_tlv[i], feat_tlv[i + 1]
         if i + 2 + ln > len(feat_tlv) or ln != 4:
             return None
         if tag == want_tag:
-            return struct.unpack("<I", feat_tlv[i + 2:i + 6])[0]
+            return struct.unpack(">I", feat_tlv[i + 2:i + 6])[0]
         i += 2 + ln
     return None
 
 
 def parse_d3_payload(abdata: bytes):
-    """Escape abData: [total_us u32][reads u32][fwt_ms u32] LE. pcscd
-    control returns the payload directly (exactly 12 bytes); the serial
-    path carries the RDR header in front (type byte 0x80..0x83, >= 22
-    bytes total). Anything else does not parse."""
-    if len(abdata) == 12:
-        return struct.unpack("<III", abdata)
-    if len(abdata) >= CCID_HEADER_SIZE + 12 and 0x80 <= abdata[0] <= 0x83:
-        return struct.unpack("<III",
-                             abdata[CCID_HEADER_SIZE:CCID_HEADER_SIZE + 12])
+    """Escape abData: [total_us u32][reads u32][fwt_ms u32] LE, plus
+    (#519) an optional 4-byte raw timer readback [TMode, TPrescaler,
+    TReloadHi, TReloadLo]. pcscd control returns the payload directly
+    (12 bytes legacy / 16 bytes extended); the serial path carries the
+    RDR header in front (type byte 0x80..0x83). Returns
+    (total_us, reads, fwt_ms, regs|None) — regs None on the legacy
+    12-byte shape."""
+    def _payload(body: bytes):
+        if len(body) == 12:
+            return (*struct.unpack("<III", body), None)
+        if len(body) == 16:
+            return (*struct.unpack("<III", body[:12]), body[12:16])
+        return None
+
+    if len(abdata) in (12, 16):
+        return _payload(abdata)
+    # RDR-headed: try the LONGEST shape first — a 16-byte payload also
+    # satisfies the 12-byte length check.
+    for plen in (16, 12):
+        if len(abdata) >= CCID_HEADER_SIZE + plen and 0x80 <= abdata[0] <= 0x83:
+            return _payload(abdata[CCID_HEADER_SIZE:CCID_HEADER_SIZE + plen])
     return None
+
+
+def armed_fwt_ms_from_regs(regs: bytes):
+    """(#519) The AUTHORITATIVE armed FWT from the raw timer readback:
+    prescaler = ((TMode & 0x0F) << 8) | TPrescaler (MFRC522 datasheet
+    §8.5.2, TModeReg[3:0]:TPrescalerReg), reload = TReloadHi:TReloadLo,
+    period = reload x (2 x prescaler + 1) / 13.56 MHz. This is the
+    silicon state — unlike word 3, which both firmware generations
+    fill with the FWI-derived REQUEST."""
+    prescaler = ((regs[0] & 0x0F) << 8) | regs[1]
+    reload = (regs[2] << 8) | regs[3]
+    return reload * (2 * prescaler + 1) / 13.56e6 * 1000.0
 
 
 def build_escape_msg(seq: int, data: bytes) -> bytes:
@@ -122,25 +157,54 @@ def build_escape_msg(seq: int, data: bytes) -> bytes:
             + data)
 
 
-def _verdict(fwt_ms, expect_fwi):
+def _verdict(fwt_ms, expect_fwi, regs=None, card_leg=True):
+    """rc 0 FIXED / 2 PRE-FIX / 3 INCONCLUSIVE. With the #519 raw
+    timer readback the verdict is authoritative (the silicon's armed
+    period vs the advertised FWT). Without it the verdict CANNOT be
+    made: word 3 is the requested-timeout cache — both firmware
+    generations report the FWI-derived request there, so a word-3-only
+    'FIXED' is exactly the false-pass #519 exists to remove."""
     want = fwt_ms_for_fwi(expect_fwi)
     print(f"expect FWI {expect_fwi}: advertised FWT = {want:.0f} ms "
           f"(tolerance 1%)")
-    if fwt_ms is None or fwt_ms < want * 0.99:
-        print(f"VERDICT: PRE-FIX class — armed {fwt_ms} ms < {want:.0f} ms "
-              "(the 1638 ms clamp fingerprint of bolty #180; fw predates "
-              "ccid PR #464)")
-        return 2
-    print(f"VERDICT: FIXED — armed {fwt_ms} ms covers the advertised FWT "
-          "(ccid PR #464 arithmetic)")
-    return 0
+    if regs is not None:
+        armed = armed_fwt_ms_from_regs(regs)
+        prescaler = ((regs[0] & 0x0F) << 8) | regs[1]
+        print(f"timer readback: TMode={regs[0]:02X} TPrescaler={regs[1]:02X} "
+              f"TReload={regs[2]:02X}{regs[3]:02X} -> prescaler 0x{prescaler:X}"
+              f" ({prescaler}), armed period {armed:.0f} ms")
+        if not card_leg:
+            # The idle arming (e.g. the 100 ms default, legitimately on
+            # the 0xA9 prescaler — every sub-1638 ms timeout maps to the
+            # historical register bytes post-fix too): no card-driven
+            # FWT was requested, so no fingerprint claim is possible.
+            print("VERDICT: INCONCLUSIVE — no card session: the readback "
+                  "shows the IDLE arming, not a card-driven FWT. The #180 "
+                  "fingerprint needs a card (or --expect-fwi re-run with "
+                  "one on the coil).")
+            return 3
+        if armed < want * 0.99:
+            print(f"VERDICT: PRE-FIX class — hardware armed {armed:.0f} ms < "
+                  f"{want:.0f} ms (the fixed-prescaler clamp fingerprint of "
+                  "bolty #180; fw predates ccid PR #464)")
+            return 2
+        print(f"VERDICT: FIXED — hardware armed {armed:.0f} ms covers the "
+              "advertised FWT (readback proof, ccid PR #464 arming)")
+        return 0
+    print(f"VERDICT: INCONCLUSIVE — legacy 12-byte 0xD3 payload, no timer "
+          f"readback; word 3 ({fwt_ms} ms) is the requested-timeout cache, "
+          "not the arming. Reflash firmware with the #519 0xD3 append.")
+    return 3
 
 
 def via_pcscd(expect_fwi=None):
     """Escape path (track_d.py feature pattern). Card leg: high-level
     CardConnection (connect arms the card FWT). Card-less baseline: raw
     DIRECT connection + Part10 CM_IOCTL_GET_FEATURE_REQUEST TLV —
-    control works on a card-less reader only through SHARE_DIRECT."""
+    control works on a card-less reader only through SHARE_DIRECT.
+
+    Returns (fwt_ms|None, regs|None, card_leg: bool, derived_fwi|None),
+    or None when the reader/plumbing is absent (SKIP/FAIL printed)."""
     from smartcard.System import readers
 
     matches = [r for r in readers() if READER_NEEDLE in str(r)]
@@ -152,6 +216,7 @@ def via_pcscd(expect_fwi=None):
 
     atr = None
     fwt_ms = None
+    regs = None
     conn = reader.createConnection()
     try:
         conn.connect()  # card on coil: activation arms the card FWT
@@ -166,7 +231,7 @@ def via_pcscd(expect_fwi=None):
             resp = bytes(conn.control(ioctl, list(b"\xD3\x20")))
             words = parse_d3_payload(resp)
             if words:
-                _, _, fwt_ms = words
+                _, _, fwt_ms, regs = words
     except Exception as e:  # noqa: BLE001 — no card is a normal state
         print(f"no card session ({type(e).__name__}) — card-less baseline "
               "via DIRECT control")
@@ -176,20 +241,21 @@ def via_pcscd(expect_fwi=None):
         except Exception:  # noqa: BLE001
             pass
 
+    derived_fwi = None
     if atr is not None:
         bwi = fwi_from_atr(atr)
         print(f"card ATR: {atr.hex()} (TB1 BWI -> "
               f"{f'FWI {bwi}' if bwi is not None else 'TB(1) absent'})")
         if bwi is not None and expect_fwi is None:
-            expect_fwi = bwi
+            derived_fwi = bwi
     if fwt_ms is not None:
-        total_us, reads, fwt_ms = words
+        total_us, reads = words[0], words[1]
         print(f"escape 0xD3: {reads} ComIrqReg reads in {total_us} us "
               f"({total_us / max(reads, 1):.0f} us/read); "
-              f"armed FWT = {fwt_ms} ms")
-        if expect_fwi is not None:
-            return _verdict(fwt_ms, expect_fwi), fwt_ms
-        return fwt_ms
+              f"requested FWT = {fwt_ms} ms"
+              + (f"; timer readback {regs.hex()}" if regs else
+                 " (legacy payload, no readback)"))
+        return fwt_ms, regs, atr is not None, derived_fwi
 
     # card-less: raw DIRECT handle + feature TLV walk
     from smartcard.scard import (SCARD_LEAVE_CARD, SCARD_SCOPE_USER,
@@ -221,26 +287,34 @@ def via_pcscd(expect_fwi=None):
             return None
         words = parse_d3_payload(bytes(resp))
         if words is None:
-            print(f"FAIL: short 0xD3 payload {bytes(resp).hex()}")
+            print(f"FAIL: unparseable 0xD3 payload {bytes(resp).hex()}")
             return None
-        total_us, reads, fwt_ms = words
+        total_us, reads, fwt_ms, regs = words
         print(f"escape 0xD3 (card-less): {reads} ComIrqReg reads in "
               f"{total_us} us ({total_us / max(reads, 1):.0f} us/read); "
-              f"idle armed FWT = {fwt_ms} ms")
-        return fwt_ms
+              f"requested FWT = {fwt_ms} ms"
+              + (f"; timer readback {regs.hex()}" if regs else
+                 " (legacy payload, no readback)"))
+        return fwt_ms, regs, False, None
     finally:
         SCardDisconnect(hcard, SCARD_LEAVE_CARD)
 
 
 def via_serial(port=None):
+    """Raw GemPC framing on the by-id port (pcscd must be stopped —
+    turnaround_probe.py rules). Returns as via_pcscd."""
     import serial
 
     from serial_ports import resolve
 
-    port = port or next(iter(resolve("m5stick")), None)
-    if not port:
-        print("SKIP: no m5stick serial port")
-        return None
+    if port is None:
+        try:
+            # #519 P2: resolve() returns a single str (or raises
+            # SystemExit) — it is NOT an iterable of ports.
+            port = resolve("m5stick")
+        except SystemExit as e:
+            print(f"SKIP: no m5stick serial port ({e})")
+            return None
     s = serial.Serial(port, 115200, bytesize=8, parity="N", stopbits=2,
                       timeout=0.5)
     s.setDTR(False)
@@ -256,15 +330,18 @@ def via_serial(port=None):
             if n:
                 buf += s.read(n)
                 for f in parse_frames(buf):
+                    # parse_frames yields (type, seq, bStatus, bError,
+                    # payload) — the CCID message is f[4] (#519 P2).
                     if f[0] >= 0x80 and f[1] == seq:
-                        payload = f[2]
-                        if len(payload) < CCID_HEADER_SIZE + 12:
+                        words = parse_d3_payload(f[4])
+                        if words is None:
                             break
-                        total_us, reads, fwt_ms = parse_d3_payload(
-                            payload[CCID_HEADER_SIZE:])
+                        total_us, reads, fwt_ms, regs = words
                         print(f"escape 0xD3: {reads} reads in "
-                              f"{total_us} us; armed FWT = {fwt_ms} ms")
-                        return fwt_ms
+                              f"{total_us} us; requested FWT = {fwt_ms} ms"
+                              + (f"; timer readback {regs.hex()}" if regs
+                                 else " (legacy payload, no readback)"))
+                        return fwt_ms, regs, False, None
             else:
                 time.sleep(0.01)
         print(f"FAIL: no 0xD3 response ({buf.hex()[:80]})")
@@ -283,11 +360,21 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     out = via_serial(args.port) if args.via_serial else via_pcscd(args.expect_fwi)
-    if isinstance(out, tuple):  # verdict path already ran
-        return out[0]
-    fwt_ms = out
-    if fwt_ms is None:
+    if out is None:
         return 1  # FAIL/SKIP already printed
+    fwt_ms, regs, card_leg, derived_fwi = out
+    expect_fwi = args.expect_fwi if args.expect_fwi is not None else derived_fwi
+    if expect_fwi is not None:
+        # #519 P2: --expect-fwi is now enforced on EVERY path — a scalar
+        # baseline no longer exits 0 with the expectation ignored.
+        if fwt_ms is None:
+            print("FAIL: FWI expectation given but no 0xD3 data — "
+                  "card leg not established")
+            return 1
+        if not card_leg:
+            print("note: no card session — the verdict below reports the "
+                  "card-less baseline arming")
+        return _verdict(fwt_ms, expect_fwi, regs, card_leg=card_leg)
     print("no card-derived FWI and no --expect-fwi: baseline report only "
           "(plumbing proof / idle armed FWT)")
     return 0

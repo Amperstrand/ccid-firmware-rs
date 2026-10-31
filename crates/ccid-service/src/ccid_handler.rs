@@ -330,22 +330,32 @@ impl<D: NfcDriver + FrontendDiagnostics> CcidHandler<D> {
             // Escape 0xD3 (issue #120): I2C poll-cadence probe — times N
             // back-to-back ComIrqReg reads (the exact transaction the
             // MFRC522 transceive poll loop performs) and reports
-            // total_us, N, configured FWT. Payload out: 3 words LE.
+            // total_us, N, configured FWT. Payload out: 3 words LE,
+            // plus a 4-byte RAW timer-register readback
+            // [TMode, TPrescaler, TReloadHi, TReloadLo] when the
+            // frontend provides one (#519: word 3 is the REQUESTED
+            // cache — both firmware generations report the FWI-derived
+            // request — so the registers are the only on-wire #180
+            // fingerprint; 12-byte payloads stay the legacy shape).
             if header.message_type == PC_TO_RDR_ESCAPE
                 && header.length == 2
                 && ccid_msg.get(CCID_HEADER_SIZE) == Some(&0xD3)
             {
                 let reads = u32::from(ccid_msg.get(CCID_HEADER_SIZE + 1).copied().unwrap_or(0));
+                let regs = self.core.driver_mut().0.timer_registers();
                 let (took_us, fwt_ms) = match self.core.driver_mut().0.i2c_timing_probe(reads) {
                     Some(us) => (us, self.core.driver().0.configured_fwt_ms()),
                     None => (u32::MAX, 0),
                 };
-                let payload = [
+                let mut payload = [
                     took_us.to_le_bytes(),
                     reads.to_le_bytes(),
                     fwt_ms.to_le_bytes(),
                 ]
                 .concat();
+                if let Some(regs) = regs {
+                    payload.extend_from_slice(&regs);
+                }
                 let cmd_status = if took_us == u32::MAX {
                     COMMAND_STATUS_FAILED
                 } else {
@@ -727,6 +737,43 @@ mod tests {
 
     fn new_handler(card_present: bool) -> CcidHandler<MockNfcDriver> {
         CcidHandler::new(MockNfcDriver::new(card_present, &ATR, &APDU_RESPONSE))
+    }
+
+    #[test]
+    fn escape_0xd3_appends_raw_timer_readback() {
+        // #519: with a timer-capable frontend the payload is 12 legacy
+        // bytes + [TMode, TPrescaler, TReloadHi, TReloadLo] — the
+        // on-wire #180 fingerprint (prescaler bits, not the request
+        // cache in word 3).
+        let mut driver = MockNfcDriver::new(false, &ATR, &APDU_RESPONSE);
+        driver.set_timer_registers([0x82, 0x01, 0x4E, 0x20]); // presc 0x201
+        let mut handler = CcidHandler::new(driver);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 50, &[0xD3, 32]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(payload.len(), 16, "12 legacy bytes + 4 register bytes");
+        assert_eq!(&payload[12..], &[0x82, 0x01, 0x4E, 0x20]);
+        // legacy words unchanged at the front (backward-compatible append)
+        assert_eq!(u32::from_le_bytes(payload[4..8].try_into().unwrap()), 32);
+    }
+
+    #[test]
+    fn escape_0xd3_legacy_payload_without_timer_frontend() {
+        // Backends without timer_registers() (PN7160/PN532, the mock
+        // default) keep the exact legacy 12-byte shape.
+        let mut handler = new_handler(false);
+        let cmd = build_ccid_cmd(PC_TO_RDR_ESCAPE, 0, 51, &[0xD3, 32]);
+        let mut response = [0u8; 271];
+
+        let len = handler.process_command(&cmd, &mut response);
+        let (header, payload) = parse_response(&response[..len]);
+
+        assert_eq!(header.message_type, RDR_TO_PC_ESCAPE);
+        assert_eq!(payload.len(), 12);
     }
 
     #[test]

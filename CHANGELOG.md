@@ -1,5 +1,32 @@
 ## [Unreleased]
 
+### Fixed — #519: fwt_arm_probe repair (raw timer readback, Part10 TLV endianness, serial path)
+
+- Escape 0xD3 payload now appends a 4-byte RAW timer-register readback
+  `[TMode, TPrescaler, TReloadHi, TReloadLo]` when the frontend
+  provides one (`timer_registers()` on `NfcDriver`, MFRC522 only —
+  backward-compatible: 12-byte legacy shape on every other backend).
+  Word 3 was the REQUESTED-timeout cache — both firmware generations
+  report the FWI-derived request there, so the old "fingerprint" could
+  false-pass; the readback is the silicon's actual arming and the only
+  on-wire #180 fingerprint (prescaler 0xA9 vs 0x101/0x201 under a
+  card-driven FWI 13/14 FWT). Bench-proven card-less: readback
+  `80 a9 0f a0` on the wire (the idle 100 ms arming).
+- `_feature_ioctl` decodes the Part10 feature TLV value as BIG ENDIAN
+  (pinned: `reference/pcsc-lite/src/PCSC/reader.h:164`, PC/SC v2
+  Part 10 §2.2) — the LE decode byte-swapped the ioctl on every
+  little-endian host. Live re-run with the fix: card-less escapes DO
+  work through libccidtwin (the 2026-10-29 "refuses card-less
+  escapes" conclusion was the swapped ioctl, not the stack).
+- `--via-serial`: `serial_ports.resolve()` returns a str, not an
+  iterable (the old `next(iter(...))` opened port `'/'`); `parse_frames`
+  payload is field 4 of 5 (was read from the bStatus byte).
+- Verdict enforcement: `--expect-fwi` now runs on every path and the
+  verdict is honest about what it saw — rc 0 FIXED (readback covers the
+  advertised FWT), rc 2 PRE-FIX (readback clamped), rc 3 INCONCLUSIVE
+  (legacy payload without readback, or card-less idle arming). A
+  scalar baseline no longer exits 0 with the expectation ignored.
+
 ### Changed — #119: CDC burst serve loop extracted to ccid-service (host-tested)
 
 - The nucula CDC main's burst-read loop (66109dd) moved to
