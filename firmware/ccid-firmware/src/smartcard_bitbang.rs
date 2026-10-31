@@ -316,12 +316,23 @@ impl SmartcardBitbang {
 
         diag_clear();
 
-        // Full cold reset: power off, RST low, IO released
-        self.stop_continuous_clock();
-        self.pwr_pin.set_high(); // VCC off
+        // Cold reset + 3V VCC selection (#146): the ST8034 auto-selects
+        // card VCC from the CMDVCC high-time before the falling edge —
+        // >30ms → 5V, <15ms → 3V (datasheet §6.10.1). The old 200ms hold
+        // always selected 5V; if the shield's VDDP is marginal (5V from
+        // Arduino header), 5V generation silently fails. Use the
+        // datasheet's 3-pulse sequence for a clean 3V activation after
+        // any long idle: LOW 500µs → HIGH 5ms → LOW (activate).
         self.rst_pin.set_low();
         self.io_release_high();
-        Self::delay_ms(200);
+        self.pwr_pin.set_high(); // CMDVCC high (shutdown)
+        Self::delay_ms(10); // ensure >30ms total high time (forces 5V path)
+        // 3-pulse to select 3V: brief LOW, brief HIGH, then LOW to activate
+        self.pwr_pin.set_low();
+        Self::delay_us(500);
+        self.pwr_pin.set_high();
+        Self::delay_ms(5);
+        self.pwr_pin.set_low(); // CMDVCC low → activate with VCC=3V
 
         self.atr = Atr::default();
         self.powered = false;
@@ -332,21 +343,20 @@ impl SmartcardBitbang {
 
         self.io_readback_test();
 
-        // Activation: VCC on → start CLK → wait → RST high
-        self.pwr_pin.set_low(); // VCC on
+        // Activation: CLK first, then VCC on, then RST high (#146 research:
+        // the ST8034's 40,000-cycle startup counter runs on XTAL1 — without
+        // a clock the activation sequence never advances. The F469 works
+        // because USART2_CK is always running before CMDVCC goes low.)
+        self.start_continuous_clock();
+        let _ = Self::gpiof_ptr(); // ensure GPIOF clock is on
+        self.pwr_pin.set_low(); // VCC on (CMDVCC low → exit deep shutdown, start activation)
         Self::delay_ms(SC_POWER_ON_DELAY_MS);
 
-        // H5 test: GPIO-toggled clock instead of TIM10
-        let gpiof = Self::gpiof_ptr();
-        for _ in 0..SC_CLK_TO_RST_DELAY_CARD_CLKS {
-            gpiof.bsrr.write(|w| unsafe { w.bits(1 << 6) });
-            cortex_m::asm::delay(GPIO_CLK_HALF_CYCLES);
-            gpiof.bsrr.write(|w| unsafe { w.bits(1 << (6 + 16)) });
-            cortex_m::asm::delay(GPIO_CLK_HALF_CYCLES);
-        }
-
-        // Start continuous TIM10 PWM clock — card needs clock during ATR + all communication
-        self.start_continuous_clock();
+        // CLK-to-RST settling: the ST8034 needs ~40,000 clock cycles after
+        // CMDVCC goes low before card VCC is stable (ISO 7816-3 §5.3.2).
+        // The continuous TIM10 clock is already running — just wait.
+        let _ = Self::gpiof_ptr();
+        Self::delay_ms(10);
 
         self.rst_pin.set_high(); // Release RST → card sends ATR
 

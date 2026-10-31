@@ -1,0 +1,4 @@
+build/gen/com/amperstrand/benchrelay/R.java
+src/com/amperstrand/benchrelay/RelayKickstartService.java
+src/com/amperstrand/benchrelay/RelayServer.java
+src/com/amperstrand/benchrelay/RelayApduService.java

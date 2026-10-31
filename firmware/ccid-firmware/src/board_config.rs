@@ -133,6 +133,14 @@ pub mod f746 {
 
         let pres_pin = gpiof.pf10.into_floating_input();
 
+        // D7/PI3 = SC_CLKDIV1 on the shield (#146): sets the ST8034's
+        // card-clock division ratio. Driven LOW for a known ratio
+        // (ST8034AT: fXTAL pass-through; ST8034T: fXTAL/4 — both valid
+        // for ISO 7816-3). Left floating by the old code → undefined.
+        let _clkdiv: PI3<Output<PushPull>> = gpioi
+            .pi3
+            .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::Low);
+
         let pwr_pin: PF7<Output<PushPull>> = gpiof
             .pf7
             .into_push_pull_output_in_state(stm32f7xx_hal::gpio::PinState::High);
