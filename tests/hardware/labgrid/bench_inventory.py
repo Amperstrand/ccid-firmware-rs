@@ -61,7 +61,8 @@ EXPECTED_PCSCD = ["ST2XXX-001", "CardMan"]
 BENCH_USB_IDS = [
     ("046a:003e", "F469/F746 DUT (Cherry emul)"),
     ("0483:374b", "ST-LINK V2.1"),
-    ("072f:223b", "ACR1252 reference"),
+    # ACR1252: retired to ai-legion-small 2026-10-25 (#71) — not on this
+    # host by design; its absence is not a bench regression.
     ("076b:3021", "CardMan reference"),
 ]
 
@@ -182,8 +183,11 @@ def run_body():
         print("== DUT/reference identity split ==")
         dut = [r for r in readers if DUT_SERIAL in r]
         check(f"exactly one DUT reader (serial {DUT_SERIAL})", len(dut) == 1, "; ".join(dut))
+        # ACR1252 retired to ai-legion-small (2026-10-25, #71) — the
+        # on-host reference is the CardMan. Expect >= 1.
         refs = [r for r in readers if DUT_SERIAL not in r and ("ACR1252" in r or "CardMan" in r)]
-        check(f"reference readers carry no DUT serial ({len(refs)} found)", len(refs) >= 2, "; ".join(refs))
+        check("at least one reference reader present (CardMan; ACR lives on ai-legion-small)",
+              len(refs) >= 1, "; ".join(refs))
 
         print("== USB device presence ==")
         for vidpid, label in BENCH_USB_IDS:
