@@ -16,10 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
+# The trailing `|| true` on the old single chain silently swallowed a
+# FAILED espup install too: the image built "fine" without
+# /root/export-esp.sh and every boot-smoke build leg died at
+# build-in-container.sh:26 (found by the #520 forced-red first live
+# run). Critical toolchain chain is now unmasked; only the genuinely
+# optional cargo-generate keeps its fallback.
 RUN cargo install espup --version 1.98.1.0 --locked \
     && espup install \
-    && cargo install ldproxy \
-    && cargo install cargo-generate --locked || true
+    && cargo install ldproxy
+RUN cargo install cargo-generate --locked || true
 
 # Warm mounts used by the workflow's docker run: caches cross container
 # lifetimes while the throwaway container stays disposable.
