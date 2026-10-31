@@ -31,6 +31,11 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install espup \
     && espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3 \
     && cargo install ldproxy
+
+# build.sh's elf2image step shells out to esptool (same install as
+# union-matrix.yml's legs; --break-system-packages because bookworm pip
+# is PEP-668 managed — third silent gap found by the #520 demo).
+RUN pip3 install --break-system-packages esptool
 RUN cargo install cargo-generate --locked || true
 
 # Warm mounts used by the workflow's docker run: caches cross container
