@@ -1,7 +1,9 @@
 # Boot-smoke build image — pinned esp toolchain, mirrors ci.yml's esp legs.
 # Pure toolchain image: NO repo sources (they are bind-mounted at run time).
 # Pins mirror .github/workflows/ci.yml's esp32 build legs:
-#   - espup 1.98.1.0 (pinned esp fork toolchain; same Rust version as stable)
+#   - esp toolchain via espup, pinned exactly as ci.yml's esp legs
+#     (espup crate unpinned; toolchain -v 1.98.1.0, crosstool
+#     -c 14.2.0_20260121, targets esp32,esp32c3)
 #   - ldproxy via cargo install (unpinned, same as ci.yml)
 FROM debian:bookworm-slim
 
@@ -22,9 +24,18 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # build-in-container.sh:26 (found by the #520 forced-red first live
 # run). Critical toolchain chain is now unmasked; only the genuinely
 # optional cargo-generate keeps its fallback.
-RUN cargo install espup --version 1.98.1.0 --locked \
-    && espup install \
+# 1.98.1.0 is the TOOLCHAIN version (espup install -v), NOT a valid
+# cargo-install crate version — the old --version pin failed cargo's
+# semver parse instantly; combined with the masked chain the image
+# ALWAYS built without a toolchain (second bug found by the #520 demo).
+RUN cargo install espup \
+    && espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3 \
     && cargo install ldproxy
+
+# build.sh's elf2image step shells out to esptool (same install as
+# union-matrix.yml's legs; --break-system-packages because bookworm pip
+# is PEP-668 managed — third silent gap found by the #520 demo).
+RUN pip3 install --break-system-packages esptool
 RUN cargo install cargo-generate --locked || true
 
 # Warm mounts used by the workflow's docker run: caches cross container
