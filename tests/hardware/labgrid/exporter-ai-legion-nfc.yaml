@@ -13,15 +13,28 @@
 
 ## --- DUTs -----------------------------------------------------------------
 
+## ⚠️ 2026-11-01: the nucula C3 ALSO moved to ai-legion-small (with the
+## m5stick, owner hands window; it was USB-latch-down at move time). The
+## live export is ai-legion-small-nfc/nucula-c3/NetworkSerialPort. The
+## nucula-c3 PLACE deliberately still matches this (now phantom) export
+## until the owner's latch work completes — re-point = one del/add-match.
 nucula-c3:
   SerialPort:
     port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
     speed: 115200
 
-m5stick-usb:
-  SerialPort:
-    port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0
-    speed: 115200
+## ⚠️ 2026-11-01: the m5stick (Hades2001) PHYSICALLY MOVED to
+## ai-legion-small (owner hands window). This export is a phantom — the
+## live export is ai-legion-small-nfc/m5stick-usb/NetworkSerialPort in
+## conwrt-bench deploy/exporter-nfc-small.yaml; the m5stick place was
+## re-pointed. Kept here so the old wiring is not lost (F469 doctrine).
+## NOTE: pcscd GemPC serving on .208 (reader.conf m5stick-gempc) and every
+## serial_ports.resolve('m5stick') on .208 are BROKEN by the move until a
+## serial-over-TCP bridge (socat from small) or small-side serving lands.
+## m5stick-usb:
+##   SerialPort:
+##     port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0
+##     speed: 115200
 
 ### F469-DISCO SWD flash + console (ST-LINK V2.1 CDC; serial is IN the
 ## by-id path — stable without a udev match)
