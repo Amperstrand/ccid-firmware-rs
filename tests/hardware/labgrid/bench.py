@@ -223,10 +223,44 @@ def dut_absent_reason(place: str) -> str | None:
 
         try:
             port = resolve("m5stick")
-        except Exception:
-            return None
+        except SystemExit as e:
+            # #535: resolve() sys.exits (SystemExit is a BaseException —
+            # `except Exception` never caught it) when the m5stick is
+            # unplugged or ambiguous. SKIP≠FAIL (#183): that is an
+            # absence, not a red.
+            return f"m5stick serial unresolved: {e}"
+        except Exception as e:
+            return f"m5stick serial resolve error: {e}"
         try:
-            with pyserial.Serial(port, 115200, timeout=0.2) as s:
+            # #535: with the normal GemPC firmware present, pcscd owns
+            # this UART — opening it bare races pcscd and can toggle the
+            # board. Probe inside a stop/start window (same discipline as
+            # the test suites' pcscd_paused).
+            import contextlib
+
+            @contextlib.contextmanager
+            def _pcscd_paused_for_probe():
+                subprocess.run(
+                    ["systemctl", "stop", "pcscd.socket", "pcscd.service"],
+                    capture_output=True)
+                time.sleep(1.0)
+                try:
+                    yield
+                finally:
+                    subprocess.run(
+                        ["systemctl", "start", "pcscd.socket", "pcscd.service"],
+                        capture_output=True)
+                    for _ in range(20):
+                        r = subprocess.run(
+                            ["systemctl", "is-active", "pcscd.service"],
+                            capture_output=True, text=True)
+                        if r.stdout.strip() == "active":
+                            time.sleep(0.5)
+                            break
+                        time.sleep(0.5)
+
+            with _pcscd_paused_for_probe(), \
+                    pyserial.Serial(port, 115200, timeout=0.2) as s:
                 s.setDTR(False)
                 s.setRTS(False)
                 buf = b""
