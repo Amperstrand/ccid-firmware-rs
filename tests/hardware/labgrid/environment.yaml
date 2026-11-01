@@ -25,12 +25,16 @@ places:
     matches:
       - name: 'stm32f469-stlink'
       - name: 'stm32f469-ccid'
+  # migrated to ai-legion-small 2026-10-31: the serial resources live on
+  # .221 (exporter-ccid-small.yaml); wifi/OTA paths are host-agnostic.
+  # Keep BOTH match names during the migration window.
   nucula-c3:
     matches:
       - name: 'nucula-c3'
   m5stick:
     matches:
       - name: 'm5stick-usb'
+      - name: 'm5stick-small-serial'
   ref-acr1252:
     matches:
       - name: 'ref-acr1252'
