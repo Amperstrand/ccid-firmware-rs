@@ -123,7 +123,8 @@ pub mod wifi_vpcd;
         feature = "pn7160-bringup",
         feature = "backend-mfrc522",
         feature = "wifi-ccid",
-        feature = "wifi-vpcd"
+        feature = "wifi-vpcd",
+        feature = "pn7160-listen"
     ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
@@ -157,7 +158,8 @@ pub use ccid_service::vpcd;
         feature = "pn7160-bringup",
         feature = "wifi-ccid",
         feature = "wifi-vpcd",
-        feature = "bench-net"
+        feature = "bench-net",
+        feature = "pn7160-listen"
     ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
