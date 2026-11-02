@@ -1216,7 +1216,7 @@ mod tests {
             NTF_RF_DEACTIVATE,
             0x02,
             0x00,
-            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
         ]);
 
         let mut drv = Pn7160Driver::new(t);
@@ -1585,10 +1585,7 @@ mod tests {
     // the DEACTIVATE_REASON_* block comment in lib.rs).
     #[test]
     fn rf_link_lost_clears_auto_presence() {
-        for reason in [
-            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
-            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
-        ] {
+        for reason in [DEACTIVATE_REASON_RF_LINK_LOSS_NXP] {
             let mut t = MockTransport::new();
             t.push_notification(&auto_activation_ntf());
             let mut drv = Pn7160Driver::new(t);
@@ -1708,7 +1705,7 @@ mod tests {
             NTF_RF_DEACTIVATE,
             0x02,
             DEACTIVATE_TYPE_IDLE,
-            DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
+            DEACTIVATE_REASON_RF_LINK_LOSS_NXP,
         ]);
         let mut atr = [0u8; 32];
         assert_eq!(
