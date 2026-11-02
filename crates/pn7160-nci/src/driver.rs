@@ -825,11 +825,10 @@ mod tests {
     use crate::mock::MockTransport;
     use crate::Frame;
     use crate::{
-        DEACTIVATE_REASON_DH_REQ, DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X,
-        DEACTIVATE_REASON_RF_LINK_LOSS_NXP, DEACTIVATE_TYPE_IDLE, GID_CORE, GID_RF, MT_CMD, MT_NTF,
-        MT_RSP, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP, NTF_RF_DEACTIVATE, NTF_RF_DISCOVER,
-        NTF_RF_INTF_ACTIVATED, OID_CORE_INIT, OID_CORE_RESET, OID_RF_DEACTIVATE, OID_RF_DISCOVER,
-        OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
+        DEACTIVATE_REASON_DH_REQ, DEACTIVATE_REASON_RF_LINK_LOSS_NXP, DEACTIVATE_TYPE_IDLE,
+        GID_CORE, GID_RF, MT_CMD, MT_NTF, MT_RSP, NCI_INTERFACE_ISO_DEP, NCI_PROTOCOL_ISO_DEP,
+        NTF_RF_DEACTIVATE, NTF_RF_DISCOVER, NTF_RF_INTF_ACTIVATED, OID_CORE_INIT, OID_CORE_RESET,
+        OID_RF_DEACTIVATE, OID_RF_DISCOVER, OID_RF_DISCOVER_MAP, OID_RF_DISCOVER_SELECT, STATUS_OK,
     };
 
     /// #257 error-model pass lock: the additive Display strings,
@@ -1585,7 +1584,8 @@ mod tests {
     // the DEACTIVATE_REASON_* block comment in lib.rs).
     #[test]
     fn rf_link_lost_clears_auto_presence() {
-        for reason in [DEACTIVATE_REASON_RF_LINK_LOSS_NXP] {
+        {
+            let reason = DEACTIVATE_REASON_RF_LINK_LOSS_NXP;
             let mut t = MockTransport::new();
             t.push_notification(&auto_activation_ntf());
             let mut drv = Pn7160Driver::new(t);
