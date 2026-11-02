@@ -483,6 +483,12 @@ pub trait Transport {
 pub mod driver;
 pub mod transport;
 
+/// ISO-DEP listen mode (card emulation) — the #261 RF rung.
+pub mod listen;
+
+/// Deterministic synthetic-card responder (self-marked fixture table).
+pub mod responder;
+
 pub mod data {
     use super::*;
 
