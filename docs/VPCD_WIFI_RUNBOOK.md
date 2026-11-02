@@ -7,7 +7,7 @@ soak, GPG `--card-status` ×3, and full GP uninstall/install of SmartPGP.
 ## Architecture — reversed connection
 
 ```
-gpg / scdaemon ─ pcscd ─ libifdvpcd.so (SERVER, listens :35963)
+gpg / scdaemon ─ pcscd ─ libifdvpcd.so (SERVER, listens :35967 for the nucula post-2026-11-01)
                                    ▲
                                    │ TCP (board connects OUT)
                                    ▁▼▁
@@ -38,7 +38,7 @@ LIBPATH /usr/lib/pcsc/drivers/serial/libifdvpcd.so
 CHANNELID 0x8C7B
 EOF
 
-# 2. keep pcscd (and the :35963 listener) alive without clients,
+# 2. keep pcscd (and the :35967 listener) alive without clients,
 #    and raise its fd limit
 sudo mkdir -p /etc/systemd/system/pcscd.service.d
 sudo tee /etc/systemd/system/pcscd.service.d/no-auto-exit.conf <<'EOF'
@@ -53,7 +53,8 @@ EOF
 
 # 3. firewall: the board's inbound vpcd SYN + netlog UDP.
 #    A ufw INPUT policy DROP here looks EXACTLY like a firmware hang.
-sudo ufw allow 35963/tcp comment "vpcd nucula"
+sudo ufw allow 35967/tcp comment "vpcd nucula wifi67 (post-2026-11-01 move)"
+sudo ufw allow 35963/tcp comment "vpcd boltcard vpicc (was nucula pre-move)"
 sudo ufw allow 4567/udp comment "netlog bench"
 ```
 
@@ -72,12 +73,21 @@ sudo systemctl start pcscd.service
 ```sh
 cd firmware/esp32-ccid
 NUCULA_WIFI_SSID=<ssid> NUCULA_WIFI_PASS=<pass> \
-NUCULA_VPCD_HOST=<host-ip> ./build.sh wifi-vpcd          # nucula (slot :35963)
+NUCULA_VPCD_HOST=<host-ip> NUCULA_VPCD_PORT=35967 \
+    ./build.sh wifi-vpcd      # nucula ("Nucula VPCD wifi67" 00 00)
 NUCULA_VPCD_PORT=35964 ./build.sh m5stick-vpcd \
     --flash /dev/ttyUSB0                                  # m5stick (slot :35964)
 python3 host-tools/ota_push.py <board-ip> \
     ~/.cargo-target/esp32-ccid-wifi-vpcd.bin
 ```
+
+**⚠️ Port-map drift (2026-11-01 bench move):** the nucula's listener is
+`:35967` (`/etc/reader.conf.d/vpcd-nucula-35967`, reader name "Nucula
+VPCD wifi67" 00 00/00 01); `:35963/:35964` now back the **boltcard**
+vpicc (`vpcd-boltcard`). A default-port wifi-vpcd build silently
+presents the nucula's card under the wrong reader name ("Virtual PICC
+boltcard vpcd 00 00") — bench-proven the hard way 2026-11-02. Always
+set `NUCULA_VPCD_PORT=35967` for the nucula.
 
 **Optional OTA auth (2026-10-14):** add `OTA_TOKEN=<exactly 32 chars>`
 to the build env to arm the board's OTA server — armed builds accept
@@ -86,8 +96,9 @@ The push client picks the form automatically from the same `OTA_TOKEN`
 env var; a token/tokenless mismatch fails at the magic stage before any
 image byte moves (no corruption window).
 
-**Multi-board benches**: the stock driver exposes one listener per slot
-(:35963 = "Nucula VPCD 00 00", :35964 = "Nucula VPCD 00 01"). Give each
+**Multi-board benches**: one listener per slot. Post-2026-11-01 move:
+:35967/:35968 = "Nucula VPCD wifi67" 00 00/00 01; :35963/:35964 back
+the boltcard vpicc. Give each
 board its own `NUCULA_VPCD_PORT` and the board↔reader mapping is
 deterministic — no accept race. Both ports need ufw rules. Bench-proven
 with nucula (wall power) + m5stick (computer USB power) side by side.
@@ -218,7 +229,7 @@ inside one NCI packet — no longer needed.
    while the live connection serves the other one. Discover the
    working slot by attempting a real connect (ATR or not).
 3. The stock driver exposes **two slots** ("00 00"/"00 01", listeners
-   :35963/:35964). Map boards to slots deterministically with
+   :35967/:35968 for the nucula post-move). Map boards to slots with
    `NUCULA_VPCD_PORT` (see "Multi-board benches").
 4. Firmware v3+ treats vpcd read timeouts as **idle, not disconnect** —
    pcscd goes silent with no clients; a 30s-timeout disconnect churned

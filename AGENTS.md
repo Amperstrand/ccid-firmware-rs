@@ -467,36 +467,53 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
   `USB_UART_CHIP_RST_DIS`), an external USB-UART bridge (FTDI, like
   the m5stick), or USB-OTG class CCID (S2/S3 only).
 
-## Host pcscd instances — system + lane-private (2026-10-21)
+## Host pcscd instances — system FROZEN USB-only + lane-private (2026-10-21; FREEZE EXECUTED 2026-10-31)
 
-**Read this before any pcscd-visible bench work on ai-legion.** The
-SYSTEM pcscd (socket `/run/pcscd/pcscd.comm`) carries every reader
-config in `/etc/reader.conf.d/` and is STOPPED/RESTARTED by any
-ESP32 flash window (`esp32_flash.py`) — concurrent lanes kill each
-other's runs this way (two lifecycle runs died to it 2026-10-21).
+**Read this before any pcscd-visible bench work on ai-legion.** Since the
+2026-10-31 freeze (design `docs/PCSD-LANE-INSTANCES-DESIGN.md` §7 steps 1-5,
+bench evidence §9 + PR #533):
 
-- `/etc/reader.conf.d/vpcd-nucula-35967` (the wifi-vpcd wifi67 reader)
-  lives in the LANE dir `/etc/reader.conf.d-lanes/wifi-verify/` — the
-  system instance intentionally does NOT load it. wifi-vpcd bench work
-  runs against a PRIVATE pcscd instance (recipe below). Full migration
-  of the remaining serial entries is `docs/PCSD-LANE-INSTANCES-DESIGN.md`
-  §7 (owner-gated steps; §9 now carries the pilot's bench proof).
-- **Private-instance recipe (bench-proven 2026-10-21, ran the full
-  J3R180 lifecycle green through two external system-pcscd restarts):**
+- The SYSTEM pcscd (socket `/run/pcscd/pcscd.comm`) is FROZEN to USB
+  readers ONLY: `/etc/reader.conf.d/` holds just `libccidtwin` (reference
+  comments). It never needs restarts for serial DUT work again — and
+  stopping it touches EVERY lane's USB reader sessions, so it stays
+  untouched outside host maintenance (under `/run/lock/bench-pcscd.lock`
+  + a labgrid `who` check for acquired reader places).
+- ALL serial/vpcd/modemifd reader configs live in per-lane dirs
+  `/etc/reader.conf.d.lanes/{m5stick,nucula,boltcard,vjavacard,
+  nr7101-modem}/` and are served by LANE INSTANCES — systemd template
+  units `pcscd-lane@<lane>.{socket,service}` (installed, nothing
+  enabled; instances start on demand and `--auto-exit` after ~60 s
+  idle). Client env (EVERY client — pyscard, gp/JNA, scripts):
+  ```sh
+  systemctl start pcscd-lane@<lane>.socket
+  export PCSCLITE_CSOCK_NAME=/run/pcscd-lane-<lane>.comm
+  ```
+  Lane instances carry the USB filter
+  (`PCSCLITE_FILTER_IGNORE_READER_NAMES=Cherry:ACS:OMNIKEY`) — strace-
+  proven to never open USB device nodes (§9 TODO-4).
+- **Flock doctrine (amended 2026-10-31):** any pcscd stop/start goes
+  through the flock of the instance it touches — lane ops under
+  `/run/lock/bench-pcscd-<lane>.lock`, system ops (rare) under
+  `/run/lock/bench-pcscd.lock`. `esp32_flash.py`'s system-pcscd quiesce
+  is now vestigial for serial DUTs (the system instance holds no serial
+  ports); its lane-aware rework is a follow-up — until then a flash
+  window must still stop a running lane instance for its port.
+- **Pre-freeze history (2026-10-21 pilot)** — the manual fallback if the
+  units are ever unavailable:
   ```sh
   mkdir -p /run/pcscd-lanes /etc/reader.conf.d-lanes/<lane>
-  # put ONLY your lane's reader.conf entries in the lane dir
   systemd-socket-activate -l /run/pcscd-lanes/<lane>.sock -- \
       /usr/sbin/pcscd --foreground -c /etc/reader.conf.d-lanes/<lane> &
-  # then EVERY client (pyscard, gp/JNA, scripts) needs:
   export PCSCLITE_CSOCK_NAME=/run/pcscd-lanes/<lane>.sock
   ```
-  Mechanism per PCSD-LANE-INSTANCES-DESIGN §3 (socket activation skips
-  the second-instance check; the daemon otherwise hardcodes the socket
-  path). Caveats: the instance still writes the shared
-  `/run/pcscd/pcscd.pid` (harmless lie; `-H` is racy), and USB hotplug
-  readers fail to add inside it (system instance owns them — cosmetic).
-  Kill the `systemd-socket-activate` process to tear down.
+  (socket activation skips the second-instance check; plain
+  `pcscd -f` does NOT coexist — single-instance guard. The instance
+  writes the shared `/run/pcscd/pcscd.pid` — harmless lie.)
+- **vpcd port exclusivity (learned 2026-10-31):** vpcd reader slots
+  LISTEN inside whichever pcscd carries their config — only ONE daemon
+  may hold a given vpcd port. The freeze moved them all to lanes; do
+  not copy a vpcd entry back into the system dir while its lane runs.
 
 ## CI Testing Protocol
 
@@ -851,6 +868,16 @@ the CCID handler or MFRC522 driver, verify `CONFIG_MAIN_TASK_STACK_SIZE` is set
 and large enough (≥ 12 KB; 16 KB is the recommended value).
 
 ## Known-Good Bench State (2026-10-09, re-verified 2026-10-12)
+
+**STATE 2026-10-31 — the current tested surface** (supersedes the 2026-10-20 block below until the next stamp):
+
+- **#408 CLOSED** (fix verified on hw): nucula APDU latency median 78.2 ms n=30 (was 400 ms constant) through pcscd→wifi-vpcd with the S20 coupled.
+- **m5stick re-stamped GREEN on main 766c762a** (then again with #531's 0xD3 append, merged as 7656b71b4): #490 flash recipe + wire boot check + full battery PASS. **#519/#531 merged** — the 0xD3 payload now carries a raw timer readback `[TMode,TPrescaler,TReloadHi,TReloadLo]`; card-less bench-proven (`80 a9 0f a0` = idle 100 ms). The #444 session-loss fix is on hardware; #444 re-soak awaits the S20 → m5stick coil move.
+- **c3 data link VERIFIED working** (the 10-29 "power-only" blocker is stale); nucula runs the wifi-vpcd image serving `Nucula VPCD wifi67` slots. S20 HCE confirmed coupled to its coil.
+- **#529 phone-as-virtual-card**: place/remove verbs PROVEN via software (`svc nfc disable/enable` ≈ 10 s / 30 s, identical ATR). Relay app + host brain built (draft PR #532; phone↔host link proven). Reader-side dispatch blocked by S20 quirks (system-level 6999 interception of non-payment SELECTs — phone-originated, NOT firmware-synthesized: vpcd error path is 6400/absent per `vpcd.rs:445`; dev.boltcard.hce registers A000000151 as a PREFIX AID; app/routing changes burn the ISO-DEP session → nucula cached-ATR echo = stale-session signature). Full map on #529.
+- **F469 Cherry + ST-LINK ABSENT again** (the 10-17 reattached state regressed — STM32 HIL legs dormant until replugged). ACR1252 lives on ai-legion-small; bench_inventory updated accordingly (direct-to-main, 2026-10-31).
+- **#472 host-side VERIFIED COMPLETE** (`make check` ALL PASS incl. DataBlock-shaped extension legs); hardware leg = first use of the #529 `--delay-ms` instrument.
+- **Disk: ~21G free on the 937G fs (92%)** — cargo-target is only 74G of it; the mass is elsewhere + a 59-branch worktree farm exists only on this host (host_hygiene ACTION list — owner coordination item).
 
 **STATE 2026-10-20 (night) — the current tested surface.** The matrix
 below is historical context; this block is the live truth until the

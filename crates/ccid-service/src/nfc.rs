@@ -119,6 +119,17 @@ pub trait NfcDriver {
         0
     }
 
+    /// Escape 0xD3 append (#519): raw timer registers
+    /// `[TMode, TPrescaler, TReloadHi, TReloadLo]` READ BACK from the
+    /// controller — the hardware arming, unlike `configured_fwt_ms`
+    /// (the requested-timeout cache, which both pre- and post-#464
+    /// firmware generations fill with the FWI-derived request). `None`
+    /// on backends without a readable hardware timer (everything but
+    /// MFRC522): the 0xD3 payload stays the legacy 12 bytes.
+    fn timer_registers(&mut self) -> Option<[u8; 4]> {
+        None
+    }
+
     /// Power on the NFC card and read its Answer-to-Reset (ATR)
     ///
     /// # Arguments
@@ -266,6 +277,9 @@ pub struct MockNfcDriver {
     /// Test instrumentation: WTX counters surfaced by wtx_counters()
     /// (issue #156 A3 / Escape 0xD4).
     wtx: Option<(u32, u32)>,
+    /// Test instrumentation: raw timer registers served by
+    /// `timer_registers()` (#519, Escape 0xD3 append).
+    timer_regs: Option<[u8; 4]>,
     /// Test instrumentation: invoked at the START of transmit_apdu with
     /// a nominal stall elapsed (issue #156 B) — models the PN7160
     /// driver's stall hook firing from inside a blocking exchange.
@@ -296,6 +310,7 @@ impl MockNfcDriver {
             poll_count: 0,
             last_apdu: Vec::new(),
             wtx: None,
+            timer_regs: None,
             stall_probe: None,
             frontend_status: FrontendStatus {
                 health: FrontendHealth::Healthy,
@@ -322,6 +337,11 @@ impl MockNfcDriver {
     /// Test instrumentation: values returned by `wtx_counters()`.
     pub fn set_wtx_counters(&mut self, last: u32, total: u32) {
         self.wtx = Some((last, total));
+    }
+
+    /// Test instrumentation: raw timer readback for the 0xD3 append.
+    pub fn set_timer_registers(&mut self, regs: [u8; 4]) {
+        self.timer_regs = Some(regs);
     }
 
     /// Test instrumentation: stall probe invoked inside transmit_apdu.
@@ -433,6 +453,10 @@ impl NfcDriver for MockNfcDriver {
 
     fn wtx_counters(&self) -> Option<(u32, u32)> {
         self.wtx
+    }
+
+    fn timer_registers(&mut self) -> Option<[u8; 4]> {
+        self.timer_regs
     }
 }
 

@@ -58,10 +58,18 @@ TIMEOUT_PER_READ = 0.2
 
 
 def decode_cadence(payload: bytes) -> tuple[int, int, int]:
-    """12-byte reply → (took_us, reads, fwt_ms). Fails loudly on shape
-    (issue #110: a wrong answer must fail, not pass as data)."""
-    if len(payload) != 12:
-        raise ValueError(f"cadence payload is {len(payload)} B, want 12")
+    """12-byte legacy or 16-byte extended reply → (took_us, reads, fwt_ms).
+
+    #531 (Codex P1): MFRC522 firmwares append a 4-byte RAW timer-register
+    readback to the 0xD3 response — the three legacy words live in the
+    PREFIX, so decode from it and ignore the tail. Still fails loudly on
+    any other shape (issue #110: a wrong answer must fail, not pass as
+    data)."""
+    if len(payload) not in (12, 16):
+        raise ValueError(
+            f"cadence payload is {len(payload)} B, want 12 (legacy) or 16 "
+            "(extended, #531 timer readback)"
+        )
     took_us, reads, fwt_ms = (
         int.from_bytes(payload[0:4], "little"),
         int.from_bytes(payload[4:8], "little"),

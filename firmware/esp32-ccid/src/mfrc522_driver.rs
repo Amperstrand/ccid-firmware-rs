@@ -547,6 +547,15 @@ where
         self.configured_fwt_ms
     }
 
+    /// #519: raw timer-register readback for the 0xD3 append — the
+    /// silicon's actual [TMode, TPrescaler, TReloadHi, TReloadLo]
+    /// (prescaler 0xA9 = pre-#464 fixed arming, 0x101/0x201 = FWI
+    /// 13/14 post-fix). `configured_fwt_ms` above is the REQUEST
+    /// cache; this is the arming proof.
+    fn timer_registers(&mut self) -> Option<[u8; 4]> {
+        self.transceiver.timer_registers().ok()
+    }
+
     fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, NfcError> {
         if !self.is_initialized {
             return Err(NfcError::NotInitialized);

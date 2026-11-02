@@ -27,7 +27,12 @@ import sys
 # Stable USB identities per bench DUT (glob patterns against /dev/serial/by-id).
 BENCH_PORT_GLOBS = {
     "nucula": "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00",
-    "m5stick": "/dev/serial/by-id/usb-Hades2001_M5stack_*-if00-port0",
+    # m5stick: physically on ai-legion-small since 2026-11-01 — the
+    # /dev/m5stick-remote pty (m5stick-bridge.service, socat via
+    # small:7777) is the .208-side path; the by-id glob stays first for
+    # the day the board returns to local USB.
+    "m5stick": ("/dev/serial/by-id/usb-Hades2001_M5stack_*-if00-port0",
+                "/dev/m5stick-remote"),
 }
 
 
@@ -48,9 +53,19 @@ def resolve(name: str) -> str:
             f"unknown bench port name {name!r}; known: {sorted(BENCH_PORT_GLOBS)}"
         )
 
-    matches = sorted(p for p in glob.glob(pattern) if os.path.exists(p))
+    # patterns may be a single glob or a tuple of fallbacks (first match
+    # wins — e.g. the m5stick's remote-pty bridge after the 2026-11-01 move)
+    patterns = pattern if isinstance(pattern, tuple) else (pattern,)
+    matches = sorted({p for pat in patterns
+                      for p in glob.glob(pat) if os.path.exists(p)})
     if len(matches) == 1:
         return matches[0]
+    if len(matches) > 1 and len(patterns) > 1:
+        # prefer the FIRST pattern's hits when fallbacks also match
+        for pat in patterns:
+            first = sorted(p for p in glob.glob(pat) if os.path.exists(p))
+            if len(first) == 1:
+                return first[0]
 
     listing = "\n".join(f"  {p}" for p in list_by_id()) or "  (none)"
     if not matches:

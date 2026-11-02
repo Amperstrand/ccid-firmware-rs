@@ -127,6 +127,14 @@ impl<D: NfcDriver> NfcDriver for RetryFrontend<D> {
         }
     }
 
+    fn timer_registers(&mut self) -> Option<[u8; 4]> {
+        if self.degraded {
+            None
+        } else {
+            self.inner.timer_registers()
+        }
+    }
+
     fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, Self::Error> {
         self.inner.power_on(atr_buf)
     }
@@ -316,6 +324,13 @@ impl<A: NfcDriver, B: NfcDriver<Error = A::Error>> NfcDriver for EitherFrontend<
         match self {
             Self::Primary(d) => d.configured_fwt_ms(),
             Self::Fallback(d) => d.configured_fwt_ms(),
+        }
+    }
+
+    fn timer_registers(&mut self) -> Option<[u8; 4]> {
+        match self {
+            Self::Primary(d) => d.timer_registers(),
+            Self::Fallback(d) => d.timer_registers(),
         }
     }
 

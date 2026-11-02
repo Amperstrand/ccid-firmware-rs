@@ -13,11 +13,21 @@
 
 ## --- DUTs -----------------------------------------------------------------
 
+## ⚠️ 2026-11-01: the nucula C3 ALSO moved to ai-legion-small (with the
+## m5stick, owner hands window; it was USB-latch-down at move time). The
+## live export is ai-legion-small-nfc/nucula-c3/NetworkSerialPort. The
+## nucula-c3 PLACE deliberately still matches this (now phantom) export
+## until the owner's latch work completes — re-point = one del/add-match.
 nucula-c3:
   SerialPort:
     port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
     speed: 115200
 
+## 2026-11-01: the m5stick physically lives on ai-legion-small and is
+## attached to THIS host's USB bus via usbip (usbipd + bind unit on small,
+## m5stick-usbip-attach.service here) — the by-id path below is a REAL
+## local device again (full control lines: esptool flashing works).
+## Emergency fallback: socat pty (see conwrt-bench deploy/serial-bridges).
 m5stick-usb:
   SerialPort:
     port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0

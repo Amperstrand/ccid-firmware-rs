@@ -75,43 +75,105 @@ class AtrBwiTests(unittest.TestCase):
 
 
 class D3PayloadTests(unittest.TestCase):
-    def test_bare_payload(self):
+    def test_bare_legacy_payload(self):
         self.assertEqual(
             probe.parse_d3_payload(struct.pack("<III", 1520, 32, 2483)),
-            (1520, 32, 2483))
+            (1520, 32, 2483, None))
+
+    def test_bare_extended_payload_carries_regs(self):
+        # #519: 12 legacy bytes + [TMode, TPrescaler, TReloadHi,
+        # TReloadLo] — FWI-14-class arming (prescaler 0x201).
+        raw = struct.pack("<III", 1520, 32, 4957) + bytes([0x82, 0x01,
+                                                           0x4E, 0x20])
+        self.assertEqual(probe.parse_d3_payload(raw),
+                         (1520, 32, 4957, bytes([0x82, 0x01, 0x4E, 0x20])))
 
     def test_rdr_headed_payload(self):
         headed = b"\x81" + b"\x00" * 9 + struct.pack("<III", 1, 2, 3)
-        self.assertEqual(probe.parse_d3_payload(headed), (1, 2, 3))
+        self.assertEqual(probe.parse_d3_payload(headed), (1, 2, 3, None))
+
+    def test_rdr_headed_extended_payload(self):
+        headed = b"\x83" + b"\x00" * 9 + struct.pack("<III", 1, 2, 3) + \
+            bytes([0x8A, 0xA9, 0x19, 0x9A])
+        self.assertEqual(probe.parse_d3_payload(headed)[3],
+                         bytes([0x8A, 0xA9, 0x19, 0x9A]))
 
     def test_short_is_none(self):
         self.assertIsNone(probe.parse_d3_payload(b"\x00" * 8))
 
 
+class ReadbackArithmeticTests(unittest.TestCase):
+    """#519: the authoritative armed period from the raw registers."""
+
+    def test_pre_fix_fixed_0xa9_arming_caps_at_1638(self):
+        # Fixed 0xA9 prescaler, reload 0xFFFF: 65535 x 339 / 13.56 MHz
+        # ~= 1638 ms — the pre-#464 ceiling.
+        armed = probe.armed_fwt_ms_from_regs(bytes([0x80, 0xA9, 0xFF, 0xFF]))
+        self.assertLess(abs(armed - 1638.4) / 1638.4, 0.01)
+
+    def test_post_fix_fwi14_arming_covers_4957(self):
+        # prescaler 0x201 (divisor 1027), reload 0xFFFF: 65535 x 1027 /
+        # 13.56 MHz ~= 4964 ms >= the FWI-14 FWT (4949 ms) — the
+        # post-#464 per-request prescaler path.
+        armed = probe.armed_fwt_ms_from_regs(bytes([0x82, 0x01, 0xFF, 0xFF]))
+        self.assertGreaterEqual(armed, probe.fwt_ms_for_fwi(14) * 0.99)
+
+
 class VerdictTests(unittest.TestCase):
-    def test_1638_clamp_is_pre_fix(self):
-        self.assertEqual(probe._verdict(1638, 13), 2)
-        self.assertEqual(probe._verdict(1638, 14), 2)
+    """rc 0 FIXED / 2 PRE-FIX / 3 INCONCLUSIVE (legacy payload)."""
 
-    def test_full_fwt_is_fixed(self):
-        self.assertEqual(probe._verdict(2475, 13), 0)
-        self.assertEqual(probe._verdict(4949, 14), 0)
-        self.assertEqual(probe._verdict(4957, 14), 0)  # bolty's figure
+    # --- readback present: authoritative ---
+    def test_readback_1638_clamp_is_pre_fix(self):
+        regs = bytes([0x80, 0xA9, 0xFF, 0xFF])  # ~1638 ms ceiling
+        self.assertEqual(probe._verdict(4957, 14, regs), 2)
+        self.assertEqual(probe._verdict(2483, 13, regs), 2)
 
-    def test_none_is_pre_fix(self):
-        self.assertEqual(probe._verdict(None, 13), 2)
+    def test_readback_covering_is_fixed(self):
+        regs = bytes([0x82, 0x01, 0xFF, 0xFF])  # ~4964 ms >= FWI-14 FWT
+        self.assertEqual(probe._verdict(4957, 14, regs), 0)
+
+    def test_cardless_idle_arming_is_inconclusive(self):
+        # Bench-proven 2026-10-31: card-less, the fw holds the IDLE
+        # arming (100 ms default, legitimately prescaler 0xA9 — every
+        # sub-1638 ms timeout keeps the historical register bytes
+        # post-fix). That is NOT a pre-fix fingerprint.
+        idle = bytes([0x80, 0xA9, 0x0F, 0xA0])  # readback 80a90fa0
+        self.assertEqual(probe._verdict(0, 14, idle, card_leg=False), 3)
+
+    def test_readback_1638_for_fwi13_is_pre_fix(self):
+        # 1638 ms < FWI-13 FWT (2475 ms) — the gap the verdict catches.
+        regs = bytes([0x80, 0xA9, 0xFF, 0xFF])
+        self.assertEqual(probe._verdict(2483, 13, regs), 2)
+
+    # --- legacy payload: word 3 is the REQUEST cache — no verdict
+    #     possible (the #519 false-pass class). ---
+    def test_legacy_payload_is_inconclusive_even_when_word3_claims_fixed(self):
+        self.assertEqual(probe._verdict(2475, 13, None), 3)
+        self.assertEqual(probe._verdict(4957, 14, None), 3)
+
+    def test_legacy_payload_inconclusive_even_with_clamp_word3(self):
+        self.assertEqual(probe._verdict(1638, 14, None), 3)
 
 
 class FeatureTlvTests(unittest.TestCase):
     def _tlv(self, *pairs):
+        # PC/SC v2 Part 10 §2.2 (reader.h:164): value is BIG ENDIAN.
         out = b""
         for tag, val in pairs:
-            out += bytes([tag, 4]) + struct.pack("<I", val)
+            out += bytes([tag, 4]) + struct.pack(">I", val)
         return out
 
     def test_finds_esc_tag_after_others(self):
         tlv = self._tlv((2, 0x1000001), (19, 0x1000042))
         self.assertEqual(probe._feature_ioctl(tlv, 19), 0x1000042)
+
+    def test_real_shape_linux_esc_ioctl(self):
+        # pcscd on Linux advertises ESC as SCARD_CTL_CODE(1) =
+        # 0x42000001 — wire bytes 42 00 00 01 (BE). The pre-#519 LE
+        # decode read this as 0x01000042 and every subsequent control
+        # hit the wrong ioctl.
+        tlv = self._tlv((19, 0x42000001))
+        self.assertEqual(probe._feature_ioctl(tlv, 19), 0x42000001)
 
     def test_absent_tag(self):
         self.assertIsNone(probe._feature_ioctl(self._tlv((2, 1)), 19))
