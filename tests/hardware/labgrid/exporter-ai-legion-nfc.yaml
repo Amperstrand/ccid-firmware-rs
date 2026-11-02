@@ -23,13 +23,14 @@ nucula-c3:
     port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
     speed: 115200
 
-## 2026-11-01: the m5stick physically lives on ai-legion-small; the
-## .208-side path is the socat bridge pty (m5stick-bridge.service ->
-## small:7777 -> the real port, held by small's m5stick-serial-relay).
-## Data-only (no DTR/RTS) — flashing stays small-side or OTA.
+## 2026-11-01: the m5stick physically lives on ai-legion-small and is
+## attached to THIS host's USB bus via usbip (usbipd + bind unit on small,
+## m5stick-usbip-attach.service here) — the by-id path below is a REAL
+## local device again (full control lines: esptool flashing works).
+## Emergency fallback: socat pty (see conwrt-bench deploy/serial-bridges).
 m5stick-usb:
   SerialPort:
-    port: /dev/m5stick-remote
+    port: /dev/serial/by-id/usb-Hades2001_M5stack_49D6163EBE-if00-port0
     speed: 115200
 
 ### F469-DISCO SWD flash + console (ST-LINK V2.1 CDC; serial is IN the
