@@ -22,7 +22,11 @@ AI-legion-small-ccid/serial:
     speed: 115200
   NetworkService:
     address: '192.168.13.230:3232'
-    name: 'nucula-c3-ota'
+    # username is a required NetworkService field but inert here — the
+    # OTA service is not SSH; 'ota' marks intent (.208 exporter-ccid
+    # precedent). name: is NOT a NetworkService kwarg — the display name
+    # is the resource path (deploy-debugged 2026-11-02).
+    username: ota
 m5stick-small/serial:
   USBSerialPort:
     match:
