@@ -99,8 +99,15 @@ class Reader:
         self.s = serial.Serial(port=None, baudrate=115200, timeout=0.2,
                                stopbits=2)
         self.s.port = port
-        self.s.dtr = False
-        self.s.rts = False
+        # Control-line-less transports (the /dev/m5stick-remote socat
+        # pty since the 2026-11-01 move — DTR/RTS do not traverse the
+        # bridge and the pty rejects the ioctls outright): assert them
+        # where supported, skip where not.
+        try:
+            self.s.dtr = False
+            self.s.rts = False
+        except OSError:
+            pass
         self.s.open()
         # AGENTS.md DTR-latch rule: pyserial asserts DTR at open; on the
         # nucula CDC that latches boot:0x5 on the next reset. Deassert

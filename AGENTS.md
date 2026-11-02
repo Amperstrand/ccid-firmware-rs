@@ -467,36 +467,53 @@ register map has **no disable bit** (`usb_serial_jtag_reg.h`: no
   `USB_UART_CHIP_RST_DIS`), an external USB-UART bridge (FTDI, like
   the m5stick), or USB-OTG class CCID (S2/S3 only).
 
-## Host pcscd instances — system + lane-private (2026-10-21)
+## Host pcscd instances — system FROZEN USB-only + lane-private (2026-10-21; FREEZE EXECUTED 2026-10-31)
 
-**Read this before any pcscd-visible bench work on ai-legion.** The
-SYSTEM pcscd (socket `/run/pcscd/pcscd.comm`) carries every reader
-config in `/etc/reader.conf.d/` and is STOPPED/RESTARTED by any
-ESP32 flash window (`esp32_flash.py`) — concurrent lanes kill each
-other's runs this way (two lifecycle runs died to it 2026-10-21).
+**Read this before any pcscd-visible bench work on ai-legion.** Since the
+2026-10-31 freeze (design `docs/PCSD-LANE-INSTANCES-DESIGN.md` §7 steps 1-5,
+bench evidence §9 + PR #533):
 
-- `/etc/reader.conf.d/vpcd-nucula-35967` (the wifi-vpcd wifi67 reader)
-  lives in the LANE dir `/etc/reader.conf.d-lanes/wifi-verify/` — the
-  system instance intentionally does NOT load it. wifi-vpcd bench work
-  runs against a PRIVATE pcscd instance (recipe below). Full migration
-  of the remaining serial entries is `docs/PCSD-LANE-INSTANCES-DESIGN.md`
-  §7 (owner-gated steps; §9 now carries the pilot's bench proof).
-- **Private-instance recipe (bench-proven 2026-10-21, ran the full
-  J3R180 lifecycle green through two external system-pcscd restarts):**
+- The SYSTEM pcscd (socket `/run/pcscd/pcscd.comm`) is FROZEN to USB
+  readers ONLY: `/etc/reader.conf.d/` holds just `libccidtwin` (reference
+  comments). It never needs restarts for serial DUT work again — and
+  stopping it touches EVERY lane's USB reader sessions, so it stays
+  untouched outside host maintenance (under `/run/lock/bench-pcscd.lock`
+  + a labgrid `who` check for acquired reader places).
+- ALL serial/vpcd/modemifd reader configs live in per-lane dirs
+  `/etc/reader.conf.d.lanes/{m5stick,nucula,boltcard,vjavacard,
+  nr7101-modem}/` and are served by LANE INSTANCES — systemd template
+  units `pcscd-lane@<lane>.{socket,service}` (installed, nothing
+  enabled; instances start on demand and `--auto-exit` after ~60 s
+  idle). Client env (EVERY client — pyscard, gp/JNA, scripts):
+  ```sh
+  systemctl start pcscd-lane@<lane>.socket
+  export PCSCLITE_CSOCK_NAME=/run/pcscd-lane-<lane>.comm
+  ```
+  Lane instances carry the USB filter
+  (`PCSCLITE_FILTER_IGNORE_READER_NAMES=Cherry:ACS:OMNIKEY`) — strace-
+  proven to never open USB device nodes (§9 TODO-4).
+- **Flock doctrine (amended 2026-10-31):** any pcscd stop/start goes
+  through the flock of the instance it touches — lane ops under
+  `/run/lock/bench-pcscd-<lane>.lock`, system ops (rare) under
+  `/run/lock/bench-pcscd.lock`. `esp32_flash.py`'s system-pcscd quiesce
+  is now vestigial for serial DUTs (the system instance holds no serial
+  ports); its lane-aware rework is a follow-up — until then a flash
+  window must still stop a running lane instance for its port.
+- **Pre-freeze history (2026-10-21 pilot)** — the manual fallback if the
+  units are ever unavailable:
   ```sh
   mkdir -p /run/pcscd-lanes /etc/reader.conf.d-lanes/<lane>
-  # put ONLY your lane's reader.conf entries in the lane dir
   systemd-socket-activate -l /run/pcscd-lanes/<lane>.sock -- \
       /usr/sbin/pcscd --foreground -c /etc/reader.conf.d-lanes/<lane> &
-  # then EVERY client (pyscard, gp/JNA, scripts) needs:
   export PCSCLITE_CSOCK_NAME=/run/pcscd-lanes/<lane>.sock
   ```
-  Mechanism per PCSD-LANE-INSTANCES-DESIGN §3 (socket activation skips
-  the second-instance check; the daemon otherwise hardcodes the socket
-  path). Caveats: the instance still writes the shared
-  `/run/pcscd/pcscd.pid` (harmless lie; `-H` is racy), and USB hotplug
-  readers fail to add inside it (system instance owns them — cosmetic).
-  Kill the `systemd-socket-activate` process to tear down.
+  (socket activation skips the second-instance check; plain
+  `pcscd -f` does NOT coexist — single-instance guard. The instance
+  writes the shared `/run/pcscd/pcscd.pid` — harmless lie.)
+- **vpcd port exclusivity (learned 2026-10-31):** vpcd reader slots
+  LISTEN inside whichever pcscd carries their config — only ONE daemon
+  may hold a given vpcd port. The freeze moved them all to lanes; do
+  not copy a vpcd entry back into the system dir while its lane runs.
 
 ## CI Testing Protocol
 
