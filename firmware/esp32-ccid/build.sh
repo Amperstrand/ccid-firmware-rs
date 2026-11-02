@@ -41,7 +41,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom|pn7160-listen> [--flash <port>] [--dry-run]
        $0 product=<name> [board=<name>] [--flash <port>] [--dry-run]
 
 Products (M3 presets, t_0492b7c6 — products.toml is the SSOT):
@@ -356,8 +356,22 @@ case "${BOARD}" in
         FLASH_BAUD="115200"
         FLASH_CONSOLE_NONE=1  # sdkconfig-xtensa.full: CONFIG_ESP_CONSOLE_NONE=y (#313/#332)
         ;;
+    pn7160-listen)
+        # #261 listen CE: NFC-A ISO-DEP card emulation answering from
+        # the synthetic self-marked table (host-pinned NCI bytes in
+        # crates/pn7160-nci/src/listen.rs).
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features pn7160-listen)
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, or m5atom)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, m5atom, or pn7160-listen)" >&2
         exit 1
         ;;
 esac
