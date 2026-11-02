@@ -869,7 +869,18 @@ and large enough (≥ 12 KB; 16 KB is the recommended value).
 
 ## Known-Good Bench State (2026-10-09, re-verified 2026-10-12)
 
+**STATE 2026-11-02 — the current tested surface** (supersedes the 2026-10-31 block below until the next stamp). The bench is being CONSOLIDATED onto ai-legion-small by the owner (the m5stick, the nucula C3, and the S20 physically moved there 2026-11-01; small runs its own pcscd with vpcd/ACR readers):
+
+- **Remote serial DECIDED (dual-option, one knob)** — full decision record + tradeoff matrix + gotchas: conwrt-bench `deploy/serial-bridges/DECISION.md`. Option A (default): **usbip** — the m5stick FTDI is a REAL local by-id device on .208 (esptool DTR/RTS proven, fuzz 87/0, latency_timer=1 by unit). Option B: **labgrid-native exporter ser2net** on small (canonical pattern; `RawSerialPort` export, self-disabling while usbip holds the device). socat pty = fallback. Switch commands in DECISION.md.
+- **ser2net 4.6.8 built on small** — Ubuntu 24.04's 4.6.0 never ACKs RFC2217 PURGE (known: labgrid #1779/#1396, LP 2065174; breaks pyserial open AND labgrid SerialDriver). Verified fixed ≥4.6.2: rfc2217 open+purge+DTR+exchange @20ms.
+- **Transport RTT floor ≈20-30 ms is the WiFi hop to small, not the transport** (usbip ≈ socat ≈ ser2net). Publishable latency figures need local-USB measurement or wiring small.
+- **GOTCHA: the m5stick FTDI DTR is wired to the ESP32 RESET** — toggling DTR over ANY transport reboots the board mid-exchange. Also: esptool leaves non-8N2 termios behind (stty before pcscd traffic after flashing).
+- **A CARD IS ON THE M5STICK COIL** (owner hands work, 2026-11-01/02): raw IccPowerOn ATR `3B 85 81 31 FE 45 80 73 C8 21 10 84` (T=1, TB1=0x31→BWI 3; interface bytes match the S20 ATS class `81 31 FE 45`). Raw wire exchanges work; **lane pcscd connect FAILS** (protocol mismatch, even forced T1) — tracked issue, blocks the #180 card leg despite the card being present.
+- **S20 status**: was in a USB enable-loop on small (`usb5-port1 Cannot enable` — cable/battery class, needs hands); not enumerable on .208. Check `.omo/logs/s20-watch.log` / SEATS before relying on it. Its NFC was last seen working; the relay app (PR #532) + PhoneHceDriver (PR #538) await its return + the dispatch workaround.
+- Lane pcscd for the m5stick: `PCSCLITE_CSOCK_NAME=/run/pcscd-lanes/m5stick.sock` (reader.conf back on by-id). The nucula vpcd readers live on SMALL's pcscd now (the C3's wifi-vpcd image connects there).
+
 **STATE 2026-10-31 — the current tested surface** (supersedes the 2026-10-20 block below until the next stamp):
+
 
 - **#408 CLOSED** (fix verified on hw): nucula APDU latency median 78.2 ms n=30 (was 400 ms constant) through pcscd→wifi-vpcd with the S20 coupled.
 - **m5stick re-stamped GREEN on main 766c762a** (then again with #531's 0xD3 append, merged as 7656b71b4): #490 flash recipe + wire boot check + full battery PASS. **#519/#531 merged** — the 0xD3 payload now carries a raw timer readback `[TMode,TPrescaler,TReloadHi,TReloadLo]`; card-less bench-proven (`80 a9 0f a0` = idle 100 ms). The #444 session-loss fix is on hardware; #444 re-soak awaits the S20 → m5stick coil move.
