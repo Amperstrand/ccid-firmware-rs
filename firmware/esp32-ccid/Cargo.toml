@@ -36,6 +36,9 @@ board-nucula = []
 # nucula PN7160 needs SDA-stuck clock-out just like the MFRC522 boards —
 backend-pn7160 = ["dep:pn7160-nci", "pn7160-nci/esp", "dep:mfrc522-pcd"]
 pn7160-bringup = ["backend-pn7160", "board-nucula", "bench-net"]
+# ISO-DEP listen mode (card emulation, #261): NFC-A passive listen,
+# DH-routed, answering on-device from the synthetic self-marked table.
+pn7160-listen = ["backend-pn7160", "board-nucula", "bench-net"]
 # Bench network facilities — the surfaces an untrusted network must never
 # reach (#219, D-8): the TCP OTA flash server (:3232), the UDP netlog
 # broadcast arm (:4567), and the serial mains' NUCULA_WIFI_*-creds STA

@@ -1,0 +1,30 @@
+## ccid bench exporter for ai-legion-SMALL (192.168.13.221) — the NFC
+## hardware migrated there 2026-10-31 (c3 rear port, m5stick motherboard
+## port 1-2, ACR1252 already resident). The .208 exporter
+## (labgrid-exporter-ccid on ai-legion) keeps its OTA-seat seats; this
+## one serves the SERIAL resources that physically moved.
+##
+## Deploy (owner-approved window): copy to
+## /etc/labgrid/exporter-ccid-small.yaml on .221, run
+##   labgrid-exporter -x exporter-ccid-small.yaml
+## under a systemd unit mirroring ai-legion's labgrid-exporter-ccid
+## (coordinator 192.168.13.208:20408 — the coordinator stays on .208).
+##
+## DTR HAZARD (same as the .208 exporter): USBSerialPort is
+## ser2net-served ON ACQUIRE; opening the c3's CDC chip-resets it.
+## Keep wifi-first; these serial matches exist for recovery/flashing.
+##
+## # jinja is line-statements in exporter configs; comment with '##'
+AI-legion-small-ccid/serial:
+  USBSerialPort:
+    match:
+      'ID_SERIAL': 'usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00'
+    speed: 115200
+  NetworkService:
+    address: '192.168.13.230:3232'
+    name: 'nucula-c3-ota'
+m5stick-small/serial:
+  USBSerialPort:
+    match:
+      'ID_SERIAL': 'usb-Hades2001_M5stack_49D6163EBE-if00-port0'
+    speed: 115200
