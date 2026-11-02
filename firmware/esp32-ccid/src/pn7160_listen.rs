@@ -23,14 +23,6 @@ use crate::pn7160_i2c::EspPn7160Transport;
 /// before declaring the frontend dead.
 const LADDER_ATTEMPTS: u32 = 5;
 
-/// Wifi association retries (bench lesson 2026-11-02: an AP outage at
-/// boot left the single-shot connect network-dead for the whole session
-/// while the RF path kept running — netlog/OTA evidence lost). The
-/// rollback reader image re-associates via its own retry loop; this
-/// main must too.
-const WIFI_ATTEMPTS: u32 = 5;
-const WIFI_RETRY_MS: u32 = 3000;
-
 /// Poll cadence when no frame is pending (FreeRtos yield — a busy loop
 /// starves the WiFi task and trips the task watchdog, the #63/#80/#83
 /// lesson).
@@ -38,40 +30,18 @@ const POLL_IDLE_MS: u32 = 20;
 
 fn bring_transport() -> Result<EspPn7160Transport, &'static str> {
     let peripherals = Peripherals::take().map_err(|_| "peripherals already taken")?;
-    match (
-        option_env!("NUCULA_WIFI_SSID"),
-        option_env!("NUCULA_WIFI_PASS"),
-    ) {
-        (Some(ssid), Some(pass)) => {
-            let nvs =
-                esp_idf_svc::nvs::EspDefaultNvsPartition::take().map_err(|_| "nvs partition")?;
-            match crate::wifi::WifiManager::new(peripherals.modem, nvs) {
-                Ok(mut m) => {
-                    let mut ip = None;
-                    for attempt in 1..=WIFI_ATTEMPTS {
-                        match m.connect(ssid, pass) {
-                            Ok(addr) => {
-                                ip = Some(addr);
-                                break;
-                            }
-                            Err(e) => {
-                                log::warn!("wifi: connect {attempt}/{WIFI_ATTEMPTS} failed: {e}");
-                                FreeRtos::delay_ms(WIFI_RETRY_MS);
-                            }
-                        }
-                    }
-                    match ip {
-                        Some(addr) => {
-                            crate::netlog::set_ip(&addr);
-                            crate::ota::spawn();
-                        }
-                        None => m.log_visible_aps(),
-                    }
-                }
-                Err(e) => log::warn!("wifi: manager init failed: {e}"),
-            }
-        }
-        _ => log::warn!("wifi: no NUCULA_WIFI_SSID/PASS baked in - serial only"),
+    // Proven station path (wifi_common::station_bring_up): connects,
+    // arms netlog+OTA (bench-net), and LEAKS the WifiManager so the
+    // station outlives the call — a dropped manager tears the link
+    // down. That drop was the root cause of both 2026-11-02
+    // board-silence deploys (the hand-rolled block here connected
+    // successfully, then killed the station at scope end); the
+    // AP-outage theory behind the earlier retry loop was wrong.
+    if option_env!("NUCULA_WIFI_SSID").is_some() {
+        let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take().map_err(|_| "nvs partition")?;
+        crate::wifi_common::station_bring_up(peripherals.modem, nvs);
+    } else {
+        log::warn!("wifi: no NUCULA_WIFI_SSID baked in - serial only");
     }
 
     // Same seam board_ctor::pn7160::bring_up drives for the serving

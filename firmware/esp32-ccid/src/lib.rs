@@ -107,7 +107,11 @@ pub mod pn7160_ccid;
 pub mod wifi_ccid;
 
 #[cfg(all(
-    any(feature = "wifi-ccid", feature = "wifi-vpcd"),
+    any(
+        feature = "wifi-ccid",
+        feature = "wifi-vpcd",
+        feature = "pn7160-listen"
+    ),
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod wifi_common;
