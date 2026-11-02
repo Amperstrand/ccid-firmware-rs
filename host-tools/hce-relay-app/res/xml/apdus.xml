@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AID routing for the bench HCE relay (#529). GP ISD AID: the same
+     AID the bench probes already SELECT (fwt_arm_probe card leg, gp
+     tooling identity probes) — routing it here turns those probes into
+     relay clients with zero host-side changes. -->
+<host-apdu-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/service_desc"
+    android:requireDeviceUnlock="false"
+    android:requireDeviceScreenOn="false">
+    <!-- Bench-proven 2026-10-31 (S20): Samsung answers every
+         CATEGORY_OTHER SELECT with 6999 at system level — non-payment
+         HCE dispatch never happens. CATEGORY_PAYMENT routing works
+         (PPSE proved it), so the bench relay registers as a payment
+         service and takes the tap-and-pay default via
+         `settings put secure nfc_payment_default_component`.
+         The boltcard AID D2760000850101 is ALSO registered: it is the
+         one AID PROVEN dispatched on the S20 (the matrix soaks ran
+         real exchanges through the boltcard HCE apps) — with this
+         app as payment default it routes to the relay even if the
+         non-payment path stays broken. Disable the boltcard HCE apps
+         (pm disable-user dev.boltcard.hce
+         com.amperstrand.boltcard.hce) while testing to avoid the
+         prefix-AID/default ambiguity. -->
+    <aid-group android:category="payment"
+        android:description="@string/aid_group_desc">
+        <aid-filter android:name="A000000151000000" />
+        <aid-filter android:name="D2760000850101" />
+    </aid-group>
+</host-apdu-service>

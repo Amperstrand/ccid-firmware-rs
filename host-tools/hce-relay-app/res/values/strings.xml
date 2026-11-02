@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="service_desc">Bench HCE relay (Amperstrand lab)</string>
+    <string name="aid_group_desc">GP ISD relay to the bench host</string>
+</resources>
