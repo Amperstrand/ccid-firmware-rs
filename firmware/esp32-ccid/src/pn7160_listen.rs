@@ -23,6 +23,14 @@ use crate::pn7160_i2c::EspPn7160Transport;
 /// before declaring the frontend dead.
 const LADDER_ATTEMPTS: u32 = 5;
 
+/// Wifi association retries (bench lesson 2026-11-02: an AP outage at
+/// boot left the single-shot connect network-dead for the whole session
+/// while the RF path kept running — netlog/OTA evidence lost). The
+/// rollback reader image re-associates via its own retry loop; this
+/// main must too.
+const WIFI_ATTEMPTS: u32 = 5;
+const WIFI_RETRY_MS: u32 = 3000;
+
 /// Poll cadence when no frame is pending (FreeRtos yield — a busy loop
 /// starves the WiFi task and trips the task watchdog, the #63/#80/#83
 /// lesson).
@@ -35,19 +43,31 @@ fn bring_transport() -> Result<EspPn7160Transport, &'static str> {
         option_env!("NUCULA_WIFI_PASS"),
     ) {
         (Some(ssid), Some(pass)) => {
-            let nvs = esp_idf_svc::nvs::EspDefaultNvsPartition::take()
-                .map_err(|_| "nvs partition")?;
+            let nvs =
+                esp_idf_svc::nvs::EspDefaultNvsPartition::take().map_err(|_| "nvs partition")?;
             match crate::wifi::WifiManager::new(peripherals.modem, nvs) {
-                Ok(mut m) => match m.connect(ssid, pass) {
-                    Ok(ip) => {
-                        crate::netlog::set_ip(&ip);
-                        crate::ota::spawn();
+                Ok(mut m) => {
+                    let mut ip = None;
+                    for attempt in 1..=WIFI_ATTEMPTS {
+                        match m.connect(ssid, pass) {
+                            Ok(addr) => {
+                                ip = Some(addr);
+                                break;
+                            }
+                            Err(e) => {
+                                log::warn!("wifi: connect {attempt}/{WIFI_ATTEMPTS} failed: {e}");
+                                FreeRtos::delay_ms(WIFI_RETRY_MS);
+                            }
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("wifi: connect failed: {e}");
-                        m.log_visible_aps();
+                    match ip {
+                        Some(addr) => {
+                            crate::netlog::set_ip(&addr);
+                            crate::ota::spawn();
+                        }
+                        None => m.log_visible_aps(),
                     }
-                },
+                }
                 Err(e) => log::warn!("wifi: manager init failed: {e}"),
             }
         }
