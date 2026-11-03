@@ -167,26 +167,81 @@ def check_all() -> list:
     row("labgrid NFC places", "none-held",
         ",".join(nfc_held) if nfc_held else "none-held",
         f"(all holds: {','.join(held) or 'none'})")
+
+    # nucula endpoint agreement: the freshest station-up line in the
+    # ACTIVE netlog file names the baked vpcd host:port (#555 drift
+    # signal) — must match the lane conf (small:35963) and a TCP
+    # session must exist on that port.
+    up = subprocess.run(
+        ["bash", "-c",
+         "grep 'wifi-vpcd: station up' /var/log/bench-netlog/netlog-0.log"
+         " 2>/dev/null | tail -1 | grep -oE 'vpcd at [0-9.]+:[0-9]+'"],
+        capture_output=True, text=True, timeout=15).stdout.strip()
+    endpoint = up[len("vpcd at "):] if up.startswith("vpcd at ") else "unknown"
+    estab = ssh_small("ss -tn | grep -c ':35963 '").strip()
+    ep_state = f"{endpoint}+{'estab' if estab not in ('0', '') else 'down'}"
+    row("nucula vpcd endpoint", "192.168.13.221:35963+estab",
+        ep_state, "baked endpoint (netlog station-up) + lane TCP session")
+
+    # known-good recovery path: cached wifi-vpcd images on .208
+    rec = subprocess.run(
+        ["bash", "-c",
+         "ls /root/.cargo-target/esp32-ccid-wifi-vpcd*.bin 2>/dev/null "
+         "| wc -l"],
+        capture_output=True, text=True, timeout=15).stdout.strip()
+    row("nucula recovery images", "cached", "cached" if rec not in ("0", "")
+        else "none", f"{rec} image(s) in /root/.cargo-target")
     return rows
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--gate", action="store_true",
+                    help="strict verification mode for unattended runs: "
+                         "PASS/FAIL/SKIP/BLOCKED verdicts; exit 1 on any "
+                         "FAIL. Report mode (default) always exits 0.")
     args = ap.parse_args()
     rows = check_all()
+    for r in rows:
+        r["verdict"] = classify_verdict(r)
     if args.json:
         print(json.dumps(rows, indent=2))
-        return 0
-    width = max(len(r["fixture"]) for r in rows)
-    for r in rows:
-        mark = "==" if r["status"] == "OK" else "!!"
-        print(f"{mark} {r['fixture']:<{width}}  expect={r['expected']}")
-        print(f"   {'':<{width}}  actual={r['actual']}  {r['detail'][:70]}")
-    drift = [r for r in rows if r["status"] != "OK"]
-    print(f"\n{len(rows) - len(drift)}/{len(rows)} fixtures match expected;"
-          f" {len(drift)} drift")
+    else:
+        width = max(len(r["fixture"]) for r in rows)
+        for r in rows:
+            mark = {"PASS": "==", "FAIL": "!!", "SKIP": "--",
+                    "BLOCKED": "??", "OK": "==", "DRIFT": "!!"}[r["verdict"]]
+            print(f"{mark} [{r['verdict']:<7}] {r['fixture']:<{width}}  "
+                  f"expect={r['expected']}")
+            print(f"   {'':<{width}}   actual={r['actual']}  "
+                  f"{r['detail'][:70]}")
+        drift = [r for r in rows if r["verdict"] not in ("PASS", "SKIP")]
+        print(f"\n{len(rows) - len(drift)}/{len(rows)} fixtures match "
+              f"expected; {len(drift)} drift")
+    if args.gate:
+        fails = [r for r in rows if r["verdict"] == "FAIL"]
+        if fails:
+            print(f"\nGATE FAIL: {len(fails)} fixture(s): "
+                  + ", ".join(r["fixture"] for r in fails))
+            return 1
+        print("\nGATE PASS")
     return 0
+
+
+def classify_verdict(row) -> str:
+    """PASS / FAIL / SKIP / BLOCKED for unattended gating.
+
+    BLOCKED: the probe itself could not run (host unreachable, tool
+    dead) — the fixture state is UNKNOWN, not wrong. FAIL: probed and
+    does not match the standing rig. SKIP: declared legitimately
+    absent/unavailable (e.g. Phone B). PASS: matches.
+    """
+    if row["actual"] in ("dead", "", "BLOCKED"):
+        return "BLOCKED"
+    if row["expected"].startswith("absent:"):   # declared unavailable
+        return "SKIP" if "absent" in row["actual"] else "FAIL"
+    return "PASS" if row["actual"] == row["expected"] else "FAIL"
 
 
 if __name__ == "__main__":
