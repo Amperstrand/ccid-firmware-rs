@@ -30,7 +30,7 @@ import subprocess
 import sys
 
 SMALL = "root@ai-legion-small"
-LANE_SOCK = "/run/pcscd-lanes/m5stick.sock"
+LANE_SOCK = "/run/pcscd-lane-m5stick.comm"  # the pcscd-lane@ unit socket
 S20_SERIAL = "RF8NB01ZYAH"
 
 # ATR signatures measured on the bench (2026-11-03 session, probed).
