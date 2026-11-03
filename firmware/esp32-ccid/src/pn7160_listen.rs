@@ -28,6 +28,49 @@ const LADDER_ATTEMPTS: u32 = 5;
 /// lesson).
 const POLL_IDLE_MS: u32 = 20;
 
+/// Bring-up watchdog timeout (bench lesson 2026-11-03: the PN7160 NCI
+/// transport HANGS indefinitely during listen-mode configuration when
+/// a phone is near the coil — the main task blocks in the I2C driver
+/// and never reaches the dead-loop logging. This watchdog converts the
+/// hang into a clean esp_restart(), which the OTA bootloader rollback
+/// then converts into a revert-to-reader-image — the safe direction
+/// for a diagnostic main).
+const BRINGUP_WDT_SECONDS: u32 = 45;
+
+static BRINGUP_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn bringup_watchdog(_arg: *mut core::ffi::c_void) {
+    for _ in 0..BRINGUP_WDT_SECONDS {
+        if BRINGUP_DONE.load(core::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        FreeRtos::delay_ms(1000);
+    }
+    log::error!(
+        "listen: bring-up watchdog ({}s) — transport/ladder hung, restarting",
+        BRINGUP_WDT_SECONDS
+    );
+    unsafe { esp_idf_sys::esp_restart() };
+}
+
+fn arm_bringup_watchdog() {
+    BRINGUP_DONE.store(false, core::sync::atomic::Ordering::Relaxed);
+    unsafe {
+        let name = b"brwt\0";
+        let mut handle: esp_idf_sys::TaskHandle_t = core::mem::zeroed();
+        esp_idf_sys::xTaskCreatePinnedToCore(
+            Some(bringup_watchdog),
+            name.as_ptr() as *const _,
+            2048,
+            core::ptr::null_mut(),
+            5,
+            &mut handle,
+            0,
+        );
+    }
+    log::warn!("listen: bring-up watchdog armed ({BRINGUP_WDT_SECONDS}s)");
+}
+
 fn bring_transport() -> Result<EspPn7160Transport, &'static str> {
     let peripherals = Peripherals::take().map_err(|_| "peripherals already taken")?;
     // Proven station path (wifi_common::station_bring_up): connects,
@@ -96,6 +139,7 @@ pub fn run() -> ! {
         }
     };
 
+    arm_bringup_watchdog();
     if let Err(e) = ladder_with_ven_retry(&mut transport) {
         let mut dead: u32 = 0;
         loop {
@@ -106,6 +150,7 @@ pub fn run() -> ! {
             FreeRtos::delay_ms(5000);
         }
     }
+    BRINGUP_DONE.store(true, core::sync::atomic::Ordering::Relaxed);
     log::warn!("listen: NFC-A passive ISO-DEP listening, routed to DH");
 
     let mut session = ListenSession::new();
