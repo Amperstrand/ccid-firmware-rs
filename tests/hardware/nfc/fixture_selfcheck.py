@@ -49,10 +49,9 @@ ATR_SIGNATURES = {
 EXPECTED = {
     "m5stick-coil": "S20-HCE-m5stick",
     "acr-coil": "NTAG424-04c474fa967380",
-    # both slots report no-card even with a coupled card — #554; the
-    # row DRIFTs (loudly) the day that bug is fixed and we forget to
-    # update this file, which is exactly when we want to look.
-    "nucula-vpcd-slots": "no-card no-card",
+    # nucula lane (small): card present since the #554 config fix
+    # (zombie lane pcscd + stale system-dir entry, resolved 2026-11-03).
+    "nucula-vpcd-slots": "CARD",
 }
 
 
@@ -140,7 +139,7 @@ def check_all() -> list:
         acr_state)
 
     nuc = ssh_small(
-        '/usr/bin/python3 -c "\n'
+        'PCSCLITE_CSOCK_NAME=/run/pcscd-lane-nucula.comm /usr/bin/python3 -c "\n'
         'from smartcard.System import readers\n'
         'from smartcard.Exceptions import NoCardException\n'
         'n=[x for x in readers() if \'Nucula\' in str(x)]\n'
@@ -150,8 +149,8 @@ def check_all() -> list:
         '        c=x.createConnection(); c.connect(); p.append(str(x).split()[-2:][0]+\'=CARD\'); c.disconnect()\n'
         '    except Exception: p.append(\'no-card\')\n'
         'print(\' \'.join(p) or \'slots-absent\')\n"').strip() or "dead"
-    row("nucula-vpcd-slots (small)", EXPECTED["nucula-vpcd-slots"],
-        nuc if "CARD" not in nuc else f"CARD?! {nuc}", nuc)
+    row("nucula-vpcd-slots (small lane)", EXPECTED["nucula-vpcd-slots"],
+        "CARD" if "CARD" in nuc else nuc, nuc)
 
     adb = ssh_small(f"adb -s {S20_SERIAL} get-state 2>&1").strip()
     nfc = ssh_small(
