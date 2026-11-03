@@ -123,3 +123,24 @@ Backend error / card removal / host timeout / malformed frame → the
 session dies with an explicit journal `error` record and nonzero exit;
 the phone HCE answers 6F00 to the reader when hostless. Nothing
 auto-reconnects mid-session by design.
+
+## Prior-art reuse / gap table (condensed)
+
+Full cited surveys: `docs/research/2026-11-03-prior-art-nfcgate-nero.md`
+(NFCGate v2 + nero-nfc-reader-firmware, commit-pinned) and
+`docs/research/2026-11-03-ntag424-ndef-pn7160-safety.md` (NTAG424 DNA
+read-only safety + ndef-rs/nfcpy/PN7160 NCI references). Highlights:
+
+| Source | Borrow for the relay | Borrow for conformance lab | License verdict |
+|---|---|---|---|
+| nfcgate v2 | 4-byte-BE-len+session framing is close to ours (2-byte VpcdBridge) — keep ours; their USENIX WOOT'20 latency data (WiFi/BT relay) is the honest baseline citation for what phone-relay latency looks like | capture/replay + pcapng export shape for future trace tooling | GPL-3.0 (app) — reference-only for our GPL-2.0+ firmware |
+| nero v0.3.0 | reader-side ISO-DEP + their unit-test pattern (fake ISO-DEP peers) | NDEF T2/T4/T5 test vectors + their CCID tests + `spec-traceability.yaml` method (complements our greatspectations quote gate: theirs maps normative literals→symbols, ours verifies quotes verbatim) | UNVERIFIED by this session — check before copying code |
+| Amperstrand/ntag424 + bolty-rs | read-only NTAG424 Type-4 APDU session (GET_VERSION/CC/NDEF reads; AUTH and anything key/SDM touching = forbidden) | safe-session test vectors | in-org (GPL family) |
+| ndef-rs | — | NDEF parse coverage for T4 (URI records missing per survey) | GPL-3.0-or-later — reference |
+| nfcpy | — | host-side ISO-DEP oracle for differential legs | EUPL — unlinked host tool only |
+| NXP libnfc-nci (linux) | NCI RF activation/deactivation timing reference (already our reference-first source family) | same | Apache-2.0 |
+
+Concrete gaps the survey found in OUR stack (drive future work):
+per-hop timing instrumentation at every relay leg, a broker↔DUT
+fake-ISO-DEP unit-test pattern, and an NDEF T4 parser conformance set
+(nero's vectors) to test our readers' NDEF paths.
