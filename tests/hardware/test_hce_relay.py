@@ -147,9 +147,17 @@ def test_script_backend_custom_miss():
 def test_pcsc_backend_import_is_lazy():
     """Module import must never require pyscard (python-collect env has none)."""
     assert "smartcard" not in sys.modules
-    be = hce_relay.PcscBackend("needle")
+    be = hce_relay.PcscBackend("needle", unsafe_raw=True)
     assert be.status()["name"] == "pcsc"
+    assert be.status()["policy"] == "raw-unsafe"
     assert "smartcard" not in sys.modules  # construction alone stays pure
+
+
+def test_pcsc_backend_refuses_no_policy():
+    """The default-deny boundary: no policy, no backend (unless the
+    owner explicitly waives it with unsafe_raw)."""
+    with pytest.raises(hce_relay.RelayError):
+        hce_relay.PcscBackend("needle")
 
 
 class ExplodingBackend(hce_relay.CardBackend):
