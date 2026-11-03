@@ -178,6 +178,180 @@ class ScriptBackend(CardBackend):
         return {"name": self.name, "entries": len(self.table)}
 
 
+class PolicyViolation(RelayError):
+    """A C-APDU is not allowed to reach a physical card (safety policy).
+
+    Raised BEFORE any transport write; the session treats it as a
+    hard error (no reply, socket closed) — a denied command must never
+    be silently skipped or answered with a fabricated status word.
+    """
+
+
+class CardPolicy:
+    """Default-deny APDU gate in front of a physical card.
+
+    A policy starts UNVERIFIED: only its identity-verification command
+    may pass. Once the card's observed identity matches the expected
+    one, the profile's read-only allowlist unlocks. Every command is
+    checked immediately before transmission — caller-side discipline
+    is not sufficient for an autonomous laboratory.
+    """
+
+    name = "abstract"
+
+    def __init__(self, expected_id: bytes):
+        self.expected_id = expected_id
+        self.verified = False
+
+    def check(self, capdu: bytes) -> None:
+        """Raise PolicyViolation unless the C-APDU may be transmitted."""
+        raise NotImplementedError
+
+    def observe(self, capdu: bytes, rapdu: bytes) -> None:
+        """Update chain/identity state from a completed exchange.
+
+        May raise PolicyViolation (identity mismatch is fatal)."""
+
+    def status(self) -> dict:
+        return {"policy": self.name, "verified": self.verified,
+                "expect": self.expected_id.hex()}
+
+
+class Ntag424ReadOnlyPolicy(CardPolicy):
+    """NTAG424 DNA zero-auth read profile (AGENTS card doctrine; the
+    2026-11-03 survey's safe set).
+
+    Pre-verification: the GET_VERSION chain only. Identity = the UID
+    carried in the chain's final response part. Verified allowlist:
+    NDF app SELECT (exact AID D2760000850101), CC/NDEF file SELECTs,
+    READ BINARY, plain GetFileSettings, Read_Sig. 90 AF is a chained
+    continuation and is only classifiable WITH an open GET_VERSION
+    chain. Forbidden by construction: every AUTH (90 77/90 71), key
+    change (90 C4), SDM/file-settings writes (5F), SetConfiguration
+    (5C), UpdateBinary/WriteData (D6/8D), counters, proprietary file.
+    """
+
+    name = "nt424-read"
+    _GV_START = bytes.fromhex("9060000000")
+    _NDEF_AID = bytes.fromhex("D2760000850101")
+
+    def __init__(self, expected_id: bytes):
+        super().__init__(expected_id)
+        self._gv_chain_open = False
+        self._dead = False
+
+    def check(self, capdu: bytes) -> None:
+        if self._dead:
+            raise PolicyViolation(
+                "card identity mismatch observed — this policy is dead "
+                "for the rest of the session")
+        if capdu[:2] == b"\x90\xaf":
+            if not self._gv_chain_open:
+                raise PolicyViolation(
+                    "90 AF continuation without an open GET_VERSION "
+                    "chain — unclassifiable, denied")
+            return
+        self._gv_chain_open = False  # any other command breaks the chain
+        if capdu[:5] == self._GV_START:
+            return
+        # HCE bootstrap exception: the NDEF-app SELECT is the reader's
+        # session-BINDING command (the phone dispatches on it) — it is
+        # itself a pure read, so it may pass pre-verification. Every
+        # other SELECT stays behind the identity gate.
+        if self._is_ndef_app_select(capdu):
+            return
+        if not self.verified:
+            raise PolicyViolation(
+                "card identity not verified — run the GET_VERSION "
+                "chain first (UID must match the expected identity)")
+        if capdu[:2] == b"\x00\xa4":  # SELECT: CC/NDEF file only
+            p1, p2, lc = capdu[2], capdu[3], capdu[4]
+            aid = capdu[5:5 + lc]
+            if (p1, p2) == (0x00, 0x0C) and lc == 2 and \
+                    aid in (bytes.fromhex("E103"), bytes.fromhex("E104")):
+                return
+            raise PolicyViolation(
+                f"SELECT outside the NTAG424 read profile: {capdu.hex()}")
+        if capdu[:2] == b"\x00\xb0":  # READ BINARY (any offset/len)
+            return
+        if capdu == bytes.fromhex("90F50000010200"):   # GetFileSettings
+            return
+        if capdu == bytes.fromhex("903C0000010000"):   # Read_Sig
+            return
+        raise PolicyViolation(
+            f"command not in the NTAG424 read-only profile: {capdu.hex()}")
+
+    @classmethod
+    def _is_ndef_app_select(cls, capdu: bytes) -> bool:
+        if capdu[:2] != b"\x00\xa4" or capdu[2:4] != b"\x04\x00":
+            return False
+        lc = capdu[4]
+        return capdu[5:5 + lc] == cls._NDEF_AID
+
+    def observe(self, capdu: bytes, rapdu: bytes) -> None:
+        sw = bytes(rapdu[-2:])
+        if capdu[:5] == self._GV_START or capdu[:2] == b"\x90\xaf":
+            self._gv_chain_open = (sw == b"\x91\xaf")
+            if sw == b"\x91\x00":
+                uid = bytes(rapdu[:-2])[:7]
+                if uid != self.expected_id:
+                    self._dead = True   # poison: even the bootstrap SELECT dies
+                    raise PolicyViolation(
+                        f"NTAG424 UID mismatch: card={uid.hex()} "
+                        f"expected={self.expected_id.hex()}")
+                self.verified = True
+
+
+class JcopReadOnlyPolicy(CardPolicy):
+    """JCOP/J3R180 read profile, gated by the CPLC ledger (#127).
+
+    Pre-verification: GET DATA CPLC (80 CA 9F 7F 00) only; the CPLC
+    serial (offset 11..14 of the 9F7F body) must match the expected
+    ledger identity — ATR alone is NEVER identity. Verified allowlist:
+    SELECT by AID / by file id (pure read per the doctrine table) and
+    GET DATA with approved read tags (CPLC 9F7F, applet AID 004F).
+    Forbidden by construction: INITIALIZE UPDATE / EXTERNAL
+    AUTHENTICATE (budget-bearing), VERIFY/CHANGE REFERENCE DATA,
+    INSTALL/LOAD/DELETE/GET STATUS (GP management), SC-gated GET DATA
+    (00E0), writes, unknown commands.
+    """
+
+    name = "jcop-read"
+    _CPLC = bytes.fromhex("80CA9F7F00")
+    _GD_TAGS = {bytes.fromhex("9F7F"), bytes.fromhex("004F")}
+
+    def check(self, capdu: bytes) -> None:
+        if capdu[:5] == self._CPLC:
+            return
+        if not self.verified:
+            raise PolicyViolation(
+                "card identity not verified — GET DATA CPLC must match "
+                "the expected ledger serial first (ATR is not identity)")
+        if capdu[:2] == b"\x00\xa4" and capdu[2] in (0x00, 0x04):
+            return  # SELECT by file id / by AID: pure read
+        if capdu[:2] in (b"\x80\xca", b"\x00\xca") and \
+                capdu[2:4] in self._GD_TAGS:
+            return
+        raise PolicyViolation(
+            f"command not in the JCOP read-only profile: {capdu.hex()}")
+
+    def observe(self, capdu: bytes, rapdu: bytes) -> None:
+        if capdu[:5] != self._CPLC or bytes(rapdu[-2:]) != b"\x90\x00":
+            return
+        body = bytes(rapdu[:-2])
+        if body[:2] != bytes.fromhex("9F7F"):
+            return
+        # Ledger serial position: bytes 15..18 of the tag-included 9F7F
+        # body — bench-verified on three P71D321 cards (50942720 /
+        # 50947320 / 50979692, #127 ledger, 2026-11-03).
+        serial = body[15:19]
+        if serial != self.expected_id:
+            raise PolicyViolation(
+                f"CPLC identity mismatch: card={serial.hex()} "
+                f"expected={self.expected_id.hex()}")
+        self.verified = True
+
+
 class PcscBackend(CardBackend):
     """Real card in a PC/SC reader: the live-card relay backend.
 
@@ -189,8 +363,18 @@ class PcscBackend(CardBackend):
 
     name = "pcsc"
 
-    def __init__(self, reader_needle: str):
+    def __init__(self, reader_needle: str, policy: Optional[CardPolicy] = None,
+                 unsafe_raw: bool = False):
+        if policy is None and not unsafe_raw:
+            raise RelayError(
+                "PcscBackend refuses to run without a card-safety policy "
+                "(default-deny at the physical-card boundary). Pass a "
+                "policy from --pcsc-policy/--expect-id, or "
+                "unsafe_raw=True explicitly for owner-supervised "
+                "experiments.")
         self.needle = reader_needle
+        self.policy = policy
+        self.unsafe_raw = unsafe_raw
         self._conn = None
         self._atr: Optional[bytes] = None
 
@@ -228,19 +412,35 @@ class PcscBackend(CardBackend):
                 pass
             self._conn = None
 
-    def exchange(self, capdu: bytes) -> bytes:
-        if self._conn is None:
-            raise BackendError("exchange before connect")
+    def _transmit_impl(self, capdu: bytes) -> bytes:
+        """Physical transport. Overridden by offline tests."""
         try:
             data, sw1, sw2 = self._conn.transmit(list(capdu))
         except Exception as exc:
             raise BackendError(f"SCardTransmit failed: {exc}") from None
         return bytes(data) + bytes([sw1, sw2])
 
+    def exchange(self, capdu: bytes) -> bytes:
+        if self._conn is None:
+            raise BackendError("exchange before connect")
+        if self.policy is not None:
+            # The safety boundary: enforced immediately before the
+            # physical exchange, independent of the caller's discipline.
+            self.policy.check(capdu)
+        resp = self._transmit_impl(capdu)
+        if self.policy is not None:
+            self.policy.observe(capdu, resp)
+        return resp
+
     def status(self) -> dict:
-        return {"name": self.name, "reader": self.needle,
-                "connected": self._conn is not None,
-                "atr": self._atr.hex() if self._atr else None}
+        st = {"name": self.name, "reader": self.needle,
+              "connected": self._conn is not None,
+              "atr": self._atr.hex() if self._atr else None}
+        if self.policy is not None:
+            st.update(self.policy.status())
+        elif self.unsafe_raw:
+            st["policy"] = "raw-unsafe"
+        return st
 
 
 # --- evidence journal ---------------------------------------------------------
@@ -371,12 +571,42 @@ def connect(serial: Optional[str]) -> socket.socket:
                      "installed and NFC on?")
 
 
+def make_policy(args):
+    """Build the card-safety policy for the pcsc backend from CLI args."""
+    if not getattr(args, "pcsc_policy", None):
+        if getattr(args, "unsafe_raw_pcsc", False):
+            return None  # explicit owner-supervised opt-out
+        raise SystemExit(
+            "--backend pcsc requires a card-safety policy: pass "
+            "--pcsc-policy {nt424-read,jcop-read} + --expect-id HEX "
+            "(or --unsafe-raw-pcsc for owner-supervised experiments)")
+    if not getattr(args, "expect_id", None):
+        raise SystemExit("--pcsc-policy needs --expect-id "
+                         "(NTAG424: 7-byte UID hex; JCOP: 4-byte CPLC "
+                         "serial hex from the #127 ledger)")
+    try:
+        eid = bytes.fromhex(args.expect_id)
+    except ValueError as exc:
+        raise SystemExit(f"--expect-id: bad hex ({exc})") from None
+    if args.pcsc_policy == "nt424-read":
+        if len(eid) != 7:
+            raise SystemExit("nt424-read expects a 7-byte UID "
+                             f"(got {len(eid)} bytes)")
+        return Ntag424ReadOnlyPolicy(eid)
+    if len(eid) != 4:
+        raise SystemExit("jcop-read expects a 4-byte CPLC serial "
+                         f"(got {len(eid)} bytes)")
+    return JcopReadOnlyPolicy(eid)
+
+
 def build_backend(args) -> CardBackend:
     miss = bytes.fromhex(args.miss)
     if args.backend == "pcsc":
         if not args.reader:
             raise SystemExit("--backend pcsc needs --reader NEEDLE")
-        return PcscBackend(args.reader)
+        policy = make_policy(args)
+        return PcscBackend(args.reader, policy=policy,
+                           unsafe_raw=policy is None)
     if args.backend == "static":
         return StaticBackend(bytes.fromhex(args.respond))
     table = load_script(args.script) if args.script else {}
@@ -408,6 +638,17 @@ def main() -> int:
                     help="script-backend miss SW (default 6a82)")
     ap.add_argument("--reader", default=None,
                     help="pcsc backend: reader-name substring")
+    ap.add_argument("--pcsc-policy", choices=["nt424-read", "jcop-read"],
+                    default=None,
+                    help="card-safety profile enforced at the physical "
+                         "card boundary (required for --backend pcsc)")
+    ap.add_argument("--expect-id", default=None,
+                    help="expected card identity for --pcsc-policy: "
+                         "NTAG424 7-byte UID hex, or JCOP 4-byte CPLC "
+                         "serial hex (the #127 ledger)")
+    ap.add_argument("--unsafe-raw-pcsc", action="store_true",
+                    help="explicitly waive the pcsc card-safety policy "
+                         "(owner-supervised experiments only)")
     ap.add_argument("--delay-ms", type=int, default=0)
     ap.add_argument("--once", type=int, default=0,
                     help="exit after N exchanges")
