@@ -40,5 +40,10 @@
                 android:name="android.nfc.cardemulation.host_apdu_service"
                 android:resource="@xml/apdus" />
         </service>
+        <!-- Phone-B ReaderMode companion (#529 second-phone leg): started
+             over adb; transparent; no launcher entry. -->
+        <activity android:name=".RelayReaderActivity"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:exported="true" />
     </application>
 </manifest>
