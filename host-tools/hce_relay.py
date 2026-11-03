@@ -443,6 +443,146 @@ class PcscBackend(CardBackend):
         return st
 
 
+class AndroidReaderBackend(CardBackend):
+    """Phone B as the card source: ReaderMode + IsoDep over the
+    bench-reader-relay socket (the #529 second-phone leg).
+
+    Direction is REVERSED vs the HCE link: the HOST sends C-APDU
+    frames down (adb forward tcp:4872 ->
+    localabstract:bench-reader-relay) and the phone answers with the
+    physical card's R-APDU. Controls from the phone: 0x01 tag-lost
+    (session-invalidating), 0x03 tag-present (info). Strictly
+    sequential exchanges; one tag per session; tag-lost is an explicit
+    BackendError — never a reconnect to a different tag, never a blind
+    retransmit. The same default-deny card-safety policy guards this
+    physical-card boundary as the PC/SC one.
+    """
+
+    name = "android-reader"
+    READER_PORT = 4872
+    READER_SOCKET = "bench-reader-relay"
+    CTRL_TAG_LOST = b"\x01"
+    CTRL_TAG_PRESENT = b"\x03"
+
+    def __init__(self, serial: Optional[str] = None,
+                 policy: Optional[CardPolicy] = None,
+                 unsafe_raw: bool = False):
+        if policy is None and not unsafe_raw:
+            raise RelayError(
+                "AndroidReaderBackend refuses to run without a "
+                "card-safety policy (same boundary as PcscBackend); "
+                "pass --pcsc-policy/--expect-id or unsafe_raw=True.")
+        self.serial = serial
+        self.policy = policy
+        self.unsafe_raw = unsafe_raw
+        self._sock: Optional[socket.socket] = None
+        self._connected = False
+        self._tag_info = ""
+
+    def connect(self) -> None:
+        base = ["-s", self.serial] if self.serial else []
+        adb(*base, "forward", f"tcp:{self.READER_PORT}",
+            f"localabstract:{self.READER_SOCKET}")
+        for _ in range(20):
+            try:
+                self._sock = socket.create_connection(
+                    ("127.0.0.1", self.READER_PORT), timeout=2)
+                self._sock.settimeout(None)
+                self._connected = True
+                return
+            except OSError:
+                time.sleep(0.5)
+        raise BackendError(
+            f"cannot reach {self.READER_SOCKET} on the phone — is the "
+            f"ReaderMode companion running with a tag in the field?")
+
+    def disconnect(self) -> None:
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        self._connected = False
+
+    def exchange(self, capdu: bytes) -> bytes:
+        if not self._connected or self._sock is None:
+            raise BackendError("exchange before connect")
+        if self.policy is not None:
+            self.policy.check(capdu)
+        send_frame(self._sock, capdu)
+        while True:
+            resp = recv_frame(self._sock)
+            if resp == self.CTRL_TAG_LOST:
+                self._connected = False
+                raise BackendError(
+                    "tag lost (phone ReaderMode deactivated) — session "
+                    "invalidated, no retransmit")
+            if resp[:1] == self.CTRL_TAG_PRESENT:
+                self._tag_info = resp[1:].decode(errors="replace")
+                continue   # info control, not a card answer
+            if self.policy is not None:
+                self.policy.observe(capdu, resp)
+            return resp
+
+    def status(self) -> dict:
+        st = {"name": self.name,
+              "connected": self._connected,
+              "tag": self._tag_info or None}
+        if self.policy is not None:
+            st.update(self.policy.status())
+        elif self.unsafe_raw:
+            st["policy"] = "raw-unsafe"
+        return st
+
+
+class FakeReaderBackend(CardBackend):
+    """Offline Phone-B stand-in: a canned tag table, optional
+    tag-lost injection. Speaks the same session semantics
+    (one tag, sequential, explicit loss) so relay logic can be
+    developed and tested with no phone present. Same policy guard:
+    a fake boundary must not train unsafe habits."""
+
+    name = "fake-reader"
+
+    def __init__(self, tag: dict, lose_after: int = -1,
+                 policy: Optional[CardPolicy] = None,
+                 unsafe_raw: bool = False):
+        if policy is None and not unsafe_raw:
+            raise RelayError(
+                "FakeReaderBackend also requires a card-safety policy "
+                "(or unsafe_raw=True) — the boundary discipline is "
+                "uniform across backends.")
+        self.tag = tag
+        self.lose_after = lose_after
+        self.policy = policy
+        self.unsafe_raw = unsafe_raw
+        self._exchanges = 0
+
+    def connect(self) -> None:
+        self._exchanges = 0
+
+    def exchange(self, capdu: bytes) -> bytes:
+        if self.policy is not None:
+            self.policy.check(capdu)
+        if 0 <= self.lose_after <= self._exchanges:
+            raise BackendError("tag lost (simulated)")
+        self._exchanges += 1
+        resp = self.tag.get(capdu, b"\x6a\x82")
+        if self.policy is not None:
+            self.policy.observe(capdu, resp)
+        return resp
+
+    def status(self) -> dict:
+        st = {"name": self.name, "entries": len(self.tag),
+              "exchanges": self._exchanges}
+        if self.policy is not None:
+            st.update(self.policy.status())
+        elif self.unsafe_raw:
+            st["policy"] = "raw-unsafe"
+        return st
+
+
 # --- evidence journal ---------------------------------------------------------
 
 
