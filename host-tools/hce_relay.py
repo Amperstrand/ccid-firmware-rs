@@ -202,20 +202,22 @@ class PcscBackend(CardBackend):
                 "pyscard is not available in this python — run on the "
                 "bench host/venv that has it, or use the scripted "
                 "backend") from exc
-        all_readers = [str(r) for r in readers()]
-        matches = [r for r in all_readers if self.needle.lower() in r.lower()]
+        entries = [(str(obj), obj) for obj in readers()]
+        matches = [(name, obj) for name, obj in entries
+                   if self.needle.lower() in name.lower()]
         if not matches:
             raise BackendError(f"no PC/SC reader matches {self.needle!r}; "
-                               f"present: {all_readers}")
+                               f"present: {[name for name, _ in entries]}")
         if len(matches) > 1:
             raise BackendError(f"reader needle {self.needle!r} is ambiguous: "
-                               f"{matches}")
-        conn = readers()[all_readers.index(matches[0])].createConnection()
+                               f"{[name for name, _ in matches]}")
+        name, obj = matches[0]
+        conn = obj.createConnection()
         try:
             conn.connect()
             self._atr = bytes(conn.getATR())
         except Exception as exc:  # smartcard.* hierarchy — mapped, not hidden
-            raise BackendError(f"connect to {matches[0]} failed: {exc}") from None
+            raise BackendError(f"connect to {name} failed: {exc}") from None
         self._conn = conn
 
     def disconnect(self) -> None:
@@ -277,12 +279,11 @@ class RelaySession:
 
     def __init__(self, sock: socket.socket, backend: CardBackend,
                  journal: Optional[JsonlJournal] = None,
-                 delay_ms: int = 0, log_hex: bool = False):
+                 delay_ms: int = 0):
         self.sock = sock
         self.backend = backend
         self.journal = journal
         self.delay_ms = delay_ms
-        self.log_hex = log_hex or (journal.log_hex if journal else False)
         self._backend_connected = False
 
     def _log(self, ev: str, **kw) -> None:
@@ -432,7 +433,7 @@ def main() -> int:
     s = connect(args.serial)
     print(f"connected (tcp:{HOST_PORT} -> localabstract:{SOCKET_NAME})")
     session = RelaySession(s, backend, journal=journal,
-                           delay_ms=args.delay_ms, log_hex=args.log_hex)
+                           delay_ms=args.delay_ms)
     try:
         rc = session.run(once=args.once)
     except KeyboardInterrupt:
