@@ -38,6 +38,16 @@ python3 host-tools/hce_relay.py --script - <<'EOF'
 EOF
 ```
 
+The brain grew card backends + evidence journal (2026-11-03, PR #553):
+`--backend pcsc --reader NEEDLE` answers through a REAL card in a
+PC/SC reader (the live-card relay — default-deny allowlist discipline
+governs what you drive through it); `--journal FILE` records a JSONL
+evidence trail (payloads redacted to len+sha8 unless `--log-hex`);
+`--meta k=v` stamps session headers (commit, firmware, fixture).
+NOTE: since 2026-11-01 the S20 lives on ai-legion-small — run the
+brain there (`ssh root@ai-legion-small`) where the phone's adb and the
+nucula's pcscd both are.
+
 ## Probe (through pcscd, the real reader path)
 
 `SCardConnect(Nucula VPCD wifi67)` → SCardTransmit `00 A4 04 00 07 D2 76

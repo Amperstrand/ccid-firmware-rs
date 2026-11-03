@@ -91,6 +91,10 @@ jobs:
       # label. Distinguishes "unlabeled but family-touching" (ci-ok must
       # fail) from "no family paths" (green, no label needed).
       pr-family-touched: ${{ github.event_name == 'pull_request' && (steps.filter.outputs.stm32 == 'true' || steps.filter.outputs.esp32 == 'true' || steps.filter.outputs.lint == 'true') && 'true' || 'false' }}
+      # specquotes job family (owner directive 2026-11-03): quote drift
+      # gate + coverage self-audit fire on spec/quote-source changes
+      # even when no Rust source moved (reference bumps, config edits).
+      spec: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || (github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'ci-run')) && 'false' || steps.filter.outputs.spec }}
     steps:
       - uses: actions/checkout@v5
         if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
@@ -147,6 +151,49 @@ jobs:
               - 'host-tools/**/*.py'
               - 'scripts/**'
               - 'ruff.toml'
+            spec:
+              - 'specquotes.toml'
+              - 'reference/**'
+              - 'docs/quote-sources/**'
+              - 'scripts/spec_alignment.py'
+              - 'scripts/test_spec_alignment.py'
+
+  specquotes:
+    # Spec-quote drift gate + coverage self-audit (owner directive
+    # 2026-11-03, greatspectations = Rusty Russell's
+    # github.com/rustyrussell/greatspectations, MIT). CHECK is the gate:
+    # every spec quote embedded in the Rust tree must still match its
+    # reference source (specquotes.toml) — drift fails the build with
+    # file:line messages. COVERAGE is the self-audit: artifacts show
+    # which requirement lines each source has quoted (covered) vs
+    # implementable-but-unquoted (gap) — gaps are REPORTED, never gated.
+    # Artifacts land under .omo/spec-alignment (summary.json carries git
+    # rev + config sha so a saved run traces to one tree state); the
+    # HTML pages render reference-source text and stay OUT of the repo
+    # (submodule licenses, quote-only policy).
+    needs: changes
+    if: needs.changes.outputs.spec == 'true' || needs.changes.outputs.lint == 'true' || needs.changes.outputs.stm32 == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install greatspectations (pinned)
+        run: pip install greatspectations==0.2.3
+      - name: Spec-quote drift gate + coverage self-audit
+        run: |
+          python3 scripts/spec_alignment.py --out .omo/spec-alignment --html
+          python3 scripts/test_spec_alignment.py
+      - name: Upload alignment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spec-alignment
+          path: .omo/spec-alignment/
+
 
   sdkconfig-clean-wire-gate:
     # Static clean-wire gate (issue #78 class): every shipped sdkconfig must
@@ -981,6 +1028,7 @@ jobs:
     needs:
       - changes
       - sdkconfig-clean-wire-gate
+      - specquotes
       - stm32-build
       - stm32-lint
       - stm32-test
