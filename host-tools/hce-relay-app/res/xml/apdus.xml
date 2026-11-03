@@ -25,5 +25,13 @@
         android:description="@string/aid_group_desc">
         <aid-filter android:name="A000000151000000" />
         <aid-filter android:name="D2760000850101" />
+        <!-- SmartPGP/OpenPGP AID prefix (2026-11-03, live-card relay):
+             D2760001 24 01 03 covers the bench SmartPGP instance AIDs
+             (D276000124010304AFAF...). Registered in the payment group
+             because CATEGORY_OTHER never dispatches on the S20 (see
+             the comment above) — payment routing is the proven path.
+             With this, reader SELECTs for the REAL card's applet route
+             through the phone to the host brain's pcsc backend. -->
+        <aid-filter android:name="D2760001240103" />
     </aid-group>
 </host-apdu-service>
