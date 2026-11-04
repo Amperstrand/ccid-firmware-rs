@@ -148,6 +148,12 @@ pub fn run_ladder_listen<T: Transport>(t: &mut T) -> Result<(), &'static str> {
         if rsp.status() != Some(STATUS_OK) {
             return Err("listen ladder step rejected");
         }
+        // Bench 2026-11-03 (PR #552 evidence): a reader polling during
+        // the ladder sends activation NTFs that the transact stash
+        // holds. Drain them here so the serve loop doesn't see stale
+        // activations, and so the stash (4 slots, drop-oldest) doesn't
+        // evict ladder-critical NTFs.
+        while let Some(_f) = t.drain() {}
     }
     Ok(())
 }
