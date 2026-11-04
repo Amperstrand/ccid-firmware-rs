@@ -35,7 +35,7 @@ const POLL_IDLE_MS: u32 = 20;
 /// hang into a clean esp_restart(), which the OTA bootloader rollback
 /// then converts into a revert-to-reader-image — the safe direction
 /// for a diagnostic main).
-const BRINGUP_WDT_SECONDS: u32 = 45;
+const BRINGUP_WDT_SECONDS: u32 = 60;
 
 static BRINGUP_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -123,6 +123,11 @@ pub fn run() -> ! {
         env!("FW_BUILD_TS")
     );
 
+    // Arm BEFORE bring_transport — the transport constructor itself
+    // can hang in the I2C driver when the antenna is loaded (bench
+    // 2026-11-03 second run: no read_frame message = constructor
+    // hung, watchdog not yet armed).
+    arm_bringup_watchdog();
     let mut transport = match bring_transport() {
         Ok(t) => t,
         Err(e) => {
@@ -139,7 +144,6 @@ pub fn run() -> ! {
         }
     };
 
-    arm_bringup_watchdog();
     if let Err(e) = ladder_with_ven_retry(&mut transport) {
         let mut dead: u32 = 0;
         loop {
