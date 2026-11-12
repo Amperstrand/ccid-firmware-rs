@@ -197,7 +197,10 @@ def pcscd_locked_paused():
     Start polls for readiness like test_bench_state._pcscd — rapid
     toggles need longer than a fixed sleep (bench-observed flake).
     """
-    fd = os.open(PCSCD_LOCK, os.O_CREAT | os.O_WRONLY)
+    # 0o666: shared across users (root bench sessions AND the ubuntu CI
+    # runner) — umask-default 0644 root-created locks block the runner
+    # with EACCES (boot-smoke run 41190574318 class).
+    fd = os.open(PCSCD_LOCK, os.O_CREAT | os.O_WRONLY, 0o666)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         _systemctl("stop")
