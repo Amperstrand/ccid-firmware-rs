@@ -247,7 +247,11 @@ def pcscd_lock_acquire(run=None, lock_path: str | None = None) -> int:
     import fcntl
     import os
     lp = lock_path or PCSCD_LOCK
-    fd = os.open(lp, os.O_CREAT | os.O_RDWR)
+    # 0o666: the lock is shared across users (root bench sessions AND the
+    # ubuntu CI runner) — a umask-default 0644 root-created file blocks
+    # the runner with EACCES (found live: boot-smoke run 41190574318,
+    # quiesce aborted, flash never attempted).
+    fd = os.open(lp, os.O_CREAT | os.O_RDWR, 0o666)
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
         # bare systemctl on purpose: the fd above IS the lock — wrapping

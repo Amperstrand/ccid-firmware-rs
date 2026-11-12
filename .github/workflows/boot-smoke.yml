@@ -55,7 +55,10 @@ env:
   # the bench was last proven serving on. The restore leg builds this
   # ref through the ordinary bench flow (build.sh c3-ccid) and flashes
   # it back whenever the gate goes red.
-  KNOWN_GOOD_IMAGE_REF: 1c05a6a36
+  # MUST be the FULL 40-char sha: the restore fetches it directly, and
+  # `git fetch origin <short-sha>` fails with "couldn't find remote ref"
+  # (exit 128 — found live in run 41190574318's restore step).
+  KNOWN_GOOD_IMAGE_REF: 1c05a6a36553b08707c25a585298fea8d3b7b81b
   # Flash geometry (build.sh c3-ccid): OTA partition table at 0x8000,
   # app at ota_0 (0x40000), otadata erase (0x30000, 0x2000) LAST.
   PART_TABLE_OFFSET: "0x8000"
@@ -288,6 +291,12 @@ jobs:
           PAYLOAD=$(mktemp /tmp/boot-smoke-restore.XXXXXX.sh)
           cat >"$PAYLOAD" <<'EOS'
           set -e
+          # Short-sha pins die as "couldn't find remote ref" mid-window
+          # (run 41190574318) — refuse loudly BEFORE taking the bench.
+          if ! echo "${KNOWN_GOOD_IMAGE_REF}" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "KNOWN_GOOD_IMAGE_REF must be a full 40-char sha (got: ${KNOWN_GOOD_IMAGE_REF})" >&2
+            exit 2
+          fi
           RESTORE_DIR="$(mktemp -d /tmp/boot-smoke-restore.XXXXXX)"
           git fetch origin "${KNOWN_GOOD_IMAGE_REF}" --depth=1
           git worktree add "$RESTORE_DIR" "${KNOWN_GOOD_IMAGE_REF}"
