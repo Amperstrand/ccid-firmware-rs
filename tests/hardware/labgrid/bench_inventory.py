@@ -104,17 +104,53 @@ def expected_groups() -> set:
     coordinator lists NetworkSerialPort for the same group), so exact
     class-name prediction is fragile — group presence is the invariant
     that matters ("is the wiring exported?").
+
+    Groups whose immediately-preceding ## comment block marks them as a
+    phantom (the annotate-or-delete convention, e.g. the nucula-c3 seat
+    pending its place re-point) are collected separately by
+    phantom_groups() so they can be reported as expected-absent instead
+    of FAILING every run — a standing FAIL buries real regressions.
     """
-    expected = set()
+    return _parse_groups()[0]
+
+
+def phantom_groups() -> set:
+    """Groups annotated as deliberate phantoms in the repo configs."""
+    return _parse_groups()[1]
+
+
+def _resource_holders(place: str) -> set[str]:
+    """Places that currently hold resources matched by `place`.
+
+    Parses `labgrid-client -p <place> show` — each Matching resource line
+    carries {'acquired': '<place>', ...} when spoken for. Empty when the
+    acquire failure was anything other than cross-place contention.
+    """
+    try:
+        out = subprocess.run(["labgrid-client", "-p", place, "show"],
+                             capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    return {m.group(1) for m in re.finditer(r"'acquired': '([^']+)'", out)} - {place}
+
+
+def _parse_groups() -> tuple[set, set]:
+    expected, phantom = set(), set()
     for exporter, path in EXPORTER_CONFIGS.items():
         if not path.is_file():
             check(f"exporter config {path.name} present", False, "file missing")
             continue
+        pending_comment: list[str] = []
         for line in path.read_text().splitlines():
+            if line.startswith("##"):
+                pending_comment.append(line)
+                continue
             m = re.match(r"^([A-Za-z0-9_-]+):\s*$", line)
             if m:
-                expected.add((exporter, m.group(1)))
-    return expected
+                (phantom if any(c.startswith("## PHANTOM:") for c in pending_comment)
+                 else expected).add((exporter, m.group(1)))
+            pending_comment = []  # any non-comment line ends the block
+    return expected, phantom
 
 
 def run_body():
@@ -129,6 +165,14 @@ def run_body():
     missing = want - exported_groups
     check(f"all {len(want)} configured resource groups exported", not missing,
           f"missing: {sorted('/'.join(g) for g in missing)}")
+
+    phantoms = phantom_groups()
+    if phantoms:
+        live_phantoms = sorted('/'.join(g) for g in phantoms & exported_groups)
+        note = (f" UNEXPECTEDLY LIVE: {live_phantoms}" if live_phantoms
+                else " (absent, as annotated)")
+        print(f"  [SKIP] {len(phantoms)} annotated-phantom group(s) not expected: "
+              f"{sorted('/'.join(g) for g in phantoms)}{note}")
 
     print("== labgrid places ==")
     held_places()
@@ -159,7 +203,20 @@ def run_body():
             check(f"place {place}: acquire/release", rel_ok,
                   f"acquired but release failed: {rel_detail}")
         else:
-            check(f"place {place}: acquire/release", False, r.stderr.strip()[:100])
+            # Cross-place resource contention: the place itself is free but
+            # a resource it matches is acquired by ANOTHER place (e.g.
+            # nucula-c3 matching ai-legion-ccid/nucula/NetworkService while
+            # the ccid-nucula lane holds it). That is healthy-but-busy, not
+            # a bench fault — name the holder instead of failing.
+            holders = _resource_holders(place)
+            if holders:
+                print(f"  [HELD] place {place}: matched resources held by "
+                      f"{', '.join(sorted(holders))} — acquire/release probe skipped")
+                checks.append({"name": f"place {place}: acquire/release",
+                               "ok": True,
+                               "detail": f"resources held by {sorted(holders)} (probe skipped)"})
+            else:
+                check(f"place {place}: acquire/release", False, r.stderr.strip()[:100])
 
     lsusb = sh("lsusb")
     on_bench_host = any(vidpid in lsusb for vidpid, _ in BENCH_USB_IDS)
