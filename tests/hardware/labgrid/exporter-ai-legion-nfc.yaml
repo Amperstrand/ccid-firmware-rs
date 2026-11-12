@@ -18,6 +18,8 @@
 ## live export is ai-legion-small-nfc/nucula-c3/NetworkSerialPort. The
 ## nucula-c3 PLACE deliberately still matches this (now phantom) export
 ## until the owner's latch work completes — re-point = one del/add-match.
+## PHANTOM: seat physically on ai-legion-small since 2026-11-01; expected
+## absent from this exporter until the place re-point lands.
 nucula-c3:
   SerialPort:
     port: /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_90:DA:72:9A:50:18-if00
