@@ -114,18 +114,27 @@ install_config() {
 
 restart_pcscd() {
     echo ""
-    echo "=== Restarting pcscd ==="
+    echo "=== Restarting pcscd (domain-guarded) ==="
+
+    # pcscd restart is a bench-domain disturbance (B32/tollgate-lab #15):
+    # run under the EX disturbance role so cross-lane reader sessions
+    # drain first. Un-guarded only on hosts without tollgate_lab (fresh
+    # provisioning boxes) — the helper warns loudly there.
+    pcscd_domain() {  # pcscd_domain <reason> <cmd...>
+        python3 "$(dirname "$0")/../../host-tools/pcscd_disturbance.py" \
+            --reason "$@"
+    }
 
     if sudo systemctl is-active --quiet pcscd 2>/dev/null; then
         info "Stopping pcscd..."
-        sudo systemctl stop pcscd
+        pcscd_domain "setup.sh stop" sudo systemctl stop pcscd
     fi
 
     # pcscd may leave a stale socket after restart
     sudo rm -f /var/run/pcscd/pcscd.comm 2>/dev/null || true
 
     info "Starting pcscd..."
-    sudo systemctl start pcscd
+    pcscd_domain "setup.sh start" sudo systemctl start pcscd
 
     if sudo systemctl is-active --quiet pcscd; then
         info "pcscd is running."
