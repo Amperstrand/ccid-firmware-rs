@@ -326,7 +326,9 @@ DEFMT_LOG=debug probe-rs run --chip STM32F469NI \
   target/thumbv7em-none-eabihf/release/ccid-firmware
 # read-only session (terminal 1) — via the probe script:
 python3 host-tools/gp_probe.py --execute --reader "Cherry ... (ST2XXX-001) ..." \
-  --verbose   # SELECT ISD + GET DATA CPLC, nothing else
+  --verbose --json-out cherry.json   # SELECT ISD + GET DATA CPLC, nothing else
+# (--json-out cherry.json — Codex P2 on #500: stage 2 consumes this file;
+#  nothing else creates it)
 ```
 
 Watch the RTT log for the H1/H2/H3 signatures (observable names from

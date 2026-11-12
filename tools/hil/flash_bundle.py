@@ -136,7 +136,15 @@ def check_bundle(manifest: dict, bundle_dir: Path,
     # check 1 — every target file exists next to the manifest with its
     # recorded sha256 and byte count.
     for role, t in targets.items():
-        p = bundle_dir / t["path"]
+        p = (bundle_dir / t["path"]).resolve()
+        # Codex P2 on #439 (sweep 2026-11-12): a tampered manifest could
+        # point targets outside the bundle (../../…) — the digest check
+        # would still pass against attacker-chosen bytes. Containment
+        # first, then digest.
+        if not p.is_relative_to(bundle_dir.resolve()):
+            fails.append(("path-escape",
+                          f"targets.{role}: {t['path']!r} escapes the bundle directory"))
+            continue
         if not p.is_file():
             fails.append(("file-missing", f"targets.{role}: {t['path']} not in bundle"))
             continue

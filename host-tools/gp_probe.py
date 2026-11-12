@@ -270,7 +270,8 @@ def _connect(reader_substr: str):
 
 
 def execute_probes(reader_substr: str, *, allow_get_status: bool,
-                   json_out: Path | None, atr_out: list) -> int:
+                   json_out: Path | None, atr_out: list,
+                   verbose: bool = False) -> int:
     got = _connect(reader_substr)
     if got is None:
         return 1
@@ -296,6 +297,11 @@ def execute_probes(reader_substr: str, *, allow_get_status: bool,
                 "command": apdu.hex(),
                 "response": (resp.hex() + sw).lower(),
             })
+            if verbose:  # Codex P2 on #500 (sweep 2026-11-12): the promised
+                # per-exchange hex dumps — the corruption-investigation
+                # retention the runbook's --verbose invocation relies on.
+                print(f"  C-APDU {apdu.hex()}")
+                print(f"  R-APDU {resp.hex()}{sw.lower()}")
             print(f"{probe['name']}: SW={sw} ({len(resp)}B data)")
             if sw != "9000":
                 print("  note: non-9000 answer reported, NOT retried "
@@ -392,7 +398,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         atr: list = []
         return execute_probes(args.reader, allow_get_status=args.allow_get_status,
-                              json_out=args.json_out, atr_out=atr)
+                              json_out=args.json_out, atr_out=atr,
+                              verbose=args.verbose)
 
     # DRY RUN (default): the APDU table + guard verdicts, no hardware.
     print("gp_probe DRY RUN — no hardware is opened (pass --execute --reader …)")
