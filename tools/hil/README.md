@@ -16,7 +16,7 @@ closed the whole time).
 
 | Piece | Where | Notes |
 |---|---|---|
-| labgrid coordinator | `ai-legion`, system unit `labgrid-coordinator.service`, `0.0.0.0:20408` | pre-existing, bench-wide; persists places via `StateDirectory=labgrid` (`/var/lib/labgrid/places.yaml`) — coordinator restarts do NOT wipe places here |
+| labgrid coordinator | `ai-legion`, system unit `labgrid-coordinator.service`, `0.0.0.0:20408` | pre-existing, bench-wide. ⚠️ 2026-11-12 correction: despite `StateDirectory=labgrid`, `/var/lib/labgrid/` is EMPTY (no places.yaml) and labgrid 26.0's coordinator has no persistence flag — **restarts DO wipe places** here; re-run `labgrid-place.sh` after any coordinator restart (the canon's and bolty-rs's standing rule). The earlier "persists places" claim in this table was wrong |
 | exporter `ai-legion-ccid` | `ai-legion`, SYSTEM unit `labgrid-exporter-ccid.service` (converted 2026-10-14 from a root --user unit), config `tools/hil/labgrid-exporter.yaml` deployed to `/etc/labgrid/exporter-ccid.yaml` | this repo's enrollment: OTA NetworkServices + console USBSerialPort tokens |
 | exporter `ai-legion-nfc` | `ai-legion`, system unit, config `tests/hardware/labgrid/exporter-ai-legion-nfc.yaml` → `/etc/labgrid/exporter-nfc.yaml` | pre-existing: serial tokens (`nucula-c3`, `m5stick-usb` — plain `SerialPort` class), STM32 DUTs, reference-reader USB identities. Not touched here |
 | places `ccid-nucula`, `ccid-m5stick` | coordinator | network-only matches, labels `board=` / `transport=network` |
