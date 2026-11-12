@@ -141,9 +141,11 @@ flash() {
 
 start_pcscd() {
     echo ""
-    echo "=== Starting pcscd ==="
+    echo "=== Starting pcscd (domain-guarded) ==="
     sudo rm -f /var/run/pcscd/pcscd.comm 2>/dev/null || true
-    sudo systemctl restart pcscd.socket pcscd.service
+    python3 "$(dirname "$0")/../../host-tools/pcscd_disturbance.py" \
+        --reason "flash_and_test post-flash bring-up" \
+        -- sudo systemctl restart pcscd.socket pcscd.service
     info "Waiting 8s for ESP32 boot + pcscd init..."
     sleep 8
 

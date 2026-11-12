@@ -24,6 +24,12 @@ CCID_REPO=${CCID_REPO:-$HOME/src/ccid-firmware-rs}
 BOLTY_REPO=${BOLTY_REPO:-$HOME/src/bolty-rs}
 
 say() { printf '\n=== %s ===\n' "$*"; }
+
+# pcscd restarts are bench-domain disturbances (B32/tollgate-lab #15):
+# cross-lane reader sessions drain first via the EX disturbance role.
+pcscd_domain() {  # pcscd_domain <reason> <cmd...>
+    python3 "$CCID_REPO/host-tools/pcscd_disturbance.py" --reason "$@"
+}
 usb_rescan() {
   say "USB rebind (clears FT232 wedge states)"
   echo -n 1-1 | sudo tee /sys/bus/usb/drivers/usb/unbind >/dev/null; sleep 4
@@ -53,10 +59,10 @@ case "$ROLE" in
     usb_rescan
     flash_merged /tmp/esp32-ccid-merged.bin
     say "restarting pcscd (firmware NFC init races a fast probe — retry once)"
-    sudo systemctl restart pcscd.socket pcscd.service; sleep 10
+    pcscd_domain "switch_role→ccid reader bring-up" sudo systemctl restart pcscd.socket pcscd.service; sleep 10
     say "verify: PC/SC readers"
     if ! python3 -c 'from smartcard.System import readers; rs=[str(r) for r in readers()]; print(rs); exit(0 if rs else 1)'; then
-      sudo systemctl restart pcscd.service; sleep 8
+      pcscd_domain "switch_role→ccid retry" sudo systemctl restart pcscd.service; sleep 8
       python3 -c 'from smartcard.System import readers; rs=[str(r) for r in readers()]; print(rs); exit(0 if rs else 1)'
     fi
     echo "ROLE=ccid active. Reader: ESP32 CCID Serial. Use host-tools/boltwipe.py."
@@ -64,7 +70,7 @@ case "$ROLE" in
   bolty)
     say "disabling pcscd serial reader config"
     sudo mv "$READER_CONF" "${READER_CONF}.disabled" 2>/dev/null || true
-    sudo systemctl restart pcscd.socket pcscd.service 2>/dev/null || true
+    pcscd_domain "switch_role→bolty config unload" sudo systemctl restart pcscd.socket pcscd.service 2>/dev/null || true
     say "stopping any port holders"
     sudo systemctl stop bolty-console 2>/dev/null || true
     say "building bolty-esp32 ($BOLTY_FEATURES)"

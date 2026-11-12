@@ -208,6 +208,17 @@ def disconnect_reader(conn):
 
 
 def restart_pcscd(debug_level: int = 0x0007, log_path: Optional[str] = None):
+    # pkill-ing pcscd is a bench-domain disturbance (B32/tollgate-lab #15):
+    # take the EX role so cross-lane reader sessions drain first. Absent
+    # tollgate_lab (non-bench host) the restart proceeds with a warning.
+    try:
+        from tollgate_lab import acquire_pcscd_disturbance
+        _domain = acquire_pcscd_disturbance(
+            project="ccid-soak", reason="restart_pcscd cycle", timeout_s=30,
+        )
+    except ImportError:
+        _domain = None
+        print("pcscd-domain: tollgate_lab missing — UNGUARDED restart", file=sys.stderr)
     subprocess.run(["sudo", "pkill", "pcscd"], capture_output=True)
     time.sleep(1)
     subprocess.run(["sudo", "rm", "-f", "/run/pcscd/pcscd.comm"], capture_output=True)
@@ -225,6 +236,10 @@ def restart_pcscd(debug_level: int = 0x0007, log_path: Optional[str] = None):
     else:
         proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         proc._log_file = None
+    # The disturbance spans the foreground pcscd's lifetime — released by
+    # stop_pcscd() alongside the process (the lock rides the proc object
+    # the same way _log_file does).
+    proc._pcscd_domain = _domain
     _pcscd_procs.append(proc)
 
     time.sleep(2)
@@ -242,6 +257,12 @@ def stop_pcscd():
             if hasattr(proc, '_log_file') and proc._log_file:
                 proc._log_file.flush()
                 proc._log_file.close()
+        except Exception:
+            pass
+        try:
+            if getattr(proc, '_pcscd_domain', None) is not None:
+                proc._pcscd_domain.release()
+                proc._pcscd_domain = None
         except Exception:
             pass
     _pcscd_procs.clear()
