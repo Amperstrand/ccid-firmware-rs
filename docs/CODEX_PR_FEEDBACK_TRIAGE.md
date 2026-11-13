@@ -318,3 +318,58 @@ Closes the record gap between the prior sweep's end and the #321–#391 section 
   mechanism at main: `m5stick_lcd.rs` lines 18 + 596–603 (dirty-flag lazy redraw,
   `try_lock`-only presence re-push every poll — landed via `e72ccd0e`/`af7ece9a`
   for the same-class #287/#281 findings).
+
+---
+
+# Codex Review Sweep — range #395–#566 (2026-11-12, post-hardware-absence window)
+
+First sweep since the 2026-10-21 addendum. 115 merged PRs in range, 28 carried
+bot findings (~57 total): **52 ADDRESSED / 3 fixed in #569 / 1 deferred to #570 / 1 addressed-by-triage**.
+
+## ADDRESSED (verified; nearly all carry citing comments)
+
+- **#512** ×5 (fwt_arm_probe): raw-timer-readback verdict (#519), f[4] payload,
+  resolve()-returns-str, Part10 `>I`, INCONCLUSIVE verdicts — every fix cites its finding.
+- **#461** ×4 (OTA rollback): `ota_validity.rs` gate + evidence-after-send +
+  `if sent` UART guard + `GATE_TEST_LOCK` test isolation.
+- **#425** ×4 + **#439** make_bundle item (bundle format): bootloader offset
+  DERIVED per chip with contradiction refusal, complete-ESP32 refusal, STM32
+  layoutless shape, `boot_signature_reject` CLI+manifest.
+- **#514** ×3 (HIL-CI-PRACTICES doc): restore-as-failure-only, per-PR concurrency
+  vs bench serialization, unit-gating adoption gap — the doc now teaches all three.
+- **#496** ×3 (guard times): N=0 reprogram, ResetParameters restore, RM0090-verbatim
+  reference-derived mapping.
+- **#478** ×3 (fuzz-nightly): cutoff in jq, full-window paginated probe, canary queue self-heal.
+- **#515** ×2 (bench_window trap release), **#498** ×2 (pending_baud_change),
+  **#495** ×2 (OTA endpoint resolution doc), **#483** ×2 (broker frame-gap
+  reference-lock "Codex P1 on #483" + shared partial-frame predicate),
+  **#402** ×2 (COMBO_FILTER via env — the old sweep's VERIFIED-OPEN item, since fixed).
+- **#439** P1 (bundle-id bypass): byte-anchored — check 1 recomputes every target
+  sha256 before the same-id idempotent bypass.
+- Singles: **#531** (cadence probe 16-byte D3, c6440f6e), **#530** (dirty-tree refusal),
+  **#513** (contact-slot Abort split), **#509** (JavaCard RESET silence, cites P1),
+  **#490** (build.sh bootloader-by-chip), **#487** (failed reconnect = unsuccessful),
+  **#486** (shlex.split), **#457** (both time-extension shapes), **#456**
+  (coordinated-restart failure fails the soak), **#441** (anchored .gitignore).
+- **#428** (PN532 reset-in-self-test): ADDRESSED-BY-TRIAGE — the landed code
+  consciously re-inits in the stateless self-test with an explicit rationale
+  comment (pn532_driver.rs:314-320); revisit only if a serving-path self-test
+  ever resets a live session.
+
+## OPEN → fixed in PR #569
+
+- **#500 P2**: `--verbose` declared + documented, never wired → now prints
+  per-exchange hex dumps.
+- **#500 P2**: runbook stage 2 consumed `cherry.json` that nothing created →
+  stage 1 now writes it.
+- **#439 P2**: `flash_bundle.py` target-path containment (resolve + refuse
+  escapes before digest; escape-REFUSED/negative-clean validated).
+
+## OPEN → deferred to tracking issue #570
+
+- **#409 P1**: virtual-card.yml unmanaged-Python before pip (runs green on the
+  current runner image; environmental-robustness debt).
+
+Sweep mechanics: `scripts/codex_sweep.sh` over the 115-PR gap (empty files =
+no bot pass, consistent with the bot reviewing head-push windows); triage by
+tree-read at current main, not keyword-grep (protocol §"How to sweep").
