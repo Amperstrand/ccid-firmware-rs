@@ -15,13 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install host stack (pcscd, PCSC headers, JDK, Maven, pyscard)
+      - name: Install host stack (pcscd, PCSC headers, JDK, Maven, venv)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pcscd libpcsclite-dev libpcsclite1 openjdk-21-jdk maven \
-            zip python3-pip python3-dev build-essential
-          python3 -m pip install --quiet pyscard pytest pytest-timeout
+            zip python3-venv python3-dev build-essential
+          # #570 (Codex P1 on #409): an unmanaged venv, never the system
+          # pip — externally-managed interpreters (PEP 668) refuse or
+          # diverge. Every python below runs this venv interpreter.
+          python3 -m venv "$HOME/vc-venv"
+          "$HOME/vc-venv/bin/pip" install --quiet pyscard pytest pytest-timeout
 
       - name: Build patched libifdvpcd (pinned upstream + #326/#359 patch)
         run: |
@@ -69,18 +73,18 @@ jobs:
           # keep pcscd alive through the restart window: pcscd auto-exits
           # after ~60s with no IPC client, which closes the vpcd listener
           # (pokes non-fatal — a failed poke must not kill the step)
-          python3 -c "from smartcard.System import readers; readers()" || true
+          "$HOME/vc-venv/bin/python" -c "from smartcard.System import readers; readers()" || true
           sleep 60   # pcscd-restart window: ATR answers now, C-APDUs may not
-          python3 -c "from smartcard.System import readers; readers()" || true
+          "$HOME/vc-venv/bin/python" -c "from smartcard.System import readers; readers()" || true
           cd tests/hardware/host
           # N=50: each cold-runner connect cycle costs seconds; the full
           # 300-cycle soak is a bench-side number (fast warm cycles there)
           # run as root: socket-activated pcscd respawns recreate a root-only
-          # pcscd.comm faster than any chmod can follow (run 39849460207);
-          # PYTHONPATH keeps the runner-user pip site-packages visible.
-          sudo env PYTHONPATH="$HOME/.local/lib/python$(python3 -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages" \
-            VJC_SOAK_N=50 \
-            python3 -m pytest test_vjavacard.py test_vjavacard_soak.py -v -rs --timeout=600 \
+          # pcscd.comm faster than any chmod can follow (run 39849460207).
+          # The venv interpreter carries its own site-packages — no
+          # PYTHONPATH plumbing.
+          sudo env VJC_SOAK_N=50 \
+            "$HOME/vc-venv/bin/python" -m pytest test_vjavacard.py test_vjavacard_soak.py -v -rs --timeout=600 \
             | tee /tmp/pytest.log
           # an all-skip run is a FALSE green: the suite's readiness gate
           # silently skipping everything would still exit 0.
@@ -93,4 +97,5 @@ jobs:
 
       - name: pcscd readers on failure
         if: failure()
-        run: python3 -c "from smartcard.System import readers; [print(str(r)) for r in readers()]"
+        run: |
+          "$HOME/vc-venv/bin/python" -c "from smartcard.System import readers; [print(str(r)) for r in readers()]"
