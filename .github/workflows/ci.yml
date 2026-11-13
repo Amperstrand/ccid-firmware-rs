@@ -452,7 +452,11 @@ jobs:
 
       - name: Install ldproxy
         run: |
-          cargo install ldproxy
+          # 2026-11-13: rustup component conflicts (clippy-preview
+          # bin/cargo-clippy — inconsistent runner caches) failed this
+          # step twice in one day; a retry cleared it both times (#568).
+          for i in 1 2 3; do cargo install ldproxy && exit 0; sleep 10; done
+          exit 1
 
       # espup's output (the esp Rust toolchain in ~/.rustup/toolchains/esp*
       # plus ~/export-esp.sh) is NOT covered by any cache below and was
@@ -679,7 +683,11 @@ jobs:
 
       - name: Install ldproxy
         run: |
-          cargo install ldproxy
+          # 2026-11-13: rustup component conflicts (clippy-preview
+          # bin/cargo-clippy — inconsistent runner caches) failed this
+          # step twice in one day; a retry cleared it both times (#568).
+          for i in 1 2 3; do cargo install ldproxy && exit 0; sleep 10; done
+          exit 1
 
       # espup's output (the esp Rust toolchain in ~/.rustup/toolchains/esp*
       # plus ~/export-esp.sh) is NOT covered by any cache below and was
