@@ -51,6 +51,17 @@ log = "0.4"
 [target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
 cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
 cortex-m-rt = "0.7"
+# Debug stack, one wire generation: defmt 1.x (issue #262). Two old-major
+# copies remain in Cargo.lock for reasons that CANNOT be fixed from this
+# manifest — both are third-party pins outside our tree:
+#   - defmt 0.3.100: Ferrous's published re-export SHIM over defmt 1.0.1
+#     (same RTT wire format). Pulled only by fugit 0.3.9 + nb 1.1.0's
+#     `defmt` features, which are gated by the rev-pinned stm32f4xx-hal
+#     fork's `defmt` feature. Dropping it needs a HAL-fork update
+#     (fugit/nb defmt features -> defmt 1.x), not a pin here.
+#   - panic-probe 0.2.1: pulled only by the ft6x06 git dep (BSP display
+#     lane); it prints via rtt-target, never the defmt wire, and its
+#     #[panic_handler] is never linked (ours from panic-probe 1 below is).
 defmt = "1"
 defmt-rtt = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
