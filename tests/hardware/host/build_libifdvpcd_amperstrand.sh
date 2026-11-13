@@ -51,6 +51,7 @@ case "$cmd" in
     git -C "$SRC" apply "$HERE/libifdvpcd-amperstrand.patch"
     gcc -O2 -fPIC -shared \
       -DHAVE_DECL_MSG_NOSIGNAL=1 -DHAVE_DECL_SO_NOSIGPIPE=0 \
+      -DHAVE_ARPA_INET_H=1 \
       -DPACKAGE_VERSION='"3.3+amperstrand1"' -DVPCDSLOTS=2 \
       -o "$OUT" \
       "$SRC/virtualsmartcard/src/vpcd/vpcd.c" \
