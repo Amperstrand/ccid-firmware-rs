@@ -81,6 +81,15 @@ fn parse_pcb(pcb: u8) -> Option<Pcb> {
     // ISO 7816-3 Table 45 (§11.4.2): N(S) at b7 (weight 0x40), M at b6
     // (0x20), N(R) at b5 (0x10) — in BOTH I- and R-blocks. b4..b1 are
     // 0 (I) / error code (R). Bit names are b8..b1 with b1 = LSB.
+    //
+    // Block-type prefixes, triangulated across BOTH tracked engines
+    // (#142 G-01 quote-lock; docs/t1_pcb_layout_audit.md):
+    // T1_H: #define T1_I_BLOCK 0x00
+    // T1_H: #define T1_R_BLOCK 0x80
+    // T1_H: #define T1_S_BLOCK 0xC0
+    // ST_T1: #define T1_I_BLOCK 0x00U /* PCB (I-block: b8 = 0) */
+    // ST_T1: #define T1_R_BLOCK 0x80U /* PCB (R-block: b8 b7 = 10) */
+    // ST_T1: #define T1_S_BLOCK 0xC0U /* PCB (S-block: b8 b7 = 11) */
     match pcb & 0x80 {
         0x00 => Some(Pcb::I {
             ns: (pcb >> 6) & 1,
@@ -127,11 +136,13 @@ fn block(pcb: u8, inf: &[u8]) -> Vec<u8, 520> {
 /// received I-block's N(S) at b7 only). Audit: docs/t1_pcb_layout_audit.md.
 fn i_pcb(ns: u8, more: bool, nr: u8) -> u8 {
     // T1: #define T1_I_SEQ_SHIFT 6
+    // ST_T1: #define T1_I_SEQ_SHIFT 6U /* N(S) position (bit 7) */
     (ns << 6) | ((more as u8) << 5) | (nr << 4)
 }
 
 fn r_pcb(nr: u8, err: u8) -> u8 {
     // T1: #define T1_R_SEQ_SHIFT 4
+    // ST_T1: #define T1_R_SEQ_SHIFT 4U /* N(R) position (b5) */
     0x80 | (nr << 4) | err
 }
 
@@ -147,6 +158,7 @@ fn s_pcb(kind: SKind, response: bool) -> u8 {
     // `pcb == S | 0x20 | type` (proto-t1.c t1_negotiate_ifsd) and
     // rejects 0x1x-encodings.
     // T1: #define T1_S_RESPONSE 0x20
+    // ST_T1: #define T1_S_RESPONSE 0x20U /* If response: set bit b6, if request reset b6 in PCB S-Block */
     base | ((response as u8) << 5)
 }
 
@@ -456,6 +468,11 @@ impl T1Endpoint {
 
     fn bad_block(&mut self) -> FeedResult {
         // §11.5.3: answer with R(N(R), parity-error) demanding retransmit.
+        // Error code 0x01 = EDC error in both tracked engines (#142 G-01
+        // quote-lock — the err nibble of the Table-45 R-block layout):
+        // T1: #define T1_IS_ERROR(pcb) ((pcb) & 0x0F)
+        // T1: #define T1_EDC_ERROR 0x01
+        // ST_T1: #define T1_EDC_ERROR 0x01U /* [b6..b1] = 0-N(R)-0001 */
         FeedResult::Immediate(block(r_pcb(self.host_ns, 1), &[]))
     }
 }
@@ -503,6 +520,8 @@ pub fn is_s_block_request(bytes: &[u8]) -> bool {
     }
     let pcb = bytes[1];
     // S-block: 11 b5 0 kind — request has bit 4 clear (response sets it).
+    // Type prefix quote-locked to both tracked engines (#142 G-01):
+    // T1_H: #define T1_S_BLOCK 0xC0
     (pcb & 0xC0) == 0xC0 && (pcb & 0x10) == 0
 }
 

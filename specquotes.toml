@@ -80,6 +80,25 @@ format = "markdown"
 file = "reference/CCID/src/openct/proto-t1.c"
 comment_marker = "T1"
 
+# Same engine, header side (#142 G-01 quote-lock): the block-type PCB
+# prefixes (T1_I_BLOCK/T1_R_BLOCK/T1_S_BLOCK) and the host engine's own
+# block buffer ceiling — T1_BUFFER_SIZE (3 + 254 + 2) pins the 254-octet
+# INF maximum the host will ever frame (G-03's IFS ceiling cross-cite).
+[sources.T1_H]
+format = "markdown"
+file = "reference/CCID/src/openct/proto-t1.h"
+comment_marker = "T1_H"
+
+# ST USB CCID smartcard template (#142 G-01 quote-lock): the second,
+# INDEPENDENT implementation for the Table-45 PCB layout — every macro
+# carries its bit-position comment (N(R) position (b5), N(S) position
+# (bit 7)), the triangulation partner of openct per
+# docs/t1_pcb_layout_audit.md.
+[sources.ST_T1]
+format = "markdown"
+file = "reference/ST/stm32-mw-usb-device/Class/CCID/Inc/usbd_ccid_smartcard_template.h"
+comment_marker = "ST_T1"
+
 # PDF-only authority (UM11495 Rev 1.8): quotes are transcribed verbatim
 # into the tracked markdown below (docs/quote-sources/ policy, #140/#156).
 [sources.UM11495]

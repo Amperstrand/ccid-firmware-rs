@@ -57,6 +57,9 @@ maps in-tree `// MARKER:` comments to verbatim source lines:
 | `PCSC` | `reference/CCID/MacOSX/reader.h` | `PCSC` | drift-check only |
 | `LIBCCID` | `reference/CCID/src/commands.c` | `LIBCCID` | drift-check only |
 | `ISO7816` | `reference/osmo-ccid-firmware/ccid_common/iso7816_3.c` | `ISO7816` | drift-check only |
+| `T1` | `reference/CCID/src/openct/proto-t1.c` | `T1` | drift-check only |
+| `T1_H` | `reference/CCID/src/openct/proto-t1.h` | `T1_H` | drift-check only |
+| `ST_T1` | `reference/ST/stm32-mw-usb-device/Class/CCID/Inc/usbd_ccid_smartcard_template.h` | `ST_T1` | drift-check only |
 | `UM11495` | `docs/quote-sources/um11495-quotes.md` (verbatim transcription) | `UM11495` | drift-check only |
 
 PDF-only authorities with no canonical text source (USB CCID Rev 1.1,
