@@ -99,6 +99,16 @@ format = "markdown"
 file = "reference/ST/stm32-mw-usb-device/Class/CCID/Inc/usbd_ccid_smartcard_template.h"
 comment_marker = "ST_T1"
 
+# Our canonical ISO 14443 fork, quote-only excerpt (#142 G-04): the
+# ISO-DEP (14443-4 §7.3) WTXM 1..59 range check — the NFC-side
+# cross-cite locking the T=1 WTX multiplier's 59 ceiling. (Marker is
+# ISODEP, not ISO14443: mfrc522_driver.rs carries pre-existing prose
+# comments that begin with the bare string "ISO14443".)
+[sources.ISODEP]
+format = "markdown"
+file = "reference/iso14443-rs/protocol-wtx.rs"
+comment_marker = "ISODEP"
+
 # PDF-only authority (UM11495 Rev 1.8): quotes are transcribed verbatim
 # into the tracked markdown below (docs/quote-sources/ policy, #140/#156).
 [sources.UM11495]

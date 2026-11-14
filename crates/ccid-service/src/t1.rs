@@ -374,7 +374,10 @@ impl T1Endpoint {
             }
             SKind::Wtx => {
                 // Host-requested WTX is unusual (initiator-side); echo the
-                // response to keep the exchange legal.
+                // response to keep the exchange legal. The host engine's
+                // own WTX S-block contract expects LEN=1 (#142 G-04):
+                // T1: case T1_S_WTX:
+                // T1: if (sdata[LEN] != 1)
                 let rsp = block(s_pcb(SKind::Wtx, true), inf);
                 self.last_sent = Some(rsp.clone());
                 FeedResult::Immediate(rsp)
@@ -423,6 +426,20 @@ impl T1Endpoint {
         // (proto-t1.c t1_xcv), so m = elapsed/BWT rounded up plus a
         // turnaround margin. The old fixed m=2 at a flat 150 ms was
         // detached from every window the host actually runs.
+        //
+        // The host-side extension, quote-locked (#142 G-04):
+        // T1: if (t1->wtx > 1)
+        // T1: {
+        // T1: /* set the new temporary timeout at WTX card request */
+        // T1: ccid_desc->readTimeout *=  t1->wtx;
+
+        // m ceiling 59, cross-cited to the NFC side (#142 G-04): the
+        // ISO-DEP WTX multiplier shares the 7816-3 lineage and the same
+        // 1..59 legal range (14443-4 §7.3) — our canonical 14443
+        // reference enforces it in check_wtx:
+        // ISODEP: /// §7.3: the INF field is one byte whose low six bits code a WTXM of 1
+        // ISODEP: /// to 59; 0 and 60 to 63 are RFU. A peer that keeps asking for more time
+        // ISODEP: if !(1..=59).contains(&wtxm) {
         let bwt = t1_bwt_ms(self.host_bwi, HOST_DEFAULT_BAUD);
         if took_ms + WTX_TURNAROUND_MS > bwt {
             let m = ((took_ms + WTX_TURNAROUND_MS).div_ceil(bwt)).clamp(2, 59) as u8;
