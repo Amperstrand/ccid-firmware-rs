@@ -71,8 +71,17 @@ checks = []
 held = {}
 
 
-def sh(cmd: str) -> str:
-    r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+def sh(cmd) -> str:
+    """Run a command (argv list preferred; strings are shlex.split —
+    never shell=True: the bench-tool subprocess-hygiene rule from the
+    2026-11-14 session) and return stdout ('' on failure)."""
+    if isinstance(cmd, str):
+        import shlex
+        cmd = shlex.split(cmd)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
     return r.stdout
 
 
@@ -226,10 +235,11 @@ def run_body():
         print("   check locally-plugged readers and belong on the bench host, .208)")
     else:
         print("== pcscd readers ==")
-        readers_out = sh(
-            "python3 -c 'from smartcard.System import readers; "
-            "[print(str(r)) for r in readers()]'"
-        )
+        readers_out = sh([
+            "python3", "-c",
+            "from smartcard.System import readers; "
+            "[print(str(r)) for r in readers()]",
+        ])
         readers = [l for l in readers_out.splitlines() if l.strip()]
         check(f"pcscd lists readers ({len(readers)})", bool(readers), readers_out[:120])
         for frag in EXPECTED_PCSCD:
