@@ -3,6 +3,26 @@
 
 **Usage**: Copy the citations below into Rust code comments (e.g., `// NCI 2.0 §5.4.2 / UM11495 §6.2`)
 
+## 0. TRACKED QUOTE SOURCES (2026-11-14, issue #142 NCI quote completion)
+
+The doctrinal NCI references are now quote-only vendored and
+drift-checked by the specquotes gate (`specquotes.toml`,
+`.github/workflows/spec-quote-drift.yml`) — prefer verbatim
+`// NCI_KERN:` / `NCI_CORE:` / `NCI_DEFS:` quotes from these files over
+prose section cites when locking a constant:
+
+| Source key | File (tracked) | Upstream pin | License |
+|---|---|---|---|
+| `NCI_KERN` | `reference/linux-nci/nci.h` | torvalds/linux `9907cda95fcb` (2024-11-07, last nci.h commit) | GPL-2.0-only |
+| `NCI_CORE` | `reference/linux-nci/core.c` (trimmed: nci_rx_work MT dispatch) | same | GPL-2.0-only |
+| `NCI_DEFS` | `reference/nxp-nci/nci_defs.h` | NXPNFCLinux/linux_libnfc-nci `8476ea1a` ("R2.4 release", last commit touching the file) | Apache-2.0 |
+| `UM11495` | `docs/quote-sources/um11495-quotes.md` (transcription) | NXP Rev 1.8, 2025-06-02 | © NXP, free PDF |
+
+Provenance + maintenance rules: `reference/README.md` and the
+per-directory `PROVENANCE.md` files. The `nci_defs.h` line numbers in
+the tables below (L59/L60/L126+ etc.) refer to the R2.4 pin and are now
+verifiable against the tracked copy.
+
 ---
 
 ## 1. HARDWARE & PHYSICAL INTERFACE

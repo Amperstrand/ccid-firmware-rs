@@ -41,7 +41,7 @@ use heapless::Vec;
 /// Max INF field (§11.6.2 IFS ceiling is 254). Quote-locked (#142 G-03)
 /// to the host engine's own block buffer — the largest INF any openct
 /// peer will ever frame or accept:
-/// T1_H: #define T1_BUFFER_SIZE (3 + 254 + 2)
+// T1_H: #define T1_BUFFER_SIZE (3 + 254 + 2)
 pub const MAX_IFSC: usize = 254;
 /// Relay capacity: max APDU/response assembled from a chain. Public so
 /// the CCID handler's copy buffer derives from it — independent sizes
@@ -57,7 +57,7 @@ pub const MAX_RELAY: usize = 512;
 /// Quote-locked (#142 G-03): the host engine's DEFAULT send chunk is 32
 /// when the ATR carries no TA3 — everything larger arrives as a chain,
 /// which is why 32 is the correct pre-negotiation accept size:
-/// T1: t1->ifsc = 32;
+// T1: t1->ifsc = 32;
 const DEFAULT_HOST_IFSD: usize = 32;
 
 // G-04/G-05: the BWI our synthetic ATR advertises in TB3 and the baud
@@ -478,11 +478,11 @@ impl T1Endpoint {
     /// per host R-ACK). Send-side truncation policy (#142 G-03
     /// quote-lock): chunk at the negotiated IFS and set the M bit —
     /// exactly the host engine's own send-side behavior:
-    /// T1: if (len > t1->ifsc) {
-    /// T1: pcb |= T1_MORE_BLOCKS;
-    /// T1: len = t1->ifsc;
-    /// T1: more = true;
-    /// T1: }
+    // T1: if (len > t1->ifsc) {
+    // T1: pcb |= T1_MORE_BLOCKS;
+    // T1: len = t1->ifsc;
+    // T1: more = true;
+    // T1: }
     fn take_next_chain_block(&mut self) -> Option<Vec<u8, 520>> {
         if self.send_chain.is_empty() {
             return None;

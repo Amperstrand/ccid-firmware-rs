@@ -51,14 +51,21 @@ use super::{
 /// RF group OID for RF_SET_LISTEN_MODE_ROUTING — kernel
 /// `NCI_OP_RF_SET_LISTEN_MODE_ROUTING_CMD` = 0x2101 (octet0 `0x21`,
 /// octet1 `0x01`); UM11495 Table 12: Full Support.
+// Quote-locked (#142): the kernel nci.h defines no routing opcode
+// (routing is netlink-side there) — NXP's header is the tracked name:
+// NCI_DEFS: #define NCI_MSG_RF_SET_ROUTING 1
 pub const OID_RF_SET_LISTEN_MODE_ROUTING: u8 = 0x01;
 
 /// NFC-A passive LISTEN technology-and-mode — UM11495 Table 28
 /// ("RF Technology and Mode: 0x80 (NFC_A_PASSIVE_LISTEN_MODE)").
+// Quote-locked (#142) — kernel tech-and-mode block:
+// NCI_KERN: #define NCI_NFC_A_PASSIVE_LISTEN_MODE 0x80
 pub const RF_TECH_PASSIVE_NFCA_LISTEN: u8 = 0x80;
 
 /// RF_DISCOVER_MAP, one mapping: ISO-DEP protocol → ISO-DEP interface,
 /// LISTEN mode (mode octet 0x02 — NCI §6.1.1; poll sibling carries 0x01).
+// Quote-locked (#142) — kernel map-mode block:
+// NCI_KERN: #define NCI_DISC_MAP_MODE_LISTEN 0x02
 pub const RF_DISCOVER_MAP_ISO_DEP_LISTEN: [u8; 7] = [
     MT_CMD | GID_RF,
     OID_RF_DISCOVER_MAP,
@@ -72,6 +79,12 @@ pub const RF_DISCOVER_MAP_ISO_DEP_LISTEN: [u8; 7] = [
 /// CORE_SET_CONFIG with the three NFC-A listen parameters — AN13861
 /// Table 1 + AOSP `nci_packets.pdl` listen vector (see module docs).
 /// SENS_RES = 0x0400, SEL_RES = 0x20 (ISO-DEP T4T capable).
+// Quote-locked (#142) — the param IDs, NXP's header (kernel nci.h
+// carries only LA_SEL_INFO 0x32 of the three):
+// NCI_DEFS: #define NCI_PARAM_ID_LA_BIT_FRAME_SDD 0x30
+// NCI_DEFS: #define NCI_PARAM_ID_LA_PLATFORM_CONFIG 0x31
+// NCI_DEFS: #define NCI_PARAM_ID_LA_SEL_INFO 0x32
+// NCI_KERN: #define NCI_LA_SEL_INFO 0x32
 pub const SET_CONFIG_LISTEN_NFCA: [u8; 13] = [
     MT_CMD,
     OID_CORE_SET_CONFIG,
