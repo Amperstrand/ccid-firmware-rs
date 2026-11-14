@@ -42,6 +42,12 @@ use heapless::Vec;
 /// octet0 = MT[7:5] | PBF[4] | GID[3:0]; octet1 = OID[7:0]; octet2 = LEN.
 /// (Ground truth: the C driver sends CORE_RESET as 20 00 01 01 — GID 0 in
 /// octet0, full OID 0x00 as octet1 — and matches responses the same way.)
+///
+/// Quote-locked (#142): both tracked references pin the 3-octet header
+/// and the one-octet LEN ceiling (255) our MAX_FRAME derives from:
+// NCI_KERN: #define NCI_CTRL_HDR_SIZE 3
+// NCI_DEFS: #define NCI_MSG_HDR_SIZE 3 /* per NCI spec */
+// NCI_KERN: #define NCI_MAX_PAYLOAD_SIZE 255
 pub const HEADER_LEN: usize = 3;
 
 /// Maximum NCI frame: 3 header octets + 255 payload (LEN is one octet,
@@ -49,37 +55,66 @@ pub const HEADER_LEN: usize = 3;
 pub const MAX_FRAME: usize = HEADER_LEN + 255;
 
 // --- Message types: MT bits 7..5 of octet 0 (NCI §3.3, Table 4) ----------
+// Quote-locked (#142) — NXP's own header states the SHIFTED octet-0
+// values our MT_* constants carry (kernel keeps MT unshifted):
+// NCI_DEFS: #define NCI_MT_DATA 0x00
+// NCI_DEFS: #define NCI_MT_CMD 1 /* (NCI_MT_CMD << NCI_MT_SHIFT) = 0x20 */
+// NCI_DEFS: #define NCI_MT_RSP 2 /* (NCI_MT_RSP << NCI_MT_SHIFT) = 0x40 */
+// NCI_DEFS: #define NCI_MT_NTF 3 /* (NCI_MT_NTF << NCI_MT_SHIFT) = 0x60 */
 pub const MT_DATA: u8 = 0x00;
 pub const MT_CMD: u8 = 0x20;
 pub const MT_RSP: u8 = 0x40;
 pub const MT_NTF: u8 = 0x60;
 
 // --- Group IDs (octet 0 low nibble; NCI §5.1 CORE=0x00, §6.1 RF=0x01) ----
+// Quote-locked (#142, NXP table + kernel GID block):
+// NCI_DEFS: #define NCI_GID_CORE 0x00 /* 0000b NCI Core group */
+// NCI_DEFS: #define NCI_GID_RF_MANAGE 0x01 /* 0001b RF Management group */
 pub const GID_CORE: u8 = 0x00;
 pub const GID_RF: u8 = 0x01;
 
 // --- Core OIDs (octet 1; NCI §5.1) ----------------------------------------
+// Quote-locked (#142) — kernel opcode packs (gid<<8 | oid):
+// NCI_KERN: #define NCI_OP_CORE_RESET_CMD nci_opcode_pack(NCI_GID_CORE, 0x00)
+// NCI_KERN: #define NCI_OP_CORE_INIT_CMD nci_opcode_pack(NCI_GID_CORE, 0x01)
+// NCI_KERN: #define NCI_OP_CORE_SET_CONFIG_CMD nci_opcode_pack(NCI_GID_CORE, 0x02)
 pub const OID_CORE_RESET: u8 = 0x00;
 pub const OID_CORE_INIT: u8 = 0x01;
 pub const OID_CORE_SET_CONFIG: u8 = 0x02;
 
 // --- RF OIDs (NCI §6.1) ---------------------------------------------------
+// Quote-locked (#142) — kernel opcode packs:
+// NCI_KERN: #define NCI_OP_RF_DISCOVER_MAP_CMD nci_opcode_pack(NCI_GID_RF_MGMT, 0x00)
+// NCI_KERN: #define NCI_OP_RF_DISCOVER_CMD nci_opcode_pack(NCI_GID_RF_MGMT, 0x03)
+// NCI_KERN: #define NCI_OP_RF_DISCOVER_SELECT_CMD nci_opcode_pack(NCI_GID_RF_MGMT, 0x04)
 pub const OID_RF_DISCOVER_MAP: u8 = 0x00;
 pub const OID_RF_DISCOVER: u8 = 0x03;
 pub const OID_RF_DISCOVER_SELECT: u8 = 0x04;
 
 // --- RF technologies / protocols / interfaces (NCI §6, Tables 70-72) ------
+// Quote-locked (#142) — both references, both namings:
+// NCI_KERN: #define NCI_NFC_A_PASSIVE_POLL_MODE 0x00
+// NCI_KERN: #define NCI_RF_PROTOCOL_ISO_DEP 0x04
+// NCI_KERN: #define NCI_RF_INTERFACE_ISO_DEP 0x02
+// NCI_DEFS: #define NCI_PROTOCOL_ISO_DEP 0x04
+// NCI_DEFS: #define NCI_INTERFACE_ISO_DEP 2
 pub const RF_TECH_PASSIVE_NFCA: u8 = 0x00;
 pub const NCI_PROTOCOL_ISO_DEP: u8 = 0x04; // ISO-DEP (ISO/IEC 14443-4)
 pub const NCI_INTERFACE_ISO_DEP: u8 = 0x02;
 
 /// Status code STATUS_OK (NCI §5.1.5, Table 67).
+// NCI_KERN: #define NCI_STATUS_OK 0x00
 pub const STATUS_OK: u8 = 0x00;
 
 // --- RF OIDs only used by the reader session (NCI §6.1) -------------------
+// NCI_KERN: #define NCI_OP_RF_DEACTIVATE_CMD nci_opcode_pack(NCI_GID_RF_MGMT, 0x06)
 pub const OID_RF_DEACTIVATE: u8 = 0x06;
 
 // --- Notification OIDs (octet 1 of an NTF; NCI §6.1) -----------------------
+// Quote-locked (#142) — kernel NTF opcode packs:
+// NCI_KERN: #define NCI_OP_RF_DISCOVER_NTF nci_opcode_pack(NCI_GID_RF_MGMT, 0x03)
+// NCI_KERN: #define NCI_OP_RF_INTF_ACTIVATED_NTF nci_opcode_pack(NCI_GID_RF_MGMT, 0x05)
+// NCI_KERN: #define NCI_OP_RF_DEACTIVATE_NTF nci_opcode_pack(NCI_GID_RF_MGMT, 0x06)
 pub const NTF_RF_DISCOVER: u8 = 0x03;
 pub const NTF_RF_INTF_ACTIVATED: u8 = 0x05;
 pub const NTF_RF_DEACTIVATE: u8 = 0x06;
@@ -91,12 +126,16 @@ pub const NTF_RF_DEACTIVATE: u8 = 0x06;
 /// for the PN7160 — every DATA packet sent consumes the only credit, so
 /// fragmented TX gates each next fragment on one of these
 /// ([`reader::exchange`], [`is_conn_credits_ntf`]).
+// Quote-locked (#142) — kernel NTF opcode pack:
+// NCI_KERN: #define NCI_OP_CORE_CONN_CREDITS_NTF nci_opcode_pack(NCI_GID_CORE, 0x06)
 pub const OID_CORE_CONN_CREDITS: u8 = 0x06;
 
 // --- NXP proprietary group (GID 0xF) — UM11495 Rev 1.8 ----------------------
 /// GID 0xF — the proprietary group (NCI §3.3 reserves it for vendor use;
 /// the PN7160's GID-0xF commands/notifications are listed in UM11495
 /// Annex B, Table 123).
+// Quote-locked (#142) — kernel GID block:
+// NCI_KERN: #define NCI_GID_PROPRIETARY 0xf
 pub const GID_PROP: u8 = 0x0F;
 
 /// OID 0x17 in the proprietary group: `PH_NCI_OID_SYSTEM_WTX` (RF_WTX_NTF),
@@ -121,6 +160,8 @@ pub const GID_PROP: u8 = 0x0F;
 /// chip-side ISO-DEP retry-count or total-WTX-budget TLV — the DH-side
 /// bound is the only deterministic mechanism (the only `NBR_RETRIES`
 /// field anywhere is `TechDet_NBR_RETRIES`, tag-detector/LPCD only).
+// Quote-locked (#142) — NXP's own constant:
+// NCI_DEFS: #define NCI_MSG_RF_WTX 0x17
 pub const NTF_PROP_RF_WTX: u8 = 0x17;
 
 // UM11495: Notification indicating that RF communication is in phase of
@@ -207,10 +248,18 @@ pub const fn tick_period_us(config_tick_rate_hz: u32) -> u32 {
 }
 
 // --- DATA packet header bits (NCI §5.4.1; NXP nci_defs.h NCI_CID/PBF) ------
+// Quote-locked (#142) — kernel accessor macros (conn id = low nibble of
+// octet 0, PBF = bit 4):
+// NCI_KERN: #define nci_conn_id(hdr) (__u8)(((hdr)[0])&0x0f)
+// NCI_KERN: #define nci_pbf_set(hdr, pbf) ((hdr)[0] |= (__u8)(((pbf)&0x01)<<4))
 pub const CID_MASK: u8 = 0x0F;
 pub const PBF_MASK: u8 = 0x10;
 
 // --- Deactivation types (NCI §6.3.5.1, Table 98) ---------------------------
+// Quote-locked (#142) — kernel deactivation-type block:
+// NCI_KERN: #define NCI_DEACTIVATE_TYPE_IDLE_MODE 0x00
+// NCI_KERN: #define NCI_DEACTIVATE_TYPE_SLEEP_MODE 0x01
+// NCI_KERN: #define NCI_DEACTIVATE_TYPE_SLEEP_AF_MODE 0x02
 pub const DEACTIVATE_TYPE_IDLE: u8 = 0x00;
 pub const DEACTIVATE_TYPE_SLEEP: u8 = 0x01;
 pub const DEACTIVATE_TYPE_SLEEP_AF: u8 = 0x02;
@@ -241,8 +290,11 @@ pub const DEACTIVATE_REASON_DH_REQ: u8 = 0x00;
 /// 0x01 per NCI 1.x-derived tables — bench-disproven as link-loss on
 /// this silicon (captured 0x02 on every field-drop, PR #542 runs); per
 /// NXP's table this slot is ENDPOINT_REQ. Reference only.
+// NCI_DEFS: #define NCI_DEACTIVATE_REASON_ENDPOINT_REQ 1 /* Endpoint Request */
 pub const DEACTIVATE_REASON_RF_LINK_LOSS_NCI1X: u8 = 0x01;
 /// RF-link-loss per NXP's NCI 2.x nci_defs.h (ENDPOINT_REQ occupies 0x01).
+// NCI_DEFS: #define NCI_DEACTIVATE_REASON_DH_REQ 0 /* DH Request */
+// NCI_DEFS: #define NCI_DEACTIVATE_REASON_RF_LINK_LOSS 2 /* RF Link Loss */
 pub const DEACTIVATE_REASON_RF_LINK_LOSS_NXP: u8 = 0x02;
 
 /// Is this RF_DEACTIVATE_NTF reason a link-loss (physical removal)?
@@ -292,7 +344,11 @@ impl Frame {
         // valid NCI packet — reject it (found by fuzz_nci_frame_decode,
         // nightly 2026-10-26: input `aa 31 00`, MT=101b decoded as a
         // valid Frame and could even satisfy the ladder's "first
-        // non-NTF frame" reply wait spuriously).
+        // non-NTF frame" reply wait spuriously). Quote-locked (#142,
+        // kernel nci_rx_work RX dispatch):
+        // NCI_CORE: switch (nci_mt(skb->data)) {
+        // NCI_CORE: default:
+        // NCI_CORE: pr_err("unknown MT 0x%x\n", nci_mt(skb->data));
         if mt != MT_DATA && mt != MT_CMD && mt != MT_RSP && mt != MT_NTF {
             return None;
         }
@@ -338,6 +394,16 @@ pub mod tx {
 
     /// CORE_RESET with reset_type=KEEP_CONFIGURATION (NCI §5.1.1 payload
     /// [reset_type]; 0x01 = keep configuration) — nci.c:187.
+    ///
+    /// #142 quote-lock divergence note (reference-first, flag not fix):
+    /// the kernel names 0x00 KEEP_CONFIG and 0x01 RESET_CONFIG —
+    /// i.e. the C driver's byte 0x01 (kept verbatim below: bench-proven,
+    /// the chip answers either way) is, by the kernel's naming, the
+    /// RESET-configuration type, not "keep". The label above comes from
+    /// the C driver's own comment; the wire byte is unchanged. Re-check
+    /// against UM11495 §6.1 before any behavior change:
+    // NCI_KERN: #define NCI_RESET_TYPE_KEEP_CONFIG 0x00
+    // NCI_KERN: #define NCI_RESET_TYPE_RESET_CONFIG 0x01
     pub const CORE_RESET: [u8; 4] = [MT_CMD, OID_CORE_RESET, 0x01, 0x01];
 
     /// CORE_INIT (NCI 2.0 §5.1.2: two parameter octets) — nci.c:214.
@@ -364,6 +430,13 @@ pub mod tx {
     /// Full extracted param inventory + the definitive "no ISO-DEP
     /// retry/WTX-bound TLV exists" negative: issue #151 research
     /// (UM11495 §13.2 Tables 98–100).
+    // Quote-locked (#142) — the founding incident's reference pair:
+    // NCI_KERN: struct set_config_param {
+    // NCI_KERN: __u8 id;
+    // NCI_KERN: __u8 len;
+    // NCI_KERN: __u8 val[NCI_MAX_PARAM_LEN];
+    // NCI_DEFS: #define NCI_PARAM_ID_TOTAL_DURATION 0x00
+    // NCI_DEFS: #define NCI_PARAM_LEN_TOTAL_DURATION 2
     pub const SET_CONFIG_TOTAL_DURATION: [u8; 8] = [
         MT_CMD,
         OID_CORE_SET_CONFIG,
@@ -419,6 +492,8 @@ pub mod tx {
     /// interface, poll mode. Payload [num=1, protocol, interface, mode=1]
     /// — NCI §6.1.1 (mapping mode 1 = poll) — reader-flavoured analogue of
     /// the C driver's card-emulation mapping (nci_configure_cardemu_mode).
+    // Quote-locked (#142) — kernel map-mode block:
+    // NCI_KERN: #define NCI_DISC_MAP_MODE_POLL 0x01
     pub const RF_DISCOVER_MAP_ISO_DEP: [u8; 7] = [
         MT_CMD | GID_RF,
         OID_RF_DISCOVER_MAP,
@@ -504,6 +579,8 @@ pub mod data {
     /// Max Data Packet payload 255 (UM11495 Rev 1.8 §5.3.1 Table 10;
     /// RF_INTF_ACTIVATED_NTF carries 0xFF). A 253-octet fragment maps
     /// onto one max-size ISO-DEP I-block (NCI 1.0 §8.3.1, Figure 17).
+    // Quote-locked (#142) — NXP's own clamp + derivation comment:
+    // NCI_DEFS: #define NCI_ISO_DEP_MAX_INFO 253 /* Max frame size (256) - Prologue (1) - Epilogue (2) in ISO-DEP, CID and NAD are not used*/
     pub const MAX_DATA_FRAGMENT: usize = 253;
 
     pub fn encode(conn_id: u8, payload: &[u8], out: &mut Vec<u8, MAX_FRAME>) -> bool {
@@ -749,6 +826,15 @@ pub mod reader {
     /// Activation-params-len, ActivationParams…]. For NFC-A ISO-DEP the
     /// tech params carry [SENS_RES(2), NFCID1_LEN, NFCID1, …] — re-emitted
     /// in the DISCOVER_NTF shape so [`nfca_uid`] keeps working.
+    // Quote-locked (#142) — the kernel struct this decoder walks:
+    // NCI_KERN: struct nci_rf_intf_activated_ntf {
+    // NCI_KERN: __u8 rf_discovery_id;
+    // NCI_KERN: __u8 rf_interface;
+    // NCI_KERN: __u8 rf_protocol;
+    // NCI_KERN: __u8 activation_rf_tech_and_mode;
+    // NCI_KERN: __u8 max_data_pkt_payload_size;
+    // NCI_KERN: __u8 initial_num_credits;
+    // NCI_KERN: __u8 rf_tech_specific_params_len;
     pub fn activation_to_discover(f: &Frame) -> Option<DiscoverNtf> {
         if f.mt != MT_NTF || f.gid != GID_RF || f.oid != NTF_RF_INTF_ACTIVATED || f.len < 5 {
             return None;

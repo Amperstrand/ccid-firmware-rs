@@ -38,13 +38,26 @@
 use ccid_protocol::atr::t1_bwt_ms;
 use heapless::Vec;
 
-/// Max INF field (§11.6.2 IFS ceiling is 254).
+/// Max INF field (§11.6.2 IFS ceiling is 254). Quote-locked (#142 G-03)
+/// to the host engine's own block buffer — the largest INF any openct
+/// peer will ever frame or accept:
+// T1_H: #define T1_BUFFER_SIZE (3 + 254 + 2)
 pub const MAX_IFSC: usize = 254;
 /// Relay capacity: max APDU/response assembled from a chain. Public so
 /// the CCID handler's copy buffer derives from it — independent sizes
 /// caused the G-03 silent-truncation bug.
+///
+/// Lock (#142 G-03): `feed` rejects any piece that would cross this
+/// bound with R(N(R), EDC) (`chain_overflow_answers_r_other_error`),
+/// and the handler's copy buffer is `[u8; MAX_RELAY]` by derivation
+/// (`chained_apdu_over_254_reaches_card_untruncated`) — truncation is
+/// impossible by construction on both sides of the relay.
 pub const MAX_RELAY: usize = 512;
 
+/// Quote-locked (#142 G-03): the host engine's DEFAULT send chunk is 32
+/// when the ATR carries no TA3 — everything larger arrives as a chain,
+/// which is why 32 is the correct pre-negotiation accept size:
+// T1: t1->ifsc = 32;
 const DEFAULT_HOST_IFSD: usize = 32;
 
 // G-04/G-05: the BWI our synthetic ATR advertises in TB3 and the baud
@@ -81,6 +94,15 @@ fn parse_pcb(pcb: u8) -> Option<Pcb> {
     // ISO 7816-3 Table 45 (§11.4.2): N(S) at b7 (weight 0x40), M at b6
     // (0x20), N(R) at b5 (0x10) — in BOTH I- and R-blocks. b4..b1 are
     // 0 (I) / error code (R). Bit names are b8..b1 with b1 = LSB.
+    //
+    // Block-type prefixes, triangulated across BOTH tracked engines
+    // (#142 G-01 quote-lock; docs/t1_pcb_layout_audit.md):
+    // T1_H: #define T1_I_BLOCK 0x00
+    // T1_H: #define T1_R_BLOCK 0x80
+    // T1_H: #define T1_S_BLOCK 0xC0
+    // ST_T1: #define T1_I_BLOCK 0x00U /* PCB (I-block: b8 = 0) */
+    // ST_T1: #define T1_R_BLOCK 0x80U /* PCB (R-block: b8 b7 = 10) */
+    // ST_T1: #define T1_S_BLOCK 0xC0U /* PCB (S-block: b8 b7 = 11) */
     match pcb & 0x80 {
         0x00 => Some(Pcb::I {
             ns: (pcb >> 6) & 1,
@@ -127,11 +149,13 @@ fn block(pcb: u8, inf: &[u8]) -> Vec<u8, 520> {
 /// received I-block's N(S) at b7 only). Audit: docs/t1_pcb_layout_audit.md.
 fn i_pcb(ns: u8, more: bool, nr: u8) -> u8 {
     // T1: #define T1_I_SEQ_SHIFT 6
+    // ST_T1: #define T1_I_SEQ_SHIFT 6U /* N(S) position (bit 7) */
     (ns << 6) | ((more as u8) << 5) | (nr << 4)
 }
 
 fn r_pcb(nr: u8, err: u8) -> u8 {
     // T1: #define T1_R_SEQ_SHIFT 4
+    // ST_T1: #define T1_R_SEQ_SHIFT 4U /* N(R) position (b5) */
     0x80 | (nr << 4) | err
 }
 
@@ -147,6 +171,7 @@ fn s_pcb(kind: SKind, response: bool) -> u8 {
     // `pcb == S | 0x20 | type` (proto-t1.c t1_negotiate_ifsd) and
     // rejects 0x1x-encodings.
     // T1: #define T1_S_RESPONSE 0x20
+    // ST_T1: #define T1_S_RESPONSE 0x20U /* If response: set bit b6, if request reset b6 in PCB S-Block */
     base | ((response as u8) << 5)
 }
 
@@ -349,7 +374,10 @@ impl T1Endpoint {
             }
             SKind::Wtx => {
                 // Host-requested WTX is unusual (initiator-side); echo the
-                // response to keep the exchange legal.
+                // response to keep the exchange legal. The host engine's
+                // own WTX S-block contract expects LEN=1 (#142 G-04):
+                // T1: case T1_S_WTX:
+                // T1: if (sdata[LEN] != 1)
                 let rsp = block(s_pcb(SKind::Wtx, true), inf);
                 self.last_sent = Some(rsp.clone());
                 FeedResult::Immediate(rsp)
@@ -398,6 +426,20 @@ impl T1Endpoint {
         // (proto-t1.c t1_xcv), so m = elapsed/BWT rounded up plus a
         // turnaround margin. The old fixed m=2 at a flat 150 ms was
         // detached from every window the host actually runs.
+        //
+        // The host-side extension, quote-locked (#142 G-04):
+        // T1: if (t1->wtx > 1)
+        // T1: {
+        // T1: /* set the new temporary timeout at WTX card request */
+        // T1: ccid_desc->readTimeout *=  t1->wtx;
+
+        // m ceiling 59, cross-cited to the NFC side (#142 G-04): the
+        // ISO-DEP WTX multiplier shares the 7816-3 lineage and the same
+        // 1..59 legal range (14443-4 §7.3) — our canonical 14443
+        // reference enforces it in check_wtx:
+        // ISODEP: /// §7.3: the INF field is one byte whose low six bits code a WTXM of 1
+        // ISODEP: /// to 59; 0 and 60 to 63 are RFU. A peer that keeps asking for more time
+        // ISODEP: if !(1..=59).contains(&wtxm) {
         let bwt = t1_bwt_ms(self.host_bwi, HOST_DEFAULT_BAUD);
         if took_ms + WTX_TURNAROUND_MS > bwt {
             let m = ((took_ms + WTX_TURNAROUND_MS).div_ceil(bwt)).clamp(2, 59) as u8;
@@ -433,7 +475,14 @@ impl T1Endpoint {
     }
 
     /// Next outgoing chain block (first call after staging, then one
-    /// per host R-ACK).
+    /// per host R-ACK). Send-side truncation policy (#142 G-03
+    /// quote-lock): chunk at the negotiated IFS and set the M bit —
+    /// exactly the host engine's own send-side behavior:
+    // T1: if (len > t1->ifsc) {
+    // T1: pcb |= T1_MORE_BLOCKS;
+    // T1: len = t1->ifsc;
+    // T1: more = true;
+    // T1: }
     fn take_next_chain_block(&mut self) -> Option<Vec<u8, 520>> {
         if self.send_chain.is_empty() {
             return None;
@@ -456,6 +505,11 @@ impl T1Endpoint {
 
     fn bad_block(&mut self) -> FeedResult {
         // §11.5.3: answer with R(N(R), parity-error) demanding retransmit.
+        // Error code 0x01 = EDC error in both tracked engines (#142 G-01
+        // quote-lock — the err nibble of the Table-45 R-block layout):
+        // T1: #define T1_IS_ERROR(pcb) ((pcb) & 0x0F)
+        // T1: #define T1_EDC_ERROR 0x01
+        // ST_T1: #define T1_EDC_ERROR 0x01U /* [b6..b1] = 0-N(R)-0001 */
         FeedResult::Immediate(block(r_pcb(self.host_ns, 1), &[]))
     }
 }
@@ -503,6 +557,8 @@ pub fn is_s_block_request(bytes: &[u8]) -> bool {
     }
     let pcb = bytes[1];
     // S-block: 11 b5 0 kind — request has bit 4 clear (response sets it).
+    // Type prefix quote-locked to both tracked engines (#142 G-01):
+    // T1_H: #define T1_S_BLOCK 0xC0
     (pcb & 0xC0) == 0xC0 && (pcb & 0x10) == 0
 }
 

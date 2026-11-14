@@ -264,6 +264,28 @@ radius. "esp32" gaps concern `t1.rs`/handler; "STM32" gaps concern the pipe path
 
 ### Why G-01 is the one to fix first (bench-predicted)
 
+### Quote-lock status (2026-11-14, issue #142 track — wt/t142-quote-gaps)
+
+The G-01/G-03/G-04 constants and policies are now QUOTE-LOCKED into the
+greatspectations corpus (`specquotes.toml` →
+`.github/workflows/spec-quote-drift.yml`): every load-bearing byte/fact
+cites a tracked free source verbatim, so a "fix" that drifts from the
+reference breaks CI instead of silently changing wire bytes.
+
+| Gap | Quote-locked sites (all in `crates/ccid-service/src/t1.rs` unless noted) | Sources + evidence |
+|---|---|---|
+| **G-01** PCB layout | `parse_pcb` (block-type prefixes), `i_pcb`, `r_pcb`, `s_pcb`, `bad_block` (err nibble), `is_s_block_request` | openct `proto-t1.c` + `proto-t1.h` (markers `T1`/`T1_H`) AND ST `usbd_ccid_smartcard_template.h` (marker `ST_T1`, bit-position comments) — the audit's two independent implementations, now both drift-checked. Byte-literal tests: `pcb_bit_layout_locked_to_iso_7816_3_table_45`, `serial_i_pcb_matches_7816_3_section_11_quote` |
+| **G-03** truncation policy | `MAX_IFSC` (254), `DEFAULT_HOST_IFSD` (32), `take_next_chain_block` chunk-at-IFS, `MAX_RELAY` derivation + handler copy (`ccid_handler.rs` xfr_via_t1) | `T1_H: T1_BUFFER_SIZE (3 + 254 + 2)` (host INF ceiling), `T1: t1->ifsc = 32;` (default host send chunk), `T1: t1_build` chunking block (M-bit + len clamp). Tests: `chain_overflow_answers_r_other_error`, `chained_apdu_over_254_reaches_card_untruncated` |
+| **G-04** WTX policy | `t1_bwt_ms` (`crates/ccid-protocol/src/atr.rs`), `card_response` m sizing (clamp 2..59), `on_s_request` WTX echo | `IFDHANDLER: BWT = 11 * etu + (1<<BWI) * 960 * 372 / clock_frequency;` (host's own BWT math), `T1: ccid_desc->readTimeout *=  t1->wtx;` (host extends by m exactly once), NFC-side cross-cite `ISODEP: check_wtx` WTXM 1..59 (14443-4 §7.3, our canonical iso14443 fork @0f7d9d70, quote-only excerpt `reference/iso14443-rs/`). Tests: `wtx_m_sized_from_negotiated_bwt`, `slow_card_runs_wtx_dance` |
+| NCI (issue task 1) | every constant in `crates/pn7160-nci` (opcodes, status, techs, param IDs, reasons, buffers) | NEW tracked quote-only sources: torvalds `nci.h`+`core.c` @`9907cda9` (markers `NCI_KERN`/`NCI_CORE`) + NXP `nci_defs.h` @`8476ea1a` (marker `NCI_DEFS`) — pins + rules in `reference/README.md` |
+
+Corpus-format notes learned the hard way (they cost two gate
+iterations): greatspectations parses only `// MARKER:` lines — a
+`///`-doc line is silently skipped (dead quote); and a markerless `//`
+line after a quote JOINS it — quote blocks must end at code, a blank
+line, or the next marker line.
+
+
 Trace of a host chain with N(S)=1 (host sending a >32 B APDU on its second-or-later
 chain):
 

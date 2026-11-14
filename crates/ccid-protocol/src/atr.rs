@@ -169,8 +169,15 @@ pub enum ProcedureByte {
 /// (etu = 1/baud). Ceiling division — the caller must wait at least as
 /// long as the window it advertises to the host.
 ///
+/// Quote-locked (#142 G-04) to the host driver's own BWT computation
+/// (libccid ifdhandler.c T1_card_timeout; the ch. 9.5.3.2 cite is the
+/// 1997-edition numbering of the §11.6.2 clause):
+///
 /// Shared single definition (fix-all-siblings): consumed by the STM32
 /// relay (`smartcard_common`) and the esp32 T=1 endpoint (`t1.rs`).
+// IFDHANDLER: /* card BWT */
+// IFDHANDLER: /* see ch. 9.5.3.2 Block Waiting Time, page 20 of ISO 7816-3 */
+// IFDHANDLER: BWT = 11 * etu + (1<<BWI) * 960 * 372 / clock_frequency;
 pub fn t1_bwt_ms(bwi: u8, baud: u32) -> u32 {
     if baud == 0 {
         return 5_000;
