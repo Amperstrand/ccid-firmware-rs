@@ -267,6 +267,20 @@ case "${BOARD}" in
             echo "error: wifi-vpcd needs NUCULA_WIFI_SSID / NUCULA_WIFI_PASS / NUCULA_VPCD_HOST in the environment (see docs/VPCD_WIFI_RUNBOOK.md) — refusing" >&2
             exit 1
         fi
+        # #555: the baked endpoint MUST be visible at build time — a
+        # stale NUCULA_VPCD_HOST (pre-migration host) or a silent
+        # default port cost hours of dead-agent debugging because the
+        # only other place the target appears is the boot console.
+        # Print host:port + the reader.conf CHANNELID the port implies
+        # (port | 0x8C00 base: 35963->0x8C7B, 35964->0x8C7C, ...) and
+        # warn when the host is not a documented bench listener host.
+        __VPCD_PORT="${NUCULA_VPCD_PORT:-35963}"
+        __CHAN="0x$(printf '%04X' $(( __VPCD_PORT - 35963 + 0x8C7B )) )"
+        echo "wifi-vpcd endpoint baked: ${NUCULA_VPCD_HOST}:${__VPCD_PORT} (reader.conf CHANNELID ${__CHAN}; default port used: $([ -n "${NUCULA_VPCD_PORT:-}" ] && echo no || echo YES))"
+        case "${NUCULA_VPCD_HOST}" in
+            192.168.13.208|192.168.13.221) ;;
+            *) echo "warning: NUCULA_VPCD_HOST=${NUCULA_VPCD_HOST} is not a documented bench listener host (.208 ai-legion / .221 ai-legion-small) — verify before flashing" >&2 ;;
+        esac
         TOOLCHAIN="esp"
         SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
         TRIPLE="riscv32imc-esp-espidf"
