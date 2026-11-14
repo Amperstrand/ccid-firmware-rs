@@ -82,15 +82,41 @@ BRIDGE_PORT = 35973
 ECHO_AID = "A00000015145434F01"
 
 
-def _bridge_ready() -> bool:
-    """Bridge built AND the vpcd slot actually accepting connections.
+def _estab_on_port(port: int, tcp_text: str, tcp6_text: str = "") -> bool:
+    """True if an ESTABLISHED socket exists on `port` in /proc/net/tcp[6].
 
-    Pure-python TCP probe — no `ss` (absent in some minimal runner
-    images) and no listener-table parsing; connects to the exact thing
-    the tests need.
+    Parsing the proc tables (pure python, no ss, no connect) is the
+    ONLY non-destructive ownership check for a vpcd slot: the driver
+    listener is backlog-1, so a TCP connect probe — even one that
+    closes immediately — displaces the bridge's reconnect and leaves a
+    CLOSE-WAIT stub on the slot (bench-observed 2026-11-14: the old
+    connect-based readiness probe produced exactly that CLOSE-WAIT and
+    a silent all-skip run). See the virtual-smartcard-harness wire
+    rules: ownership check = ESTAB pair, never a connect.
     """
-    import socket
+    def scan(text: str) -> bool:
+        # columns: sl local_address rem_address st ...; st 01 = ESTABLISHED
+        hexport = f"{port:04X}"
+        for line in text.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            local, st = parts[1], parts[3]
+            if local.split(":")[1] == hexport and st == "01":
+                return True
+        return False
 
+    return scan(tcp_text) or scan(tcp6_text)
+
+
+def _bridge_ready() -> bool:
+    """Bridge built AND attached to the vpcd slot (ESTAB pair visible).
+
+    Zero network side effects: reads /proc/net/tcp[6] only — a connect
+    probe here would sabotage the very bridge it certifies (backlog-1
+    accept queue, see _estab_on_port docstring). If the bridge is not
+    attached, the honest answer is False: the suite skips.
+    """
     if not BRIDGE_JAR.exists():
         return False
     # pcscd auto-exits (~60 s) with no IPC client; a first failed probe
@@ -101,14 +127,17 @@ def _bridge_ready() -> bool:
 
     for _ in range(15):
         try:
-            with socket.create_connection(("127.0.0.1", BRIDGE_PORT), timeout=2):
-                return True
+            tcp = open("/proc/net/tcp", encoding="ascii").read()
+            tcp6 = open("/proc/net/tcp6", encoding="ascii").read()
         except OSError:
-            try:
-                readers()  # IPC poke: wakes pcscd via systemd activation
-            except Exception:
-                pass
-            time.sleep(1)
+            return False
+        if _estab_on_port(BRIDGE_PORT, tcp, tcp6):
+            return True
+        try:
+            readers()  # IPC poke: wakes pcscd via systemd activation
+        except Exception:
+            pass
+        time.sleep(1)
     return False
 
 
@@ -331,3 +360,33 @@ def test_smartpgp_wrong_pin_6982():
         assert (s1, s2) == (0x69, 0x82)
     finally:
         conn.disconnect()
+
+
+class TestEstabProbe:
+    """Offline unit tests for the non-destructive ESTAB parser."""
+
+    TCP_FIXTURE = (
+        "  sl  local_address rem_address   st tx_queue\n"
+        "   0: 0100007F:8C85 0100007F:43106 01 00000000\n"   # ESTAB, our port
+        "   1: 0100007F:8C85 0100007F:46794 08 00000001\n"   # CLOSE-WAIT — NOT ready
+        "   2: 0100007F:8C74 00000000:0000 0A 00000000\n"   # LISTEN other port
+    )
+
+    def test_estab_on_our_port_is_true(self):
+        from tests.hardware.host.test_vjavacard import _estab_on_port
+        assert _estab_on_port(35973, self.TCP_FIXTURE) is True
+
+    def test_close_wait_only_is_false(self):
+        from tests.hardware.host.test_vjavacard import _estab_on_port
+        no_estab = self.TCP_FIXTURE.replace("01 00000000", "06 00000000")
+        assert _estab_on_port(35973, no_estab) is False
+
+    def test_other_port_is_false(self):
+        from tests.hardware.host.test_vjavacard import _estab_on_port
+        assert _estab_on_port(35974, self.TCP_FIXTURE) is False
+
+    def test_tcp6_fallback(self):
+        from tests.hardware.host.test_vjavacard import _estab_on_port
+        tcp6 = ("  sl  local_address rem_address   st tx_queue\n"
+                "   0: FFFF0100007F:8C85 FFFF0100007F:43106 01 0\n")
+        assert _estab_on_port(35973, "", tcp6) is True
