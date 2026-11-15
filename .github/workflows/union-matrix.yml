@@ -200,6 +200,8 @@ jobs:
         if: steps.esp_toolchain_cache.outputs.cache-hit != 'true'
         run: |
           espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
+          . "${HOME}/export-esp.sh"
+          rustup component add rustfmt --toolchain esp || true
         env:
           # espup queries the GitHub API for the fork's release assets;
           # unauthenticated it dies with 'rate limit exceeded' on cache-miss
@@ -207,8 +209,6 @@ jobs:
           # install step, nothing to do with any diff). The workflow token
           # has plenty of API quota and fixes the whole flake class.
           GITHUB_TOKEN: ${{ github.token }}
-          . "${HOME}/export-esp.sh"
-          rustup component add rustfmt --toolchain esp || true
 
       - name: cargo check (${{ matrix.name }})
         working-directory: firmware/esp32-ccid
@@ -329,6 +329,8 @@ jobs:
         if: steps.esp_toolchain_cache.outputs.cache-hit != 'true'
         run: |
           espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
+          . "${HOME}/export-esp.sh"
+          rustup component add rustfmt --toolchain esp || true
         env:
           # espup queries the GitHub API for the fork's release assets;
           # unauthenticated it dies with 'rate limit exceeded' on cache-miss
@@ -336,8 +338,6 @@ jobs:
           # install step, nothing to do with any diff). The workflow token
           # has plenty of API quota and fixes the whole flake class.
           GITHUB_TOKEN: ${{ github.token }}
-          . "${HOME}/export-esp.sh"
-          rustup component add rustfmt --toolchain esp || true
 
       - name: Build product artifact (${{ matrix.product }}/${{ matrix.board }})
         working-directory: firmware/esp32-ccid
