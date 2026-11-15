@@ -188,6 +188,9 @@ struct SmartcardWrapper {
 /// Consecutive failed activations before a floating/absent slot is
 /// reported empty. 3 keeps a slow-starting real card (one or two ATR
 /// misses) visible while killing the phantom inside three connects.
+/// Gated like its only consumer (the SmartcardWrapper impl below) —
+/// ungated it is dead code on every non-F469 target (-D dead_code).
+#[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 const PHANTOM_THRESHOLD: u8 = 3;
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
