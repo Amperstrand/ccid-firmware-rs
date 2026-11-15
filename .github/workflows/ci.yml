@@ -544,6 +544,13 @@ jobs:
           #   same Rust version as the stable pin and retires the dated
           #   upstream nightly entirely.
           espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
+        env:
+          # espup queries the GitHub API for the fork's release assets;
+          # unauthenticated it dies with 'rate limit exceeded' on cache-miss
+          # legs (3x on 2026-11-14 alone: PRs #562/#580/#581 — toolchain
+          # install step, nothing to do with any diff). The workflow token
+          # has plenty of API quota and fixes the whole flake class.
+          GITHUB_TOKEN: ${{ github.token }}
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
 
@@ -775,6 +782,13 @@ jobs:
           #   same Rust version as the stable pin and retires the dated
           #   upstream nightly entirely.
           espup install -c 14.2.0_20260121 -v 1.98.1.0 --targets esp32,esp32c3
+        env:
+          # espup queries the GitHub API for the fork's release assets;
+          # unauthenticated it dies with 'rate limit exceeded' on cache-miss
+          # legs (3x on 2026-11-14 alone: PRs #562/#580/#581 — toolchain
+          # install step, nothing to do with any diff). The workflow token
+          # has plenty of API quota and fixes the whole flake class.
+          GITHUB_TOKEN: ${{ github.token }}
           . ${HOME}/export-esp.sh
           rustup component add rustfmt --toolchain esp || true
 
