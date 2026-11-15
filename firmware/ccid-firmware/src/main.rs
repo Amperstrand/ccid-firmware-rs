@@ -174,7 +174,21 @@ enum AppMode {
 struct SmartcardWrapper {
     uart: SmartcardUart,
     heal: ccid_firmware_rs::selfhealing::FailureTracker,
+    /// #583 phantom-ICC validation: the bare-DISCO card-detect pin
+    /// floats HIGH when the slot shield is absent, exposing an
+    /// unresponsive card to pcscd (~4 s activation timeout per
+    /// SCardConnect, bench-measured). The validator latches ABSENT
+    /// after PHANTOM_THRESHOLD consecutive failed activations while
+    /// the pin stays asserted; any pin-low observation (shield/card
+    /// motion toggles the switch) resets it. Cell because
+    /// `is_card_present` takes &self.
+    presence: core::cell::Cell<ccid_core::presence::PresenceValidator>,
 }
+
+/// Consecutive failed activations before a floating/absent slot is
+/// reported empty. 3 keeps a slow-starting real card (one or two ATR
+/// misses) visible while killing the phantom inside three connects.
+const PHANTOM_THRESHOLD: u8 = 3;
 
 #[cfg(all(feature = "stm32f469", target_arch = "arm", target_os = "none"))]
 impl SmartcardWrapper {
@@ -182,6 +196,9 @@ impl SmartcardWrapper {
         Self {
             uart,
             heal: ccid_firmware_rs::selfhealing::FailureTracker::new(),
+            presence: core::cell::Cell::new(ccid_core::presence::PresenceValidator::new(
+                PHANTOM_THRESHOLD,
+            )),
         }
     }
 
@@ -229,7 +246,19 @@ impl CcidSmartcardDriver for SmartcardWrapper {
         // pending re-init latch survives — only the CCID layer's
         // take_reinit_pending consumes it (#342).
         self.heal.session_start();
-        let atr = self.uart.power_on()?;
+        // #583: sample the detect pin BEFORE power_on (its result holds a
+        // mutable-derived borrow of the frontend), then feed the
+        // activation outcome to the presence validator — the bench
+        // phantom never answers; three strikes latch absent.
+        let pin_asserted = self.uart.is_card_present();
+        let result = self.uart.power_on();
+        let obs: Option<Result<(), ()>> = if result.is_ok() {
+            Some(Ok(()))
+        } else {
+            Some(Err(()))
+        };
+        self.presence.get_mut().observe(pin_asserted, obs);
+        let atr = result?;
         Ok(&atr.raw[..atr.len])
     }
 
@@ -239,7 +268,12 @@ impl CcidSmartcardDriver for SmartcardWrapper {
     }
 
     fn is_card_present(&self) -> bool {
-        self.uart.is_card_present()
+        // #583: validated view — see the field docs. With the threshold
+        // default this is raw-pin behavior until activations fail.
+        let mut v = self.presence.get();
+        let out = v.observe(self.uart.is_card_present(), None);
+        self.presence.set(v);
+        out
     }
 
     fn transmit_apdu(
