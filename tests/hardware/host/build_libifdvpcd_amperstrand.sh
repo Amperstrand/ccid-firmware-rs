@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build + deploy the Amperstrand-patched libifdvpcd (issue #326 host half).
 #
-# Two upstream bugs fixed (see libifdvpcd-amperstrand.patch and
-# docs in this directory):
+# Three upstream bugs fixed (see libifdvpcd-amperstrand.patch,
+# libifdvpcd-pthread-lock.patch and docs in this directory):
 #   1. A zero-length ATR answer (the vpcd protocol's "no card" signal)
 #      triggered vicc_eject() — connection churn that prevents pcscd
 #      from ever seeing a slow-to-warm vpicc (our wifi firmware).
@@ -49,10 +49,11 @@ case "$cmd" in
     git clone --quiet https://github.com/frankmorgner/vsmartcard.git "$SRC"
     git -C "$SRC" checkout --quiet "$UPSTREAM_PIN"
     git -C "$SRC" apply "$HERE/libifdvpcd-amperstrand.patch"
+    git -C "$SRC" apply "$HERE/libifdvpcd-pthread-lock.patch"
     gcc -O2 -fPIC -shared \
       -DHAVE_DECL_MSG_NOSIGNAL=1 -DHAVE_DECL_SO_NOSIGPIPE=0 \
-      -DHAVE_ARPA_INET_H=1 \
-      -DPACKAGE_VERSION='"3.3+amperstrand1"' -DVPCDSLOTS=2 \
+      -DHAVE_ARPA_INET_H=1 -DHAVE_PTHREAD=1 \
+      -DPACKAGE_VERSION='"3.3+amperstrand2"' -DVPCDSLOTS=2 \
       -o "$OUT" \
       "$SRC/virtualsmartcard/src/vpcd/vpcd.c" \
       "$SRC/virtualsmartcard/src/vpcd/lock.c" \
@@ -61,7 +62,7 @@ case "$cmd" in
       -I"$SRC/virtualsmartcard/src/vpcd" \
       -I"$SRC/virtualsmartcard/src/ifd-vpcd" \
       -lpthread
-    echo "built: $OUT (upstream $UPSTREAM_PIN + amperstrand patch)"
+    echo "built: $OUT (upstream $UPSTREAM_PIN + amperstrand + pthread-lock)"
     ;;
   deploy)
     [ -f "$OUT" ] || { echo "run 'build' first" >&2; exit 1; }
