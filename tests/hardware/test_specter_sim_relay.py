@@ -5,6 +5,7 @@ Simulates the specter-diy unix wallet side (raw APDU over TCP, one
 recv) against the relay with canned backends — no pcscd, no hardware,
 safe for the CI collect gate.
 """
+import os
 import socket
 import subprocess
 import sys
@@ -152,10 +153,20 @@ def test_cli_help_smoke():
     assert r.returncode == 0 and "specter" in r.stdout
 
 
-SPECTER_DIR = Path("/root/src/specter-diy")
-# The unmodified specter-diy wallet tree (unix uscard stub + the
-# keystore MemoryCardApplet with AID B0 0B 51 11 CB 01 — the
-# SATOCHIP-family card applet). Absent on CI runners: skip cleanly.
+SPECTER_DIR = Path(os.environ.get(
+    "SPECTER_DYI_TREE",
+    "/root/src/specter-diy" if os.geteuid() == 0 else str(
+        Path.home() / "src" / "specter-diy")))
+
+
+def _specter_dir_exists():
+    # Path.stat on /root/* raises PermissionError (not False) for
+    # non-root CI runners — .exists() propagates it at module level
+    # and kills the unprivileged python-collect gate.
+    try:
+        return SPECTER_DIR.exists()
+    except (PermissionError, OSError):
+        return False
 def _load_specter_applet():
     """Import the wallet's MemoryCardApplet standalone under CPython.
 
@@ -213,7 +224,7 @@ def _load_specter_applet():
     return importlib.import_module("jk.applets.memorycard")
 
 
-@pytest.mark.skipif(not SPECTER_DIR.exists(),
+@pytest.mark.skipif(not _specter_dir_exists(),
                     reason="specter-diy tree absent (bench host only)")
 def test_e2e_specter_wallet_select_through_relay():
     """The REAL wallet applet class + REAL uscard stub -> our relay ->
