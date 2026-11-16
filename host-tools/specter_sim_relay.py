@@ -41,6 +41,9 @@ import hce_relay  # noqa: E402  (CardBackend family + policies + journal)
 
 
 def build_backend(args):
+    if args.backend == "model":
+        import specter_card_model
+        return specter_card_model.MemoryCardModel()
     if args.backend == "pcsc":
         return hce_relay.PcscBackend(
             reader_needle=args.reader,
@@ -118,7 +121,8 @@ def main() -> int:
     desc = (__doc__ or "").strip().splitlines()[0]
     ap = argparse.ArgumentParser(description=desc)
     ap.add_argument("--port", type=int, default=21111)
-    ap.add_argument("--backend", choices=["pcsc", "script", "static"],
+    ap.add_argument("--backend",
+                    choices=["pcsc", "script", "static", "model"],
                     default="script")
     ap.add_argument("--reader", help="pcscd reader needle")
     ap.add_argument("--pcsc-policy",
