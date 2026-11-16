@@ -153,9 +153,18 @@ def test_cli_help_smoke():
 
 
 SPECTER_DIR = Path("/root/src/specter-diy")
-# The unmodified specter-diy wallet tree (unix uscard stub + the
-# keystore MemoryCardApplet with AID B0 0B 51 11 CB 01 — the
-# SATOCHIP-family card applet). Absent on CI runners: skip cleanly.
+# The unmodified specter-diy wallet tree. Absent on CI runners; the
+# existence probe lives INSIDE the test (a module-level .exists() —
+# including in a skipif decorator, which evaluates at COLLECTION —
+# raises PermissionError on runners where /root is unreadable and
+# broke python-collect after #586).
+
+
+def _specter_tree_ok() -> bool:
+    try:
+        return SPECTER_DIR.is_dir()
+    except OSError:
+        return False
 def _load_specter_applet():
     """Import the wallet's MemoryCardApplet standalone under CPython.
 
@@ -213,17 +222,23 @@ def _load_specter_applet():
     return importlib.import_module("jk.applets.memorycard")
 
 
-@pytest.mark.skipif(not SPECTER_DIR.exists(),
-                    reason="specter-diy tree absent (bench host only)")
 def test_e2e_specter_wallet_select_through_relay():
     """The REAL wallet applet class + REAL uscard stub -> our relay ->
     scripted card: the zero-hardware wallet<->card loop."""
+    if not _specter_tree_ok():
+        pytest.skip("specter-diy tree absent (bench host only)")
     pytest.importorskip("Crypto")
     mc = _load_specter_applet()
     from uscard import Reader
     table = hce_relay.parse_script(["00A4040006B00B5111CB01=9000"])
-    start_relay(hce_relay.ScriptBackend(table), 21214)
-    conn = Reader().createConnection()
-    assert conn.isCardInserted()
-    conn.connect(1)
-    mc.MemoryCardApplet(conn).select()  # raises ISOException on != 9000
+    # the uscard stub dials the HARDCODED 21111 — the test must own that
+    # port and release it (an earlier version bound 21214 and only
+    # passed while a stray smoke relay happened to hold 21111).
+    relay = start_relay(hce_relay.ScriptBackend(table), 21111)
+    try:
+        conn = Reader().createConnection()
+        assert conn.isCardInserted()
+        conn.connect(1)
+        mc.MemoryCardApplet(conn).select()  # raises ISOException on != 9000
+    finally:
+        relay.stop()

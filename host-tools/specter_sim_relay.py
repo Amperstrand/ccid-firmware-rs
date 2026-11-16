@@ -64,16 +64,31 @@ class SimRelay:
     def __init__(self, backend, journal=None):
         self.backend = backend
         self.journal = journal
+        self._srv = None
+
+    def stop(self):
+        """Release the listening port (tests reuse the uscard stub's
+        hardcoded 21111 across cases; without stop the first relay's
+        daemon thread holds the port for the whole pytest session)."""
+        if self._srv is not None:
+            try:
+                self._srv.close()
+            except OSError:
+                pass
 
     def serve_forever(self, port):
         srv = socket.socket()
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.bind(("127.0.0.1", port))
         srv.listen(1)
+        self._srv = srv
         print(f"specter_sim_relay: 127.0.0.1:{port} "
               f"<- backend {self.backend.name}", flush=True)
         while True:
-            conn, _ = srv.accept()
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return  # stopped
             conn.settimeout(10)
             try:
                 self.backend.connect()

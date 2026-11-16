@@ -38,7 +38,7 @@ def _start_relay(backend, port):
     for _ in range(50):
         try:
             socket.create_connection(("127.0.0.1", port), timeout=1).close()
-            return
+            return relay
         except OSError:
             time.sleep(0.1)
     raise RuntimeError("relay did not come up")
@@ -139,32 +139,37 @@ def _load_wallet():
     return importlib.import_module("jk.applets.memorycard")
 
 
-@pytest.mark.skipif(not SPECTER_DIR.exists(),
-                    reason="specter-diy tree absent (bench host only)")
 def test_wallet_full_positive_path_against_model():
+    try:
+        ok = SPECTER_DIR.is_dir()
+    except OSError:
+        ok = False
+    if not ok:
+        pytest.skip("specter-diy tree absent (bench host only)")
     mc = _load_wallet()
     from uscard import Reader
-    _start_relay(specter_card_model.MemoryCardModel(), 21111)  # uscard stub hardcodes 21111
-    conn = Reader().createConnection()
-    assert conn.isCardInserted()
-    conn.connect(1)
-    card = mc.MemoryCardApplet(conn)
-    card.select()                       # SELECT -> 9000
-    pub = card.sc.get_card_pubkey()     # GET_PUBKEY parses
-    assert pub is not None
-    card.sc.open("es")                  # OPEN_SE: wallet VERIFIES our
-    #                                    HMAC + ECDSA signature
-    assert card.sc.is_open
-    # encrypted round-trips
-    echo = card.sc.request(b"\x00\x00hello")
-    assert echo == b"hello", f"echo mismatch: {echo!r}"
-    rnd = card.sc.request(b"\x01\x00")
-    assert len(rnd) == 32
-    # MemoryCard secret roundtrip over the secure channel
-    card.save_secret(b"my-test-secret")
-    assert card.get_secret() == b"my-test-secret"
-    card.sc.close()
-    assert not card.sc.is_open
+    _relay = _start_relay(specter_card_model.MemoryCardModel(), 21111)  # uscard stub hardcodes 21111
+    try:
+        conn = Reader().createConnection()
+        assert conn.isCardInserted()
+        conn.connect(1)
+        card = mc.MemoryCardApplet(conn)
+        card.select()                       # SELECT -> 9000
+        pub = card.sc.get_card_pubkey()     # GET_PUBKEY parses
+        assert pub is not None
+        card.sc.open("es")                  # OPEN_SE: wallet VERIFIES our
+        #                                    HMAC + ECDSA signature
+        assert card.sc.is_open
+        echo = card.sc.request(b"\x00\x00hello")
+        assert echo == b"hello", f"echo mismatch: {echo!r}"
+        rnd = card.sc.request(b"\x01\x00")
+        assert len(rnd) == 32
+        card.save_secret(b"my-test-secret")
+        assert card.get_secret() == b"my-test-secret"
+        card.sc.close()
+        assert not card.sc.is_open
+    finally:
+        _relay.stop()
 
 
 def test_model_raw_wire_shapes():
