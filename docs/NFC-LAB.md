@@ -87,6 +87,41 @@ A successful NDEF relay therefore does NOT prove transparent J3R180
 applet compatibility — applet SELECTs cannot traverse the S20 (see
 #558); use backend-side pre-selection or a non-Samsung HCE endpoint.
 
+## The dry stack (zero-hardware card surfaces)
+
+Every relay leg has a dry twin: the same host-side code exercised
+against virtual cards, no reader, no RF, no Java. Use these FIRST —
+they run in milliseconds, they are CI-gated, and the wallet's own
+verifiers are the oracle (a wrong model cannot pass them).
+
+```
+specter-diy wallet client (unmodified, CPython shims)
+   → uscard TCP stub (port 21111 — the test OWNS and releases it)
+   → specter_sim_relay (--backend model | script | pcsc)
+   → virtual applet: MemoryCardModel | SecureAppletModel
+   → OR, full-stack: vpcd_card_server → vpcd → a PRIVATE pcscd
+     → any pcscd consumer (pyscard, pcsc_scan, …)
+```
+
+| Piece | File | What it proves |
+|---|---|---|
+| MemoryCard model | `host-tools/specter_card_model.py` | the wallet's positive card path: SELECT, key exchange, secure-channel open (wallet verifies HMAC + ECDSA), encrypted ops, secrets — es AND ee modes |
+| SecureApplet model | `host-tools/specter_secure_applet.py` | the PIN applet: OwnerPIN budget survives reinsertion, re-lock on power-up, exhaustion bricks (0503), 0502 → PinError |
+| vpcd server | `host-tools/vpcd_card_server.py` | any CardBackend behind a REAL pcscd via vpcd — on a private socket-activated pcscd instance, never the bench's |
+| CI gate | `wallet-e2e` job | the wallet-vs-model tests RUN on runners (passed=19, skipped=0, zero-skip guard) |
+
+Hard rules learned building it (all encoded in the tests):
+- the wallet's `request()` AUTO-REOPENS a closed channel and rekeys at
+  iv ≥ 2¹⁶ — models must survive both, not reject them;
+- micropython-secp256k1 MUTATES pubkey objects in tweak_mul while
+  coincurve RETURNS — CPython shims need a mutable holder;
+- the uscard stub dials hardcoded 21111; any test using it must own
+  and release the port (a stray listener once made an e2e pass
+  spuriously);
+- the specter-diy wallet tree is bench-host-local at
+  `/root/src/specter-diy` — CI clones it pinned (job `wallet-e2e`).
+
+
 ## Intended workflow
 
 1. **Trust the bench by probing it, not by memory.** Run
