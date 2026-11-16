@@ -19,13 +19,15 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "host-tools"))
 
-import specter_card_model  # noqa: E402
 import specter_sim_relay  # noqa: E402
 
 SPECTER_DIR = Path("/root/src/specter-diy")
 
-pytest.importorskip("coincurve")
+# guards BEFORE the model import (it needs Crypto+coincurve at module
+# scope) — the CI collect gate runs without them
 pytest.importorskip("Crypto")
+pytest.importorskip("coincurve")
+import specter_card_model  # noqa: E402
 
 
 def _start_relay(backend, port):
