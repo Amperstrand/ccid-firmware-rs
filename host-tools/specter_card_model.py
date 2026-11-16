@@ -39,6 +39,13 @@ MAC_SIZE = 14
 
 AID = bytes.fromhex("B00B5111CB01")
 
+#: ATR of the physical card this model stands in for: the bench's
+#: ComSign eID behind the Cherry ST-2xxx (AGENTS.md host table —
+#: T=1, IFSC=254, TCK correct). Presented over vpcd so pcscd runs its
+#: real T=1 stack against the model exactly as it does against the
+#: card (vpcd_card_server picks this up via the backend's `atr`).
+COMSIGN_EID_ATR = bytes.fromhex("3BD518FF8191FE1FC38073C821100A")
+
 INS_GET_PUBKEY = 0xB2
 INS_OPEN_EE = 0xB5
 INS_OPEN_SE = 0xB4
@@ -71,6 +78,11 @@ class MemoryCardModel:
         self.selected = False
 
     # --- CardBackend surface -------------------------------------------
+
+    @property
+    def atr(self) -> bytes:
+        """ATR to present to a reader (vpcd): the ComSign eID shape."""
+        return COMSIGN_EID_ATR
 
     def connect(self) -> None:
         self.selected = False
