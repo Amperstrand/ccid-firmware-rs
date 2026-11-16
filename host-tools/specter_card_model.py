@@ -49,6 +49,7 @@ COMSIGN_EID_ATR = bytes.fromhex("3BD518FF8191FE1FC38073C821100A")
 INS_GET_PUBKEY = 0xB2
 INS_OPEN_EE = 0xB5
 INS_OPEN_SE = 0xB4
+INS_OPEN_EE = 0xB5
 INS_SECURE_MSG = 0xB6
 INS_CLOSE = 0xB7
 
@@ -112,6 +113,8 @@ class MemoryCardModel:
             return pub + OP_SUCCESS
         if ins == INS_OPEN_SE:
             return self._open_se(capdu[5:5 + capdu[4]])
+        if ins == INS_OPEN_EE:
+            return self._open_ee(capdu[5:5 + capdu[4]])
         if ins == INS_SECURE_MSG:
             return self._secure_msg(capdu[5:5 + capdu[4]])
         if ins == INS_CLOSE:
@@ -132,7 +135,10 @@ class MemoryCardModel:
         """es mode: shared = ECDH(host_eph_pub, card_static_priv) x-coord;
         secret_with_nonces = sha256(shared || nonce_card); reply =
         nonce || HMAC(card_mac,nonce)[:14] || DER-sig(sha256(nonce||hmac))."""
-        host_pub = coincurve.PublicKey(host_pub65)
+        try:
+            host_pub = coincurve.PublicKey(host_pub65)
+        except ValueError:
+            return b"\x6a\x80"  # wrong data — not a point
         shared_point = host_pub.multiply(self.card_priv.secret)
         shared = shared_point.format(compressed=True)[1:33]
         nonce = os.urandom(32)
@@ -146,6 +152,31 @@ class MemoryCardModel:
         self.chan_open = True
         self.iv = 0
         return data + sig + OP_SUCCESS
+
+    def _open_ee(self, host_pub65: bytes) -> bytes:
+        """ee mode: the card generates an EPHEMERAL key; shared =
+        sha256(x-coord of ECDH(host_eph_pub, card_eph_priv)) — hashed
+        x, unlike es mode's raw x + card nonce; reply = card_eph65 ||
+        HMAC(card_mac, card_eph65)[:14] || DER-sig(static card key over
+        sha256(card_eph65||mac)). Signature stays on the STATIC key —
+        the wallet verifies it against get_card_pubkey."""
+        try:
+            host_pub = coincurve.PublicKey(host_pub65)
+        except ValueError:
+            return b"\x6a\x80"  # wrong data — not a point
+        eph = coincurve.PrivateKey()
+        pt = host_pub.multiply(eph.secret)
+        shared = hashlib.sha256(
+            pt.format(compressed=True)[1:33]).digest()
+        self._derive(shared)
+        pub65 = eph.public_key.format(compressed=False)
+        mac = hmac_mod.new(self.card_mac, pub65,
+                           digestmod="sha256").digest()[:MAC_SIZE]
+        sig = self.card_priv.sign(
+            hashlib.sha256(pub65 + mac).digest(), hasher=None)
+        self.chan_open = True
+        self.iv = 0
+        return pub65 + mac + sig + OP_SUCCESS
 
     def _secure_msg(self, ct: bytes) -> bytes:
         if not self.chan_open:
