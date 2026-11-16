@@ -912,6 +912,90 @@ jobs:
           grep -q " tests collected" collect.txt || {
             echo "::error::zero tests collected"; exit 1; }
 
+  wallet-e2e:
+    # The strongest dry tests, promoted off the bench (they SKIPped on
+    # every runner: coincurve+pycryptodome absent and the specter-diy
+    # tree was bench-host-local): the UNMODIFIED specter-diy wallet
+    # client (MemoryCardApplet + SecureChannel with its HMAC/ECDSA
+    # verifiers) against the virtual MemoryCard model and the sim
+    # relay. Python ONLY (no Rust toolchain), PRIMARY tier: pip deps +
+    # a shallow public specter-diy clone, tests run in well under a
+    # minute (19 tests, ~0.25 s on the bench).
+    needs: changes
+    # Family inputs: the test files live under tests/** and their
+    # model/relay helpers under host-tools/*.py (both lint family);
+    # ci.yml itself rides the stm32/esp32 families, so workflow edits
+    # re-verify this job (same gate pattern as specquotes).
+    if: needs.changes.outputs.lint == 'true' || needs.changes.outputs.stm32 == 'true' || needs.changes.outputs.esp32 == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Provide specter-diy at the tests' hardcoded path
+        run: |
+          # The three test files hardcode SPECTER_DIR=/root/src/specter-diy
+          # (bench path — the tests stay unedited). Make that path work for
+          # the UID-1001 runner user: sudo creates it, hands ownership over,
+          # and grants traversal on /root itself (owning a subdir is not
+          # enough while the parent is mode 0700).
+          sudo mkdir -p /root/src
+          sudo chown -R "$USER" /root/src
+          sudo chmod o+x /root
+          # Shallow-fetch the PUBLIC specter-diy tree, pinned to the exact
+          # commit the bench validates against (upstream master == this SHA
+          # at job-creation time; a floating master would let upstream
+          # wallet changes redden main). Bump the pin deliberately when
+          # the bench tree moves.
+          git init /root/src/specter-diy
+          git -C /root/src/specter-diy remote add origin https://github.com/cryptoadvance/specter-diy
+          git -C /root/src/specter-diy fetch --depth 1 origin bec1ab108d6559a35b9cf8b1ea41da1f5731918a
+          git -C /root/src/specter-diy checkout FETCH_HEAD
+          # The uscard stub the wallet e2e drives (uscard.py/tcphost.py/
+          # pyb.py) lives in the f469-disco SUBMODULE — tracked there,
+          # not in the parent repo.
+          git -C /root/src/specter-diy submodule update --init --depth 1 f469-disco
+      - name: Install wallet-test deps (bench-only pip set)
+        run: pip install pytest coincurve pycryptodome
+      - name: Wallet e2e vs model + relay (must RUN, not skip)
+        run: |
+          # /usr/bin/python3 is deliberately NOT used here: under
+          # setup-python the pinned 3.12 interpreter (with the pip deps)
+          # is `python3` on PATH; the system /usr/bin/python3 is
+          # PEP-668 externally-managed and would not see them.
+          set +e
+          python3 -m pytest tests/hardware/test_specter_card_model.py \
+            tests/hardware/test_specter_card_model_hardening.py \
+            tests/hardware/test_specter_sim_relay.py -v > wallet-e2e.log 2>&1
+          rc=$?
+          set -e
+          cat wallet-e2e.log
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::wallet e2e pytest exited $rc"
+            exit 1
+          fi
+          # Zero-skip guard (#512 green-over-skips class): this job
+          # exists to EXECUTE the wallet tests, and with deps + tree
+          # present NOTHING here may skip. passed>0 alone proves nothing
+          # — the tree-independent minority (raw-wire shapes, offline
+          # relay legs, fuzz) still passes while every wallet-tree test
+          # silently skips, so ANY skip fails the job.
+          passed=$(grep -c ' PASSED' wallet-e2e.log || true)
+          skipped=$(grep -c ' SKIPPED' wallet-e2e.log || true)
+          total=$((passed + skipped))
+          echo "wallet e2e verdict: passed=$passed skipped=$skipped total=$total"
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::zero wallet tests PASSED — nothing ran"
+            exit 1
+          fi
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped wallet test(s) SKIPPED — they must RUN (missing dep or specter-diy tree)"
+            exit 1
+          fi
+
   stm32-test:
     needs: changes
     if: needs.changes.outputs.stm32 == 'true'
@@ -1055,6 +1139,7 @@ jobs:
       - stm32-lint
       - stm32-test
       - python-collect
+      - wallet-e2e
       - esp32-build
       - esp32-host-test
       - crates-lint
