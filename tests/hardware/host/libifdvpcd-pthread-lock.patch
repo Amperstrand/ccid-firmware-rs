@@ -1,0 +1,39 @@
+# Upstream vsmartcard lock.c: the pthread branch has NEVER compiled
+# (`r` undeclared; PTHREAD_MUTEX_INITIALIZER used as an assignment), so
+# every build without -DHAVE_PTHREAD — including ours — silently compiles
+# the NO-OP lock stub. pcscd's EH presence-poller then races SCardTransmit
+# on the same socket and frames cross-associate (transmits return ATR
+# bytes as R-APDUs — the SW=1084 desync class; reproduced deterministically
+# on the jCardSim vpcd farm 2026-11-15; mutex-fixed driver: 0 desyncs in
+# 60+ exchanges). Applies AFTER libifdvpcd-amperstrand.patch.
+diff --git a/virtualsmartcard/src/vpcd/lock.c b/virtualsmartcard/src/vpcd/lock.c
+index de592bd..4ecbedc 100644
+--- a/virtualsmartcard/src/vpcd/lock.c
++++ b/virtualsmartcard/src/vpcd/lock.c
+@@ -55,7 +55,7 @@ void free_lock(void *io_lock)
+ 
+ int lock(void *io_lock)
+ {
+-    r = 0;
++    int r = 0;
+     if (0 == pthread_mutex_lock(io_lock))
+         r = 1;
+     return r;
+@@ -63,7 +63,7 @@ int lock(void *io_lock)
+ 
+ int unlock(void *io_lock)
+ {
+-    r = 0;
++    int r = 0;
+     if (0 == pthread_mutex_unlock(io_lock))
+         r = 1;
+     return r;
+@@ -73,7 +73,7 @@ void *create_lock(void)
+ {
+     pthread_mutex_t *io_lock = malloc(sizeof *io_lock);
+     if (io_lock) {
+-        *io_lock = PTHREAD_MUTEX_INITIALIZER;
++        pthread_mutex_init(io_lock, NULL);
+     }
+     return io_lock;
+ }
