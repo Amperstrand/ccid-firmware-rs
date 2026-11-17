@@ -213,6 +213,9 @@ pub struct CcidHandlerCore<D: SlotDriver, P: ReaderProfile = SerialNfcProfile> {
     /// varies by device-profile vendor id, which the wrapper knows.
     pin_pad: bool,
     secure_state: SecureState,
+    /// #583 phantom-pin presence guard: activation-outcome memory over
+    /// the raw card-detect input. See [`PresenceGuard`].
+    presence_guard: PresenceGuard,
     /// Host-supplied parameter set from PC_to_RDR_SetParameters:
     /// (bProtocolNum, raw abProtocolDataStructure). Takes precedence over
     /// the ATR-derived values in GetParameters/SetParameters responses
@@ -228,6 +231,62 @@ pub struct CcidHandlerCore<D: SlotDriver, P: ReaderProfile = SerialNfcProfile> {
     /// wrapper and the pre-fold F469 shape).
     diagnostics_fold: Option<fn(&D, &mut Diagnostics)>,
     _profile: core::marker::PhantomData<P>,
+}
+
+/// #583 Phantom-pin presence guard (bench evidence in the issue).
+///
+/// A card-detect pin that floats or sticks HIGH with no card behind it
+/// (measured: F469 with the Specter shield detached) makes the reader
+/// answer "ICC present" forever while every activation fails — pcscd
+/// then pays a ~4 s activation timeout per connect, indefinitely, and
+/// every reader-scanning tool inherits it.
+///
+/// Contract: the pin's ABSENT verdict always wins and re-arms the
+/// guard (a real transition proves the detect path works). N
+/// consecutive FAILED activations (handler-level: driver-internal
+/// retry budgets count as one) demote a standing PRESENT to absent
+/// until the pin transitions or an activation succeeds. A healthy or
+/// interleaved card never trips it — the threshold exceeds any
+/// handler-level failure run the marginal-coupling class produces.
+#[derive(Debug, Clone, Default)]
+pub struct PresenceGuard {
+    consecutive_failed_activations: u8,
+}
+
+/// Handler-level failures before a standing PRESENT demotes (#583).
+/// Three covers the shield-detached phantom and a wedged mute card
+/// while staying above any measured intermittent-coupling run (the
+/// m5stick retry-in-driver class produced single handler failures).
+pub const PRESENCE_DEMOTE_THRESHOLD: u8 = 3;
+
+impl PresenceGuard {
+    /// Fold the raw presence input. `raw == false` always answers
+    /// absent AND resets the failure memory (transition re-arms).
+    fn effective(&mut self, raw: bool) -> bool {
+        if !raw {
+            self.consecutive_failed_activations = 0;
+            return false;
+        }
+        self.consecutive_failed_activations < PRESENCE_DEMOTE_THRESHOLD
+    }
+
+    /// True once the failure run reached the threshold — the raw pin's
+    /// PRESENT is being demoted (a raw-absent poll or a successful
+    /// activation clears it).
+    fn demoted(&self) -> bool {
+        self.consecutive_failed_activations >= PRESENCE_DEMOTE_THRESHOLD
+    }
+
+    /// Fold an activation outcome: success resets the run, failure
+    /// extends it (saturating — no wraparound into a fake re-arm).
+    fn record_activation(&mut self, ok: bool) {
+        if ok {
+            self.consecutive_failed_activations = 0;
+        } else {
+            self.consecutive_failed_activations =
+                self.consecutive_failed_activations.saturating_add(1);
+        }
+    }
 }
 
 impl<D: SlotDriver> CcidHandlerCore<D, SerialNfcProfile> {
@@ -260,6 +319,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             parameters_accepted_event: false,
             pin_pad,
             secure_state: SecureState::Idle,
+            presence_guard: PresenceGuard::default(),
             host_params: None,
             atr_params: AtrParams::default(),
             diagnostics_fold: None,
@@ -707,7 +767,10 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             return None;
         }
 
-        let presence = self.nfc.poll_card_presence();
+        let raw = self.nfc.poll_card_presence();
+        let presence = PresenceState {
+            present: self.presence_guard.effective(raw.present),
+        };
         self.diagnostics.card_present = presence.present;
         self.diagnostics.reinit_count = self.nfc.reinit_count();
 
@@ -781,6 +844,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
 
         match self.nfc.power_on(&mut self.tx_buf) {
             Ok(atr_len) => {
+                self.presence_guard.record_activation(true);
                 self.presence_state.present = true;
                 self.slot_state = SlotState::PresentActive;
                 self.card_reset_event = true;
@@ -841,7 +905,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             );
         }
 
-        if !self.nfc.is_card_present() {
+        if !self.presence_guard.effective(self.nfc.is_card_present()) {
             return write_slot_status(
                 header.slot,
                 header.seq,
@@ -868,6 +932,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
 
         match self.nfc.power_on(&mut self.tx_buf) {
             Ok(atr_len) => {
+                self.presence_guard.record_activation(true);
                 self.presence_state.present = true;
                 self.slot_state = SlotState::PresentActive;
                 self.atr_params = parse_atr(&self.tx_buf[..atr_len]);
@@ -890,6 +955,7 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
             }
             Err(e) => {
                 log::warn!("power_on failed: {:?}", e);
+                self.presence_guard.record_activation(false);
                 self.slot_state = SlotState::PresentInactive;
                 write_slot_status(
                     header.slot,
@@ -1482,6 +1548,13 @@ impl<D: SlotDriver, P: ReaderProfile> CcidHandlerCore<D, P> {
     }
 
     fn current_icc_status(&self) -> u8 {
+        // #583: a demoted phantom pin answers ICC absent at ANSWER time
+        // even while the cached slot state still says present — the
+        // host must not keep paying activation timeouts against a
+        // detect line that never had a card behind it.
+        if self.presence_guard.demoted() {
+            return ICC_STATUS_NO_ICC;
+        }
         self.slot_state.icc_status()
     }
 
@@ -2531,6 +2604,9 @@ mod contact_profile_tests {
         /// #344 fold tests: driver-known presence, fresher than the
         /// polled cache (the F746 presence-pin seam).
         diag_card_present: Option<bool>,
+        /// #583 phantom-pin tests: pin says present but activation
+        /// fails every time (shield detached / mute card class).
+        fail_power_on: bool,
     }
 
     impl ContactDriver {
@@ -2544,7 +2620,12 @@ mod contact_profile_tests {
                 transmit_class: XfrErrorKind::Unclassified,
                 last_apdu: Vec::new(),
                 diag_card_present: None,
+                fail_power_on: false,
             }
+        }
+
+        fn set_present(&mut self, present: bool) {
+            self.present = present;
         }
     }
 
@@ -2558,7 +2639,7 @@ mod contact_profile_tests {
         type Error = ContactError;
 
         fn power_on(&mut self, atr_buf: &mut [u8]) -> Result<usize, Self::Error> {
-            if !self.present {
+            if !self.present || self.fail_power_on {
                 return Err(ContactError::NoCard);
             }
             atr_buf[..self.atr.len()].copy_from_slice(&self.atr);
@@ -2655,6 +2736,82 @@ mod contact_profile_tests {
         assert_eq!(mt, RDR_TO_PC_SLOTSTATUS);
         assert_eq!(status, COMMAND_STATUS_FAILED << 6 | ICC_STATUS_NO_ICC);
         assert_eq!(err, CCID_ERR_ICC_MUTE);
+    }
+
+    // ---- #583 phantom-pin presence guard (red first) ----
+
+    fn slot_status_icc(core: &mut Core) -> u8 {
+        let mut resp = [0u8; 271];
+        let len = core.process_command(&build(0x65, 90, [0; 3], &[]), &mut resp);
+        let (_, _, status, _, _) = parse(&resp[..len]);
+        status & 0x03
+    }
+
+    #[test]
+    fn phantom_pin_presence_demotes_to_absent_after_threshold() {
+        // Shield detached: card-detect floats HIGH (present) but no card
+        // ever answers. Bench evidence #583: pcscd pays a ~4 s activation
+        // timeout per connect, forever.
+        let mut core = new_core(true, &T0_ATR, false);
+        core.nfc.fail_power_on = true;
+        for seq in 1..=3 {
+            let mut resp = [0u8; 271];
+            let len = core.process_command(&build(0x62, seq, [0x00, 0, 0], &[]), &mut resp);
+            let (mt, _, status, _, _) = parse(&resp[..len]);
+            assert_eq!(mt, RDR_TO_PC_SLOTSTATUS, "seq {seq}");
+            assert_eq!(status & 0x03, ICC_STATUS_PRESENT_INACTIVE, "seq {seq}");
+        }
+        // After the third failed activation the guard demotes the
+        // phantom: the slot answers ICC ABSENT so pcscd stops paying
+        // activation timeouts against a card that does not exist.
+        assert_eq!(slot_status_icc(&mut core), ICC_STATUS_NO_ICC);
+    }
+
+    #[test]
+    fn phantom_demote_rearms_on_pin_transition() {
+        let mut core = new_core(true, &T0_ATR, false);
+        core.nfc.fail_power_on = true;
+        for seq in 1..=3 {
+            core.process_command(&build(0x62, seq, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        }
+        assert_eq!(slot_status_icc(&mut core), ICC_STATUS_NO_ICC);
+        // Card removed + reinserted (pin really toggles): guard re-arms.
+        core.nfc.set_present(false);
+        core.check_card_change();
+        core.nfc.set_present(true);
+        core.nfc.fail_power_on = false;
+        core.check_card_change();
+        let mut resp = [0u8; 271];
+        let len = core.process_command(&build(0x62, 7, [0x00, 0, 0], &[]), &mut resp);
+        let (mt, _, status, _, _) = parse(&resp[..len]);
+        assert_eq!(mt, RDR_TO_PC_DATABLOCK);
+        assert_eq!(status & 0x03, ICC_STATUS_PRESENT_ACTIVE);
+    }
+
+    #[test]
+    fn successful_activation_resets_the_guard_counter() {
+        // Marginal-coupling class: failures interleaved with successes
+        // must never demote (m5stick activation retry lives INSIDE the
+        // driver, so handler-level failures are rare events by then).
+        let mut core = new_core(true, &T0_ATR, false);
+        core.nfc.fail_power_on = true;
+        core.process_command(&build(0x62, 1, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        core.process_command(&build(0x62, 2, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        core.nfc.fail_power_on = false;
+        core.process_command(&build(0x62, 3, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        core.nfc.fail_power_on = true;
+        core.process_command(&build(0x62, 4, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        core.process_command(&build(0x62, 5, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        assert_eq!(slot_status_icc(&mut core), ICC_STATUS_PRESENT_INACTIVE);
+    }
+
+    #[test]
+    fn two_failures_do_not_demote() {
+        let mut core = new_core(true, &T0_ATR, false);
+        core.nfc.fail_power_on = true;
+        core.process_command(&build(0x62, 1, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        core.process_command(&build(0x62, 2, [0x00, 0, 0], &[]), &mut [0u8; 271]);
+        assert_eq!(slot_status_icc(&mut core), ICC_STATUS_PRESENT_INACTIVE);
     }
 
     #[test]
