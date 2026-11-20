@@ -41,7 +41,12 @@ CTRL_NAK = 0x15
 MSG_GET_SLOT_STATUS = 0x65
 MSG_ICC_POWER_ON = 0x62
 MSG_ICC_POWER_OFF = 0x63
-MSG_GET_PARAMETERS = 0x61
+# CCID §6.1.5: PC_to_RDR_GetParameters = 0x6C (0x61 is SET_PARAMETERS —
+# this constant was mislabeled 0x61 since the battery's birth; every
+# "GetParameters" probe was actually a zero-length SET. Found while
+# writing gempc_sim.py against the spec + crate constants; the firmware
+# answers both, which is why the battery still passed).
+MSG_GET_PARAMETERS = 0x6C
 MSG_XFR_BLOCK = 0x6F
 MSG_ESCAPE = 0x6B
 
@@ -56,10 +61,14 @@ def lrc(data: bytes) -> int:
 
 
 def frame(msg_type: int, seq: int, data: bytes = b"", ctrl: int = CTRL_ACK,
-          lrc_override: int | None = None) -> bytes:
+          lrc_override: int | None = None, bstatus: int = 0,
+          berror: int = 0, bspecific: int = 0) -> bytes:
+    """Build a wire frame. bStatus/bError/bSpecific live in the CCID
+    HEADER (parse_frames fields 3/4/5) — extended for gempc_sim.py's
+    reader-side responses; requests keep the zero defaults."""
     header = bytes([msg_type, len(data) & 0xFF, (len(data) >> 8) & 0xFF,
                     (len(data) >> 16) & 0xFF, (len(data) >> 24) & 0xFF,
-                    0, seq, 0, 0, 0])
+                    0, seq, bstatus, berror, bspecific])
     body = bytes([SYNC, ctrl]) + header + data
     return body + bytes([lrc(body) if lrc_override is None else lrc_override])
 
