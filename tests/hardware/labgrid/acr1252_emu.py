@@ -4,15 +4,21 @@ STATUS (updated 2026-10-16 after the #207 merge + first tier-1 run on
 hardware): tier-1 PASSED at the TRANSPORT level — the corrected
 ten-byte CCID header changed behavior (no framing errors), enter/exit
 exchanges complete without error under the pcscd flock, place-acquired.
-CAVEAT (Codex P2 on #213): `exit` discards the reply and `enter`
-tolerates SENT-NO-REPLY, so the pass does NOT prove emulation ENGAGED
-— only that the transport is sound. The NDEF WRITE path returns no
-reply within 3 s (`write not confirmed: no-reply`); with engagement
-unconfirmed, the suspect list is BOTH the write format AND the enter
-command itself. History (overnight 2026-10-16 session, salvaged +
-review-fixed via #207): pcscd cannot reach the escape interface (no
-FEATURE_CCID_ESC advertised); the raw-USB PICC transport with pcscd
-paused works.
+CAVEAT (Codex P2 on #213, updated for ccid#437): `enter` tolerates
+SENT-NO-REPLY (firmware observed to swallow the enter-emu reply), so a
+pass does NOT prove emulation ENGAGED — only that the transport is
+sound. The `exit` path now SURFACES its reply instead of discarding it:
+an exit reply where enter gave none is a mode-dependent observable and
+the cheapest next engagement probe. The §5.6.2 enter command reads
+STORED emulated-card content, not the reader's live mode — engagement
+stays UNPROVEN until a bench run shows a reply that differs inside vs
+outside emulation (runbook step; not provable from this fixture alone).
+The NDEF WRITE path returns no reply within 3 s (`write not confirmed:
+no-reply`); with engagement unconfirmed, the suspect list is BOTH the
+write format AND the enter command itself. History (overnight
+2026-10-16 session, salvaged + review-fixed via #207): pcscd cannot
+reach the escape interface (no FEATURE_CCID_ESC advertised); the raw-USB
+PICC transport with pcscd paused works.
 
 NEXT SESSION (verify in this order):
 0. Close the engagement question FIRST: make the helper's exit path
@@ -132,8 +138,14 @@ def main():
         out = escape(ep_out, ep_in, bytes.fromhex("E000004003010000"))
         print("OK" if out is not None else "SENT-NO-REPLY")
     elif cmd == "exit":
-        escape(ep_out, ep_in, bytes.fromhex("E000004003000000"))
-        print("OK")
+        # Surface the exit reply instead of discarding it (Codex P2 on
+        # #213 / ccid#437): the enter path tolerates SENT-NO-REPLY and the
+        # firmware was observed to swallow the enter-emu reply, so the EXIT
+        # reply is the first observable mode-transition evidence this fixture
+        # can offer. A real reply here (vs SENT-NO-REPLY) is a mode-dependent
+        # signal for the engagement question — record it, don't assume OK.
+        out = escape(ep_out, ep_in, bytes.fromhex("E000004003000000"))
+        print("OK" if out is not None else "SENT-NO-REPLY")
     elif cmd == "write":
         data = bytes.fromhex(sys.argv[2])
         body = bytes([0x01, 0x01, 0x00, len(data)]) + data
