@@ -12,18 +12,22 @@ from pathlib import Path
 
 import pytest
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "nfc"))
-sys.path.insert(0, str(HERE))
-
-from conformance_battery import (  # noqa: E402
-    MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_ON,
-    MSG_XFR_BLOCK, parse_frames,
-)
-from gempc_sim import (  # noqa: E402
-    CMD_FAILED, DEFAULT_ATR, ICC_ABSENT, ICC_ACTIVE, RDR_DATABLOCK,
-    RDR_PARAMETERS, RDR_SLOTSTATUS, GemPcSim,
-)
+try:  # module-level hardware import guard (CI python-collect runs with
+    # pytest ONLY — the documented allow_module_level skip pattern):
+    # conformance_battery imports pyserial at module scope.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nfc"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from conformance_battery import (  # noqa: E402
+        MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_ON,
+        MSG_XFR_BLOCK, parse_frames,
+    )
+    from gempc_sim import (  # noqa: E402
+        CMD_FAILED, DEFAULT_ATR, ICC_ABSENT, ICC_ACTIVE, RDR_DATABLOCK,
+        RDR_PARAMETERS, RDR_SLOTSTATUS, GemPcSim,
+    )
+except ModuleNotFoundError:
+    pytest.skip("pyserial/battery unavailable (CI minimal env)",
+                allow_module_level=True)
 
 SELECT = bytes.fromhex("00A4040007D276000085010100")
 
@@ -95,7 +99,7 @@ def test_pty_round_trip():
     quirk), matching the bench's drain-until-idle practice."""
     import serial  # noqa: WPS433 (deferred: hardware import rule)
     proc = subprocess.Popen(
-        [sys.executable, str(HERE / "gempc_sim.py"),
+        [sys.executable, str(Path(__file__).resolve().parent / "gempc_sim.py"),
          "--script", "-", "--once", "1"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE)
