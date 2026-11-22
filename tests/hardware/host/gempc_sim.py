@@ -34,7 +34,7 @@ from conformance_battery import (  # noqa: E402
     MSG_ESCAPE, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_OFF,
     MSG_ICC_POWER_ON, MSG_XFR_BLOCK, frame, lrc,
 )
-from gempc_t1_sim import T1Endpoint, looks_like_block  # noqa: E402
+from gempc_t1_sim import T1Adversary, T1Endpoint, looks_like_block  # noqa: E402
 
 # CCID message types per CCID_SPEC §6.1 (docs/CCID_SPEC_AUDIT.md — matches
 # crates/ccid-protocol/src/types.rs; NOT the battery's legacy mislabels).
@@ -83,7 +83,8 @@ def parse_script(lines, source: str = "<script>") -> dict:
 class GemPcSim:
     """Reader-side state machine: frame in, frame out, one slot."""
 
-    def __init__(self, atr: bytes, table: dict, fixed: bytes | None):
+    def __init__(self, atr: bytes, table: dict, fixed: bytes | None,
+                 adversary: str | None = None):
         self.atr = atr
         self.table = table
         self.fixed = fixed
@@ -95,6 +96,7 @@ class GemPcSim:
         # twin (gempc_t1 — port of the firmware's t1.rs). Direct-serial
         # consumers keep getting raw-APDU dispatch.
         self.t1 = T1Endpoint()
+        self.adversary = T1Adversary(adversary, self.t1) if adversary else None
 
     def _status(self, cmd: int = 0) -> int:
         if not self.card_active:
@@ -107,6 +109,8 @@ class GemPcSim:
             kind, out = self.t1.feed(apdu)
             if kind == "imm":
                 return out
+            if self.adversary is not None:
+                return self.adversary.answer(out, self._plain_answer(out))
             return self.t1.card_response(self._plain_answer(out))
         return self._plain_answer(apdu)
 
@@ -208,11 +212,17 @@ def main(argv=None) -> int:
                     help="CAPDU_HEX=RAPDU_HEX table file (unmatched -> 6A82)")
     ap.add_argument("--once", type=int, default=0, metavar="N",
                     help="exit after N card exchanges (0 = forever)")
+    ap.add_argument("--t1-adversary", default=None,
+                    metavar="PROFILE",
+                    choices=["wtx-storm", "seq-violation"],
+                    help="T=1 misbehavior instrument (host-stack "
+                         "characterization; wtx-storm[:m], seq-violation)")
     args = ap.parse_args(argv)
 
     table = parse_script(args.script) if args.script else {}
     fixed = bytes.fromhex(args.respond) if args.respond else None
-    sim = GemPcSim(bytes.fromhex(args.atr), table, fixed)
+    sim = GemPcSim(bytes.fromhex(args.atr), table, fixed,
+                   adversary=args.t1_adversary)
 
     master, slave = pty.openpty()
     print(Path(os.ttyname(slave)), flush=True)  # the reader.conf DEVICENAME

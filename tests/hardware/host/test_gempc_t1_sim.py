@@ -8,7 +8,7 @@ import pytest
 
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from gempc_t1_sim import (T1Endpoint, block, i_pcb, looks_like_block,
+    from gempc_t1_sim import (T1Endpoint, block, i_pcb, lrc, looks_like_block,
                           r_pcb, s_pcb, RESYNC, IFS, WTX)
 except ModuleNotFoundError:
     pytest.skip("t1 twin unavailable", allow_module_level=True)
@@ -121,3 +121,31 @@ def test_bad_lrc_is_rejected():
     raw[-1] ^= 0xFF
     kind, out = ep.feed(bytes(raw))
     assert kind == "imm" and out[1] & 0xC0 == 0x80  # an R-block answer
+
+
+# --- adversary profiles (host-stack characterization instrument) --------------
+
+def test_adversary_wtx_storm_frames_are_stream_legal():
+    from gempc_t1_sim import T1Adversary
+    ep = T1Endpoint()
+    adv = T1Adversary("wtx-storm:3", ep)
+    kind, _ = ep.feed(block(i_pcb(0, False, 0), APDU))
+    assert kind == "apdu"
+    wire = adv.answer(APDU, SW9000)
+    wtx = block(s_pcb(WTX, False), bytes([3]))
+    assert wire.startswith(wtx + wtx + wtx)  # 3x S(WTX req, m=3)
+    assert wire.endswith(block(i_pcb(0, False, 1), SW9000))  # then the answer
+
+
+def test_adversary_seq_violation_flips_ns_then_converges():
+    from gempc_t1_sim import T1Adversary
+    ep = T1Endpoint()
+    adv = T1Adversary("seq-violation", ep)
+    ep.feed(block(i_pcb(0, False, 0), APDU))
+    bad = adv.answer(APDU, SW9000)
+    assert bad[1] & 0x40 != block(i_pcb(0, False, 1), SW9000)[1] & 0x40
+    assert lrc(bad[:-1]) == bad[-1]  # still LRC-valid (subtle, not corrupt)
+    ep.feed(block(s_pcb(RESYNC, False)))  # host resyncs
+    ep.feed(block(i_pcb(0, False, 0), APDU))
+    good = adv.answer(APDU, SW9000)
+    assert good == block(i_pcb(0, False, 1), SW9000)  # clean after reset
