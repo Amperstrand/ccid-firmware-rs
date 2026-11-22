@@ -60,6 +60,55 @@ def looks_like_block(data: bytes) -> bool:
             and lrc(data[:-1]) == data[-1])
 
 
+class T1Adversary:
+    """Card-side misbehavior instrument (#T-1 characterization): wraps a
+    T1Endpoint and injects protocol-level faults BETWEEN the endpoint's
+    correct behavior and the wire — so pcscd's internal T=1 stack (the
+    host-side engine the bench cannot otherwise stress unattended) gets
+    exercised against WTX storms, chain abortions and sequence
+    violations from a REAL pcscd, zero hardware.
+
+    Profiles:
+      wtx-storm[:m]    answer each APDU preceded by S(WTX request, m)
+                       repeated 3x — stream-legal: pcscd's ReadSerial
+                       consumes frames in sequence and its T=1 layer
+                       answers each WTX, extending its window (the
+                       timeout-multiplication path, quote-locked in
+                       t1.rs G-04).
+      seq-violation    answer with the WRONG N(S) once per APDU (host
+                       must R-block / S(RESYNC); a RESYNC resets the
+                       endpoint, so the experiment converges).
+    """
+
+    def __init__(self, profile: str, ep: T1Endpoint):
+        self.ep = ep
+        name, _, arg = profile.partition(":")
+        self.name = name
+        self.arg = int(arg) if arg.isdigit() else None
+        self._bad_next = True
+
+    def _mutate(self, frame: bytes) -> bytes:
+        pcb = frame[1] ^ 0x40  # flip N(S)
+        head = bytes([frame[0], pcb]) + frame[2:-1]
+        return head + bytes([lrc(head)])
+
+    def answer(self, apdu: bytes, plain_answer: bytes) -> bytes:
+        """One APDU exchange -> the wire bytes (possibly SEVERAL frames
+        concatenated; the host reader consumes them in sequence)."""
+        if self.name == "wtx-storm":
+            m = self.arg or 2
+            wtx = block(s_pcb(WTX, False), bytes([m])) * 3
+            return wtx + self.ep.card_response(plain_answer)
+        if self.name == "seq-violation":
+            first = self.ep.card_response(plain_answer)
+            if self._bad_next:
+                self._bad_next = False
+                return self._mutate(first)
+            self._bad_next = True
+            return first
+        return self.ep.card_response(plain_answer)
+
+
 class T1Endpoint:
     """Card-side endpoint. feed(block) -> ('imm', bytes) to return
     immediately, or ('apdu', bytes) assembled APDU to answer via
