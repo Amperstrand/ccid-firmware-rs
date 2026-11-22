@@ -78,6 +78,10 @@ class T1Adversary:
       seq-violation    answer with the WRONG N(S) once per APDU (host
                        must R-block / S(RESYNC); a RESYNC resets the
                        endpoint, so the experiment converges).
+      chain-abort      answer the FIRST block of a chain (M bit set)
+                       and never send the rest — every host R-block gets
+                       the same M-block again. Characterizes the host
+                       BWT-timeout/resync path against a stalling card.
     """
 
     def __init__(self, profile: str, ep: T1Endpoint):
@@ -86,6 +90,7 @@ class T1Adversary:
         self.name = name
         self.arg = int(arg) if arg.isdigit() else None
         self._bad_next = True
+        self._abort_frame: bytes | None = None
 
     def _mutate(self, frame: bytes) -> bytes:
         pcb = frame[1] ^ 0x40  # flip N(S)
@@ -106,6 +111,18 @@ class T1Adversary:
                 return self._mutate(first)
             self._bad_next = True
             return first
+        if self.name == "chain-abort":
+            if self._abort_frame is None:
+                first = self.ep.card_response(plain_answer)
+                if not first[1] & 0x20:  # short answer: force a chain by
+                    # splitting — first half carries M, "rest" never comes
+                    half = len(first) // 2
+                    pcb = first[1] | 0x20
+                    head = bytes([first[0], pcb, half]) + first[3:3 + half]
+                    self._abort_frame = head + bytes([lrc(head)])
+                else:
+                    self._abort_frame = first
+            return self._abort_frame
         return self.ep.card_response(plain_answer)
 
 

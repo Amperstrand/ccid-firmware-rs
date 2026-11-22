@@ -214,7 +214,7 @@ def main(argv=None) -> int:
                     help="exit after N card exchanges (0 = forever)")
     ap.add_argument("--t1-adversary", default=None,
                     metavar="PROFILE",
-                    choices=["wtx-storm", "seq-violation"],
+                    choices=["wtx-storm", "seq-violation", "chain-abort"],
                     help="T=1 misbehavior instrument (host-stack "
                          "characterization; wtx-storm[:m], seq-violation)")
     args = ap.parse_args(argv)
