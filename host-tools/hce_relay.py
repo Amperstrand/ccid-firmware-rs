@@ -697,7 +697,17 @@ def adb(*args: str) -> str:
                           text=True, timeout=30).stdout.strip()
 
 
-def connect(serial: Optional[str]) -> socket.socket:
+def connect(serial: Optional[str], tcp_peer: Optional[str] = None
+            ) -> socket.socket:
+    """Reach the phone-side relay socket. adb path (default): forward
+    tcp:4871 -> localabstract:bench-hce-relay. Direct path (--connect-tcp
+    HOST:PORT): no adb at all — the fake-phone transport for phone-free
+    end-to-end tests of this brain."""
+    if tcp_peer:
+        host, _, port = tcp_peer.partition(":")
+        s = socket.create_connection((host, int(port)), timeout=5)
+        s.settimeout(None)
+        return s
     base = ["-s", serial] if serial else []
     adb(*base, "forward", f"tcp:{HOST_PORT}", f"localabstract:{SOCKET_NAME}")
     for _ in range(20):
@@ -765,6 +775,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="host card brain for the bench HCE relay (#529)")
     ap.add_argument("--serial", default=None, help="adb device serial")
+    ap.add_argument("--connect-tcp", default=None, metavar="HOST:PORT",
+                    help="connect DIRECTLY to a TCP relay peer (no adb) — "
+                         "the fake-phone/test transport: HOST:PORT where a "
+                         "mock of the phone-side socket is listening")
     ap.add_argument("--backend", choices=["auto", "static", "script", "pcsc"],
                     default="auto",
                     help="where R-APDUs come from (default: script table "
@@ -811,8 +825,8 @@ def main() -> int:
     if journal and meta:
         journal.log("meta", **meta)
 
-    s = connect(args.serial)
-    print(f"connected (tcp:{HOST_PORT} -> localabstract:{SOCKET_NAME})")
+    s = connect(args.serial, tcp_peer=args.connect_tcp)
+    print(f"connected ({'direct ' + args.connect_tcp if args.connect_tcp else f'tcp:{HOST_PORT} -> localabstract:{SOCKET_NAME}'})")
     session = RelaySession(s, backend, journal=journal,
                            delay_ms=args.delay_ms)
     try:
