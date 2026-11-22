@@ -29,10 +29,12 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nfc"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from conformance_battery import (  # noqa: E402
     MSG_ESCAPE, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_OFF,
     MSG_ICC_POWER_ON, MSG_XFR_BLOCK, frame, lrc,
 )
+from gempc_t1 import T1Endpoint, looks_like_block  # noqa: E402
 
 # CCID message types per CCID_SPEC §6.1 (docs/CCID_SPEC_AUDIT.md — matches
 # crates/ccid-protocol/src/types.rs; NOT the battery's legacy mislabels).
@@ -88,6 +90,11 @@ class GemPcSim:
         self.card_active = True  # card seated + powered at boot (bench shape)
         self.exchanges = 0
         self.naks = 0
+        # pcscd's internal T=1 stack speaks BLOCKS through XfrBlock
+        # (libccidtwin is TPDU-level): the card side carries the endpoint
+        # twin (gempc_t1 — port of the firmware's t1.rs). Direct-serial
+        # consumers keep getting raw-APDU dispatch.
+        self.t1 = T1Endpoint()
 
     def _status(self, cmd: int = 0) -> int:
         if not self.card_active:
@@ -96,6 +103,14 @@ class GemPcSim:
 
     def _card_answer(self, apdu: bytes) -> bytes:
         self.exchanges += 1
+        if looks_like_block(apdu):  # T=1 dialect (pcscd path)
+            kind, out = self.t1.feed(apdu)
+            if kind == "imm":
+                return out
+            return self.t1.card_response(self._plain_answer(out))
+        return self._plain_answer(apdu)
+
+    def _plain_answer(self, apdu: bytes) -> bytes:
         if self.fixed is not None:
             return self.fixed
         return self.table.get(apdu, bytes.fromhex("6a82"))
