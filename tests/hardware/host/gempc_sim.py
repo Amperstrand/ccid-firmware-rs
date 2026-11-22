@@ -34,7 +34,7 @@ from conformance_battery import (  # noqa: E402
     MSG_ESCAPE, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_OFF,
     MSG_ICC_POWER_ON, MSG_XFR_BLOCK, frame, lrc,
 )
-from gempc_t1 import T1Endpoint, looks_like_block  # noqa: E402
+from gempc_t1_sim import T1Endpoint, looks_like_block  # noqa: E402
 
 # CCID message types per CCID_SPEC §6.1 (docs/CCID_SPEC_AUDIT.md — matches
 # crates/ccid-protocol/src/types.rs; NOT the battery's legacy mislabels).

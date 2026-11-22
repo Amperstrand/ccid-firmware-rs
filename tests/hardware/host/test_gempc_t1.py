@@ -8,7 +8,7 @@ import pytest
 
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from gempc_t1 import (T1Endpoint, block, i_pcb, looks_like_block,
+    from gempc_t1_sim import (T1Endpoint, block, i_pcb, looks_like_block,
                           r_pcb, s_pcb, RESYNC, IFS, WTX)
 except ModuleNotFoundError:
     pytest.skip("t1 twin unavailable", allow_module_level=True)
