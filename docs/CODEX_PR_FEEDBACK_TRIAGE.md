@@ -373,3 +373,18 @@ bot findings (~57 total): **52 ADDRESSED / 3 fixed in #569 / 1 deferred to #570 
 Sweep mechanics: `scripts/codex_sweep.sh` over the 115-PR gap (empty files =
 no bot pass, consistent with the bot reviewing head-push windows); triage by
 tree-read at current main, not keyword-grep (protocol §"How to sweep").
+
+---
+
+# Codex Review Sweep — range #576–#601 (2026-11-23)
+
+23 merged PRs in range (the post-virtualization wave: bench fixes, OTA/
+rollout gates, NFC-lab docs, the virtualization stack #576–#601 incl.
+sibling-lane work): **0 bot findings — the reviewer produced no review
+on ANY PR in the range.** Combined with the #395–#575 sweep (which
+itself saw the bot engage only through ~#515), the bot has effectively
+been dark since late October. Rule-0 merges in this period all rode the
+0b self-review fallback with posted records. OWNER NOTE: if the Codex
+reviewer is expected to gate merges, its integration needs a look (it
+may have lost its trigger/token); if 0b is the accepted mode now, the
+AGENTS rule-0 text should say so explicitly.
