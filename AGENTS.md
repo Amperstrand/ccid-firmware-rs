@@ -877,7 +877,7 @@ and large enough (≥ 12 KB; 16 KB is the recommended value).
 - **GOTCHA: the m5stick FTDI DTR is wired to the ESP32 RESET** — toggling DTR over ANY transport reboots the board mid-exchange. Also: esptool leaves non-8N2 termios behind (stty before pcscd traffic after flashing).
 - **A CARD IS ON THE M5STICK COIL** (owner hands work, 2026-11-01/02): raw IccPowerOn ATR `3B 85 81 31 FE 45 80 73 C8 21 10 84` (T=1, TB1=0x31→BWI 3; interface bytes match the S20 ATS class `81 31 FE 45`). Raw wire exchanges work; **lane pcscd connect FAILS** (protocol mismatch, even forced T1) — tracked issue, blocks the #180 card leg despite the card being present.
 - **S20 status**: was in a USB enable-loop on small (`usb5-port1 Cannot enable` — cable/battery class, needs hands); not enumerable on .208. Check `.omo/logs/s20-watch.log` / SEATS before relying on it. Its NFC was last seen working; the relay app (PR #532) + PhoneHceDriver (PR #538) await its return + the dispatch workaround.
-- Lane pcscd for the m5stick: `PCSCLITE_CSOCK_NAME=/run/pcscd-lanes/m5stick.sock` (reader.conf back on by-id). The nucula vpcd readers live on SMALL's pcscd now (the C3's wifi-vpcd image connects there).
+- Lane pcscd for the m5stick: `PCSCLITE_CSOCK_NAME=/run/pcscd-lane-m5stick.comm` — the INSTALLED socket unit's FLAT path (`pcscd-lane@m5stick.socket`, spawns on demand; verified live 2026-11-23, #545). The old `/run/pcscd-lanes/*.sock` files were dead artifacts and are REMOVED — never use that path. The nucula vpcd readers live on SMALL's pcscd now (the C3's wifi-vpcd image connects there).
 
 **STATE 2026-10-31 — the current tested surface** (supersedes the 2026-10-20 block below until the next stamp):
 
