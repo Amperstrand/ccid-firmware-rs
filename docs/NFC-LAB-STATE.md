@@ -21,7 +21,7 @@ stale: the S20 enumerates and adb-answers on ai-legion-small.
 | Device | Physical location | Access path | Card in field | State |
 |---|---|---|---|---|
 | nucula C3 + PN7160 (`90:DA:72:9A:50:18`) | ai-legion-small | wifi-vpcd image → `Nucula VPCD wifi67 00 00/01` on small's pcscd; USB-JTAG by-id for esptool; labgrid `nucula-c3` + OTA seat `ccid-nucula` | S20 HCE (coupling PASS) | **vpcd presence gap**: slots report "no card" to pcscd despite coupling, also after hard-reset reboot (see findings) |
-| m5stick + MFRC522 (Hades2001 `49D6163EBE`) | **ai-legion (.208)** — the "on small since 11-01" note is stale | local `/dev/ttyUSB2` (lane pcscd holds it); lane socket `/run/pcscd-lanes/m5stick.sock` | a T=1 tag (ATR `3B858131FE458073C8211084` per 11-01 note; identity UNVERIFIED this session) | pcscd connect = the tracked protocol-mismatch bug; raw GemPC path works per 11-01 |
+| m5stick + MFRC522 (Hades2001 `49D6163EBE`) | **ai-legion (.208)** — the "on small since 11-01" note is stale | local `/dev/ttyUSB2` (lane pcscd holds it); lane socket `/run/pcscd-lane-m5stick.comm` (socket-unit flat path, #545) | a T=1 tag (ATR `3B858131FE458073C8211084` per 11-01 note; identity UNVERIFIED this session) | pcscd connect = the tracked protocol-mismatch bug; raw GemPC path works per 11-01 |
 | ACR1252 (ref oracle) | ai-legion-small | small's pcscd (`ACS ACR1252 ... PICC/SAM`); labgrid `ref-acr1252-small` | **empty** (probed: no card on coil) | the J3R180/NTAG424 are NOT here — their physical location is unknown, owner hands |
 | CardMan 3121 | ai-legion (.208) | system pcscd (USB-only freeze) | — | untouched this session |
 
