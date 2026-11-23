@@ -149,3 +149,16 @@ def test_adversary_seq_violation_flips_ns_then_converges():
     ep.feed(block(i_pcb(0, False, 0), APDU))
     good = adv.answer(APDU, SW9000)
     assert good == block(i_pcb(0, False, 1), SW9000)  # clean after reset
+
+
+def test_adversary_chain_abort_stalls_forever():
+    from gempc_t1_sim import T1Adversary
+    ep = T1Endpoint()
+    adv = T1Adversary("chain-abort", ep)
+    ep.feed(block(i_pcb(0, False, 0), APDU))
+    first = adv.answer(APDU, SW9000)
+    assert first[1] & 0x20          # M bit: chain promised
+    assert lrc(first[:-1]) == first[-1]
+    # every subsequent exchange replays the SAME stall frame
+    ep.feed(block(r_pcb(1, 0)))
+    assert adv.answer(APDU, SW9000) == first
