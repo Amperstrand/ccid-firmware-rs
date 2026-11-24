@@ -102,24 +102,23 @@ pub const SET_CONFIG_LISTEN_NFCA: [u8; 23] = [
     0x01,
     0x20, // LA_SEL_INFO
     // #549: LI_A_RATS_TB1 + LI_A_HIST_BY — the ATS stops being the
-    // degenerate 3B80800101 default. Quote-locked (UM11495 §5.1
-    // Table 14 — LI_A_RATS_TB1 default 0x04; AN13861 Table 1 carries
-    // both in its listen-config set):
-    // UM11495: LI_A_RATS_TB1 0x58, default 0x04 (TB1: SFGI=4, FWI=0)
+    // degenerate 3B80800101 default. Values per issue #549's citation
+    // of UM11495 §5.1 Table 14 (LI_A_RATS_TB1 key 0x58, default 0x04;
+    // LI_A_HIST_BY key 0x59) + AN13861 Table 1 — plain annotation, NOT
+    // quote-locked: the registered um11495-quotes.md does not yet carry
+    // the Table 14 rows; whoever holds the PDF should add them verbatim
+    // and promote these to UM11495: quotes (never paraphrase a source).
     0x58,
     0x01,
-    0x04, // LI_A_RATS_TB1
-    // UM11495: LI_A_HIST_BY 0x59 — historical bytes echoed in the ATS.
-    // Value: the bench-standard 5-byte class (80 73 C8 21 10) our
-    // emulated cards present, so ATR-inspecting tools see the same
-    // shape the vpicc/gempc twins carry.
+    0x04, // LI_A_RATS_TB1 (TB1: SFGI=4, FWI=0)
     0x59,
     0x05,
     0x80,
     0x73,
     0xC8,
     0x21,
-    0x10, // LI_A_HIST_BY
+    0x10, // LI_A_HIST_BY: bench-standard historical class (the shape
+          // the vpicc/gempc emulated cards carry)
 ];
 
 /// RF_SET_LISTEN_MODE_ROUTING with one protocol-based entry routing
