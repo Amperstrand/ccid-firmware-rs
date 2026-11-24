@@ -41,7 +41,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 usage() {
     cat <<EOF
-Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom|pn7160-listen> [--flash <port>] [--dry-run]
+Usage: $0 <c3|c3-ccid|c3-ccid-ble|c3-ccid-ble-diag|m5stick|m5stick-plus-lcd|m5stick-ble|m5stick-spp|m5atom|pn7160-listen|pn7160-rfdark> [--flash <port>] [--dry-run]
        $0 product=<name> [board=<name>] [--flash <port>] [--dry-run]
 
 Products (M3 presets, t_0492b7c6 — products.toml is the SSOT):
@@ -384,8 +384,22 @@ case "${BOARD}" in
         FLASH_OFFSET="0x40000"
         FLASH_BAUD="460800"
         ;;
+    pn7160-rfdark)
+        # #547 rf-dark idle image: VEN held low — no discovery, no RF.
+        # Never marks OTA-valid: reset auto-reverts to the serving slot
+        # (RESET IS RF_RESUME). Bench-orchestration RF-quiet window.
+        TOOLCHAIN="esp"
+        SDKCONFIG="${SCRIPT_DIR}/sdkconfig.full"
+        TRIPLE="riscv32imc-esp-espidf"
+        PROFILE="debug"
+        RELEASE_ARGS=()
+        FEATURE_ARGS=(--no-default-features --features pn7160-rfdark)
+        CHIP="esp32c3"
+        FLASH_OFFSET="0x40000"
+        FLASH_BAUD="460800"
+        ;;
     *)
-        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, m5atom, or pn7160-listen)" >&2
+        echo "error: unknown board: ${BOARD} (expected c3, c3-ccid, c3-ccid-ble, c3-ccid-ble-diag, m5stick, m5stick-plus-lcd, m5stick-ble, m5stick-spp, m5atom, pn7160-listen, or pn7160-rfdark)" >&2
         exit 1
         ;;
 esac

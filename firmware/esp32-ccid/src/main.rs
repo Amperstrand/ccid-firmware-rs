@@ -850,7 +850,8 @@ fn main() {}
     not(feature = "pn7160-m1"),
     not(feature = "pn7160-v10raw"),
     not(feature = "pn7160-actdiag"),
-    not(feature = "pn7160-listen")
+    not(feature = "pn7160-listen"),
+    not(feature = "pn7160-rfdark")
 ))]
 mod pad_diag {
     const IO_MUX_BASE: *mut u32 = 0x60009000 as *mut u32;
@@ -970,7 +971,8 @@ mod pad_diag {
     not(feature = "pn7160-m1"),
     not(feature = "pn7160-v10raw"),
     not(feature = "pn7160-actdiag"),
-    not(feature = "pn7160-listen")
+    not(feature = "pn7160-listen"),
+    not(feature = "pn7160-rfdark")
 ))]
 fn main() {
     crate::pad_diag::run()
@@ -982,6 +984,14 @@ fn main() {
 ))]
 fn main() {
     esp32_ccid::pn7160_bringup::run()
+}
+
+#[cfg(all(
+    any(target_arch = "xtensa", target_arch = "riscv32"),
+    feature = "pn7160-rfdark"
+))]
+fn main() {
+    esp32_ccid::pn7160_rfdark::run()
 }
 
 #[cfg(all(
