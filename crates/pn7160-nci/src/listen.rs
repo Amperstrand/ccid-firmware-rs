@@ -14,7 +14,9 @@
 //! - RF_DISCOVER_MAP mode octet 0x02 = listen (NCI §6.1.1); command
 //!   `21 00 04 01 04 02 02`.
 //! - CORE_SET_CONFIG listen params: LA_BIT_FRAME_SDD (0x30) = 0x04,
-//!   LA_PLATFORM_CONFIG (0x31) = 0x00, LA_SEL_INFO (0x32) = 0x20 —
+//!   LA_PLATFORM_CONFIG (0x31) = 0x00, LA_SEL_INFO (0x32) = 0x20,
+//!   LI_A_RATS_TB1 (0x58) = 0x04, LI_A_HIST_BY (0x59) = bench-class
+//!   historical bytes (#549; UM11495 Table 14 + AN13861 Table 1) —
 //!   AN13861 §5.1 Table 1 ("SENS_RES hardcoded to 0x0400 on Linux and
 //!   Android; SEL_RES hardcoded to 0x20"), byte-identical to the first
 //!   three parameters of AOSP's `SetConfigCommand` test vector
@@ -85,11 +87,11 @@ pub const RF_DISCOVER_MAP_ISO_DEP_LISTEN: [u8; 7] = [
 // NCI_DEFS: #define NCI_PARAM_ID_LA_PLATFORM_CONFIG 0x31
 // NCI_DEFS: #define NCI_PARAM_ID_LA_SEL_INFO 0x32
 // NCI_KERN: #define NCI_LA_SEL_INFO 0x32
-pub const SET_CONFIG_LISTEN_NFCA: [u8; 13] = [
+pub const SET_CONFIG_LISTEN_NFCA: [u8; 23] = [
     MT_CMD,
     OID_CORE_SET_CONFIG,
-    0x0A,
-    0x03, //
+    0x14,
+    0x05, //
     0x30,
     0x01,
     0x04, // LA_BIT_FRAME_SDD
@@ -99,6 +101,25 @@ pub const SET_CONFIG_LISTEN_NFCA: [u8; 13] = [
     0x32,
     0x01,
     0x20, // LA_SEL_INFO
+    // #549: LI_A_RATS_TB1 + LI_A_HIST_BY — the ATS stops being the
+    // degenerate 3B80800101 default. Quote-locked (UM11495 §5.1
+    // Table 14 — LI_A_RATS_TB1 default 0x04; AN13861 Table 1 carries
+    // both in its listen-config set):
+    // UM11495: LI_A_RATS_TB1 0x58, default 0x04 (TB1: SFGI=4, FWI=0)
+    0x58,
+    0x01,
+    0x04, // LI_A_RATS_TB1
+    // UM11495: LI_A_HIST_BY 0x59 — historical bytes echoed in the ATS.
+    // Value: the bench-standard 5-byte class (80 73 C8 21 10) our
+    // emulated cards present, so ATR-inspecting tools see the same
+    // shape the vpicc/gempc twins carry.
+    0x59,
+    0x05,
+    0x80,
+    0x73,
+    0xC8,
+    0x21,
+    0x10, // LI_A_HIST_BY
 ];
 
 /// RF_SET_LISTEN_MODE_ROUTING with one protocol-based entry routing
@@ -468,11 +489,15 @@ mod tests {
 
     #[test]
     fn set_config_listen_nfca_bytes_are_pinned() {
+        // #549: 0x58 (LI_A_RATS_TB1=0x04, UM11495 Table 14 default) +
+        // 0x59 (LI_A_HIST_BY = bench-standard 80 73 C8 21 10) appended.
         assert_eq!(
             SET_CONFIG_LISTEN_NFCA,
             [
-                0x20, 0x02, 0x0A, 0x03, //
-                0x30, 0x01, 0x04, 0x31, 0x01, 0x00, 0x32, 0x01, 0x20
+                0x20, 0x02, 0x14, 0x05, //
+                0x30, 0x01, 0x04, 0x31, 0x01, 0x00, 0x32, 0x01, 0x20, //
+                0x58, 0x01, 0x04, //
+                0x59, 0x05, 0x80, 0x73, 0xC8, 0x21, 0x10,
             ]
         );
     }
@@ -488,10 +513,13 @@ mod tests {
             0x30, 0x01, 0x04, 0x31, 0x01, 0x00, 0x32, 0x01, 0x20, //
             0x38, 0x01, 0x01, 0x50, 0x01, 0x00,
         ];
-        let ours = &SET_CONFIG_LISTEN_NFCA[4..];
+        // #549: the vector predates our 0x58/0x59 additions — the
+        // LA_* THREE must still appear in it, in order; the newer
+        // params are pinned by the UM11495/AN13861-cited bytes above.
+        let ours = &SET_CONFIG_LISTEN_NFCA[4..4 + 9];
         assert!(
             aosp.windows(ours.len()).any(|w| w == ours),
-            "params {ours:02X?} must be a sub-sequence of the AOSP vector"
+            "LA_* params {ours:02X?} must be a sub-sequence of the AOSP vector"
         );
     }
 
