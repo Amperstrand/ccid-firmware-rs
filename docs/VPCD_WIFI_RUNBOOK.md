@@ -77,7 +77,7 @@ NUCULA_VPCD_HOST=<host-ip> NUCULA_VPCD_PORT=35967 \
     ./build.sh wifi-vpcd      # nucula ("Nucula VPCD wifi67" 00 00)
 NUCULA_VPCD_PORT=35964 ./build.sh m5stick-vpcd \
     --flash /dev/ttyUSB0                                  # m5stick (slot :35964)
-python3 host-tools/ota_push.py <board-ip> \
+python3 tests/hardware/vpcd/ota_push.py <board-ip> \
     ~/.cargo-target/esp32-ccid-wifi-vpcd.bin
 ```
 

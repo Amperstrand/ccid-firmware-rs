@@ -113,7 +113,7 @@ is what keeps them exclusive with field sessions.
 | 2 | Single-field pcscd-serving ops (connection opens, GP/gpg flows) | `test_gpg.py` leg, `j3r180_gpg_lifecycle.py` on one reader | **field lock** → labgrid place (pcscd stays up; serving is per-reader — proven, §1) |
 | 3 | Multi-field sequential ops | full differential run (rotation card through every reader — sequential by design; see differential-seat note below) | field locks acquired **one at a time**, released between seats; never hold two |
 | 4 | pcscd lifecycle | conformance battery (`conformance_battery.py` stops pcscd), reader.conf enable/disable + restart | **whole-bench + all field locks** + `/run/lock/bench-pcscd.lock` (existing pcscd rule) |
-| 5 | Flashing / OTA / console | `esp32_flash.py`, `stm32_flash.py`, `host-tools/ota_push.py`, coredump trigger/retrieve/erase, any serial open | **whole-bench + all field locks** → labgrid place |
+| 5 | Flashing / OTA / console | `esp32_flash.py`, `stm32_flash.py`, `tests/hardware/vpcd/ota_push.py`, coredump trigger/retrieve/erase, any serial open | **whole-bench + all field locks** → labgrid place |
 | 6 | /dev or USB topology | replug, ST-LINK ops, exporter/coordinator restart or config deploy, udev work | **whole-bench + all field locks** |
 | 7 | Power ops | board power-cycle, bench PDU | **whole-bench + all field locks** |
 
@@ -199,7 +199,7 @@ stale.)
 ## 7. What still needs the whole-bench lock (explicit list)
 
 1. **Flashing, any flavor**: `esp32_flash.py`, `stm32_flash.py`
-   (connect-under-reset), OTA pushes (`host-tools/ota_push.py`, places
+   (connect-under-reset), OTA pushes (`tests/hardware/vpcd/ota_push.py`, places
    `ccid-nucula` / `ccid-m5stick`), bootloader/PT/app partitions.
 2. **Serial console opens** — DTR/RTS side effects chip-reset boards
    (nucula CDC hazard; ser2net-on-acquire hazard), including coredump
