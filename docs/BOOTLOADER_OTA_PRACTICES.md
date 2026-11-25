@@ -131,8 +131,9 @@ boot-loop DIO boards) lives in `build.sh:546-553` and `make_bundle.py:79-95`.
 - **Host side:** `tests/hardware/vpcd/ota_push.py` (OTA1/OTA2-aware,
   `push()` :48-91, streams the app image in 4 KiB chunks) and
   `tests/hardware/ota/ota_push.py` (OTA1-only suite library, :36-113). Both
-  send **app-only** images. Note: three docs reference `host-tools/ota_push.py`
-  which does not exist — the real clients are the two above.
+  send **app-only** images. Note: three docs referenced `host-tools/ota_push.py`
+  which did not exist — FIXED 2026-11-25 (the docs now point at the real
+  clients; checklist item closed).
 
 **(4) Secure boot / signed images:** **absent, deliberately** —
 `# CONFIG_SECURE_BOOT is not set` in every `.full` (e.g.
@@ -461,8 +462,9 @@ Effort: S ≤ a day, M ≤ a week, L > a week. Items assume the shared 4 MB
 board class; money-bearing NVS layouts must be preserved by construction.
 
 **ccid-firmware-rs** (canonical, gaps are polish):
-- S: fix the stale `host-tools/ota_push.py` doc path (3 docs point at a file
-  that doesn't exist; the real clients live under `tests/hardware/`).
+- ~~S: fix the stale `host-tools/ota_push.py` doc path~~ — DONE
+  2026-11-25 (NFC-FIELD-LOCKS, VPCD_WIFI_RUNBOOK, labgrid README now
+  point at `tests/hardware/vpcd/ota_push.py` and the ota-suite client).
 - S: reflash the m5stick bootloader so the rollback knob is actually
   enforced (README:140-151) — one bundle flash.
 - M (field-only): signature verification on the OTA path

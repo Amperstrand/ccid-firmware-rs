@@ -65,7 +65,7 @@ DUT and the two ESP32 OTA seats served by the second exporter.
 | `m5stick` | ai-legion-nfc | GemPC Escape 0x02 over UART0 | `test_serial_battery_hil.py` |
 | `ref-acr1252` | ai-legion-nfc | pcscd `ACR1252` | identity only (reference oracle) |
 | `ref-cardman` | ai-legion-nfc | pcscd `CardMan` | identity only (contact reference) |
-| `ccid-nucula` | ai-legion-ccid | OTA TCP `192.168.13.230:3232` | `tests/hardware/vpcd/` + `host-tools/ota_push.py` |
+| `ccid-nucula` | ai-legion-ccid | OTA TCP `192.168.13.230:3232` | `tests/hardware/vpcd/ota_push.py` (the OTA1/OTA2-aware client) |
 | `ccid-m5stick` | ai-legion-ccid | OTA TCP `192.168.13.234:3232` | OTA reflash (vpcd slot :35964) |
 
 ## Testbed topology
