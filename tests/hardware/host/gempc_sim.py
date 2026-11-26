@@ -88,7 +88,12 @@ class GemPcSim:
         self.atr = atr
         self.table = table
         self.fixed = fixed
-        self.card_active = True  # card seated + powered at boot (bench shape)
+        # ICC lifecycle fidelity (found via the battery's card-relative
+        # cases): a present card reads PRESENT+INACTIVE (bmICCStatus 1)
+        # until IccPowerOn — never ACTIVE-at-boot; the battery's
+        # power_on_expect depends on exactly this pre-activation state.
+        self.card_active = True   # seated (presence)
+        self.card_powered = False  # bmICCStatus: 1 until PowerOn, 0 after
         self.exchanges = 0
         self.naks = 0
         # pcscd's internal T=1 stack speaks BLOCKS through XfrBlock
@@ -101,6 +106,8 @@ class GemPcSim:
     def _status(self, cmd: int = 0) -> int:
         if not self.card_active:
             return ICC_ABSENT | cmd
+        if not self.card_powered:
+            return ICC_INACTIVE | cmd
         return ICC_ACTIVE | cmd
 
     def _card_answer(self, apdu: bytes) -> bytes:
@@ -129,12 +136,14 @@ class GemPcSim:
             if not self.card_active:
                 return frame(RDR_SLOTSTATUS, seq, b"",
                              bstatus=self._status(CMD_FAILED))
+            self.card_powered = True
             return frame(RDR_DATABLOCK, seq, self.atr,
                          bstatus=self._status())
         if msg_type == MSG_ICC_POWER_OFF:
+            self.card_powered = False  # present+inactive again (§6.2.2)
             return frame(RDR_SLOTSTATUS, seq, b"", bstatus=self._status())
         if msg_type == MSG_XFR_BLOCK:
-            if not self.card_active:
+            if not self.card_active or not self.card_powered:
                 return frame(RDR_SLOTSTATUS, seq, b"",
                              bstatus=self._status(CMD_FAILED))
             return frame(RDR_DATABLOCK, seq, self._card_answer(payload),
