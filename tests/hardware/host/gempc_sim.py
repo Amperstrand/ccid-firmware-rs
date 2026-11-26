@@ -189,7 +189,17 @@ def serve(master_fd: int, sim: GemPcSim, once: int = 0) -> None:
             dlen = int.from_bytes(buf[i + 3:i + 7], "little")
             end = i + 13 + dlen
             if end > len(buf):
-                break  # partial — wait for more bytes
+                # Stray-SYNC restart (reference: ccid-transport-serial
+                # FrameParser — "a stray SYNC means the previous SYNC
+                # was garbage: restart collection on the new SYNC").
+                # Without this, a truncated/oversized dwLength wedges
+                # the scanner forever waiting for bytes that never
+                # come — found live by the battery's fuzz leg.
+                nxt = buf.find(b"\x03", i + 1)
+                if nxt == -1 and len(buf) - i < 13 + 4096:
+                    break  # plausible partial — wait for more bytes
+                i += 1  # declared length is unbelievable: resync scan
+                continue
             if lrc(buf[i:end - 1]) != buf[end - 1]:
                 i += 1
                 continue
