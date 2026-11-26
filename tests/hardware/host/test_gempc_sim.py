@@ -18,12 +18,12 @@ try:  # module-level hardware import guard (CI python-collect runs with
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nfc"))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from conformance_battery import (  # noqa: E402
-        MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_ON,
-        MSG_XFR_BLOCK, parse_frames,
+        MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_OFF,
+        MSG_ICC_POWER_ON, MSG_XFR_BLOCK, parse_frames,
     )
     from gempc_sim import (  # noqa: E402
-        CMD_FAILED, DEFAULT_ATR, ICC_ABSENT, ICC_ACTIVE, RDR_DATABLOCK,
-        RDR_PARAMETERS, RDR_SLOTSTATUS, GemPcSim,
+        CMD_FAILED, DEFAULT_ATR, ICC_ABSENT, ICC_ACTIVE, ICC_INACTIVE,
+        RDR_DATABLOCK, RDR_PARAMETERS, RDR_SLOTSTATUS, GemPcSim,
     )
 except ModuleNotFoundError:
     pytest.skip("pyserial/battery unavailable (CI minimal env)",
@@ -49,6 +49,7 @@ def test_power_on_returns_atr():
 
 def test_xfr_block_scripted_table_and_default_miss():
     sim = GemPcSim(DEFAULT_ATR, {SELECT: bytes.fromhex("9000")}, None)
+    sim.on_frame(MSG_ICC_POWER_ON, 0, b"")  # lifecycle: power first
     _, _, _, _, payload = resp_payload(sim.on_frame(MSG_XFR_BLOCK, 1, SELECT))
     assert payload == bytes.fromhex("9000")
     _, _, status, _, payload = resp_payload(
@@ -82,6 +83,19 @@ def test_slot_status_absent():
     _, _, status, _, _ = resp_payload(
         sim.on_frame(MSG_GET_SLOT_STATUS, 9, b""))
     assert status == ICC_ABSENT
+
+
+def test_power_off_returns_to_inactive_not_absent():
+    sim = GemPcSim(DEFAULT_ATR, {}, None)
+    sim.on_frame(MSG_ICC_POWER_ON, 1, b"")   # powered -> active
+    _, _, status, _, _ = resp_payload(sim.on_frame(MSG_GET_SLOT_STATUS, 2, b""))
+    assert status == ICC_ACTIVE
+    sim.on_frame(MSG_ICC_POWER_OFF, 3, b"")  # depower -> present+inactive
+    _, _, status, _, _ = resp_payload(sim.on_frame(MSG_GET_SLOT_STATUS, 4, b""))
+    assert status == ICC_INACTIVE
+    # XfrBlock without power: FAILED command status, named (§ honest-error)
+    mt, _, st, err, _ = resp_payload(sim.on_frame(MSG_XFR_BLOCK, 5, SELECT))
+    assert mt == RDR_SLOTSTATUS and (st & 0xC0) != 0
 
 
 def test_bad_lrc_gets_no_answer():
@@ -145,11 +159,13 @@ def test_pty_round_trip():
 
         # Twin echo semantics: every exchange reads back [echo][response]
         # (libccidtwin discards the echo on its FIRST read only).
+        # ICC lifecycle: present+INACTIVE at rest (bmICCStatus 1) — the
+        # battery's card-relative cases depend on exactly this shape.
         s.write(frame(MSG_GET_SLOT_STATUS, 1))
         frames = read_frames()
         assert frames[0][0] == MSG_GET_SLOT_STATUS  # the echo = our frame
         assert frames[1][0] == RDR_SLOTSTATUS
-        assert frames[1][2] == ICC_ACTIVE
+        assert frames[1][2] == ICC_INACTIVE
 
         s.write(frame(MSG_ICC_POWER_ON, 2))
         frames = read_frames()
