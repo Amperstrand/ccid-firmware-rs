@@ -317,8 +317,14 @@ def via_serial(port=None):
             return None
     s = serial.Serial(port, 115200, bytesize=8, parity="N", stopbits=2,
                       timeout=0.5)
-    s.setDTR(False)
-    s.setRTS(False)
+    # Control-line-less transports (ptys — the gempc_sim oracle and the
+    # socat bridges) reject the ioctls outright: tolerate, like the
+    # battery's Reader (its "Control-line-less transports" note).
+    try:
+        s.setDTR(False)
+        s.setRTS(False)
+    except OSError:
+        pass
     try:
         seq = 1
         s.reset_input_buffer()
