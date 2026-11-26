@@ -7,6 +7,7 @@ class as the /dev/m5stick-remote socat pty) and drives a full
 status->power-on->APDU exchange over the wire, LRCs included.
 """
 import subprocess
+import os as _os
 import sys
 from pathlib import Path
 
@@ -19,7 +20,7 @@ try:  # module-level hardware import guard (CI python-collect runs with
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from conformance_battery import (  # noqa: E402
         MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_OFF,
-        MSG_ICC_POWER_ON, MSG_XFR_BLOCK, parse_frames,
+        MSG_ICC_POWER_ON, MSG_XFR_BLOCK, frame, parse_frames,
     )
     from gempc_sim import (  # noqa: E402
         CMD_FAILED, DEFAULT_ATR, ICC_ABSENT, ICC_ACTIVE, ICC_INACTIVE,
@@ -186,3 +187,45 @@ def test_pty_round_trip():
         err = proc.stderr.read().decode(errors="replace").strip()
         if err:
             print(f"--- gempc_sim stderr ---\n{err}", file=sys.stderr)
+
+
+
+def test_scanner_resyncs_after_unbelievable_length():
+    """The battery fuzz leg's wedge class, locked: a header declaring an
+    oversized dwLength must NOT wedge the scanner — a subsequently sent
+    valid frame still gets answered (stray-SYNC restart, mirroring
+    ccid-transport-serial's FrameParser semantics)."""
+    import subprocess as sp
+    proc = sp.Popen([sys.executable, str(Path(__file__).resolve().parent / "gempc_sim.py")],
+                    stdout=sp.PIPE, stderr=sp.STDOUT)
+    try:
+        port = proc.stdout.readline().decode().strip()
+        assert port.startswith("/dev/pts/"), port
+        import serial as _serial
+        s = _serial.Serial(port=port, baudrate=115200, timeout=0.5,
+                           stopbits=2)
+        # giant header: SYNC ACK + type/len declaring 1 MB — never
+        # completed on the wire:
+        s.write(bytes([0x03, 0x06, 0x65, 0xFF, 0xFF, 0x00, 0x00,
+                       0, 1, 0, 0, 0, 0x00]))
+        import time as _t
+        _t.sleep(0.05)
+        # then a perfectly valid GetSlotStatus:
+        s.write(frame(MSG_GET_SLOT_STATUS, 1))
+        got = b""
+        for _ in range(20):
+            import select as _sel
+            if _sel.select([s.fd], [], [], 0.1)[0]:
+                got += _os.read(s.fd, 512)
+                if parse_frames(got):
+                    break
+            _t.sleep(0.02)
+        # frames = [echo of our request, response] — ANY valid response
+        # frame proves the scanner resynced (the wedge = no frames).
+        frames = parse_frames(got)
+        assert frames and any(f[0] == RDR_SLOTSTATUS for f in frames), (
+            f"wedged behind giant header: {got.hex()!r}")
+        s.close()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)

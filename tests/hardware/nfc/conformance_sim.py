@@ -16,7 +16,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from conformance_battery import Reader, conformance_battery  # noqa: E402
+from conformance_battery import (  # noqa: E402
+    Reader, conformance_battery, fuzz_battery, slot_status_soak,
+)
 
 
 def main() -> int:
@@ -30,7 +32,13 @@ def main() -> int:
             return 2
         print(f"gempc_sim pty: {port}")
         reader = Reader("gempc-sim", port)
-        ok = conformance_battery({"gempc-sim": reader})
+        readers = {"gempc-sim": reader}
+        ok = conformance_battery(readers)
+        # The bench legs, host-only and bounded: the framing fuzz
+        # (malformed frames must never wedge — every case ends with a
+        # valid GetSlotStatus) and the GSS soak (state stability).
+        ok = fuzz_battery(readers, rounds=25) and ok
+        ok = slot_status_soak(readers, count=100) and ok
         reader.close()
         print("SIM BATTERY VERDICT:", "PASS" if ok else "FAIL")
         return 0 if ok else 1
