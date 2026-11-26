@@ -22,6 +22,7 @@ Usage:
   python3 gempc_sim.py --atr 3B... --script card.txt --once 10
 """
 import argparse
+import json
 import os
 import pty
 import sys
@@ -162,7 +163,8 @@ class GemPcSim:
                      bstatus=self._status(CMD_FAILED), berror=0xFF)
 
 
-def serve(master_fd: int, sim: GemPcSim, once: int = 0) -> None:
+def serve(master_fd: int, sim: GemPcSim, once: int = 0,
+          capture=None) -> None:
     """Reader loop with GemPC-Twin ECHO semantics (reference:
     reference/CCID/src/ccid_serial.c — the Twin echoes received bytes on
     the line; libccidtwin's ReadSerial discards one echo-frame on its
@@ -205,10 +207,18 @@ def serve(master_fd: int, sim: GemPcSim, once: int = 0) -> None:
                 continue
             wire = buf[i:end]
             i = end
+            if capture is not None:
+                capture.write(json.dumps(
+                    {"event": "rx", "t": time.time(),
+                     "data": wire.hex()}) + "\n")
             os.write(master_fd, wire)  # the ECHO (line semantics)
             mt, seq, payload = wire[2], wire[8], wire[12:12 + dlen]
             resp = sim.on_frame(mt, seq, payload)
             if resp is not None:
+                if capture is not None:
+                    capture.write(json.dumps(
+                        {"event": "tx", "t": time.time(),
+                         "data": resp.hex()}) + "\n")
                 os.write(master_fd, resp)
             if once and sim.exchanges >= once:
                 # Drain grace: closing the pty master discards unread
@@ -231,6 +241,9 @@ def main(argv=None) -> int:
                     help="CAPDU_HEX=RAPDU_HEX table file (unmatched -> 6A82)")
     ap.add_argument("--once", type=int, default=0, metavar="N",
                     help="exit after N card exchanges (0 = forever)")
+    ap.add_argument("--capture", default=None, metavar="FILE",
+                    help="JSONL wire capture: every frame in/out with "
+                         "timestamps (the #540 wire-oracle harness)")
     ap.add_argument("--t1-adversary", default=None,
                     metavar="PROFILE",
                     choices=["wtx-storm", "seq-violation", "chain-abort"],
@@ -245,7 +258,12 @@ def main(argv=None) -> int:
 
     master, slave = pty.openpty()
     print(Path(os.ttyname(slave)), flush=True)  # the reader.conf DEVICENAME
-    serve(master, sim, args.once or None)
+    capture = None
+    if args.capture:
+        capture = open(args.capture, "a", buffering=1)
+        capture.write(json.dumps({"event": "session", "atr": args.atr,
+                                  "t": time.time()}) + "\n")
+    serve(master, sim, args.once or None, capture=capture)
     return 0
 
 
