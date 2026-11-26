@@ -209,7 +209,10 @@ def test_scanner_resyncs_after_unbelievable_length():
         s.write(bytes([0x03, 0x06, 0x65, 0xFF, 0xFF, 0x00, 0x00,
                        0, 1, 0, 0, 0, 0x00]))
         import time as _t
-        _t.sleep(0.05)
+        for _ in range(20):  # poll: giant header actually consumed
+            if s.in_waiting == 0:
+                break
+            _t.sleep(0.02)
         # then a perfectly valid GetSlotStatus:
         s.write(frame(MSG_GET_SLOT_STATUS, 1))
         got = b""

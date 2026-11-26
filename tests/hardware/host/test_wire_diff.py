@@ -74,9 +74,15 @@ def test_capture_mode_records_every_exchange(tmp_path):
         from conformance_battery import MSG_GET_SLOT_STATUS, frame
         s.write(frame(MSG_GET_SLOT_STATUS, 1))
         import time
-        time.sleep(0.6)
+        # poll until the capture carries the exchange (pty timing is
+        # racy under load; fixed sleeps flake — the round-trip lesson)
+        for _ in range(40):
+            if cap.exists() and cap.read_text().count("rx") >= 1 \
+                    and cap.read_text().count("tx") >= 1:
+                break
+            time.sleep(0.05)
         s.close()
-        time.sleep(0.6)  # --once drain grace
+        time.sleep(0.4)  # --once drain grace
         events = [json.loads(l) for l in cap.read_text().splitlines()]
         kinds = [e["event"] for e in events]
         assert kinds[0] == "session"
