@@ -85,7 +85,8 @@ class GemPcSim:
     """Reader-side state machine: frame in, frame out, one slot."""
 
     def __init__(self, atr: bytes, table: dict, fixed: bytes | None,
-                 adversary: str | None = None):
+                 adversary: str | None = None,
+                 self_marked: bool = False):
         self.atr = atr
         self.table = table
         self.fixed = fixed
@@ -103,6 +104,7 @@ class GemPcSim:
         # consumers keep getting raw-APDU dispatch.
         self.t1 = T1Endpoint()
         self.adversary = T1Adversary(adversary, self.t1) if adversary else None
+        self.self_marked = self_marked
 
     def _status(self, cmd: int = 0) -> int:
         if not self.card_active:
@@ -125,7 +127,21 @@ class GemPcSim:
     def _plain_answer(self, apdu: bytes) -> bytes:
         if self.fixed is not None:
             return self.fixed
-        return self.table.get(apdu, bytes.fromhex("6a82"))
+        if apdu in self.table:
+            return self.table[apdu]
+        if self.self_marked and len(apdu) >= 2:
+            # Self-marked doctrine (#261): the vpicc_table's synthetic
+            # GP-smoke answers — one source of truth for the
+            # never-real-crypto shapes (marker + A5/5A filler), the
+            # same answers on every emulated surface. Lazy import: the
+            # sibling dir is not a package.
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nfc"))
+            from vpicc_table import default_table
+            prefix_table = default_table()
+            key = (apdu[0], apdu[1])
+            if key in prefix_table:
+                return prefix_table[key]
+        return bytes.fromhex("6a82")
 
     def on_frame(self, msg_type: int, seq: int, payload: bytes) -> bytes | None:
         """Return the full wire response (frame()'d), or None for silence.
@@ -241,6 +257,10 @@ def main(argv=None) -> int:
                     help="CAPDU_HEX=RAPDU_HEX table file (unmatched -> 6A82)")
     ap.add_argument("--once", type=int, default=0, metavar="N",
                     help="exit after N card exchanges (0 = forever)")
+    ap.add_argument("--self-marked", action="store_true",
+                    help="default card = the vpicc_table synthetic "
+                         "GP-smoke answers (marker + A5/5A filler — "
+                         "never real crypto; the #261 doctrine)")
     ap.add_argument("--capture", default=None, metavar="FILE",
                     help="JSONL wire capture: every frame in/out with "
                          "timestamps (the #540 wire-oracle harness)")
@@ -254,7 +274,8 @@ def main(argv=None) -> int:
     table = parse_script(args.script) if args.script else {}
     fixed = bytes.fromhex(args.respond) if args.respond else None
     sim = GemPcSim(bytes.fromhex(args.atr), table, fixed,
-                   adversary=args.t1_adversary)
+                   adversary=args.t1_adversary,
+                   self_marked=args.self_marked)
 
     master, slave = pty.openpty()
     print(Path(os.ttyname(slave)), flush=True)  # the reader.conf DEVICENAME

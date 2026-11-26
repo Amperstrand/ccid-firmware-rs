@@ -232,3 +232,22 @@ def test_scanner_resyncs_after_unbelievable_length():
     finally:
         proc.terminate()
         proc.wait(timeout=5)
+
+
+def test_self_marked_mode_uses_vpicc_table_doctrine():
+    """--self-marked: the vpicc_table's synthetic GP-smoke answers (the
+    #261 doctrine: marker + A5/5A filler, never real crypto) — one
+    source of truth across every emulated surface."""
+    sim = GemPcSim(DEFAULT_ATR, {}, None, self_marked=True)
+    sim.on_frame(MSG_ICC_POWER_ON, 1, b"")
+    _, _, _, _, sel = resp_payload(
+        sim.on_frame(MSG_XFR_BLOCK, 2,
+                     bytes.fromhex("00a4040008a000000151000000")))
+    assert sel.endswith(bytes.fromhex("9000"))
+    assert b"VPICC-TABLE" in sel  # the self-marking
+    _, _, _, _, cplc = resp_payload(
+        sim.on_frame(MSG_XFR_BLOCK, 3, bytes.fromhex("80ca9f7f00")))
+    assert cplc.startswith(bytes.fromhex("9f7f2da5a5"))  # synthetic
+    # exact table + 6A82 default still take their precedence
+    assert sim._plain_answer(bytes.fromhex("00b0000000")) == \
+        bytes.fromhex("6a82")
