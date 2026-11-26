@@ -14,7 +14,7 @@ try:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from gempc_sim import DEFAULT_ATR, GemPcSim
     from gempc_t1_sim import (T1Endpoint, block, i_pcb, lrc,
-                              looks_like_block, r_pcb)
+                              looks_like_block)
 except ModuleNotFoundError:
     pytest.skip("t1 twin unavailable", allow_module_level=True)
 
