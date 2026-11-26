@@ -161,3 +161,33 @@ jobs:
         if: failure()
         run: |
           "$HOME/vc-venv/bin/python" -c "from smartcard.System import readers; [print(str(r)) for r in readers()]"
+
+  # ---------------------------------------------------------------------
+  # gempc-sim stack (#596/#607/#608): the whole host-only serial-CCID
+  # test surface — simulator, T=1 endpoint twin, mutation corpus, the
+  # battery-on-sim, the fake-phone relay leg — needs ONLY pyserial
+  # (no pcscd, no pyscard, no boards). Until now these ran solely on
+  # the bench host; this lane makes them CI-enforced.
+  # ---------------------------------------------------------------------
+  gempc-sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install venv (pyserial only)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-venv python3-dev build-essential
+          python3 -m venv "$HOME/vc-venv"
+          "$HOME/vc-venv/bin/pip" install --quiet pyserial pytest pytest-timeout
+
+      - name: Run the sim test stack
+        run: |
+          "$HOME/vc-venv/bin/python" -m pytest tests/hardware/host/ -q \
+            --timeout=120 -rs | tee /tmp/pytest.log
+          "$HOME/vc-venv/bin/python" tests/hardware/nfc/conformance_sim.py \
+            | tee /tmp/battery.log
+          grep -q "SIM BATTERY VERDICT: PASS" /tmp/battery.log \
+            || { echo "FAIL: sim battery not PASS"; cat /tmp/battery.log; exit 1; }
