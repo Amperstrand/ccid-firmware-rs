@@ -19,8 +19,9 @@ try:  # module-level hardware import guard (CI python-collect runs with
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nfc"))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from conformance_battery import (  # noqa: E402
-        MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS, MSG_ICC_POWER_OFF,
-        MSG_ICC_POWER_ON, MSG_XFR_BLOCK, frame, parse_frames,
+        MSG_ESCAPE, MSG_GET_PARAMETERS, MSG_GET_SLOT_STATUS,
+        MSG_ICC_POWER_OFF, MSG_ICC_POWER_ON, MSG_XFR_BLOCK, frame,
+        parse_frames,
     )
     from gempc_sim import (  # noqa: E402
         CMD_FAILED, DEFAULT_ATR, ICC_ABSENT, ICC_ACTIVE, ICC_INACTIVE,
@@ -251,3 +252,18 @@ def test_self_marked_mode_uses_vpicc_table_doctrine():
     # exact table + 6A82 default still take their precedence
     assert sim._plain_answer(bytes.fromhex("00b0000000")) == \
         bytes.fromhex("6a82")
+
+
+def test_d3_escape_carries_the_519_shape():
+    """Escape [0xD3, N]: the #519/#531 cadence-probe body — 16 bytes
+    [total_us][reads][fwt_ms] LE + raw timer readback. fwt_arm_probe
+    runs end-to-end against it (live-verified via --via-serial --port)."""
+    import struct
+    sim = GemPcSim(DEFAULT_ATR, {}, None)
+    sim.on_frame(MSG_ICC_POWER_ON, 1, b"")
+    _, _, _, _, body = resp_payload(
+        sim.on_frame(MSG_ESCAPE, 2, bytes([0xD3, 32])))
+    assert len(body) == 16
+    total_us, reads, fwt_ms = struct.unpack("<III", body[:12])
+    assert reads == 32 and total_us == 32_000 and fwt_ms == 2483
+    assert body[12:16] == bytes([0x0A, 0x83, 0x0C, 0x40])

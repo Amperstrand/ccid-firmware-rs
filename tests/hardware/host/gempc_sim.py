@@ -173,6 +173,18 @@ class GemPcSim:
             ident = b"GemPC Twin SIM 1.0"
             if payload[:1] == bytes([0x02]):
                 return frame(RDR_ESCAPE, seq, ident, bstatus=self._status())
+            if payload[:1] == bytes([0xD3]):
+                # The #519/#531 cadence-probe shape: 16-byte body
+                # [total_us u32][reads u32][fwt_ms u32] + raw timer
+                # readback [TMode, TPrescaler, TReloadHi, TReloadLo].
+                # Synthetic post-fix-class values (FWI-13 arming,
+                # 32 polls): the probe's verdict machinery runs
+                # end-to-end against them.
+                n = payload[1] if len(payload) > 1 else 32
+                import struct
+                body = struct.pack("<III", n * 1000, n, 2483) + bytes(
+                    [0x0A, 0x83, 0x0C, 0x40])
+                return frame(RDR_ESCAPE, seq, body, bstatus=self._status())
             return frame(RDR_ESCAPE, seq, b"", bstatus=self._status())
         # Unknown type: cmd_not_supported, named per the honest-error contract
         return frame(RDR_SLOTSTATUS, seq, b"",
