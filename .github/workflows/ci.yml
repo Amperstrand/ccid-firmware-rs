@@ -39,7 +39,7 @@ on:
   # would bitrot silently (toolchain/IDF drift) — 03:00 UTC rebuilds BOTH
   # tiers (the changes job defaults every family to true on schedule).
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "47 2 * * *"
   workflow_dispatch:
     inputs:
       full-matrix:
