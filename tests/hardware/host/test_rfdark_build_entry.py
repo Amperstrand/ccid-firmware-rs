@@ -8,9 +8,7 @@ pins the contract (toolchain, triple, features, chip, artifact name).
 If the entry rots (renamed feature, wrong triple), this fails before
 anyone burns a bench session on it.
 """
-import re
 import subprocess
-import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
