@@ -301,6 +301,16 @@ impl EspPn7160Transport {
         f
     }
 
+    /// #547 rf-dark: hold VEN LOW persistently — the PN7160 stays
+    /// powered down (no discovery, no RF, I2C dark). The RF_RESUME
+    /// path is a plain reset: no caller of this in any serving main,
+    /// and a rfdark image never marks OTA-valid, so the bootloader's
+    /// rollback returns the serving slot on the next boot.
+    pub fn ven_hold_low(&mut self) {
+        log::warn!("rf-dark: VEN -> LOW (PN7160 powered down)");
+        unsafe { esp_idf_sys::gpio_set_level(self.board.ven, 0) };
+    }
+
     /// VEN power cycle, byte-exact vs nci.c:77-86. Public: the bring-up
     /// health loop re-applies it before every init-ladder retry.
     pub fn ven_cycle(&mut self) {
