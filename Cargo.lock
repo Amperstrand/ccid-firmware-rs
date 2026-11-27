@@ -300,7 +300,7 @@ dependencies = [
  "ccid-core",
  "ccid-protocol",
  "ccid-transport-serial",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "log",
  "thiserror 2.0.18",
 ]
@@ -310,7 +310,7 @@ name = "ccid-transport-serial"
 version = "0.1.0"
 dependencies = [
  "ccid-protocol",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "thiserror 2.0.18",
 ]
 
@@ -598,7 +598,7 @@ dependencies = [
  "embedded-io-async",
  "futures-core",
  "futures-sink",
- "heapless 0.9.2",
+ "heapless 0.9.4",
 ]
 
 [[package]]
@@ -730,7 +730,7 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async",
  "enumset",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "num_enum",
  "serde",
  "strum 0.27.2",
@@ -845,7 +845,7 @@ dependencies = [
  "embuild",
  "enumset",
  "esp-idf-sys",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "log",
  "nb 1.1.0",
 ]
@@ -863,7 +863,7 @@ dependencies = [
  "enumset",
  "esp-idf-hal",
  "futures-io",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "log",
  "num_enum",
  "uncased",
@@ -907,7 +907,7 @@ dependencies = [
  "esp-idf-hal",
  "esp-idf-svc",
  "esp-idf-sys",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "iso14443",
  "log",
  "mfrc522",
@@ -1111,9 +1111,9 @@ dependencies = [
 
 [[package]]
 name = "heapless"
-version = "0.9.2"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2af2455f757db2b292a9b1768c4b70186d443bcb3b316252d6b540aec1cd89ed"
+checksum = "411fdef4df93751117bd9ef8caa0e7f99c65dafec5bd84313eb8e2fdd75e32f2"
 dependencies = [
  "hash32",
  "stable_deref_trait",
@@ -1211,7 +1211,7 @@ source = "git+https://github.com/Amperstrand/iso14443-rs.git?rev=0f7d9d70#0f7d9d
 dependencies = [
  "bitflags 2.11.1",
  "bounded-integer",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "num_enum",
 ]
 
@@ -1561,7 +1561,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "esp-idf-hal",
  "esp-idf-sys",
- "heapless 0.9.2",
+ "heapless 0.9.4",
  "log",
  "thiserror 2.0.18",
 ]
