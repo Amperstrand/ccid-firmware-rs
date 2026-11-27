@@ -87,6 +87,11 @@ pub mod pn7160_v10raw;
     any(target_arch = "xtensa", target_arch = "riscv32")
 ))]
 pub mod pn7160_actdiag;
+
+#[cfg(all(
+    feature = "pn7160-rfdark",
+    any(target_arch = "xtensa", target_arch = "riscv32")
+))]
 pub mod pn7160_rfdark;
 
 #[cfg(all(
