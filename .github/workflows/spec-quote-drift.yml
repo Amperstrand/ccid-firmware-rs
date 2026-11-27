@@ -35,7 +35,7 @@ on:
   pull_request:
     types: [labeled]
   schedule:
-    - cron: "0 6 * * 1" # weekly: catch upstream reference changes
+    - cron: "11 6 * * 1" # weekly: catch upstream reference changes
   workflow_dispatch:
 
 jobs:
